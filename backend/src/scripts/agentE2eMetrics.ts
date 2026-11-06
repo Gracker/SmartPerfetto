@@ -4,8 +4,8 @@
 import {createHash} from 'node:crypto';
 import {MODEL_REQUEST_COMPONENTS, RUNTIME_MODEL_CALL_PURPOSES, RUNTIME_MODEL_CALL_TRIGGERS,
   RUNTIME_MODEL_REASONING_EFFORTS, RUNTIME_DECLARATION_AUTHORING_STATUSES, RUNTIME_DECLARATION_AUTHORING_VERSIONS,
-  projectRuntimeModelPolicyReceipt, projectRuntimeFinalTransportObservation} from '../agentRuntime/runtimePerformance';
-import {getFinalSubmissionModeDescriptor, type FinalSubmissionModeKey} from '../agentRuntime/finalSubmissionImplementation';
+  projectRuntimeModelPolicyReceipt, projectRuntimeFinalTransportObservation, projectRuntimeFinalReviewReceipt} from '../agentRuntime/runtimePerformance';
+import {getObservedFinalSubmissionModeDescriptor, type ObservedFinalSubmissionModeKey} from '../agentRuntime/finalSubmissionImplementation';
 import {PRODUCTION_RUNTIME_KINDS} from '../agentRuntime/runtimeKinds';
 import {getRunManifestStore} from '../services/selfEvolution/runManifestStore';
 import type {RunManifestScope, RunManifestV1} from '../types/selfEvolution';
@@ -31,9 +31,9 @@ function member<T extends string>(value: unknown, values: readonly T[]): T {
   return value as T;
 }
 
-function finalSubmissionMode(value: unknown): FinalSubmissionModeKey {
-  if (!getFinalSubmissionModeDescriptor(value)) throw new Error('metrics_enum_invalid');
-  return value as FinalSubmissionModeKey;
+function finalSubmissionMode(value: unknown): ObservedFinalSubmissionModeKey {
+  if (!getObservedFinalSubmissionModeDescriptor(value)) throw new Error('metrics_enum_invalid');
+  return value as ObservedFinalSubmissionModeKey;
 }
 
 function numbers(value: unknown, keys: readonly string[]): Record<string, number> {
@@ -79,6 +79,8 @@ export function projectAgentE2ePerformance(value: unknown) {
   const finalTransportObservation = source.finalTransportObservation === undefined ? undefined
     : projectRuntimeFinalTransportObservation(source.finalTransportObservation);
   if (source.finalTransportObservation !== undefined && !finalTransportObservation) throw new Error('metrics_final_transport_invalid');
+  const finalReview = source.finalReview === undefined ? undefined : projectRuntimeFinalReviewReceipt(source.finalReview);
+  if (source.finalReview !== undefined && !finalReview) throw new Error('metrics_final_review_invalid');
   return {
     schemaVersion: 1,
     ...numbers(source, ['firstOutputMs']),
@@ -126,6 +128,7 @@ export function projectAgentE2ePerformance(value: unknown) {
       };
     })}),
     ...(finalTransportObservation ? {finalTransportObservation} : {}),
+    ...(finalReview ? {finalReview} : {}),
     ...(source.policyObservations === undefined ? {} : {policyObservations: rows(source.policyObservations, row => {
       const receipt = projectRuntimeModelPolicyReceipt(row);
       if (!receipt || !Number.isSafeInteger(row.observationOrdinal) || (row.observationOrdinal as number) < 1

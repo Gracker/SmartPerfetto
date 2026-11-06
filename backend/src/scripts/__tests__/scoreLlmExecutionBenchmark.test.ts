@@ -1131,3 +1131,347 @@ describe('W0 versioned representation-treatment scoring', () => {
     expect(data.score().cells[0].performance.status).toBe('inconclusive');
   });
 });
+
+const t0ScoreTreatment = 'assistant_text_to_evidence_quotes_v3@1';
+const t0ScoreTuple = {representationVersion: 'authored_claim_document@3', compilerVersion: 'authored_claim_document_compiler@3',
+  admissionVersion: 'openai_typed_final_admission@5', wireVersion: 'openai_chat_final_wire@4', rendererVersion: 'program_evidence_quote_render@1'};
+function t0ScoreCore(adoption: Json) {
+  return {schemaVersion: 'program_quote_issuer_core@1', ownerBindingHash: adoption.ownerBindingHash, implementation: {...t0ScoreTuple},
+    nativeIdentity: {source: adoption.actualNativeSource, dispatchOrdinal: adoption.collectorDispatchOrdinal, responseKey: adoption.responseKey,
+      ...(adoption.actualNativeSource === 'assistant_json' ? {messageKey: adoption.messageKey} : {callKey: adoption.callKey})},
+    rawSourceIdentity: {utf16Hash: adoption.rawSourceUtf16Hash, utf8Hash: adoption.rawSourceUtf8Hash, utf16Length: adoption.rawSourceUtf16Length},
+    bodyHash: adoption.bodyHash, provenanceHash: adoption.provenanceHash, nativeCandidateKey: adoption.nativeCandidateKey,
+    componentCount: adoption.componentCount, renderedComponentCount: adoption.renderedComponentCount,
+    unavailableComponentCount: adoption.unavailableComponentCount, quotedCellOccurrences: adoption.quotedCellOccurrences,
+    independentClaimCount: adoption.independentClaimCount};
+}
+function rehashQuoteTransport(report: Json) {
+  const events = report.executionMetrics.performance.finalTransportObservation.events, changed = new Map<string, string>();
+  for (const [index, event] of events.entries()) {
+    const old = event.eventKey;
+    event.sequence = index + 1; event.offsetMs = index;
+    for (const author of event.authors ?? []) author.terminalEventKey = changed.get(author.terminalEventKey) ?? author.terminalEventKey;
+    if (event.retainedEventKey) event.retainedEventKey = changed.get(event.retainedEventKey) ?? event.retainedEventKey;
+    if (event.adoption?.nativeTerminalEventKey) event.adoption.nativeTerminalEventKey = changed.get(event.adoption.nativeTerminalEventKey) ?? event.adoption.nativeTerminalEventKey;
+    const {eventKey: _key, ...body} = event; event.eventKey = canonicalContentHash(body); changed.set(old, event.eventKey);
+  }
+}
+
+/** New fixtures are explicitly synthetic. Even a valid graph must not admit real performance. */
+function quoteScoreFixture(root: string, lane: 'function' | 'assistant' = 'assistant', components = 1, noQuoteReview = false) {
+  const data = treatmentScoreFixture(root, ['scheduler'], {maxOutputTokens: 4096}, sourceLifecycle.DUAL_CARRIER_TREATMENT_ID, 'assistant');
+  const outputs = {base: {finalSubmission: 'assistant_text', declarationSyntax: 'canonical_v1'},
+    candidate: {finalSubmission: 'authored_claim_document_v3_quotes', declarationSyntax: 'authoring_v2'}};
+  const materials = Object.fromEntries(['base', 'candidate'].map(side => [side, {configuration: {provider: 'deepseek', model: MODEL,
+    lightModel: MODEL, baseUrl: 'https://api.deepseek.com/v1'}, runtime: 'openai-agents-sdk', timeoutMs: 1200000,
+    environment: {SMARTPERFETTO_FINAL_SUBMISSION: outputs[side as 'base' | 'candidate'].finalSubmission,
+      SMARTPERFETTO_CONCLUSION_AUTHORING: outputs[side as 'base' | 'candidate'].declarationSyntax, OPENAI_MAX_OUTPUT_TOKENS: '4096'}}]));
+  const fields = sourceLifecycle.alignConfigCommitments(sourceLifecycle.buildConfigCommitments(materials.base), sourceLifecycle.buildConfigCommitments(materials.candidate));
+  const configs: Json = Object.fromEntries(['base', 'candidate'].map((side, index) => [side,
+    sourceLifecycle.makeConfigCommitments(fields[index], hash(stableStringify(materials[side])))]));
+  const treatment = {schemaVersion: 'representation_treatment@3', id: t0ScoreTreatment, sides: outputs,
+    implementationContracts: {base: {nativeContract: 'openai_native_completion_observer@1'}, candidate: {...t0ScoreTuple}},
+    controlsFingerprint: configs.base.controlsFingerprint, sideFullFingerprints: {base: configs.base.fullFingerprint, candidate: configs.candidate.fullFingerprint}};
+  Object.assign(data.benchmark, {candidate: t0ScoreTreatment, treatment, measurementOrigin: 'synthetic'});
+  const treatmentHash = hash(stableStringify(treatment));
+  function updateProbe(proof: Json, side: 'base' | 'candidate') {
+    const request = JSON.parse(fs.readFileSync(path.join(root, proof.request), 'utf8')) as Json;
+    const receipt = JSON.parse(fs.readFileSync(path.join(root, proof.receipt), 'utf8')) as Json;
+    request.declaredConfig = configs[side]; request.treatmentHash = treatmentHash;
+    Object.assign(receipt, {schemaVersion: 'llm_target_preflight@3', declaredConfigFingerprint: configs[side].fullFingerprint,
+      declaredControlsFingerprint: configs[side].controlsFingerprint, declaredTreatmentHash: treatmentHash, capturedOutput: outputs[side],
+      outputImplementation: side === 'base' ? OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION : {kind: 'typed', ...t0ScoreTuple},
+      actualResolvedConfig: buildRuntimeConfigCommitments({...data.common, outputConfig: outputs[side]})});
+    proof.requestHash = write(root, proof.request, request); proof.receiptHash = write(root, proof.receipt, receipt);
+  }
+  for (const proof of data.benchmark.preflights) updateProbe(proof, proof.side);
+  for (const sample of data.samples) {
+    if (sample.side === 'candidate' && (components > 0 || noQuoteReview)) addStageObservation(data, sample, 'review');
+    const report = data.reportFor(sample), side = sample.side as 'base' | 'candidate', config = configs[side];
+    Object.assign(sample, {configuration: config, configFingerprint: config.legacyConfigFingerprint, treatmentHash, measurementOrigin: 'synthetic'});
+    for (const proof of sample.preflights) updateProbe(proof, side);
+    Object.assign(report.executionTarget, {declaredConfigFingerprint: config.legacyConfigFingerprint, declaredConfigFullFingerprint: config.fullFingerprint,
+      declaredConfigControlsFingerprint: config.controlsFingerprint, declaredTreatmentHash: treatmentHash,
+      declaredPreflightFingerprint: hash(stableStringify(sample.preflights))});
+    report.executionMetrics.requestedOutputConfig = outputs[side];
+    if (side === 'candidate') {
+      const performance = report.executionMetrics.performance, previous = performance.finalTransportObservation.events;
+      const main = previous.find((event: Json) => event.kind === 'main_dispatch');
+      const stages = previous.filter((event: Json) => event.kind === 'stage_dispatch');
+      for (const event of [main, ...stages]) {
+        event.controls.requestedOutput = outputs.candidate;
+        if (event.kind === 'main_dispatch') {
+          const profile = resolveModelExecutionProfile({runtimeKind: 'openai-agents-sdk', protocol: 'chat_completions', modelId: MODEL,
+            baseUrl: data.common.baseURL, sdk: {packageName: '@openai/agents-openai', version: '0.13.0', adapterContractVersion: t0ScoreTuple.admissionVersion},
+            sdkCapabilities: {surface: 'none', thinking: 'unknown', reasoningRoundtrip: 'unknown', source: 'contract_test'}, effective: {}});
+          const {fingerprint: _fingerprint, ...rest} = profile;
+          const body = {...rest, effective: {...outputs.candidate, maxOutputTokens: 4096, maxTurns: 100}};
+          event.controls.profiles = [buildRuntimeExecutionProfileObservation({...body,
+            fingerprint: {schemaVersion: 'model_execution_fingerprint@1', value: `sha256:${hash(JSON.stringify(body))}`}},
+          {role: 'typed_admission', purpose: 'answer_turn'})!];
+        }
+        const {fullFingerprint: _old, ...controls} = event.controls; event.controls.fullFingerprint = canonicalContentHash(controls);
+      }
+      const complete = report.summary.terminalAnalysis.completion;
+      const candidate = createOpenAiCandidateIdentity({runId: report.executionMetrics.runId, attemptId: complete.attemptId,
+        conclusionFingerprint: hash(report.summary.terminalAnalysis.conclusion)});
+      Object.assign(complete, candidate, {sdkFinishReason: lane === 'assistant' ? 'stop' : 'tool_calls'});
+      const nativeKey = hash(JSON.stringify(candidate));
+      main.attemptKey = hash(JSON.stringify({runId: candidate.runId, attemptId: candidate.attemptId}));
+      const rawSource = '{"document":{"representationVersion":"authored_claim_document@3"}}';
+      const sourceUtf16 = hash(Buffer.from(rawSource, 'utf16le')), sourceUtf8 = hash(rawSource), responseKey = hash('quote-response');
+      const httpRequestKey = hash(`${sample.pairId}:actual-http-ticket`);
+      const native: Json = {kind: 'quote_native_terminal', eventKey: hash('old-quote-native'),
+        fact: {attemptKey: main.attemptKey, logicalCallKey: main.logicalCallKey, response: {status: 'observed', hash: responseKey},
+          actualModel: {status: 'observed', hash: hash(MODEL)}, nativeStatus: 'completed', finish: lane === 'assistant' ? 'stop' : 'tool_calls',
+          rawMaterial: {status: 'observed', hash: lane === 'assistant' ? sourceUtf8 : candidate.conclusionFingerprint},
+          nativeContract: 'openai_native_completion_observer@1', sdkStreamCompleted: true}, drainStatus: 'fulfilled',
+        actualNativeSource: {status: 'observed', source: lane === 'assistant' ? 'assistant_json' : 'function_arguments'},
+        producingRequest: {status: 'observed', httpRequestKey, collectorDispatchOrdinal: 2, requestBodyHash: {status: 'observed', hash: hash('actual-body')}},
+        rawSourceIdentity: {status: 'observed', utf16Hash: sourceUtf16, utf8Hash: sourceUtf8, utf16Length: rawSource.length}};
+      const adoption: Json = {schemaVersion: 'program_quote_adoption@1', status: 'issued', ...t0ScoreTuple, ownerBindingHash: hash('private-owner-binding'),
+        actualNativeSource: lane === 'assistant' ? 'assistant_json' : 'function_arguments', httpRequestKey, collectorDispatchOrdinal: 2,
+        responseKey, nativeTerminalEventKey: native.eventKey, rawSourceUtf16Hash: sourceUtf16, rawSourceUtf8Hash: sourceUtf8,
+        rawSourceUtf16Length: rawSource.length, nativeCandidateKey: nativeKey, bodyHash: candidate.conclusionFingerprint,
+        provenanceHash: hash(`actual-frozen-semantic-provenance:${components}`), actualModel: {status: 'observed', hash: hash(MODEL)},
+        nativeStatus: 'completed', drainStatus: 'fulfilled', componentCount: components, renderedComponentCount: components,
+        unavailableComponentCount: 0, quotedCellOccurrences: components * 2,
+        independentClaimCount: report.summary.terminalAnalysis.conclusionContract.claims.length,
+        ...(lane === 'assistant' ? {messageKey: responseKey} : {callKey: hash('quote-call')})};
+      adoption.issuerLineageHash = canonicalContentHash(t0ScoreCore(adoption));
+      const issued = {kind: 'program_quote_adoption', eventKey: hash('old-quote-issued'), attemptKey: main.attemptKey, logicalCallKey: main.logicalCallKey, adoption};
+      const retained: Json = {kind: 'candidate_retained', eventKey: hash('old-quote-retained'), nativeCandidateKey: nativeKey,
+        carrier: lane === 'assistant' ? 'assistant_document' : 'model_tool_arguments', transform: 'native',
+        authors: [{role: 'body_and_declaration', terminalEventKey: issued.eventKey}], declaredBody: 'present', declaredClaims: 'present', productStatus: 'completed'};
+      const selected = {kind: 'finalizer_selected', eventKey: hash('old-quote-selected'), retainedEventKey: retained.eventKey,
+        nativeCandidateKey: nativeKey, displayCandidateKey: nativeKey, canonicalSourceCandidateKey: nativeKey, canonicalCandidateKey: nativeKey,
+        productStatus: 'completed', quoteIssuerLineageHash: adoption.issuerLineageHash};
+      performance.finalTransportObservation = {schemaVersion: 'final_transport_observation@2', events: [main, native, issued, retained, ...stages, selected], truncated: 0};
+      performance.finalReview = {necessity: components || noQuoteReview ? 'required' : 'not_required',
+        triggers: components ? ['quote_context'] : noQuoteReview ? ['claims_verifiable'] : [],
+        declaredClaimCount: report.summary.terminalAnalysis.conclusionContract.claims.length};
+      if (components) {
+        report.checkGroups.proof.program_quote_fidelity = true;
+        report.checkGroups.value.program_quote_context = true;
+        report.checkGroups.delivery.program_quote_coverage = true;
+      }
+      rehashQuoteTransport(report);
+    }
+    data.resave(sample, report);
+  }
+  data.save(); return data;
+}
+
+function t0QuoteEvents(report: Json) {
+  const events = report.executionMetrics.performance.finalTransportObservation.events;
+  return {events, native: events.find((event: Json) => event.kind === 'quote_native_terminal'),
+    issued: events.find((event: Json) => event.kind === 'program_quote_adoption'),
+    kept: events.find((event: Json) => event.kind === 'candidate_retained'),
+    selected: events.find((event: Json) => event.kind === 'finalizer_selected')};
+}
+function expectOnlySyntheticQuoteIssues(result: ReturnType<typeof scoreLlmExecutionBenchmark>) {
+  expect(result.status).toBe('inconclusive');
+  expect(result.issues).toContain('real_provider_origin_unproven');
+  for (const pair of result.cells[0].pairs) expect(pair.issues).toEqual(['sample_identity_unproven']);
+}
+
+describe('R15 T0 synthetic quote treatment graph and qualification', () => {
+  let root: string;
+  beforeEach(() => {root = fs.mkdtempSync(path.join(os.tmpdir(), 'llm-quote-score-'));});
+  afterEach(() => fs.rmSync(root, {recursive: true, force: true}));
+
+  it.each(['function', 'assistant'] as const)('validates the complete %s graph without admitting synthetic performance', lane => {
+    const data = quoteScoreFixture(root, lane); bindSyntheticMaterialReviews(data);
+    const result = data.score(); expectOnlySyntheticQuoteIssues(result);
+    expect(result.cells[0].samples).toHaveLength(6);
+    expect(result.cells[0].samples.every((sample: Json) => sample.quality === 'passed')).toBe(true);
+  });
+
+  it.each(['function', 'assistant'] as const)('rejects a legitimately rehashed %s quote offset outside the sealed run', lane => {
+    const data = quoteScoreFixture(root, lane), sample = data.samples.find(sample => sample.side === 'candidate')!;
+    const report = data.reportFor(sample), {events, selected} = t0QuoteEvents(report);
+    expect(events[events.length - 1]).toBe(selected);
+    selected.offsetMs = report.executionMetrics.wallclockMs + 2;
+    // The last event has no downstream references. Preserve every other event and rehash its complete actual payload.
+    const {eventKey: _key, ...body} = selected;
+    selected.eventKey = canonicalContentHash(body);
+    data.resave(sample, report); bindSyntheticMaterialReviews(data);
+    const result = data.score();
+    expect(result.cells[0].pairs[0].issues).toEqual(['sample_identity_unproven', 'transport_time_outside_run']);
+    expect(result.cells[0].performance.status).toBe('inconclusive');
+  });
+
+  it.each(['function', 'assistant'] as const)('preserves the existing one-millisecond %s quote offset boundary', lane => {
+    const data = quoteScoreFixture(root, lane), sample = data.samples.find(sample => sample.side === 'candidate')!;
+    const report = data.reportFor(sample), {events, selected} = t0QuoteEvents(report);
+    expect(events[events.length - 1]).toBe(selected);
+    selected.offsetMs = report.executionMetrics.wallclockMs + 1;
+    const {eventKey: _key, ...body} = selected;
+    selected.eventKey = canonicalContentHash(body);
+    data.resave(sample, report); bindSyntheticMaterialReviews(data);
+    expectOnlySyntheticQuoteIssues(data.score());
+  });
+
+  it.each([false, true])('keeps a zero-quote @5 sample in the full matrix with its old no-quote review necessity: %s', reviewRequired => {
+    const data = quoteScoreFixture(root, 'assistant', 0, reviewRequired); bindSyntheticMaterialReviews(data);
+    const result = data.score(); expectOnlySyntheticQuoteIssues(result);
+    expect(result.cells[0].samples).toHaveLength(6);
+    for (const sample of data.samples.filter(sample => sample.side === 'candidate')) {
+      const report = data.reportFor(sample);
+      expect(t0QuoteEvents(report).issued.adoption).toMatchObject({status: 'issued', componentCount: 0, quotedCellOccurrences: 0});
+      expect(report.executionMetrics.performance.finalReview.triggers).not.toContain('quote_context');
+      expect(report.checkGroups.proof).not.toHaveProperty('program_quote_fidelity');
+    }
+  });
+
+  it.each(['function', 'assistant'] as const)('requires actual SDK completion and an observed inner request hash for %s', lane => {
+    for (const mutation of ['sdk_stream', 'inner_body_unknown'] as const) {
+      const directory = path.join(root, mutation); fs.mkdirSync(directory);
+      const data = quoteScoreFixture(directory, lane), sample = data.samples.find(sample => sample.side === 'candidate')!, report = data.reportFor(sample);
+      const {native} = t0QuoteEvents(report);
+      if (mutation === 'sdk_stream') native.fact.sdkStreamCompleted = false;
+      else native.producingRequest.requestBodyHash = {status: 'unknown'};
+      rehashQuoteTransport(report); data.resave(sample, report); bindSyntheticMaterialReviews(data);
+      const result = data.score();
+      expect(result.cells[0].pairs[0].issues.some((issue: string) => issue !== 'sample_identity_unproven')).toBe(true);
+      expect(result.cells[0].performance.status).toBe('inconclusive');
+      expect(native.producingRequest.status).toBe('observed');
+    }
+  });
+
+  it.each(['http_ticket', 'collector_ordinal', 'response', 'raw_utf16', 'raw_utf8', 'source_length', 'source_kind', 'actual_model',
+    'body', 'native_candidate', 'owner', 'provenance', 'renderer', 'component_count', 'quote_count', 'claim_count', 'issuer_hash',
+    'selected_core_hash', 'terminal_parent', 'message', 'native_finish', 'native_drain'] as const)
+    ('rejects a legitimately rehashed single-field lineage mutation: %s', mutation => {
+      const data = quoteScoreFixture(root), sample = data.samples.find(sample => sample.side === 'candidate')!, report = data.reportFor(sample);
+      const {native, issued, selected} = t0QuoteEvents(report), value = issued.adoption;
+      if (mutation === 'http_ticket') value.httpRequestKey = hash('other-ticket');
+      if (mutation === 'collector_ordinal') value.collectorDispatchOrdinal++;
+      if (mutation === 'response') value.responseKey = hash('other-response');
+      if (mutation === 'raw_utf16') value.rawSourceUtf16Hash = hash('other-utf16');
+      if (mutation === 'raw_utf8') value.rawSourceUtf8Hash = hash('other-utf8');
+      if (mutation === 'source_length') value.rawSourceUtf16Length++;
+      if (mutation === 'source_kind') value.actualNativeSource = 'function_arguments';
+      if (mutation === 'actual_model') value.actualModel.hash = hash('other-model');
+      if (mutation === 'body') value.bodyHash = hash('substituted-body');
+      if (mutation === 'native_candidate') value.nativeCandidateKey = hash('other-candidate');
+      if (mutation === 'owner') value.ownerBindingHash = hash('other-owner');
+      if (mutation === 'provenance') value.provenanceHash = hash('other-provenance');
+      if (mutation === 'renderer') value.rendererVersion = 'program_evidence_quote_render@2';
+      if (mutation === 'component_count') value.componentCount++;
+      if (mutation === 'quote_count') value.quotedCellOccurrences++;
+      if (mutation === 'claim_count') value.independentClaimCount++;
+      if (mutation === 'issuer_hash') value.issuerLineageHash = hash('other-core');
+      if (mutation === 'selected_core_hash') selected.quoteIssuerLineageHash = hash('other-selected-core');
+      if (mutation === 'terminal_parent') value.nativeTerminalEventKey = hash('missing-parent');
+      if (mutation === 'message') value.messageKey = hash('other-message');
+      if (mutation === 'native_finish') native.fact.finish = 'length';
+      if (mutation === 'native_drain') native.drainStatus = 'rejected';
+      rehashQuoteTransport(report); data.resave(sample, report); bindSyntheticMaterialReviews(data);
+      const result = data.score(); expect(result.cells[0].performance.status).toBe('inconclusive');
+      expect(result.cells[0].pairs[0].issues.some((issue: string) => issue !== 'sample_identity_unproven')).toBe(true);
+    });
+
+  it.each(['requested_only', 'not_issued', 'old_tuple', 'old_kind', 'missing_core', 'truncated'] as const)
+    ('does not infer actual @5 execution from %s', mutation => {
+      const data = quoteScoreFixture(root), sample = data.samples.find(sample => sample.side === 'candidate')!, report = data.reportFor(sample);
+      const {issued, selected} = t0QuoteEvents(report);
+      if (mutation === 'requested_only') delete report.executionMetrics.performance.finalTransportObservation;
+      if (mutation === 'not_issued') issued.adoption = {schemaVersion: 'program_quote_adoption@1', status: 'not_issued', reason: 'composition_rejected'};
+      if (mutation === 'old_tuple') Object.assign(issued.adoption, OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@4']);
+      if (mutation === 'old_kind') issued.kind = 'typed_issued_after_drain';
+      if (mutation === 'missing_core') delete selected.quoteIssuerLineageHash;
+      if (mutation === 'truncated') report.executionMetrics.performance.finalTransportObservation.truncated = 1;
+      if (mutation !== 'requested_only') rehashQuoteTransport(report);
+      data.resave(sample, report); bindSyntheticMaterialReviews(data);
+      const result = data.score(); expect(result.cells[0].performance.status).toBe('inconclusive');
+      expect(result.cells[0].pairs[0].issues.some((issue: string) => issue !== 'sample_identity_unproven')).toBe(true);
+    });
+
+  it.each(['base_orphan', 'candidate_orphan', 'both_lanes'] as const)('rejects uncited or competing quote issuance: %s', mutation => {
+    const data = quoteScoreFixture(root), candidate = data.samples.find(sample => sample.side === 'candidate')!;
+    const original = t0QuoteEvents(data.reportFor(candidate)).issued;
+    const sample = mutation === 'base_orphan' ? data.samples.find(sample => sample.side === 'base')! : candidate;
+    const report = data.reportFor(sample), observation = report.executionMetrics.performance.finalTransportObservation;
+    if (mutation === 'base_orphan') observation.schemaVersion = 'final_transport_observation@2';
+    const extra = JSON.parse(JSON.stringify(original)) as Json;
+    extra.eventKey = hash('extra-issuance');
+    if (mutation !== 'both_lanes') extra.logicalCallKey = hash('unretained-logical');
+    else {extra.adoption.actualNativeSource = 'function_arguments'; extra.adoption.callKey = hash('call'); delete extra.adoption.messageKey;
+      extra.adoption.issuerLineageHash = canonicalContentHash(t0ScoreCore(extra.adoption));}
+    observation.events.push(extra); rehashQuoteTransport(report); data.resave(sample, report); bindSyntheticMaterialReviews(data);
+    const result = data.score(); expect(result.cells[0].performance.status).toBe('inconclusive');
+    expect(result.cells[0].pairs[0].issues.some((issue: string) => issue !== 'sample_identity_unproven')).toBe(true);
+  });
+
+  it.each(['missing_review', 'missing_trigger', 'no_review_call', 'double_review', 'fidelity', 'context', 'coverage'] as const)
+    ('requires the actual positive-quote review and all maintained quality groups: %s', mutation => {
+      const data = quoteScoreFixture(root), sample = data.samples.find(sample => sample.side === 'candidate')!;
+      if (mutation === 'double_review') addStageObservation(data, sample, 'review');
+      const report = data.reportFor(sample), perf = report.executionMetrics.performance;
+      if (mutation === 'double_review') {
+        const extra = perf.finalTransportObservation.events.find((event: Json) => event.kind === 'stage_dispatch' && event.purpose === 'review');
+        extra.stageCallKey = hash('independent-second-review-call');
+        extra.controls.requestedOutput = {finalSubmission: 'authored_claim_document_v3_quotes', declarationSyntax: 'authoring_v2'};
+        const {fullFingerprint: _old, ...body} = extra.controls; extra.controls.fullFingerprint = canonicalContentHash(body);
+      }
+      if (mutation === 'missing_review') delete perf.finalReview;
+      if (mutation === 'missing_trigger') perf.finalReview.triggers = [];
+      if (mutation === 'no_review_call') {
+        perf.modelCalls = perf.modelCalls.filter((call: Json) => call.purpose !== 'review');
+        perf.finalTransportObservation.events = perf.finalTransportObservation.events.filter((event: Json) => event.kind !== 'stage_dispatch' || event.purpose !== 'review');
+      }
+      if (mutation === 'fidelity') delete report.checkGroups.proof.program_quote_fidelity;
+      if (mutation === 'context') delete report.checkGroups.value.program_quote_context;
+      if (mutation === 'coverage') delete report.checkGroups.delivery.program_quote_coverage;
+      rehashQuoteTransport(report); data.resave(sample, report); bindSyntheticMaterialReviews(data);
+      const result = data.score(); expect(result.cells[0].performance.status).toBe('inconclusive');
+      expect(result.cells[0].pairs[0].issues.some((issue: string) => issue !== 'sample_identity_unproven')).toBe(true);
+    });
+
+  it('keeps an uninstrumented or failed observation separate from a private issued source', () => {
+    const data = quoteScoreFixture(root), sample = data.samples.find(sample => sample.side === 'candidate')!, report = data.reportFor(sample);
+    const {issued} = t0QuoteEvents(report), frozenCore = t0ScoreCore(issued.adoption), before = canonicalContentHash(frozenCore);
+    report.executionMetrics.performance.finalTransportObservation.truncated = 1;
+    expect(issued.adoption.status).toBe('issued'); expect(issued.adoption.issuerLineageHash).toBe(before);
+    data.resave(sample, report); bindSyntheticMaterialReviews(data);
+    expect(data.score().cells[0].performance.status).toBe('inconclusive');
+    expect(t0ScoreCore(issued.adoption)).toEqual(frozenCore);
+  });
+
+  it('does not rescue an actual failed baseline by successful candidate quote quality', () => {
+    const data = quoteScoreFixture(root), sample = data.samples.find(sample => sample.side === 'base')!;
+    sample.lifecycle.outcome = 'nonzero_exit'; sample.lifecycle.exitCode = 1; data.resave(sample); bindSyntheticMaterialReviews(data);
+    const result = data.score(); expect(result.cells[0].performance.status).toBe('inconclusive');
+    expect(result.cells[0].samples.find((item: Json) => item.side === 'base')).toHaveProperty('outcome', 'failed');
+  });
+
+  it('independently binds the native body even when a substituted core and selected commitment are rehashed together', () => {
+    const data = quoteScoreFixture(root), sample = data.samples.find(sample => sample.side === 'candidate')!, report = data.reportFor(sample);
+    const {issued, selected} = t0QuoteEvents(report);
+    issued.adoption.bodyHash = hash('forged compiled body');
+    issued.adoption.issuerLineageHash = canonicalContentHash(t0ScoreCore(issued.adoption));
+    selected.quoteIssuerLineageHash = issued.adoption.issuerLineageHash;
+    rehashQuoteTransport(report); data.resave(sample, report); bindSyntheticMaterialReviews(data);
+    const result = data.score();
+    expect(result.cells[0].pairs[0].issues.some((issue: string) => issue !== 'sample_identity_unproven')).toBe(true);
+    expect(result.cells[0].performance.status).toBe('inconclusive');
+  });
+
+  it('allows a separately bound privacy display identity while preserving the original native issuer core', () => {
+    const data = quoteScoreFixture(root);
+    for (const sample of data.samples.filter(sample => sample.side === 'candidate')) {
+      const report = data.reportFor(sample), terminal = report.summary.terminalAnalysis;
+      const {issued, selected} = t0QuoteEvents(report), original = issued.adoption.issuerLineageHash;
+      terminal.conclusion += ' Private details withheld.';
+      terminal.completion.conclusionFingerprint = hash(terminal.conclusion);
+      const display = createOpenAiCandidateIdentity({runId: report.executionMetrics.runId,
+        attemptId: terminal.completion.attemptId, conclusionFingerprint: terminal.completion.conclusionFingerprint});
+      const key = hash(JSON.stringify(display));
+      selected.displayCandidateKey = key; selected.canonicalSourceCandidateKey = key; selected.canonicalCandidateKey = key;
+      rehashQuoteTransport(report); data.resave(sample, report);
+      expect(issued.adoption.issuerLineageHash).toBe(original);
+    }
+    bindSyntheticMaterialReviews(data); expectOnlySyntheticQuoteIssues(data.score());
+  });
+});

@@ -543,7 +543,9 @@ describe('W0 default-text to native-v2 controller', () => {
 
   it('keeps the native CLI exact tuple mirror in parity without widening to Cartesian versions', () => {
     expect(lifecycle.parseOutputImplementation(OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION)).toEqual(OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION);
-    for (const [admission, identity] of Object.entries(OPENAI_TYPED_FINAL_CONTRACTS)) {
+    for (const admission of ['openai_typed_final_admission@1', 'openai_typed_final_admission@2',
+      'openai_typed_final_admission@3', 'openai_typed_final_admission@4'] as const) {
+      const identity = OPENAI_TYPED_FINAL_CONTRACTS[admission];
       expect(lifecycle.getOpenAiTypedFinalContractIdentity(admission)).toEqual(getOpenAiTypedFinalContractIdentity(admission));
       expect(lifecycle.parseOutputImplementation({kind: 'typed', ...identity})).toEqual({kind: 'typed', ...identity});
       for (const field of Object.keys(identity)) {
@@ -733,5 +735,120 @@ describe('W0 default-text to native-v2 controller', () => {
     expect(fixture.dependencies.runOwnedVerifier).not.toHaveBeenCalled();
     expect(result.artifact.lifecycle).toBe('incomplete');
     expect(result.artifact.samples[0].failureCode).toBe('benchmark_preflight_changed');
+  });
+
+  const quoteTreatmentId = 'assistant_text_to_evidence_quotes_v3@1';
+  const quoteTuple = {representationVersion: 'authored_claim_document@3', compilerVersion: 'authored_claim_document_compiler@3',
+    admissionVersion: 'openai_typed_final_admission@5', wireVersion: 'openai_chat_final_wire@4'};
+  const quoteImplementation = {kind: 'typed', ...quoteTuple, rendererVersion: 'program_evidence_quote_render@1'};
+
+  it('keeps the new exact tuple and mandatory renderer in TypeScript/native-CLI parity', () => {
+    const observed = require('../../agentRuntime/finalSubmissionImplementation') as {
+      getObservedOpenAiTypedFinalContractIdentity?: (value: unknown) => unknown};
+    expect(typeof observed.getObservedOpenAiTypedFinalContractIdentity).toBe('function');
+    expect(observed.getObservedOpenAiTypedFinalContractIdentity!(quoteTuple.admissionVersion)).toEqual(quoteTuple);
+    expect(lifecycle.getObservedOpenAiTypedFinalContractIdentity(quoteTuple.admissionVersion)).toEqual(quoteTuple);
+    expect(getOpenAiTypedFinalContractIdentity(quoteTuple.admissionVersion)).toBeUndefined();
+    expect(lifecycle.getOpenAiTypedFinalContractIdentity(quoteTuple.admissionVersion)).toBeUndefined();
+    expect(Object.keys(OPENAI_TYPED_FINAL_CONTRACTS)).toHaveLength(4);
+    expect(lifecycle.parseOutputImplementation(quoteImplementation)).toEqual(quoteImplementation);
+    expect(lifecycle.EVIDENCE_QUOTES_TREATMENT_ID).toBe(quoteTreatmentId);
+    expect(controller.parseArgs(cli('/base', '/candidate', ['--treatment', quoteTreatmentId])).treatment).toBe(quoteTreatmentId);
+    expect(controller.parseArgs(cli('/base', '/candidate'))).not.toHaveProperty('treatment');
+  });
+
+  it('rejects every missing quote implementation field and every old/new version cross-product', () => {
+    for (const field of Object.keys(quoteImplementation)) {
+      const missing: Record<string, unknown> = {...quoteImplementation}; delete missing[field];
+      expect(() => lifecycle.parseOutputImplementation(missing)).toThrow('benchmark_output_implementation_invalid');
+    }
+    for (const identity of Object.values(OPENAI_TYPED_FINAL_CONTRACTS)) {
+      if (identity.admissionVersion === quoteTuple.admissionVersion) continue;
+      for (const field of Object.keys(quoteTuple)) {
+        const replacement = (identity as unknown as Record<string, unknown>)[field];
+        if (replacement !== (quoteTuple as Record<string, unknown>)[field]) {
+          expect(() => lifecycle.parseOutputImplementation({...quoteImplementation, [field]: replacement})).toThrow();
+        }
+      }
+      expect(() => lifecycle.parseOutputImplementation({kind: 'typed', ...identity, rendererVersion: 'program_evidence_quote_render@1'})).toThrow();
+    }
+    for (const mutation of [{rendererVersion: 'program_evidence_quote_render@2'}, {rawSource: 'PRIVATE'}, {presentationOrigin: 'mixed_model_program'}]) {
+      expect(() => lifecycle.parseOutputImplementation({...quoteImplementation, ...mutation})).toThrow();
+    }
+  });
+
+  it('constructs a separate treatment@3 while masking only the existing two output leaves', () => {
+    const outputs = {base: {finalSubmission: 'assistant_text', declarationSyntax: 'canonical_v1'},
+      candidate: {finalSubmission: 'authored_claim_document_v3_quotes', declarationSyntax: 'authoring_v2'}};
+    const material = (side: 'base' | 'candidate') => ({control: {effort: 'low', tokenCap: 8192}, environment: {
+      SMARTPERFETTO_FINAL_SUBMISSION: outputs[side].finalSubmission, SMARTPERFETTO_CONCLUSION_AUTHORING: outputs[side].declarationSyntax}});
+    const input = [material('base'), material('candidate')], aligned = lifecycle.alignConfigCommitments(...input.map(lifecycle.buildConfigCommitments));
+    const configurations = aligned.map((fields: unknown, index: number) => lifecycle.makeConfigCommitments(fields, lifecycle.hash(JSON.stringify(input[index]))));
+    const value = lifecycle.makeRepresentationTreatment(...configurations, quoteTreatmentId);
+    expect(value).toEqual({schemaVersion: 'representation_treatment@3', id: quoteTreatmentId, sides: outputs,
+      implementationContracts: {base: {nativeContract: 'openai_native_completion_observer@1'}, candidate: {...quoteTuple, rendererVersion: 'program_evidence_quote_render@1'}},
+      controlsFingerprint: configurations[0].controlsFingerprint,
+      sideFullFingerprints: {base: configurations[0].fullFingerprint, candidate: configurations[1].fullFingerprint}});
+    expect(configurations[0].fullFingerprint).not.toBe(configurations[1].fullFingerprint);
+    expect(configurations[0].controlsFingerprint).toBe(configurations[1].controlsFingerprint);
+    const changed = {...input[1], control: {effort: 'low', tokenCap: 4096}};
+    const changedFields = lifecycle.alignConfigCommitments(lifecycle.buildConfigCommitments(input[0]), lifecycle.buildConfigCommitments(changed));
+    const changedConfig = changedFields.map((fields: unknown, index: number) => lifecycle.makeConfigCommitments(fields, configurations[index].legacyConfigFingerprint));
+    expect(() => lifecycle.makeRepresentationTreatment(...changedConfig, quoteTreatmentId)).toThrow('benchmark_config_mismatch');
+  });
+
+  it('collects synthetic quote fixtures only after every initial implementation probe and keeps their synthetic origin', async () => {
+    const fixture = treatmentFixture((_input, request, result) => {
+      result.schemaVersion = 'llm_target_preflight@3';
+      result.outputImplementation = request.side === 'base' ? OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION : quoteImplementation;
+    });
+    fixture.options.treatment = quoteTreatmentId;
+    const result = await controller.runBenchmark(fixture.options, fixture.dependencies);
+    expect(result.artifact).toMatchObject({measurementOrigin: 'synthetic', treatment: {schemaVersion: 'representation_treatment@3', id: quoteTreatmentId}});
+    expect(fixture.order.slice(0, 2)).toEqual(['probe:base', 'probe:candidate']);
+    expect(fixture.dependencies.runOwnedVerifier).toHaveBeenCalledTimes(6);
+    expect(fixture.probe).toHaveBeenCalledTimes(8);
+  });
+
+  it.each(['old_tuple', 'wrong_renderer', 'requested_only', 'old_envelope'] as const)
+    ('refuses initial quote implementation %s before either side dispatches a sample', async mutation => {
+      const fixture = treatmentFixture((_input, request, result) => {
+        result.schemaVersion = 'llm_target_preflight@3'; result.outputImplementation = request.side === 'base' ? OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION : {...quoteImplementation};
+        if (request.side !== 'candidate') return;
+        if (mutation === 'old_tuple') result.outputImplementation = {kind: 'typed', ...OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@4']};
+        if (mutation === 'wrong_renderer') result.outputImplementation.rendererVersion = 'program_evidence_quote_render@2';
+        if (mutation === 'requested_only') delete result.outputImplementation;
+        if (mutation === 'old_envelope') result.schemaVersion = 'llm_target_preflight@2';
+      });
+      fixture.options.treatment = quoteTreatmentId;
+      await expect(controller.runBenchmark(fixture.options, fixture.dependencies)).rejects.toThrow('benchmark_preflight_failed');
+      expect(fixture.dependencies.runOwnedVerifier).not.toHaveBeenCalled();
+    });
+
+  it('finishes the last initial cell before any paid sample even when its quote renderer is wrong', async () => {
+    const fixture = treatmentFixture((_input, request, result) => {
+      result.schemaVersion = 'llm_target_preflight@3'; result.outputImplementation = request.side === 'base' ? OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION : {...quoteImplementation};
+      if (request.side === 'candidate' && request.cellId === 'startup') result.outputImplementation.rendererVersion = 'program_evidence_quote_render@2';
+    });
+    fixture.options.treatment = quoteTreatmentId; fixture.options.cells = ['scheduler', 'startup'];
+    const load = fixture.dependencies.loadCheckout;
+    fixture.dependencies.loadCheckout = (root: string) => {const checkout = load(root); return {...checkout, api: {...checkout.api,
+      suites: {startup: {args: ['--trace', '../Trace/fixture.pftrace', '--expectation-json', '{}']}}}};};
+    await expect(controller.runBenchmark(fixture.options, fixture.dependencies)).rejects.toThrow('benchmark_preflight_failed');
+    expect(fixture.order).toEqual(['probe:base', 'probe:candidate', 'probe:base', 'probe:candidate']);
+    expect(fixture.dependencies.runOwnedVerifier).not.toHaveBeenCalled();
+  });
+
+  it('rejects a quote implementation reprobe change before the corresponding sample', async () => {
+    let probes = 0;
+    const fixture = treatmentFixture((_input, request, result) => {
+      result.schemaVersion = 'llm_target_preflight@3'; result.outputImplementation = request.side === 'base' ? OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION : {...quoteImplementation};
+      if (++probes === 3) result.outputImplementation = {...quoteImplementation};
+    });
+    fixture.options.treatment = quoteTreatmentId;
+    const result = await controller.runBenchmark(fixture.options, fixture.dependencies);
+    expect(fixture.dependencies.runOwnedVerifier).not.toHaveBeenCalled();
+    expect(result.artifact.lifecycle).toBe('incomplete');
+    expect(result.artifact.samples[0].failureCode).toBe('benchmark_preflight_failed');
   });
 });

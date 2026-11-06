@@ -44,15 +44,20 @@ function canonicalJson(value) {
 const TREATMENT_ID = 'assistant_text_to_native_v2@1';
 const MIXED_CONTENT_TREATMENT_ID = 'assistant_text_to_native_v2@2';
 const DUAL_CARRIER_TREATMENT_ID = 'assistant_text_to_native_v2_dual@1';
+const EVIDENCE_QUOTES_TREATMENT_ID = 'assistant_text_to_evidence_quotes_v3@1';
+const QUOTE_RENDERER_VERSION = 'program_evidence_quote_render@1';
 const TREATMENT_OUTPUTS = Object.freeze({
   base: Object.freeze({finalSubmission: 'assistant_text', declarationSyntax: 'canonical_v1'}),
   candidate: Object.freeze({finalSubmission: 'authored_claim_document_v2', declarationSyntax: 'authoring_v2'}),
 });
 const DUAL_CARRIER_OUTPUTS = Object.freeze({base: TREATMENT_OUTPUTS.base,
   candidate: Object.freeze({finalSubmission: 'authored_claim_document_v2_dual', declarationSyntax: 'authoring_v2'})});
+const EVIDENCE_QUOTES_OUTPUTS = Object.freeze({base: TREATMENT_OUTPUTS.base,
+  candidate: Object.freeze({finalSubmission: 'authored_claim_document_v3_quotes', declarationSyntax: 'authoring_v2'})});
 function treatmentOutputs(id = TREATMENT_ID) {
   if (id === TREATMENT_ID || id === MIXED_CONTENT_TREATMENT_ID) return TREATMENT_OUTPUTS;
   if (id === DUAL_CARRIER_TREATMENT_ID) return DUAL_CARRIER_OUTPUTS;
+  if (id === EVIDENCE_QUOTES_TREATMENT_ID) return EVIDENCE_QUOTES_OUTPUTS;
   throw new Error('benchmark_treatment_invalid');
 }
 const TREATMENT_FIELDS = ['/environment/SMARTPERFETTO_FINAL_SUBMISSION', '/environment/SMARTPERFETTO_CONCLUSION_AUTHORING'];
@@ -164,6 +169,14 @@ function getOpenAiTypedFinalContractIdentity(admissionVersion) {
   return typeof admissionVersion === 'string' && Object.hasOwn(TYPED_FINAL_CONTRACTS, admissionVersion)
     ? TYPED_FINAL_CONTRACTS[admissionVersion] : undefined;
 }
+const OBSERVED_TYPED_FINAL_CONTRACTS = Object.freeze({...TYPED_FINAL_CONTRACTS,
+  'openai_typed_final_admission@5': Object.freeze({representationVersion: 'authored_claim_document@3',
+    compilerVersion: 'authored_claim_document_compiler@3', admissionVersion: 'openai_typed_final_admission@5', wireVersion: 'openai_chat_final_wire@4'}),
+});
+function getObservedOpenAiTypedFinalContractIdentity(admissionVersion) {
+  return typeof admissionVersion === 'string' && Object.hasOwn(OBSERVED_TYPED_FINAL_CONTRACTS, admissionVersion)
+    ? OBSERVED_TYPED_FINAL_CONTRACTS[admissionVersion] : undefined;
+}
 function parseOutputImplementation(value) {
   const fail = () => {throw new Error('benchmark_output_implementation_invalid');};
   if (!value || typeof value !== 'object' || Array.isArray(value) || utilTypes.isProxy(value) ||
@@ -174,18 +187,20 @@ function parseOutputImplementation(value) {
   let expected;
   if (value.kind === 'assistant') expected = {kind: 'assistant', nativeContract: 'openai_native_completion_observer@1'};
   else if (value.kind === 'typed') {
-    const identity = getOpenAiTypedFinalContractIdentity(value.admissionVersion);
+    const identity = getObservedOpenAiTypedFinalContractIdentity(value.admissionVersion);
     if (!identity) fail();
-    expected = {kind: 'typed', ...identity};
+    expected = {kind: 'typed', ...identity, ...(identity.admissionVersion === 'openai_typed_final_admission@5' ? {rendererVersion: QUOTE_RENDERER_VERSION} : {})};
   } else fail();
   if (Object.keys(value).length !== Object.keys(expected).length ||
       Object.entries(expected).some(([key, item]) => !Object.hasOwn(value, key) || value[key] !== item)) fail();
   return Object.freeze(expected);
 }
 function treatmentOutputImplementation(id, side) {
-  if (![TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID, DUAL_CARRIER_TREATMENT_ID].includes(id) || !['base', 'candidate'].includes(side)) {
+  if (![TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID, DUAL_CARRIER_TREATMENT_ID, EVIDENCE_QUOTES_TREATMENT_ID].includes(id) || !['base', 'candidate'].includes(side)) {
     throw new Error('benchmark_treatment_invalid');
   }
+  if (id === EVIDENCE_QUOTES_TREATMENT_ID && side === 'candidate') return {kind: 'typed',
+    ...getObservedOpenAiTypedFinalContractIdentity('openai_typed_final_admission@5'), rendererVersion: QUOTE_RENDERER_VERSION};
   return side === 'base' ? {kind: 'assistant', nativeContract: 'openai_native_completion_observer@1'} : {kind: 'typed',
     ...getOpenAiTypedFinalContractIdentity(id === TREATMENT_ID ? 'openai_typed_final_admission@2' : id === MIXED_CONTENT_TREATMENT_ID
       ? 'openai_typed_final_admission@3' : 'openai_typed_final_admission@4')};
@@ -211,6 +226,11 @@ function makeRepresentationTreatment(base, candidate, id = TREATMENT_ID) {
       if (!row || row.presence !== 'present' || row.type !== 'string' || row.valueCommitment !== configHash(['string', value])) throw new Error('benchmark_treatment_mismatch');
     }
   }
+  if (id === EVIDENCE_QUOTES_TREATMENT_ID) return {schemaVersion: 'representation_treatment@3', id, sides: outputs,
+    implementationContracts: {base: {nativeContract: 'openai_native_completion_observer@1'}, candidate: {
+      representationVersion: expected.representationVersion, compilerVersion: expected.compilerVersion,
+      admissionVersion: expected.admissionVersion, wireVersion: expected.wireVersion, rendererVersion: expected.rendererVersion}},
+    controlsFingerprint: base.controlsFingerprint, sideFullFingerprints: {base: base.fullFingerprint, candidate: candidate.fullFingerprint}};
   return {schemaVersion: id === TREATMENT_ID ? 'representation_treatment@1' : 'representation_treatment@2', id, sides: outputs,
     implementationContracts: {base: {nativeContract: 'openai_native_completion_observer@1'}, candidate: {
       representationVersion: 'authored_claim_document@2', compilerVersion: 'authored_claim_document_compiler@2',
@@ -599,8 +619,8 @@ async function runOwnedVerifier(input, dependencies) {
     censored: deadlineExpired || Boolean(harness.receivedSignal) || Boolean(exit?.error)};
 }
 
-module.exports = {TARGET_ENV, CELLS, SOURCE_FACET, TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID, DUAL_CARRIER_TREATMENT_ID, treatmentOutputs,
-  getOpenAiTypedFinalContractIdentity, parseOutputImplementation, treatmentOutputImplementation, parsePreflightOutputImplementation, TREATMENT_OUTPUTS, buildConfigCommitments, alignConfigCommitments,
+module.exports = {TARGET_ENV, CELLS, SOURCE_FACET, TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID, DUAL_CARRIER_TREATMENT_ID, EVIDENCE_QUOTES_TREATMENT_ID, treatmentOutputs,
+  getOpenAiTypedFinalContractIdentity, getObservedOpenAiTypedFinalContractIdentity, parseOutputImplementation, treatmentOutputImplementation, parsePreflightOutputImplementation, TREATMENT_OUTPUTS, buildConfigCommitments, alignConfigCommitments,
   configFieldsFingerprint, configControlsFingerprint, makeConfigCommitments, parseConfigCommitments, parsePurposeContracts, makeRepresentationTreatment,
   cellPreflightSelections, canonicalJson, hash, fingerprintSourceTree, fingerprintFixtureDirectory, fingerprintObserver,
   sourceFacetContext, evaluateSourceFacetPending, validateSourceFacetCollection, createSourceFacetSettlement,

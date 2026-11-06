@@ -81,9 +81,37 @@ export function expectedOpenAiTypedFinalContract(mode: AuthoredFinalSubmissionMo
   return OPENAI_TYPED_FINAL_CONTRACTS[descriptor.admissionVersion];
 }
 
+/** Read-only future contract identity. This table never participates in active configuration capture. */
+export const EVIDENCE_QUOTE_MODE = 'authored_claim_document_v3_quotes' as const;
+export const EVIDENCE_QUOTE_RENDERER_VERSION = 'program_evidence_quote_render@1' as const;
+export const OBSERVED_OPENAI_TYPED_FINAL_CONTRACTS = Object.freeze({
+  ...OPENAI_TYPED_FINAL_CONTRACTS,
+  'openai_typed_final_admission@5': Object.freeze({
+    representationVersion: 'authored_claim_document@3',
+    compilerVersion: 'authored_claim_document_compiler@3',
+    admissionVersion: 'openai_typed_final_admission@5',
+    wireVersion: 'openai_chat_final_wire@4',
+  } as const),
+});
+export type ObservedOpenAiTypedFinalContractIdentity =
+  typeof OBSERVED_OPENAI_TYPED_FINAL_CONTRACTS[keyof typeof OBSERVED_OPENAI_TYPED_FINAL_CONTRACTS];
+export function getObservedOpenAiTypedFinalContractIdentity(value: unknown): ObservedOpenAiTypedFinalContractIdentity | undefined {
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(OBSERVED_OPENAI_TYPED_FINAL_CONTRACTS, value)
+    ? OBSERVED_OPENAI_TYPED_FINAL_CONTRACTS[value as keyof typeof OBSERVED_OPENAI_TYPED_FINAL_CONTRACTS] : undefined;
+}
+export const EVIDENCE_QUOTE_OUTPUT_DESCRIPTOR = Object.freeze({kind: 'typed', requiredDeclarationSyntax: 'authoring_v2',
+  sourcePolicy: 'function_or_assistant_json', ...OBSERVED_OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@5'],
+  rendererVersion: EVIDENCE_QUOTE_RENDERER_VERSION} as const);
+export type ObservedFinalSubmissionModeKey = FinalSubmissionModeKey | typeof EVIDENCE_QUOTE_MODE;
+export function getObservedFinalSubmissionModeDescriptor(value: unknown): FinalSubmissionModeDescriptor | typeof EVIDENCE_QUOTE_OUTPUT_DESCRIPTOR | undefined {
+  return value === EVIDENCE_QUOTE_MODE ? EVIDENCE_QUOTE_OUTPUT_DESCRIPTOR : getFinalSubmissionModeDescriptor(value);
+}
+export type OpenAiEvidenceQuoteImplementation = typeof OBSERVED_OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@5'] &
+  Readonly<{rendererVersion: typeof EVIDENCE_QUOTE_RENDERER_VERSION}>;
+
 export const OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION = Object.freeze({
   kind: 'assistant', nativeContract: 'openai_native_completion_observer@1',
 } as const);
 
 export type OpenAiOutputImplementation = typeof OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION |
-  (Readonly<{kind: 'typed'}> & OpenAiTypedFinalContractIdentity);
+  (Readonly<{kind: 'typed'}> & (OpenAiTypedFinalContractIdentity | OpenAiEvidenceQuoteImplementation));

@@ -7,7 +7,7 @@ import {createHash} from 'node:crypto';
 import {parseStoredJson} from '../utils/storedData';
 import {stableStringify} from '../utils/stableJson';
 import {PRODUCTION_RUNTIME_KINDS} from '../agentRuntime/runtimeKinds';
-import {RUNTIME_MODEL_CALL_PURPOSES, projectRuntimeFinalTransportObservation, parseRuntimeBenchmarkConfigCommitments,
+import {RUNTIME_MODEL_CALL_PURPOSES, projectRuntimeFinalTransportObservation, projectRuntimeFinalReviewReceipt, runtimeProgramQuoteIssuerCore, parseRuntimeBenchmarkConfigCommitments,
   buildRuntimeConfigCommitments, runtimeConfigCommitmentsFingerprint, runtimeCandidateObservationKey, type RuntimeConfigFieldCommitment,
   type RuntimeFinalTransportEvent, type RuntimeExecutionProfileObservation} from '../agentRuntime/runtimePerformance';
 import {canonicalContentHash} from '../services/selfEvolution/canonicalJson';
@@ -19,12 +19,13 @@ import type {OpenAiOutputImplementation} from '../agentRuntime/finalSubmissionIm
 import {adjudicateLlmSourceFacet, buildLlmExecutionQuality, compareLlmExecutionQuality, elapsedIntervalUnion, scoreLlmExecutionLatency,
   type LlmExecutionQuality, type LlmExecutionLatencyPair, type LlmMaterialChangeReview} from './llmExecutionBenchmark';
 
-const {CELLS, SOURCE_FACET, TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID, DUAL_CARRIER_TREATMENT_ID, treatmentOutputs, makeRepresentationTreatment,
+const {CELLS, SOURCE_FACET, TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID, DUAL_CARRIER_TREATMENT_ID, EVIDENCE_QUOTES_TREATMENT_ID, treatmentOutputs, makeRepresentationTreatment,
   treatmentOutputImplementation, parsePreflightOutputImplementation, parsePurposeContracts, sourceFacetContext, validateSourceFacetCollection, assertExecutionTarget} = require('../../scripts/llm-execution-lifecycle.cjs') as {
   CELLS: readonly string[];
   TREATMENT_ID: string;
   MIXED_CONTENT_TREATMENT_ID: string;
   DUAL_CARRIER_TREATMENT_ID: string;
+  EVIDENCE_QUOTES_TREATMENT_ID: string;
   treatmentOutputs(id: string): Record<'base' | 'candidate', {finalSubmission: string; declarationSyntax: string}>;
   makeRepresentationTreatment(base: unknown, candidate: unknown, id?: string): Record<string, unknown>;
   treatmentOutputImplementation(id: string, side: string): OpenAiOutputImplementation;
@@ -380,6 +381,111 @@ function purposeSettingsMatch(dispatch: Extract<RuntimeFinalTransportEvent, {kin
     return equalFields(fields, dispatch.controls.appliedSettings);
   } catch {return false;}
 }
+type TransportRequirement = (value: unknown, code: string) => void;
+type ActualDispatch = Extract<RuntimeFinalTransportEvent, {kind: 'main_dispatch' | 'stage_dispatch'}>;
+function inspectStageCoverage(performance: RecordValue | undefined, dispatches: readonly ActualDispatch[], require: TransportRequirement): void {
+  const calls = array(performance?.modelCalls).map(object);
+  // One logical no-tool call owns one stageCallKey; its HTTP retries are not additional logical calls.
+  for (const purpose of ['classification', 'review'] as const) {
+    const observedCalls = new Set(dispatches.filter((event): event is Extract<RuntimeFinalTransportEvent, {kind: 'stage_dispatch'}> =>
+      event.kind === 'stage_dispatch' && event.purpose === purpose).map(event => event.stageCallKey));
+    require(observedCalls.size === calls.filter(call => call?.purpose === purpose).length, 'stage_controls_coverage_incomplete');
+  }
+  require(calls.filter(call => call?.purpose === 'classification' || call?.purpose === 'review').every(call => call?.modelSource === 'provider_reported'), 'stage_actual_model_source_unproven');
+}
+
+/** Quote observations establish a source-bound execution graph, never finite proof or semantic truth. */
+function inspectQuoteActualTransport(events: readonly RuntimeFinalTransportEvent[], report: RecordValue, benchmark: RecordValue,
+  logical: ReadonlyMap<string, Extract<RuntimeFinalTransportEvent, {kind: 'main_dispatch'}>>, treatment: ValidatedTreatment,
+  require: TransportRequirement): void {
+  const metrics = object(report.executionMetrics), performance = object(metrics?.performance);
+  const terminal = object(object(report.summary)?.terminalAnalysis), completion = object(terminal?.completion);
+  const byKey = new Map(events.map(event => [event.eventKey, event]));
+  const adoptions = events.filter((event): event is Extract<RuntimeFinalTransportEvent, {kind: 'program_quote_adoption'}> => event.kind === 'program_quote_adoption');
+  const retained = events.filter((event): event is Extract<RuntimeFinalTransportEvent, {kind: 'candidate_retained'}> => event.kind === 'candidate_retained');
+  const selected = events.filter((event): event is Extract<RuntimeFinalTransportEvent, {kind: 'finalizer_selected'}> => event.kind === 'finalizer_selected');
+  require(adoptions.length === 1, 'quote_issuance_not_unique');
+  require(retained.length === 1 && selected.length === 1, 'retained_selected_lineage_missing');
+  if (retained.length !== 1 || selected.length !== 1) return;
+  const kept = retained[0], final = selected[0];
+  require(kept.transform === 'native' && kept.productStatus === 'completed' && kept.declaredBody === 'present' &&
+    final.productStatus === 'completed' && final.sequence > kept.sequence && final.retainedEventKey === kept.eventKey &&
+    final.nativeCandidateKey === kept.nativeCandidateKey && final.canonicalSourceCandidateKey === final.displayCandidateKey,
+  'retained_selected_lineage_mismatch');
+  require(kept.authors.length === 1 && kept.authors[0].role === 'body_and_declaration', 'author_roles_incomplete');
+  const referenced = new Set(kept.authors.map(author => author.terminalEventKey));
+  const logicalTerminals = new Set<string>(), issuedLogical = new Set<string>();
+  for (const event of events) if (event.kind === 'quote_native_terminal') {
+    require(!logicalTerminals.has(event.fact.logicalCallKey), 'duplicate_logical_terminal'); logicalTerminals.add(event.fact.logicalCallKey);
+  }
+  for (const event of adoptions) {
+    require(referenced.has(event.eventKey) && kept.sequence > event.sequence, 'quote_issuance_not_retained');
+    require(!issuedLogical.has(event.logicalCallKey), 'duplicate_final_carrier'); issuedLogical.add(event.logicalCallKey);
+    const adoption = event.adoption;
+    require(adoption.status === 'issued', 'quote_issuance_unproven');
+    if (adoption.status !== 'issued') continue;
+    const dispatch = logical.get(event.logicalCallKey), parent = byKey.get(adoption.nativeTerminalEventKey);
+    require(dispatch && dispatch.attemptKey === event.attemptKey && dispatch.sequence < event.sequence, 'quote_dispatch_unproven');
+    require(parent?.kind === 'quote_native_terminal', 'quote_native_parent_unproven');
+    if (parent?.kind !== 'quote_native_terminal') continue;
+    const {fact, producingRequest, rawSourceIdentity, actualNativeSource} = parent;
+    require(dispatch && dispatch.sequence < parent.sequence && parent.sequence < event.sequence && fact.attemptKey === event.attemptKey &&
+      fact.logicalCallKey === event.logicalCallKey && fact.response.status === 'observed' && fact.response.hash === adoption.responseKey &&
+      fact.nativeStatus === 'completed' && fact.sdkStreamCompleted === true && parent.drainStatus === 'fulfilled', 'quote_native_completion_unproven');
+    require(producingRequest.status === 'observed' && producingRequest.requestBodyHash.status === 'observed' &&
+      producingRequest.httpRequestKey === adoption.httpRequestKey && producingRequest.collectorDispatchOrdinal === adoption.collectorDispatchOrdinal,
+    'quote_producing_request_unproven');
+    require(rawSourceIdentity.status === 'observed' && rawSourceIdentity.utf16Hash === adoption.rawSourceUtf16Hash &&
+      rawSourceIdentity.utf8Hash === adoption.rawSourceUtf8Hash && rawSourceIdentity.utf16Length === adoption.rawSourceUtf16Length &&
+      actualNativeSource.status === 'observed' && actualNativeSource.source === adoption.actualNativeSource, 'quote_raw_source_unproven');
+    require(fact.actualModel.status === 'observed' && fact.actualModel.hash === adoption.actualModel.hash && adoption.actualModel.hash === hash(String(benchmark.model)),
+      'quote_actual_model_unproven');
+    require(adoption.representationVersion === treatment.candidate.representationVersion && adoption.compilerVersion === treatment.candidate.compilerVersion &&
+      adoption.admissionVersion === treatment.candidate.admissionVersion && adoption.wireVersion === treatment.candidate.wireVersion &&
+      'rendererVersion' in treatment.candidate && adoption.rendererVersion === treatment.candidate.rendererVersion,
+    'quote_implementation_unproven');
+    if (adoption.actualNativeSource === 'function_arguments') {
+      require(kept.carrier === 'model_tool_arguments' && fact.finish === 'tool_calls' && fact.rawMaterial.status === 'observed' &&
+        fact.rawMaterial.hash === adoption.bodyHash, 'quote_function_source_unproven');
+    } else {
+      require(kept.carrier === 'assistant_document' && fact.finish === 'stop' && fact.rawMaterial.status === 'observed' &&
+        fact.rawMaterial.hash === adoption.rawSourceUtf8Hash && adoption.messageKey === adoption.responseKey, 'quote_assistant_source_unproven');
+    }
+    const identity = textId(metrics?.runId) && textId(completion?.attemptId) ? createOpenAiCandidateIdentity({
+      runId: metrics.runId, attemptId: completion.attemptId, conclusionFingerprint: adoption.bodyHash}) : undefined;
+    require(identity && event.attemptKey === hash(JSON.stringify({runId: identity.runId, attemptId: identity.attemptId})) &&
+      runtimeCandidateObservationKey(identity) === adoption.nativeCandidateKey && kept.nativeCandidateKey === adoption.nativeCandidateKey,
+    'quote_native_candidate_unproven');
+    // The private commitment excludes observer parent/model/ticket facts, which were checked separately above.
+    require(canonicalContentHash(runtimeProgramQuoteIssuerCore(adoption)) === adoption.issuerLineageHash &&
+      'quoteIssuerLineageHash' in final && final.quoteIssuerLineageHash === adoption.issuerLineageHash, 'quote_issuer_core_unproven');
+    const claims = object(terminal?.conclusionContract)?.claims;
+    require(Array.isArray(claims) && claims.length === adoption.independentClaimCount, 'quote_model_claim_count_unproven');
+    const review = projectRuntimeFinalReviewReceipt(performance?.finalReview);
+    require(review && review.declaredClaimCount === adoption.independentClaimCount, 'quote_review_necessity_unproven');
+    const reviewCalls = array(performance?.modelCalls).map(object).filter(call => call?.purpose === 'review');
+    if (adoption.componentCount > 0) {
+      require(review?.necessity === 'required' && review.triggers.includes('quote_context') && reviewCalls.length === 1, 'quote_context_review_unproven');
+      require(adoption.unavailableComponentCount === 0, 'quote_fidelity_unavailable');
+      const groups = object(report.checkGroups);
+      require(object(groups?.proof)?.program_quote_fidelity === true && object(groups?.value)?.program_quote_context === true &&
+        object(groups?.delivery)?.program_quote_coverage === true, 'quote_quality_unproven');
+    } else {
+      // Representation execution with no selected quote is legitimate; keep its fixed costs and old no-quote review rules.
+      require(review && !review.triggers.includes('quote_context') &&
+        (review.necessity === 'required' ? review.triggers.length > 0 && reviewCalls.length === 1
+          : review.necessity === 'not_required' && review.triggers.length === 0 && reviewCalls.length === 0),
+      'quote_zero_component_review_unproven');
+    }
+  }
+  for (const reference of referenced) require(byKey.get(reference)?.kind === 'program_quote_adoption', 'native_author_missing');
+  require(completion?.schemaVersion === 1 && completion.runId === metrics?.runId && completion.runtimeKind === metrics?.runtime &&
+    completion.status === 'completed' && completion.reason === undefined && textId(completion.attemptId) && textId(completion.candidateRef) && validHash(completion.conclusionFingerprint),
+  'actual_completion_identity_unproven');
+  if (completion) require(final.canonicalCandidateKey === hash(JSON.stringify({runId: completion.runId, attemptId: completion.attemptId,
+    candidateRef: completion.candidateRef, conclusionFingerprint: completion.conclusionFingerprint})), 'selected_candidate_identity_mismatch');
+}
+
 function inspectActualTransport(raw: RecordValue, benchmark: RecordValue, report: RecordValue,
   probe: ReturnType<typeof inspectPreflight>, treatment: ValidatedTreatment, require: (value: unknown, code: string) => void): Record<string, string[]> {
   const metrics = object(report.executionMetrics), performance = object(metrics?.performance);
@@ -388,6 +494,8 @@ function inspectActualTransport(raw: RecordValue, benchmark: RecordValue, report
   require(observed && observed.truncated === 0, 'actual_transport_observation_unproven');
   require(stableStringify(metrics?.requestedOutputConfig) === stableStringify(treatment.outputs[side]), 'requested_treatment_mismatch');
   if (!observed) return {};
+  require(observed.schemaVersion === (side === 'candidate' && treatment.id === EVIDENCE_QUOTES_TREATMENT_ID
+    ? 'final_transport_observation@2' : 'final_transport_observation@1'), 'actual_transport_version_mismatch');
   const events = observed.events, byKey = new Map(events.map(event => [event.eventKey, event]));
   const dispatches = events.filter((event): event is Extract<RuntimeFinalTransportEvent, {kind: 'main_dispatch' | 'stage_dispatch'}> =>
     event.kind === 'main_dispatch' || event.kind === 'stage_dispatch');
@@ -443,10 +551,17 @@ function inspectActualTransport(raw: RecordValue, benchmark: RecordValue, report
     const key = `${dispatch.kind}:${dispatch.purpose}`;
     (signatures[key] ??= new Set()).add(signature);
   }
-  const terminalCalls = new Set<string>(), issuedCarriers = new Set<string>();
   for (const event of events) {
     // Monotonic offsets are rounded, while the manifest uses millisecond wall-clock ticks.
     require(event.offsetMs <= Number(metrics?.wallclockMs) + 1, 'transport_time_outside_run');
+  }
+  if (side === 'candidate' && treatment.id === EVIDENCE_QUOTES_TREATMENT_ID) {
+    inspectQuoteActualTransport(events, report, benchmark, logical, treatment, require);
+    inspectStageCoverage(performance, dispatches, require);
+    return Object.fromEntries(Object.entries(signatures).map(([key, values]) => [key, [...values].sort()]));
+  }
+  const terminalCalls = new Set<string>(), issuedCarriers = new Set<string>();
+  for (const event of events) {
     if (event.kind !== 'native_terminal' && event.kind !== 'typed_issued_after_drain' && event.kind !== 'assistant_document_issued_after_drain') continue;
     if (event.kind !== 'native_terminal') {
       require(!issuedCarriers.has(event.logicalCallKey), 'duplicate_final_carrier'); issuedCarriers.add(event.logicalCallKey);
@@ -512,15 +627,7 @@ function inspectActualTransport(raw: RecordValue, benchmark: RecordValue, report
     completion.status === 'completed' && completion.reason === undefined && textId(completion.attemptId) && textId(completion.candidateRef) && validHash(completion.conclusionFingerprint), 'actual_completion_identity_unproven');
   if (completion) require(final.canonicalCandidateKey === hash(JSON.stringify({runId: completion.runId, attemptId: completion.attemptId,
     candidateRef: completion.candidateRef, conclusionFingerprint: completion.conclusionFingerprint})), 'selected_candidate_identity_mismatch');
-  const calls = array(performance?.modelCalls).map(object);
-  // One dispatchWithModelCallRecord span owns one no-tool transport invocation.
-  // Its internal HTTP retries reuse stageCallKey; fetch ordinals are unrelated.
-  for (const purpose of ['classification', 'review'] as const) {
-    const observedCalls = new Set(dispatches.filter((event): event is Extract<RuntimeFinalTransportEvent, {kind: 'stage_dispatch'}> =>
-      event.kind === 'stage_dispatch' && event.purpose === purpose).map(event => event.stageCallKey));
-    require(observedCalls.size === calls.filter(call => call?.purpose === purpose).length, 'stage_controls_coverage_incomplete');
-  }
-  require(calls.filter(call => call?.purpose === 'classification' || call?.purpose === 'review').every(call => call?.modelSource === 'provider_reported'), 'stage_actual_model_source_unproven');
+  inspectStageCoverage(performance, dispatches, require);
   return Object.fromEntries(Object.entries(signatures).map(([key, values]) => [key, [...values].sort()]));
 }
 
@@ -689,7 +796,7 @@ export interface ScoreLlmExecutionBenchmarkOptions {input: string; reviews?: str
 export function scoreLlmExecutionBenchmark(options: ScoreLlmExecutionBenchmarkOptions) {
   const input = explicitInput(options.input), saved = readJsonFile(input.file), benchmark = object(saved.value);
   if (!benchmark || !['llm_execution_benchmark@1', 'llm_execution_benchmark@2'].includes(String(benchmark.schemaVersion)) ||
-      (benchmark.schemaVersion === 'llm_execution_benchmark@2' ? ![TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID, DUAL_CARRIER_TREATMENT_ID].includes(String(benchmark.candidate)) : benchmark.candidate !== 'llm-execution-v1') ||
+      (benchmark.schemaVersion === 'llm_execution_benchmark@2' ? ![TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID, DUAL_CARRIER_TREATMENT_ID, EVIDENCE_QUOTES_TREATMENT_ID].includes(String(benchmark.candidate)) : benchmark.candidate !== 'llm-execution-v1') ||
       typeof benchmark.nonce !== 'string' || !/^[a-f0-9]{32}$/.test(benchmark.nonce) ||
       !['glm', 'deepseek'].includes(String(benchmark.provider)) ||
       !PRODUCTION_RUNTIME_KINDS.includes(benchmark.runtime as typeof PRODUCTION_RUNTIME_KINDS[number]) ||

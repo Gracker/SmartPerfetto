@@ -467,4 +467,42 @@ describe('maintained LLM execution target preflight', () => {
     expect(linked.run({}, ['--input', link, '--output', linked.output]).status).toBe(2);
     expect(fs.existsSync(linked.output)).toBe(false);
   });
+
+  it('recognizes the future quote observation descriptor without activating the production configuration', () => {
+    const descriptor = require('../../agentRuntime/finalSubmissionImplementation') as {
+      getObservedFinalSubmissionModeDescriptor?: (value: unknown) => unknown;
+      getFinalSubmissionModeDescriptor(value: unknown): unknown;
+    };
+    expect(typeof descriptor.getObservedFinalSubmissionModeDescriptor).toBe('function');
+    expect(descriptor.getObservedFinalSubmissionModeDescriptor!('authored_claim_document_v3_quotes')).toMatchObject({
+      admissionVersion: 'openai_typed_final_admission@5', rendererVersion: 'program_evidence_quote_render@1'});
+    expect(descriptor.getFinalSubmissionModeDescriptor('authored_claim_document_v3_quotes')).toBeUndefined();
+  });
+
+  it.each(['auto', 'fast', 'full'] as const)('keeps quote configuration closed with zero real child dispatch in %s mode', requestedMode => {
+    const test = fixture({side: 'candidate', requestedMode});
+    const requestBytes = fs.readFileSync(test.input, 'utf8');
+    const result = test.run({SMARTPERFETTO_FINAL_SUBMISSION: 'authored_claim_document_v3_quotes',
+      SMARTPERFETTO_CONCLUSION_AUTHORING: 'authoring_v2', OPENAI_AGENTS_PROTOCOL: 'chat_completions',
+      OPENAI_BASE_URL: 'https://api.deepseek.com/v1', OPENAI_MODEL: 'deepseek-flash', OPENAI_LIGHT_MODEL: 'deepseek-flash',
+      OPENAI_ANALYSIS_REASONING_EFFORT: 'none'});
+    expect(result.status).toBe(1); expect(result.observed.attempts).toEqual([]);
+    expect(result.observed.sdkModes).toEqual([]); expect(result.observed.purposeInputs).toEqual([]);
+    expect(test.receipt()).toMatchObject({schemaVersion: 'llm_target_preflight@3', status: 'failed', failureCode: 'invalid_configuration'});
+    expect(test.receipt()).not.toHaveProperty('outputImplementation');
+    expect(test.receipt()).not.toHaveProperty('actualResolvedConfig');
+    expect(fs.readFileSync(test.input, 'utf8')).toBe(requestBytes);
+  });
+
+  it('cannot turn declared quote implementation fields into actual base implementation facts', () => {
+    const fields = buildRuntimeConfigCommitments({configuration: {admissionVersion: 'openai_typed_final_admission@5',
+      rendererVersion: 'program_evidence_quote_render@1'}, environment: {SMARTPERFETTO_FINAL_SUBMISSION: 'authored_claim_document_v3_quotes'}})!;
+    const test = fixture({declaredConfig: {schemaVersion: 'benchmark_config_commitments@2', fields,
+      fullFingerprint: runtimeConfigCommitmentsFingerprint(fields)!, controlsFingerprint: runtimeConfigControlsFingerprint(fields)!,
+      legacyConfigFingerprint: 'e'.repeat(64)}});
+    const result = test.run(); expect(result.status).toBe(0); expect(result.observed.attempts).toEqual([]);
+    expect(test.receipt()).toMatchObject({status: 'ready', capturedOutput: {finalSubmission: 'assistant_text', declarationSyntax: 'canonical_v1'},
+      outputImplementation: {kind: 'assistant', nativeContract: 'openai_native_completion_observer@1'}});
+    expect(test.receipt()).not.toHaveProperty('outputImplementation.rendererVersion');
+  });
 });

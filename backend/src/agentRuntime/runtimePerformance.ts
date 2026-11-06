@@ -16,8 +16,9 @@ import {isSceneEntryNotRunReason, type RuntimePerformanceSceneEvidenceReceiptV1}
 import type {ModelExecutionPolicyReceipt} from './modelExecutionPolicy';
 import type {ReasoningSetting} from '../services/providerManager/modelExecutionProfile';
 import {CONCLUSION_PROTOCOL_VALUES} from '../agent/core/conclusionContract';
-import {getFinalSubmissionModeDescriptor, getOpenAiTypedFinalContractIdentity,
-  type FinalSubmissionModeKey, type OpenAiTypedFinalContractIdentity} from './finalSubmissionImplementation';
+import {getObservedFinalSubmissionModeDescriptor, getOpenAiTypedFinalContractIdentity, getObservedOpenAiTypedFinalContractIdentity,
+  OBSERVED_OPENAI_TYPED_FINAL_CONTRACTS, EVIDENCE_QUOTE_RENDERER_VERSION,
+  type ObservedFinalSubmissionModeKey, type OpenAiTypedFinalContractIdentity, type OpenAiEvidenceQuoteImplementation} from './finalSubmissionImplementation';
 import {TYPED_OUTPUT_MATERIAL_LIMITS, TYPED_OUTPUT_WIRE_FINISH_REASONS, type RuntimeTypedOutputMaterial, type RuntimeTypedOutputCollection,
   type RuntimeTypedOutputStructure, type RuntimeTypedOutputDecoded} from './typedOutputMaterial';
 
@@ -81,7 +82,7 @@ export type RuntimeModelCallTrigger = typeof RUNTIME_MODEL_CALL_TRIGGERS[number]
 
 /** Why the finalizer's semantic review was required. */
 export const RUNTIME_FINAL_REVIEW_TRIGGERS = [
-  'report', 'selection', 'source', 'investigation', 'claims_verifiable', 'acknowledgement',
+  'report', 'selection', 'source', 'investigation', 'claims_verifiable', 'acknowledgement', 'quote_context',
 ] as const;
 export type RuntimeFinalReviewTrigger = typeof RUNTIME_FINAL_REVIEW_TRIGGERS[number];
 
@@ -159,7 +160,7 @@ export interface RuntimeBenchmarkConfigCommitmentsV2 {
   readonly legacyConfigFingerprint: string;
 }
 export interface RuntimeObservedOutputConfig {
-  readonly finalSubmission: FinalSubmissionModeKey;
+  readonly finalSubmission: ObservedFinalSubmissionModeKey;
   readonly declarationSyntax: 'canonical_v1' | 'authoring_v1' | 'authoring_v2';
 }
 export interface RuntimeExecutionProfileObservation {
@@ -219,11 +220,42 @@ export type RuntimeFinalTransportEventInput =
   | Readonly<{kind: 'finalizer_selected'; retainedEventKey: string; nativeCandidateKey: string; displayCandidateKey: string;
       canonicalSourceCandidateKey: string; canonicalCandidateKey: string; productStatus: RuntimeObservedNativeStatus}>
   | Readonly<{kind: 'not_exercised'; reason: 'program_ack' | 'direct_without_main'}>;
-export type RuntimeFinalTransportEvent = RuntimeFinalTransportEventInput & Readonly<{
+export type RuntimeQuoteNativeSource = 'function_arguments' | 'assistant_json';
+export type RuntimeObservedQuoteRequest = Readonly<{status: 'observed'; httpRequestKey: string; collectorDispatchOrdinal: number;
+  requestBodyHash: RuntimeObservedHash}> | Readonly<{status: 'unknown'}>;
+export type RuntimeObservedUtf16Source = Readonly<{status: 'observed'; utf16Length: number; utf16Hash: string; utf8Hash: string}> |
+  Readonly<{status: 'unknown'}>;
+export type RuntimeQuoteNativeTerminal = Readonly<{kind: 'quote_native_terminal'; fact: RuntimeObservedNativeFact;
+  drainStatus: RuntimeObservedDrainStatus; actualNativeSource: Readonly<{status: 'observed'; source: RuntimeQuoteNativeSource}> |
+    Readonly<{status: 'unknown'}>; producingRequest: RuntimeObservedQuoteRequest; rawSourceIdentity: RuntimeObservedUtf16Source}>;
+export interface RuntimeQuoteCounts {
+  readonly componentCount: number; readonly renderedComponentCount: number; readonly unavailableComponentCount: number;
+  readonly quotedCellOccurrences: number; readonly independentClaimCount: number;
+}
+export type RuntimeProgramQuoteIssuedObservation = OpenAiEvidenceQuoteImplementation & RuntimeQuoteCounts & Readonly<{
+  schemaVersion: 'program_quote_adoption@1'; status: 'issued'; ownerBindingHash: string;
+  httpRequestKey: string; collectorDispatchOrdinal: number; responseKey: string; nativeTerminalEventKey: string;
+  rawSourceUtf16Hash: string; rawSourceUtf8Hash: string; rawSourceUtf16Length: number;
+  nativeCandidateKey: string; bodyHash: string; provenanceHash: string; issuerLineageHash: string;
+  actualModel: Readonly<{status: 'observed'; hash: string}>; nativeStatus: 'completed'; drainStatus: 'fulfilled';
+}> & (Readonly<{actualNativeSource: 'function_arguments'; callKey: string}> |
+  Readonly<{actualNativeSource: 'assistant_json'; messageKey: string}>);
+const QUOTE_NOT_ISSUED_REASONS = ['not_submitted', 'wire_ineligible', 'native_incomplete', 'composition_rejected',
+  'retention_unavailable', 'owner_unavailable', 'cancelled', 'deadline'] as const;
+export type RuntimeProgramQuoteAdoption = RuntimeProgramQuoteIssuedObservation | Readonly<{
+  schemaVersion: 'program_quote_adoption@1'; status: 'not_issued'; reason: typeof QUOTE_NOT_ISSUED_REASONS[number];
+  actualNativeSource?: RuntimeQuoteNativeSource;
+}>;
+export type RuntimeQuoteAdoptionEvent = Readonly<{kind: 'program_quote_adoption'; attemptKey: string; logicalCallKey: string;
+  adoption: RuntimeProgramQuoteAdoption}>;
+export type RuntimeQuoteFinalizerSelected = Extract<RuntimeFinalTransportEventInput, {kind: 'finalizer_selected'}> &
+  Readonly<{quoteIssuerLineageHash: string}>;
+export type RuntimeQuoteTransportEventInput = RuntimeQuoteNativeTerminal | RuntimeQuoteAdoptionEvent | RuntimeQuoteFinalizerSelected;
+export type RuntimeFinalTransportEvent = (RuntimeFinalTransportEventInput | RuntimeQuoteTransportEventInput) & Readonly<{
   eventKey: string; sequence: number; offsetMs: number;
 }>;
 export interface RuntimeFinalTransportObservation {
-  readonly schemaVersion: 'final_transport_observation@1';
+  readonly schemaVersion: 'final_transport_observation@1' | 'final_transport_observation@2';
   readonly events: readonly RuntimeFinalTransportEvent[];
   readonly truncated: number;
 }
@@ -397,8 +429,8 @@ export function buildRuntimeCommonModelConfig(config: unknown, context?: Readonl
 }
 function parseOutputConfig(value: unknown): RuntimeObservedOutputConfig {
   const input = exactObservationObject(value, ['finalSubmission', 'declarationSyntax']);
-  if (!getFinalSubmissionModeDescriptor(input.finalSubmission)) throw new Error('runtime_observation_enum_invalid');
-  return {finalSubmission: input.finalSubmission as FinalSubmissionModeKey,
+  if (!getObservedFinalSubmissionModeDescriptor(input.finalSubmission)) throw new Error('runtime_observation_enum_invalid');
+  return {finalSubmission: input.finalSubmission as ObservedFinalSubmissionModeKey,
     declarationSyntax: observationMember(input.declarationSyntax, OUTPUT_SYNTAXES)};
 }
 function parseProfileObservation(value: unknown): RuntimeExecutionProfileObservation {
@@ -692,24 +724,131 @@ function parseFinalTransportInput(value: unknown): RuntimeFinalTransportEventInp
     default: throw new Error('runtime_observation_event_invalid');
   }
 }
+const QUOTE_COMMON_EVENT_KINDS = ['main_dispatch', 'stage_dispatch', 'typed_output_observed', 'candidate_retained', 'not_exercised'] as const;
+function quoteCommonKind(kind: string): boolean {return (QUOTE_COMMON_EVENT_KINDS as readonly string[]).includes(kind);}
+function quoteCount(value: unknown): number {
+  const count = observationCount(value);
+  if (count > TYPED_OUTPUT_MATERIAL_LIMITS.structureNodes) throw new Error('runtime_observation_quote_count_invalid');
+  return count;
+}
+function quoteSourceLength(value: unknown): number {
+  const count = observationCount(value);
+  if (count > TYPED_OUTPUT_MATERIAL_LIMITS.decodedUtf16Chars) throw new Error('runtime_observation_quote_source_invalid');
+  return count;
+}
+
+/** Reader reconstruction of a frozen private commitment; never a private issuer dependency or token factory. */
+export function runtimeProgramQuoteIssuerCore(value: RuntimeProgramQuoteIssuedObservation) {
+  return {schemaVersion: 'program_quote_issuer_core@1' as const, ownerBindingHash: value.ownerBindingHash,
+    implementation: {...OBSERVED_OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@5'], rendererVersion: value.rendererVersion},
+    nativeIdentity: {source: value.actualNativeSource, dispatchOrdinal: value.collectorDispatchOrdinal, responseKey: value.responseKey,
+      ...(value.actualNativeSource === 'assistant_json' ? {messageKey: value.messageKey} : {callKey: value.callKey})},
+    rawSourceIdentity: {utf16Hash: value.rawSourceUtf16Hash, utf8Hash: value.rawSourceUtf8Hash, utf16Length: value.rawSourceUtf16Length},
+    bodyHash: value.bodyHash, provenanceHash: value.provenanceHash, nativeCandidateKey: value.nativeCandidateKey,
+    componentCount: value.componentCount, renderedComponentCount: value.renderedComponentCount,
+    unavailableComponentCount: value.unavailableComponentCount, quotedCellOccurrences: value.quotedCellOccurrences,
+    independentClaimCount: value.independentClaimCount};
+}
+
+function parseProgramQuoteAdoption(value: unknown): RuntimeProgramQuoteAdoption {
+  const input = observationData(value);
+  if (input.schemaVersion !== 'program_quote_adoption@1') throw new Error('runtime_observation_quote_contract_invalid');
+  if (input.status === 'not_issued') {
+    exactObservationObject(input, ['schemaVersion', 'status', 'reason'], ['actualNativeSource']);
+    return {schemaVersion: input.schemaVersion, status: 'not_issued', reason: observationMember(input.reason, QUOTE_NOT_ISSUED_REASONS),
+      ...(observationOwn(input, 'actualNativeSource') ? {actualNativeSource: observationMember(input.actualNativeSource,
+        ['function_arguments', 'assistant_json'] as const)} : {})};
+  }
+  const actualNativeSource = observationMember(input.actualNativeSource, ['function_arguments', 'assistant_json']);
+  const identity = getObservedOpenAiTypedFinalContractIdentity(input.admissionVersion);
+  if (!identity || identity.admissionVersion !== 'openai_typed_final_admission@5') throw new Error('runtime_observation_quote_contract_invalid');
+  exactObservationObject(input, ['schemaVersion', 'status', ...Object.keys(identity), 'rendererVersion', 'ownerBindingHash',
+    'httpRequestKey', 'collectorDispatchOrdinal', 'responseKey', 'nativeTerminalEventKey', 'rawSourceUtf16Hash', 'rawSourceUtf8Hash',
+    'rawSourceUtf16Length', 'nativeCandidateKey', 'bodyHash', 'provenanceHash', 'issuerLineageHash', 'actualModel', 'nativeStatus', 'drainStatus',
+    'componentCount', 'renderedComponentCount', 'unavailableComponentCount', 'quotedCellOccurrences', 'independentClaimCount',
+    'actualNativeSource', actualNativeSource === 'assistant_json' ? 'messageKey' : 'callKey']);
+  if (input.status !== 'issued' || input.nativeStatus !== 'completed' || input.drainStatus !== 'fulfilled' ||
+      Object.entries(identity).some(([key, expected]) => input[key] !== expected) || input.rendererVersion !== EVIDENCE_QUOTE_RENDERER_VERSION) {
+    throw new Error('runtime_observation_quote_contract_invalid');
+  }
+  const counts = {componentCount: quoteCount(input.componentCount), renderedComponentCount: quoteCount(input.renderedComponentCount),
+    unavailableComponentCount: quoteCount(input.unavailableComponentCount), quotedCellOccurrences: quoteCount(input.quotedCellOccurrences),
+    independentClaimCount: quoteCount(input.independentClaimCount)};
+  const ordinal = observationCount(input.collectorDispatchOrdinal), actualModel = parseObservedHash(input.actualModel);
+  if (!ordinal || actualModel.status !== 'observed' || counts.renderedComponentCount + counts.unavailableComponentCount !== counts.componentCount ||
+      counts.componentCount === 0 && counts.quotedCellOccurrences !== 0 ||
+      actualNativeSource === 'assistant_json' && input.messageKey !== input.responseKey) throw new Error('runtime_observation_quote_facts_invalid');
+  const common = {schemaVersion: 'program_quote_adoption@1' as const, status: 'issued' as const, ...identity,
+    rendererVersion: EVIDENCE_QUOTE_RENDERER_VERSION, ...counts, ownerBindingHash: observationHash(input.ownerBindingHash),
+    httpRequestKey: observationHash(input.httpRequestKey), collectorDispatchOrdinal: ordinal, responseKey: observationHash(input.responseKey),
+    nativeTerminalEventKey: observationHash(input.nativeTerminalEventKey), rawSourceUtf16Hash: observationHash(input.rawSourceUtf16Hash),
+    rawSourceUtf8Hash: observationHash(input.rawSourceUtf8Hash), rawSourceUtf16Length: quoteSourceLength(input.rawSourceUtf16Length),
+    nativeCandidateKey: observationHash(input.nativeCandidateKey), bodyHash: observationHash(input.bodyHash),
+    provenanceHash: observationHash(input.provenanceHash), issuerLineageHash: observationHash(input.issuerLineageHash),
+    actualModel, nativeStatus: 'completed' as const, drainStatus: 'fulfilled' as const};
+  return actualNativeSource === 'assistant_json' ? {...common, actualNativeSource, messageKey: observationHash(input.messageKey)}
+    : {...common, actualNativeSource, callKey: observationHash(input.callKey)};
+}
+function parseQuoteTransportInput(value: unknown): RuntimeFinalTransportEventInput | RuntimeQuoteTransportEventInput {
+  if (!buildRuntimeConfigCommitments(value)) throw new Error('runtime_observation_data_invalid');
+  const input = observationData(value);
+  if (typeof input.kind === 'string' && quoteCommonKind(input.kind)) return parseFinalTransportInput(input);
+  if (input.kind === 'quote_native_terminal') {
+    exactObservationObject(input, ['kind', 'fact', 'drainStatus', 'actualNativeSource', 'producingRequest', 'rawSourceIdentity']);
+    const terminal = parseFinalTransportInput({kind: 'native_terminal', fact: input.fact, drainStatus: input.drainStatus});
+    if (terminal.kind !== 'native_terminal') throw new Error('runtime_observation_quote_contract_invalid');
+    const source = observationData(input.actualNativeSource), request = observationData(input.producingRequest), raw = observationData(input.rawSourceIdentity);
+    let actualNativeSource: RuntimeQuoteNativeTerminal['actualNativeSource'];
+    if (source.status === 'unknown') {exactObservationObject(source, ['status']); actualNativeSource = {status: 'unknown'};}
+    else {exactObservationObject(source, ['status', 'source']); if (source.status !== 'observed') throw new Error('runtime_observation_quote_source_invalid');
+      actualNativeSource = {status: 'observed', source: observationMember(source.source, ['function_arguments', 'assistant_json'])};}
+    let producingRequest: RuntimeObservedQuoteRequest;
+    if (request.status === 'unknown') {exactObservationObject(request, ['status']); producingRequest = {status: 'unknown'};}
+    else {exactObservationObject(request, ['status', 'httpRequestKey', 'collectorDispatchOrdinal', 'requestBodyHash']);
+      const ordinal = observationCount(request.collectorDispatchOrdinal);
+      if (request.status !== 'observed' || !ordinal) throw new Error('runtime_observation_quote_request_invalid');
+      producingRequest = {status: 'observed', httpRequestKey: observationHash(request.httpRequestKey), collectorDispatchOrdinal: ordinal,
+        requestBodyHash: parseObservedHash(request.requestBodyHash)};}
+    let rawSourceIdentity: RuntimeObservedUtf16Source;
+    if (raw.status === 'unknown') {exactObservationObject(raw, ['status']); rawSourceIdentity = {status: 'unknown'};}
+    else {exactObservationObject(raw, ['status', 'utf16Length', 'utf16Hash', 'utf8Hash']);
+      if (raw.status !== 'observed') throw new Error('runtime_observation_quote_source_invalid');
+      rawSourceIdentity = {status: 'observed', utf16Length: quoteSourceLength(raw.utf16Length),
+        utf16Hash: observationHash(raw.utf16Hash), utf8Hash: observationHash(raw.utf8Hash)};}
+    return {kind: input.kind, fact: terminal.fact, drainStatus: terminal.drainStatus, actualNativeSource, producingRequest, rawSourceIdentity};
+  }
+  if (input.kind === 'program_quote_adoption') {
+    exactObservationObject(input, ['kind', 'attemptKey', 'logicalCallKey', 'adoption']);
+    return {kind: input.kind, attemptKey: observationHash(input.attemptKey), logicalCallKey: observationHash(input.logicalCallKey),
+      adoption: parseProgramQuoteAdoption(input.adoption)};
+  }
+  if (input.kind === 'finalizer_selected') {
+    const {quoteIssuerLineageHash, ...legacy} = input;
+    const selected = parseFinalTransportInput(legacy);
+    if (selected.kind !== 'finalizer_selected') throw new Error('runtime_observation_quote_selection_invalid');
+    return {...selected, quoteIssuerLineageHash: observationHash(quoteIssuerLineageHash)};
+  }
+  throw new Error('runtime_observation_quote_event_invalid');
+}
+
 /** Strict shared stored-receipt projection, not an authority check or a quality verdict. */
 export function projectRuntimeFinalTransportObservation(value: unknown): RuntimeFinalTransportObservation | undefined {
   try {
     const input = exactObservationObject(value, ['schemaVersion', 'events', 'truncated']);
-    if (input.schemaVersion !== 'final_transport_observation@1' || !Array.isArray(input.events) || nodeUtilTypes.isProxy(input.events) ||
+    if ((input.schemaVersion !== 'final_transport_observation@1' && input.schemaVersion !== 'final_transport_observation@2') || !Array.isArray(input.events) || nodeUtilTypes.isProxy(input.events) ||
         input.events.length > DEFAULT_MAX_RECEIPT_ITEMS || !Number.isSafeInteger(input.truncated) || (input.truncated as number) < 0) return undefined;
     const seen = new Set<string>();
     let previousOffset = -1;
     const events = input.events.map((value, index) => {
       const event = observationData(value);
       const {eventKey, sequence, offsetMs, ...payload} = event;
-      const parsed = parseFinalTransportInput(payload);
+      const parsed = input.schemaVersion === 'final_transport_observation@1' ? parseFinalTransportInput(payload) : parseQuoteTransportInput(payload);
       if (sequence !== index + 1 || typeof offsetMs !== 'number' || !Number.isFinite(offsetMs) || offsetMs < previousOffset || offsetMs < 0 ||
           typeof eventKey !== 'string' || seen.has(eventKey) || eventKey !== canonicalContentHash({sequence, offsetMs, ...parsed})) throw new Error('runtime_observation_event_identity_invalid');
       previousOffset = offsetMs; seen.add(eventKey);
       return {...parsed, eventKey, sequence, offsetMs} as RuntimeFinalTransportEvent;
     });
-    return immutableCanonicalSnapshot({schemaVersion: 'final_transport_observation@1', events, truncated: input.truncated as number});
+    return immutableCanonicalSnapshot({schemaVersion: input.schemaVersion as RuntimeFinalTransportObservation['schemaVersion'], events, truncated: input.truncated as number});
   } catch {return undefined;}
 }
 
@@ -826,6 +965,19 @@ export interface RuntimePerformanceFinalReviewReceiptV1 {
   necessity: typeof RUNTIME_FINAL_REVIEW_NECESSITIES[number];
   triggers: RuntimeFinalReviewTrigger[];
   declaredClaimCount: number;
+}
+
+/** Closed diagnostic projection. It neither decides review eligibility nor dispatches work. */
+export function projectRuntimeFinalReviewReceipt(value: unknown): RuntimePerformanceFinalReviewReceiptV1 | undefined {
+  try {
+    if (!buildRuntimeConfigCommitments(value)) return undefined;
+    const input = exactObservationObject(value, ['necessity', 'triggers', 'declaredClaimCount']);
+    const necessity = observationMember(input.necessity, RUNTIME_FINAL_REVIEW_NECESSITIES);
+    if (!Array.isArray(input.triggers) || input.triggers.length > RUNTIME_FINAL_REVIEW_TRIGGERS.length) return undefined;
+    const triggers = input.triggers.map(item => observationMember(item, RUNTIME_FINAL_REVIEW_TRIGGERS));
+    if (new Set(triggers).size !== triggers.length || necessity === 'not_required' && triggers.includes('quote_context')) return undefined;
+    return immutableCanonicalSnapshot({necessity, triggers, declaredClaimCount: observationCount(input.declaredClaimCount)});
+  } catch {return undefined;}
 }
 
 export const RUNTIME_DECLARATION_STATUSES = ['absent', 'valid', 'partially_valid', 'invalid'] as const;
@@ -1016,6 +1168,7 @@ export class RuntimePerformanceRecorder {
   private readonly modelRequests: RuntimeModelRequestReceiptV1[] = [];
   private readonly policyObservations: RuntimeModelPolicyObservation[] = [];
   private readonly finalTransportEvents: RuntimeFinalTransportEvent[] = [];
+  private finalTransportVersion: RuntimeFinalTransportObservation['schemaVersion'] = 'final_transport_observation@1';
   private finalTransportTruncated = 0;
   private finalReview: RuntimePerformanceFinalReviewReceiptV1 | undefined;
   private declaration: RuntimePerformanceDeclarationReceiptV1 | undefined;
@@ -1222,10 +1375,27 @@ export class RuntimePerformanceRecorder {
     if (this.finalTransportEvents.length >= this.maxFinalTransportEvents) {this.finalTransportTruncated++; return undefined;}
     let payload: RuntimeFinalTransportEventInput;
     try {payload = parseFinalTransportInput(input);} catch {this.finalTransportTruncated++; return undefined;}
+    if (this.finalTransportVersion === 'final_transport_observation@2' && !quoteCommonKind(payload.kind)) {this.finalTransportTruncated++; return undefined;}
     const event = {sequence: this.finalTransportEvents.length + 1, offsetMs: this.offsetMs(), ...payload};
     const eventKey = canonicalContentHash(event);
     this.finalTransportEvents.push(immutableCanonicalSnapshot({...event, eventKey}));
     return eventKey;
+  }
+
+  /** New observation channel only. No production issuer calls it until its separately reviewed integration. */
+  recordQuoteTransportEvent(input: RuntimeQuoteTransportEventInput): string | undefined {
+    if (this.sealedReceipt) return undefined;
+    if (this.finalTransportEvents.length >= this.maxFinalTransportEvents) {this.finalTransportTruncated++; return undefined;}
+    try {
+      const payload = parseQuoteTransportInput(input);
+      if (quoteCommonKind(payload.kind)) throw new Error('runtime_observation_quote_kind_required');
+      const event = {sequence: this.finalTransportEvents.length + 1, offsetMs: this.offsetMs(), ...payload};
+      const eventKey = canonicalContentHash(event), snapshot = immutableCanonicalSnapshot({...event, eventKey});
+      if (this.sealedReceipt) return undefined;
+      this.finalTransportVersion = 'final_transport_observation@2';
+      this.finalTransportEvents.push(snapshot);
+      return eventKey;
+    } catch {if (!this.sealedReceipt) this.finalTransportTruncated++; return undefined;}
   }
 
   /** A missing/conflicting observation is incompleteness, never a fabricated event. */
@@ -1370,6 +1540,15 @@ export class RuntimePerformanceRecorder {
   recordFinalReview(input: RuntimePerformanceFinalReviewReceiptV1): void {
     this.assertCollecting('record_final_review');
     if (this.finalReview) return;
+    // Preserve the historical no-quote normalization; the new quote path must never manufacture zero.
+    if (nodeUtilTypes.isProxy(input)) return;
+    const descriptor = Object.getOwnPropertyDescriptor(input, 'triggers');
+    if (!descriptor || !('value' in descriptor) || !Array.isArray(descriptor.value) || !buildRuntimeConfigCommitments(descriptor.value)) return;
+    if (descriptor.value.includes('quote_context')) {
+      const receipt = projectRuntimeFinalReviewReceipt(input);
+      if (receipt) this.finalReview = receipt;
+      return;
+    }
     this.finalReview = {
       necessity: input.necessity,
       triggers: [...new Set(input.triggers)],
@@ -1453,7 +1632,7 @@ export class RuntimePerformanceRecorder {
       ...(this.modelRequests.length > 0 ? {modelRequests: [...this.modelRequests]} : {}),
       ...(this.policyObservations.length > 0 ? {policyObservations: [...this.policyObservations]} : {}),
       ...(this.finalTransportEvents.length || this.finalTransportTruncated ? {finalTransportObservation: {
-        schemaVersion: 'final_transport_observation@1' as const, events: [...this.finalTransportEvents], truncated: this.finalTransportTruncated}} : {}),
+        schemaVersion: this.finalTransportVersion, events: [...this.finalTransportEvents], truncated: this.finalTransportTruncated}} : {}),
       ...(this.finalReview ? {finalReview: this.finalReview} : {}),
       ...(this.declaration ? {declaration: this.declaration} : {}),
       ...(this.deliveryBudgets.length > 0 ? {deliveryBudgets: [...this.deliveryBudgets]} : {}),
