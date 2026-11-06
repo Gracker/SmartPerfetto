@@ -3891,7 +3891,7 @@ describe('experimental Pi agent-core runtime contract', () => {
         const context = takeFinalizationContext(result)!;
         try {
           const declaration = context.getNativeDeclaration(result, new AbortController().signal);
-          if (!declaration || declaration.inputKind === 'model_tool_arguments') {
+          if (!declaration || declaration.inputKind === 'model_tool_arguments' || declaration.inputKind === 'assistant_json') {
             throw new Error('Expected an assistant-text native declaration');
           }
           expect(inspectCandidateProtocol(declaration.raw).status).toBe('valid');

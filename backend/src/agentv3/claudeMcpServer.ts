@@ -351,6 +351,7 @@ import {
 } from '../services/resolvedAnalysisContext';
 import {preserveRuntimeLiteralJson, preserveRuntimeLiteralStrings, type RuntimeToolExtra} from '../agentRuntime/runtimeToolSpec';
 import type {FinalSubmissionMode} from '../agentRuntime/finalSubmissionConfig';
+import {getFinalSubmissionModeDescriptor} from '../agentRuntime/finalSubmissionImplementation';
 import {AUTHORED_FINAL_SUBMISSION_PENDING_ACK} from '../agentRuntime/authoredFinalSubmission';
 import {compileAuthoredClaimDocument, type AuthoredClaimDocumentFailure} from '../agent/core/authoredClaimDocument';
 import {compileAuthoredClaimObject, type AuthoredClaimObjectFailure} from '../agent/core/authoredClaimObject';
@@ -7857,7 +7858,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   if (options.conversationTraceAttached !== false && executeSqlOn) registry.registerSdk(executeSqlOn, 'execute_sql_on', 'internal', {evidenceEffect: 'acquire'});
   if (getComparisonContext) registry.registerSdk(getComparisonContext, 'get_comparison_context', 'internal', {evidenceEffect: 'read_existing'});
 
-  if (options.finalSubmission === 'authored_claim_document_v1') {
+  const submissionDescriptor = getFinalSubmissionModeDescriptor(options.finalSubmission ?? 'assistant_text');
+  if (!submissionDescriptor) throw new Error('invalid_final_submission_mode');
+  if (submissionDescriptor.kind === 'typed' && submissionDescriptor.representationVersion === 'authored_claim_document@1') {
     registry.registerShared({
       name: 'submit_final_document', role: 'final_candidate_submission', exposure: 'internal', evidenceEffect: 'none',
       description: requireToolDescription('prompt-submit-final-document-tool-description'),
@@ -7876,10 +7879,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         } catch {return rejected('submission_rejected');}
       },
     });
-  } else if (options.finalSubmission === 'authored_claim_document_v2') {
+  } else if (submissionDescriptor.kind === 'typed' && submissionDescriptor.representationVersion === 'authored_claim_document@2') {
     registry.registerShared({
       name: 'submit_final_document', role: 'final_candidate_submission', exposure: 'internal', evidenceEffect: 'none',
-      description: requireToolDescription('prompt-submit-final-document-v2-tool-description'),
+      description: requireToolDescription(submissionDescriptor.sourcePolicy === 'function_or_assistant_json'
+        ? 'prompt-submit-final-document-v2-dual-tool-description' : 'prompt-submit-final-document-v2-tool-description'),
       inputSchema: {document: preserveRuntimeLiteralJson(authoredClaimObjectSchema)},
       annotations: {readOnlyHint: true},
       handler: async args => {

@@ -16,6 +16,7 @@ import {CONCLUSION_AUTHORING_LIMITS} from '../agent/core/conclusionAuthoring';
 import {SUPPORTED_DETERMINISTIC_CLAIM_RULES} from '../services/verifier/deterministicClaimVerifier';
 import {buildFocusAppPromptData, packageProvenance} from '../agentRuntime/focusAppTarget';
 import type {FinalSubmissionMode} from '../agentRuntime/finalSubmissionConfig';
+import {getFinalSubmissionModeDescriptor} from '../agentRuntime/finalSubmissionImplementation';
 
 /**
  * Rough token estimate for mixed Chinese/English text.
@@ -196,13 +197,13 @@ function buildTypedTurnSystemPromptParts(
   // Inject protocol syntax after authoring comments are removed. Applying the
   // comment stripper to the rendered asset would delete its sidecar example.
   const finalSubmission = context.finalSubmission ?? 'assistant_text';
-  if (finalSubmission !== 'assistant_text' && finalSubmission !== 'authored_claim_document_v1'
-    && finalSubmission !== 'authored_claim_document_v2') {
+  const submissionDescriptor = getFinalSubmissionModeDescriptor(finalSubmission);
+  if (!submissionDescriptor) {
     throw new Error('[SystemPrompt] Invalid final submission mode');
   }
-  const nativeObjectSubmission = finalSubmission === 'authored_claim_document_v2';
-  const typedSubmission = finalSubmission === 'authored_claim_document_v1' || nativeObjectSubmission;
-  if (typedSubmission && (context.declarationSyntax !== (nativeObjectSubmission ? 'authoring_v2' : 'canonical_v1')
+  const typedSubmission = submissionDescriptor.kind === 'typed';
+  const nativeObjectSubmission = typedSubmission && submissionDescriptor.representationVersion === 'authored_claim_document@2';
+  if (typedSubmission && (context.declarationSyntax !== submissionDescriptor.requiredDeclarationSyntax
     || context.resolvedFinalTool?.role !== 'final_candidate_submission'
     || typeof context.resolvedFinalTool.nativeName !== 'string'
     || !context.resolvedFinalTool.nativeName.trim())) {
@@ -217,7 +218,9 @@ function buildTypedTurnSystemPromptParts(
       authoringMaxDepth: String(CONCLUSION_AUTHORING_LIMITS.depth),
       supportedProofRules: JSON.stringify(SUPPORTED_DETERMINISTIC_CLAIM_RULES),
     });
-    push(1, 'conclusion_declaration', renderTemplate(requiredAsset('prompt-authored-final-submission-v2-delivery'), {
+    const deliveryAsset = submissionDescriptor.sourcePolicy === 'function_or_assistant_json'
+      ? 'prompt-authored-final-submission-v2-dual-delivery' : 'prompt-authored-final-submission-v2-delivery';
+    push(1, 'conclusion_declaration', renderTemplate(requiredAsset(deliveryAsset), {
       declarationFraming, finalSubmissionToolName: context.resolvedFinalTool?.nativeName,
     }));
   } else {

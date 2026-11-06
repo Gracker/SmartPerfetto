@@ -28,7 +28,7 @@ import {registerOnDemandSourceLookupForEcho, registerCodeAwareCanary, registerPr
 import {prepareClaimEvidence, preparedClaimEvidenceSnapshot} from '../evidence/claimEvidencePreparation';
 import {AUTHORED_CLAIM_DOCUMENT_VERSION, compileAuthoredClaimDocument} from '../../agent/core/authoredClaimDocument';
 import {AUTHORED_CLAIM_DOCUMENT_COMPILER_VERSION, AUTHORED_CLAIM_OBJECT_COMPILER_VERSION, createAuthoredFinalSubmissionIssuer,
-  type AuthoredFinalSubmissionV1ReadInput, type AuthoredFinalSubmissionV2ReadInput,
+  type AuthoredFinalSubmissionV1ReadInput, type AuthoredFinalSubmissionV2ReadInput, type AuthoredFinalSubmissionAssistantV2ReadInput,
   issueAuthoredFinalSubmission, readAuthoredFinalSubmission} from '../../agentRuntime/authoredFinalSubmission';
 import {issueAuthoredConclusionProtocolProjection, hasCurrentAuthoredFinalDelivery, hasCurrentAuthoredFinalBody,
   type AuthoredConclusionSubmission} from '../security/conclusionProtocolProjection';
@@ -2015,6 +2015,156 @@ describe('issued native-object quote bindings and material diagnostics', () => {
         {...material, normalizedNativeDocument: {...f.compiled.material.nativeDocument, nodes: 10_001}},
         {...material, normalizedExpanded: {...f.compiled.material.expanded, depth: 25}},
       ]) expect(sanitizeCandidateProtocolDiagnostic({...diagnostic, authoredMaterial: invalid})).toBeUndefined();
+    } finally {f.cleanup();}
+  });
+});
+
+
+function assistantAuthoredFixture(document = nativeAuthoredDocument(), options: {redact?: string} = {}) {
+  const rawAssistantText = ' \n' + JSON.stringify({document}, null, 2) + '\n';
+  const nativeDocument = JSON.parse(rawAssistantText).document;
+  const compiled = compileAuthoredClaimObject(nativeDocument);
+  if (compiled.status !== 'compiled') throw new Error('Assistant source fixture must compile');
+  const source = result(compiled.body), live = {active: true, attempt: true};
+  const binding = {owner: live, sessionId: source.sessionId, runId: 'run-a', attemptId: 'attempt-a',
+    providerPin: 'test-pin', authorizationFingerprint: 'test-scope'};
+  const issuer = createAuthoredFinalSubmissionIssuer({binding, representationVersion: AUTHORED_CLAIM_OBJECT_VERSION,
+    sourcePolicy: 'function_or_assistant_json', assertAttemptCurrent: () => {if (!live.attempt) throw new Error('retired');},
+    assertCurrent: () => {if (!live.active) throw new Error('revoked');}});
+  const dispatch = {dispatchOrdinal: 1, responseId: 'assistant-response', messageId: 'assistant-response'};
+  const submission = issueAuthoredFinalSubmission(issuer, {sourceKind: 'assistant_json', ...dispatch, rawAssistantText, nativeDocument, compiled});
+  const handoff: AuthoredConclusionSubmission & {input: AuthoredFinalSubmissionAssistantV2ReadInput} = {submission, input: {
+    sourceKind: 'assistant_json', binding: {...binding, ...dispatch, representationVersion: AUTHORED_CLAIM_OBJECT_VERSION,
+      compilerContractVersion: AUTHORED_CLAIM_OBJECT_COMPILER_VERSION}, rawAssistantText,
+    nativeDocument: structuredClone(nativeDocument), body: compiled.body, rawCanonicalPayload: structuredClone(compiled.rawCanonicalPayload)}};
+  const delivery = contextFor(source);
+  delivery.outputOrigin = 'sdk_final'; delivery.finalSubmission = {mode: 'authored_claim_document_v2_dual', outcome: 'submitted'};
+  source.outputOrigin = delivery.outputOrigin; source.completion = delivery.completion;
+  if (options.redact) registerCodeAwareCanary(source.sessionId, options.redact);
+  const projected = finalizeSourceAwareAnalysisResultWithProjection(source, undefined, {context: delivery, authoredSubmission: handoff});
+  const context = projected.deliveryContext;
+  if (!context || context.entry === 'historical_restore' || !projected.protocolProjection) throw new Error('Expected assistant source projection');
+  const token = projected.protocolProjection;
+  const native = readConclusionProtocolProjection(token, {result: source, candidate: context.acceptedCandidate, runId: binding.runId});
+  const canonical = canonicalizeAnalysisResult(source, {context, nativeDeclaration: native});
+  return {source, live, compiled, handoff, context, native, canonical, token, rawAssistantText,
+    cleanup: () => {releaseConclusionProtocolProjection(token); clearCodeAwareOutputGuards(source.sessionId);}};
+}
+
+describe('issued assistant JSON source projection', () => {
+  let restoreClone: (() => void) | undefined;
+  beforeEach(() => {restoreClone = installCurrentRealmStructuredCloneForTest();});
+  afterEach(() => {restoreClone?.(); restoreClone = undefined;});
+
+  it('uses the original compiled declaration and literal body with an honest SDK origin', () => {
+    const document = nativeAuthoredDocument();
+    document.bodyParts.push('\n{"literal":"not another declaration"}\n', renderConclusionContractSidecar(declaration()));
+    const f = assistantAuthoredFixture(document);
+    try {
+      expect(f.native.inputKind).toBe('assistant_json');
+      if (f.native.inputKind !== 'assistant_json') throw new Error('Expected assistant source');
+      expect(f.native.rawAssistantText).toBe(f.rawAssistantText); expect(f.native.body).toBe(f.compiled.body);
+      expect(f.native.rawCanonicalPayload).toEqual(f.compiled.rawCanonicalPayload);
+      expect(f.native).not.toHaveProperty('rawArguments'); expect(f.native).not.toHaveProperty('raw');
+      expect(f.canonical.result.conclusion).toBe(f.compiled.body);
+      expect(f.canonical.validationContract?.claims?.map(claim => claim.id)).toEqual(['duration']);
+      expect(f.canonical.result.outputOrigin).toBe('sdk_final'); expect(f.canonical.result.completion?.status).toBe('completed');
+      expect(hasCurrentAuthoredFinalDelivery(f.canonical.result, f.canonical.deliveryContext!)).toBe(true);
+      expect(hasCurrentAuthoredFinalBody(f.canonical.result.conclusion, f.canonical.deliveryContext!)).toBe(true);
+      expect(JSON.stringify(f.canonical.result)).not.toMatch(/rawAssistantText|rawArguments|privateNativeDocument|quoteBindings|semanticFrames|partSpans/);
+    } finally {f.cleanup();}
+  });
+
+  it('reports actual assistant raw character length and compiled triage without function-only material metrics', () => {
+    const document = nativeAuthoredDocument(); document.contract.sourceClaimBindings = [];
+    const f = assistantAuthoredFixture(document);
+    try {
+      const snapshot = readAuthoredFinalSubmission(f.handoff.submission, f.handoff.input);
+      const diagnostic = buildAuthoredCandidateProtocolDiagnostic(snapshot);
+      expect(diagnostic).toMatchObject({rawChars: f.rawAssistantText.length, canonicalChars: f.compiled.body.trim().length,
+        claimCount: 1, semanticClaimCount: 1, sourceBindingCount: 0});
+      expect(diagnostic).not.toHaveProperty('authoredMaterial'); expect(JSON.stringify(diagnostic)).not.toMatch(/rawArgumentsUtf8Bytes|rawAssistantTextHash|nativeDocument|bodyParts/);
+      expect(sanitizeCandidateProtocolDiagnostic(diagnostic)).toEqual(diagnostic);
+    } finally {f.cleanup();}
+  });
+
+  it('retains invalid semantic entries from the issued original instead of parsing protocol-looking body text', () => {
+    const document = nativeAuthoredDocument();
+    (document.contract.claims[0].semantics!.numeric as any).value = 'not-a-number';
+    document.bodyParts.push('\n', renderConclusionContractSidecar(declaration(999)));
+    const f = assistantAuthoredFixture(document);
+    try {
+      expect(f.compiled.canonicalParse.status).toBe('partially_valid');
+      expect(f.canonical.protocolDiagnostics?.typedJson?.rawPayload).toEqual(f.compiled.rawCanonicalPayload);
+      expect(f.canonical.validationContract?.claims?.[0].valid).toBe(false);
+      expect(f.canonical.result.conclusion).toBe(f.compiled.body);
+      expect(f.canonical.validationContract?.claims?.[0].semantics?.numeric?.value).not.toBe(999);
+    } finally {f.cleanup();}
+  });
+
+  it.each(['origin', 'old_v2_mode', 'old_v1_mode', 'missing_submission', 'revoked'] as const)
+    ('requires the exact live source/mode/origin pairing: %s', mismatch => {
+      const f = assistantAuthoredFixture();
+      try {
+        const context = f.canonical.deliveryContext;
+        if (!context || context.entry === 'historical_restore') throw new Error('Expected live context');
+        if (mismatch === 'origin') context.outputOrigin = 'model_tool_arguments';
+        if (mismatch === 'old_v2_mode') context.finalSubmission = {mode: 'authored_claim_document_v2', outcome: 'submitted'};
+        if (mismatch === 'old_v1_mode') context.finalSubmission = {mode: 'authored_claim_document_v1', outcome: 'submitted'};
+        if (mismatch === 'missing_submission') context.finalSubmission = {mode: 'authored_claim_document_v2_dual', outcome: 'missing_submission'};
+        if (mismatch === 'revoked') f.live.active = false;
+        expect(hasCurrentAuthoredFinalDelivery(f.canonical.result, context)).toBe(false);
+        expect(hasCurrentAuthoredFinalBody(f.canonical.result.conclusion, context)).toBe(false);
+      } finally {f.cleanup();}
+    });
+
+  it('retains the legitimate function lane in dual mode without changing its source kind', () => {
+    const f = nativeAuthoredFixture();
+    try {
+      const context = f.canonical.deliveryContext;
+      if (!context || context.entry === 'historical_restore') throw new Error('Expected live context');
+      context.finalSubmission = {mode: 'authored_claim_document_v2_dual', outcome: 'submitted'};
+      expect(f.native.inputKind).toBe('model_tool_arguments');
+      expect(hasCurrentAuthoredFinalDelivery(f.canonical.result, context)).toBe(true);
+      context.outputOrigin = 'sdk_final'; expect(hasCurrentAuthoredFinalDelivery(f.canonical.result, context)).toBe(false);
+    } finally {f.cleanup();}
+  });
+
+  it.each([false, true])('keeps genuine quote bindings and privacy projection independent: redact=%s', redact => {
+    const document = nativeAuthoredDocument(); document.bodyParts[0] = 'PRIVATE_ASSISTANT_CANARY First ';
+    const f = assistantAuthoredFixture(document, redact ? {redact: 'PRIVATE_ASSISTANT_CANARY'} : {});
+    try {
+      const claim = f.canonical.validationContract!.claims![0], presentation = claim.semantics!.numeric!.presentation!;
+      const quotes = readAuthoredQuoteBindings({nativeDeclaration: f.native, expectedVersion: AUTHORED_CLAIM_OBJECT_VERSION,
+        body: f.canonical.result.conclusion, claim, presentation});
+      if (redact) {
+        expect(f.canonical.result.conclusion).not.toContain('PRIVATE_ASSISTANT_CANARY');
+        expect(quotes).toEqual({status: 'unavailable', reason: 'quote_body_changed'});
+        expect(f.native.inputKind === 'assistant_json' && f.native.rawAssistantText).toContain('PRIVATE_ASSISTANT_CANARY');
+      } else {
+        expect(quotes.status).toBe('bound');
+        if (quotes.status !== 'bound') throw new Error('Expected original spans');
+        expect(quotes.bindings.map(binding => [binding.claimOrdinal, binding.quoteOrdinal])).toEqual([[1, 1], [1, 2]]);
+        for (const binding of quotes.bindings) expect(f.canonical.result.conclusion.slice(binding.originalSpan.startUtf16,
+          binding.originalSpan.endUtf16)).toBe('10 ms');
+      }
+      expect(hasCurrentAuthoredFinalDelivery(f.canonical.result, f.canonical.deliveryContext!)).toBe(true);
+      expect(f.canonical.validationContract?.claims).toEqual(f.compiled.canonicalParse.contract?.claims);
+    } finally {f.cleanup();}
+  });
+
+  it('does not restore private source or quote authority from a serialized declaration or disposed token', () => {
+    const f = assistantAuthoredFixture();
+    const claim = f.canonical.validationContract!.claims![0], presentation = claim.semantics!.numeric!.presentation!;
+    try {
+      const fake = JSON.parse(JSON.stringify(f.native));
+      expect(() => canonicalizeAnalysisResult(f.source, {context: f.context, nativeDeclaration: fake})).toThrow('unissued');
+      expect(readAuthoredQuoteBindings({nativeDeclaration: fake, expectedVersion: AUTHORED_CLAIM_OBJECT_VERSION,
+        body: f.compiled.body, claim, presentation})).toEqual({status: 'unavailable', reason: 'quote_binding_unavailable'});
+      releaseConclusionProtocolProjection(f.token);
+      expect(hasCurrentAuthoredFinalDelivery(f.canonical.result, f.canonical.deliveryContext!)).toBe(false);
+      expect(readAuthoredQuoteBindings({nativeDeclaration: f.native, expectedVersion: AUTHORED_CLAIM_OBJECT_VERSION,
+        body: f.compiled.body, claim, presentation})).toEqual({status: 'unavailable', reason: 'quote_binding_unavailable'});
     } finally {f.cleanup();}
   });
 });

@@ -92,7 +92,8 @@ SDK 路径发送；实际请求、原生终态和使用量须分别观测，不�
 
 `SMARTPERFETTO_FINAL_SUBMISSION` 选择主分析输出运输，默认 `assistant_text`；
 `authored_claim_document_v1` 和 `authored_claim_document_v2` 是显式实验配置，分别要求
-`canonical_v1` 和 `authoring_v2`。运输与声明格式在分类调用前一起捕获。
+`canonical_v1` 和 `authoring_v2`；`authored_claim_document_v2_dual` 也要求 `authoring_v2`，
+显式允许两种互斥载体。运输与声明格式在分类调用前一起捕获。
 实验准入分别检查实际 SDK 合同、Chat Completions 协议及
 所有可能用于主分析的模型的 function-tool 原语事实；未知或不兼容配置在付费调用前拒绝。
 已观察到工具调用不代表该模型的文档提交、准确度或性能已经通过验收。
@@ -116,11 +117,22 @@ V1 用 `documentJson` 提交正文片段和原始 canonical 声明。工具 stri
 | V1 | `@1` / `@1` | `@1` / `@1` |
 | 历史 V2 | `@2` / `@2` | `@2` / `@1` |
 | 当前 V2 | `@2` / `@2` | `@3` / `@2` |
+| 显式 V2 dual | `@2` / `@2` | `@4` / `@3` |
 
 当前 V2 允许同一响应包含有界的 assistant 伴随文字和唯一最终文档函数调用。伴随文字
 须与 SDK 完成的 assistant message 逐字对应，并绑定该响应。最终正文取自工具提交的
 完整文档。非空 refusal、额外待完成工作和不完整运输会阻止提交准入。实际合同版本取自
 当前 SDK 适配实现及本次私有 attempt，历史记录保留其原始版本。
+
+Dual 保留完整 Zod final tool 和同一文档语法。终态响应含任何实际、未知或格式错误的
+action 时，只能进入函数载体；函数失败不能退到 assistant。只有零 action 的响应才可
+把完整 assistant 文本作为唯一 `{document}` JSON 提交，不提取围栏、不修补 JSON。
+它必须自然 `stop`，具有完整 SSE／DONE／EOF、稳定的 provider response ID，且原文与
+SDK completed message、finalOutput 逐字一致。原始输入和先前工具工作必须已完成，
+SDK 与原消费者排空后仍须通过当前 owner、取消和授权检查。函数载体保留
+`model_tool_arguments/tool_calls`；assistant 载体使用 `sdk_final/stop`，另由私有
+`assistant_json` 来源及活跃提交绑定约束。公开 origin 本身不授予核验或完成资格。
+两者交付同一 compiler 的正文并执行原有质量门，不新增重试、调用、cap 或预算。
 
 Conversation 的 typed envelope 当前交付 `answered` 正文，附带既有 evidence。正文里的
 控制协议样式文字保持字面。显式 `needs_user_input` 和 `recommend_full` 会话动作仍使用

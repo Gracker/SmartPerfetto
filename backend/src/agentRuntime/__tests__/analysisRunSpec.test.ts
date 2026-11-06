@@ -123,10 +123,12 @@ describe('captured final submission configuration', () => {
       modelSelection: {...valid.modelSelection, requestedMode: 'full', lightModel: 'unobserved-model'}})).not.toThrow();
   });
 
-  it('captures native object mode with its own syntax and SDK contract without changing v1 rollback', () => {
-    const env = {[SMARTPERFETTO_FINAL_SUBMISSION_ENV]: 'authored_claim_document_v2', [CONCLUSION_AUTHORING_ENV]: 'authoring_v2'};
+  it.each(['authored_claim_document_v2', 'authored_claim_document_v2_dual'] as const)(
+  'captures %s with its exact SDK contract without changing v1 rollback', mode => {
+    const env: Record<string, string | undefined> = {[SMARTPERFETTO_FINAL_SUBMISSION_ENV]: mode, [CONCLUSION_AUTHORING_ENV]: 'authoring_v2'};
     const nativeOutput = captureAnalysisOutputConfig(env);
-    const nativeSdk = {...sdk, contractVersion: 'openai_typed_final_admission@3'};
+    const nativeSdk = {...sdk, contractVersion: mode === 'authored_claim_document_v2'
+      ? 'openai_typed_final_admission@3' : 'openai_typed_final_admission@4'};
     const nativeProfile = (modelId = 'deepseek-flash', adapterContractVersion = nativeSdk.contractVersion) => resolveModelExecutionProfile({
       runtimeKind: 'openai-agents-sdk', protocol: 'chat_completions', modelId, baseUrl: 'https://api.deepseek.com/v1',
       sdk: {packageName: '@openai/agents-openai', version: '0.13.0', adapterContractVersion},
@@ -135,11 +137,17 @@ describe('captured final submission configuration', () => {
     });
     const input = {...admission(), outputConfig: nativeOutput, sdk: nativeSdk, modelProfiles: [nativeProfile()]};
     env[SMARTPERFETTO_FINAL_SUBMISSION_ENV] = 'assistant_text'; env[CONCLUSION_AUTHORING_ENV] = 'canonical_v1';
-    expect(nativeOutput).toEqual({finalSubmission: 'authored_claim_document_v2', declarationSyntax: 'authoring_v2'});
+    expect(nativeOutput).toEqual({finalSubmission: mode, declarationSyntax: 'authoring_v2'});
     expect(Object.isFrozen(nativeOutput)).toBe(true);
     expect(() => assertFinalSubmissionPreDispatch(input)).not.toThrow();
     expect(() => assertFinalSubmissionPreDispatch({...input, sdk})).toThrow('final_submission:sdk');
     expect(() => assertFinalSubmissionPreDispatch({...input, modelProfiles: [nativeProfile('deepseek-flash', sdk.contractVersion)]})).toThrow('model_set');
+    const otherNativeContract = mode === 'authored_claim_document_v2'
+      ? 'openai_typed_final_admission@4' : 'openai_typed_final_admission@3';
+    expect(() => assertFinalSubmissionPreDispatch({...input, sdk: {...sdk, contractVersion: otherNativeContract}}))
+      .toThrow('final_submission:sdk');
+    expect(() => assertFinalSubmissionPreDispatch({...input,
+      modelProfiles: [nativeProfile('deepseek-flash', otherNativeContract)]})).toThrow('model_set');
     expect(() => assertFinalSubmissionPreDispatch({...admission(), sdk: nativeSdk})).toThrow('final_submission:sdk');
     expect(() => assertFinalSubmissionPreDispatch(admission())).not.toThrow();
     const historicalSdk = {...sdk, contractVersion: 'openai_typed_final_admission@2'};
@@ -171,6 +179,8 @@ describe('captured final submission configuration', () => {
 
   it.each([undefined, 'canonical_v1', 'authoring_v1'])('refuses native object mode with syntax %s', declarationSyntax => {
     expect(() => captureAnalysisOutputConfig({[SMARTPERFETTO_FINAL_SUBMISSION_ENV]: 'authored_claim_document_v2',
+      [CONCLUSION_AUTHORING_ENV]: declarationSyntax})).toThrow('declaration_syntax_conflict');
+    expect(() => captureAnalysisOutputConfig({[SMARTPERFETTO_FINAL_SUBMISSION_ENV]: 'authored_claim_document_v2_dual',
       [CONCLUSION_AUTHORING_ENV]: declarationSyntax})).toThrow('declaration_syntax_conflict');
   });
 

@@ -39,7 +39,6 @@ import {createRuntimeRunAuthorization, throwIfRunAuthorizationRevoked, type RunA
 import {ensureRuntimeAdmission, assertRuntimeTaskWorkRemaining, RuntimeTaskDeadlineExceededError} from '../../runtimeTaskDeadline';
 import {conclusionDeclarationAuthoring} from '../../../agent/core/conclusionContract';
 import {AUTHORED_CLAIM_DOCUMENT_VERSION} from '../../../agent/core/authoredClaimDocument';
-import {AUTHORED_CLAIM_OBJECT_VERSION} from '../../../agent/core/authoredClaimObject';
 import type {AnalysisNote, AnalysisPlanV3, ClaudeAnalysisContext, Hypothesis, TracePairContext, TraceCompleteness, UncertaintyFlag} from '../../../agentv3/types';
 import {recordPlanOrPrePlanToolCall, resetPrePlanToolCallsForNewRun, readToolResultFacts} from '../../../agentv3/planToolCallRecorder';
 import {buildComplexityClassifierInput} from '../../../agentv3/queryComplexityContext';
@@ -126,7 +125,8 @@ import {runtimeSourceDepth} from '../../../services/codebase/sourceDepthPolicy';
 import {createOpenAiTypedFinalAttempt,
   type OpenAiTypedFinalWireEvents, type OpenAiTypedFinalWireObserver} from './openAiTypedFinalAdmission';
 import {FinalSubmissionConfigurationError} from '../../finalSubmissionConfig';
-import {getOpenAiTypedFinalContractIdentity} from '../../finalSubmissionImplementation';
+import {getAuthoredFinalSubmissionModeDescriptor, getOpenAiTypedFinalContractIdentity} from '../../finalSubmissionImplementation';
+import {createOpenAiCandidateIdentity} from '../../openAiCandidateIdentity';
 import {admitFinalSubmissionConfiguration, installedOpenAiSdkCompatibility} from './openAiFinalSubmissionConfig';
 import {createAuthoredFinalSubmissionIssuer, readAuthoredFinalSubmission, type AuthoredFinalSubmissionSnapshot} from '../../authoredFinalSubmission';
 import {hasCurrentAuthoredFinalDelivery, type AuthoredConclusionSubmission} from '../../../services/security/conclusionProtocolProjection';
@@ -143,6 +143,14 @@ interface ObservedCandidateLineage {
   authors: readonly ObservedAuthor[];
   declaredBody: 'present' | 'absent';
   declaredClaims: 'present' | 'absent' | 'invalid' | 'unknown';
+}
+interface ObservedAssistantSubmission {
+  readonly runId: string;
+  readonly attemptId: string;
+  readonly bodyFingerprint: string;
+  readonly event: Omit<Extract<RuntimeFinalTransportEventInput, {kind: 'assistant_document_issued_after_drain'}>, 'nativeCandidateKey'>;
+  readonly declaredBody: ObservedCandidateLineage['declaredBody'];
+  readonly declaredClaims: ObservedCandidateLineage['declaredClaims'];
 }
 
 /** Observation may be unavailable, but must never change execution or ownership. */
@@ -437,10 +445,10 @@ function finalizeOpenAiCandidate(input: {
 }) {
   const {result, runId, attemptId} = input;
   const nativeEmpty = result.conclusion.trim().length === 0;
-  const acceptedCandidate: AnalysisCandidateIdentity = {
-    runId, attemptId, candidateRef: `${runId}:${attemptId}`,
+  const acceptedCandidate = createOpenAiCandidateIdentity({
+    runId, attemptId,
     conclusionFingerprint: analysisDeliveryFingerprint(result.conclusion),
-  };
+  });
   result.outputOrigin = input.outputOrigin;
   result.completion = {schemaVersion: 1, runtimeKind: OPENAI_AGENT_RUNTIME_KIND, ...acceptedCandidate,
     ...input.finish, ...(nativeEmpty && input.finish.status === 'completed' && !input.finalSubmission ? {status: 'unknown' as const} : {})};
@@ -860,8 +868,8 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     const admittedFinalModels = admitFinalSubmissionConfiguration(config, options.analysisMode ?? 'auto');
     const typedFinalMode = config.outputConfig.finalSubmission === 'assistant_text' ? undefined : config.outputConfig.finalSubmission;
     const usesTypedFinal = typedFinalMode !== undefined;
-    const typedRepresentationVersion = typedFinalMode === 'authored_claim_document_v2'
-      ? AUTHORED_CLAIM_OBJECT_VERSION : AUTHORED_CLAIM_DOCUMENT_VERSION;
+    const typedDescriptor = getAuthoredFinalSubmissionModeDescriptor(typedFinalMode);
+    const typedRepresentationVersion = typedDescriptor?.representationVersion ?? AUTHORED_CLAIM_DOCUMENT_VERSION;
     const executionLease = this.executionGuard.begin({
       runtime: OPENAI_AGENT_RUNTIME_KIND, sessionId,
       referenceTraceId: options.referenceTraceId, runId,
@@ -1075,6 +1083,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       let observedToolCalls = 0;
       let emittedAnswer = '';
       let retainedLineage: ObservedCandidateLineage | undefined;
+      let observedAssistantSubmission: ObservedAssistantSubmission | undefined;
       let recoveryCandidate: {
         conclusion: string; attemptId: string; outputOrigin: AnalysisOutputOrigin;
         finish: typeof finish; hadDeclarations: boolean; terminationMessage: string | undefined;
@@ -1149,6 +1158,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
             providerPin: analysisDeliveryFingerprint({baseURL: config.baseURL, model: selectedModel, protocol: config.protocol}),
             authorizationFingerprint: options.analysisContextFingerprint ?? analysisContextMemoryPartitionKey(options)};
           const issuer = createAuthoredFinalSubmissionIssuer({binding: ownerBinding, representationVersion: typedRepresentationVersion, assertCurrent: assertRunCurrent,
+            sourcePolicy: typedDescriptor?.sourcePolicy,
             assertAttemptCurrent: () => {assertRunCurrent(); if (!typedAttemptCurrent) throw new Error('final_submission_attempt_inactive');}});
           typedAttempt = createOpenAiTypedFinalAttempt({finalTool: context.finalTool.tool, toolName: context.finalTool.nativeName,
             contractVersion: typedContractIdentity.admissionVersion,
@@ -1607,8 +1617,14 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               authoredSubmission = await typedAttempt.settleAfterDrain(consumeWork ?? Promise.resolve());
               const submitted = readAuthoredFinalSubmission(authoredSubmission.submission, authoredSubmission.input);
               conclusion = submitted.compiled.body;
-              outputOrigin = 'model_tool_arguments';
-              finish = {status: 'completed', sdkFinishReason: 'tool_calls'};
+              if ('sourceKind' in submitted) {
+                // The SDK completed its original assistant string with stop. Compilation
+                // changes only the product body, never that native completion fact.
+                outputOrigin = 'sdk_final';
+              } else {
+                outputOrigin = 'model_tool_arguments';
+                finish = {status: 'completed', sdkFinishReason: 'tool_calls'};
+              }
               terminationMessage = undefined;
               actualFinalSubmission = {mode: typedFinalMode!, outcome: 'submitted'};
               observedSubmission = submitted;
@@ -1642,6 +1658,23 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
                 const actualModel = observedResponse?.logicalCallKey === observedLogicalCallKey &&
                     observedResponse.response.status === 'observed' && observedResponse.response.hash === responseKey
                   ? observedResponse.actualModel : {status: 'unknown' as const};
+                if ('sourceKind' in issuedObservation) {
+                  if (contractIdentity.admissionVersion !== 'openai_typed_final_admission@4' || !observedTerminal.eventKey) return;
+                  observedAssistantSubmission = Object.freeze({runId: issuedObservation.binding.runId,
+                    attemptId: issuedObservation.binding.attemptId,
+                    bodyFingerprint: analysisDeliveryFingerprint(issuedObservation.compiled.body),
+                    declaredBody: issuedObservation.compiled.body.trim() ? 'present' : 'absent',
+                    declaredClaims: observedDeclaration(issuedObservation.compiled.canonicalParse),
+                    event: Object.freeze({kind: 'assistant_document_issued_after_drain', sourceKind: 'assistant_json',
+                      attemptKey: runtimeObservationHash(JSON.stringify({runId, attemptId: observedAttemptId})),
+                      logicalCallKey: observedLogicalCallKey, responseKey,
+                      messageKey: runtimeObservationHash(issuedObservation.binding.messageId),
+                      nativeTerminalEventKey: observedTerminal.eventKey,
+                      rawAssistantTextHash: runtimeObservationHash(issuedObservation.rawAssistantText),
+                      compiledBodyHash: runtimeObservationHash(issuedObservation.compiled.body),
+                      actualModel: Object.freeze({...actualModel}), nativeStatus: 'completed', drainStatus: 'fulfilled', ...contractIdentity})});
+                  return;
+                }
                 const eventKey = recordRuntimeFinalTransportEvent(options.runManifestAttributionSink, {
                   kind: 'typed_issued_after_drain', attemptKey: runtimeObservationHash(JSON.stringify({runId, attemptId: observedAttemptId})),
                   logicalCallKey: observedLogicalCallKey, responseKey, callKey: runtimeObservationHash(issuedObservation.binding.callId),
@@ -1701,10 +1734,19 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         result: nativeResult, runId, attemptId, finish, outputOrigin,
         sourceUse, authoredSubmission, finalSubmission: actualFinalSubmission,
         observeCandidate: ({nativeCandidate, displayCandidate, productStatus}) => {
+          const assistant = observedAssistantSubmission;
+          if (assistant) {
+            if (nativeCandidate.runId !== assistant.runId || nativeCandidate.attemptId !== assistant.attemptId ||
+              nativeCandidate.conclusionFingerprint !== assistant.bodyFingerprint) return;
+            const eventKey = recordRuntimeFinalTransportEvent(options.runManifestAttributionSink,
+              {...assistant.event, nativeCandidateKey: runtimeCandidateObservationKey(nativeCandidate)});
+            retainedLineage = {transform: 'native', authors: [{role: 'body_and_declaration', terminal: {eventKey}}],
+              declaredBody: assistant.declaredBody, declaredClaims: assistant.declaredClaims};
+          }
           if (!retainedLineage || !displayCandidate || retainedLineage.authors.some(author => !author.terminal.eventKey)) return;
           recordRuntimeFinalTransportEvent(options.runManifestAttributionSink, {kind: 'candidate_retained',
             nativeCandidateKey: runtimeCandidateObservationKey(nativeCandidate),
-            carrier: outputOrigin === 'model_tool_arguments' ? 'model_tool_arguments' : 'assistant_text',
+            carrier: assistant ? 'assistant_document' : outputOrigin === 'model_tool_arguments' ? 'model_tool_arguments' : 'assistant_text',
             transform: retainedLineage.transform,
             authors: retainedLineage.authors.map(author => ({role: author.role, terminalEventKey: author.terminal.eventKey!})),
             declaredBody: retainedLineage.declaredBody, declaredClaims: retainedLineage.declaredClaims, productStatus});

@@ -5,6 +5,7 @@ import {createHash} from 'node:crypto';
 import {MODEL_REQUEST_COMPONENTS, RUNTIME_MODEL_CALL_PURPOSES, RUNTIME_MODEL_CALL_TRIGGERS,
   RUNTIME_MODEL_REASONING_EFFORTS, RUNTIME_DECLARATION_AUTHORING_STATUSES, RUNTIME_DECLARATION_AUTHORING_VERSIONS,
   projectRuntimeModelPolicyReceipt, projectRuntimeFinalTransportObservation} from '../agentRuntime/runtimePerformance';
+import {getFinalSubmissionModeDescriptor, type FinalSubmissionModeKey} from '../agentRuntime/finalSubmissionImplementation';
 import {PRODUCTION_RUNTIME_KINDS} from '../agentRuntime/runtimeKinds';
 import {getRunManifestStore} from '../services/selfEvolution/runManifestStore';
 import type {RunManifestScope, RunManifestV1} from '../types/selfEvolution';
@@ -28,6 +29,11 @@ function number(value: unknown): number {
 function member<T extends string>(value: unknown, values: readonly T[]): T {
   if (typeof value !== 'string' || !values.includes(value as T)) throw new Error('metrics_enum_invalid');
   return value as T;
+}
+
+function finalSubmissionMode(value: unknown): FinalSubmissionModeKey {
+  if (!getFinalSubmissionModeDescriptor(value)) throw new Error('metrics_enum_invalid');
+  return value as FinalSubmissionModeKey;
 }
 
 function numbers(value: unknown, keys: readonly string[]): Record<string, number> {
@@ -152,7 +158,7 @@ export function readAgentE2eMetrics(input: {scope: RunManifestScope; sessionId: 
         conclusionDeclarationSyntax: member(manifest.conclusionDeclarationSyntax, ['canonical_v1', 'authoring_v1', 'authoring_v2']),
       }),
       ...(manifest.finalSubmission === undefined ? {} : {requestedOutputConfig: {
-        finalSubmission: member(manifest.finalSubmission, ['assistant_text', 'authored_claim_document_v1', 'authored_claim_document_v2']),
+        finalSubmission: finalSubmissionMode(manifest.finalSubmission),
         declarationSyntax: member(manifest.conclusionDeclarationSyntax, ['canonical_v1', 'authoring_v1', 'authoring_v2']),
       }}),
       providerSnapshotHash: typeof manifest.providerSnapshotHash === 'string' &&

@@ -59,13 +59,14 @@ describe('report review budget', () => {
 });
 
 describe('native v2 finalization transport admission', () => {
-  it.each(['submitted', 'missing_submission', 'transport_failure'] as const)(
-    'keeps %s without an issued v2 binding from dispatching review', async outcome => {
+  it.each((['authored_claim_document_v2', 'authored_claim_document_v2_dual'] as const).flatMap(mode =>
+    (['submitted', 'missing_submission', 'transport_failure'] as const).map(outcome => ({mode, outcome}))))(
+    'keeps $mode/$outcome without an issued v2 binding from dispatching review', async ({mode, outcome}) => {
       const dispatch = jest.fn<NonNullable<RuntimeFinalizationContextInput['dispatchText']>>()
         .mockResolvedValue({status: 'ok', text: '{}'});
       const {result, input} = fixture({dispatchText: dispatch});
       if (input.deliveryContext.entry === 'historical_restore') throw new Error('Unexpected fixture entry');
-      input.deliveryContext.finalSubmission = {mode: 'authored_claim_document_v2', outcome};
+      input.deliveryContext.finalSubmission = {mode, outcome};
       attachFinalizationContext(result, input);
       const context = takeFinalizationContext(result)!;
       try {
@@ -101,7 +102,9 @@ describe('private runtime finalization context', () => {
     expect(() => attachFinalizationContext({...result}, input)).toThrow('already_claimed');
     const context = takeFinalizationContext(result)!;
     const native = context.getNativeDeclaration(result, new AbortController().signal)!;
-    if (native.inputKind === 'model_tool_arguments') throw new Error('Expected assistant-text declaration');
+    if (native.inputKind === 'model_tool_arguments' || native.inputKind === 'assistant_json') {
+      throw new Error('Expected assistant-text declaration');
+    }
     expect(native.raw).toContain('ORIGINAL_MACHINE_VALUE');
     expect(Object.isFrozen(native)).toBe(true);
     expect(JSON.stringify(context)).not.toContain('ORIGINAL_MACHINE_VALUE');

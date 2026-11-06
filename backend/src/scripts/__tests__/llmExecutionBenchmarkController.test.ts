@@ -33,6 +33,7 @@ function checkout(root: string, changed = false) {
   }
   write(root, 'backend/src/agentRuntime/typedOutputMaterial.ts', 'common material schema');
   write(root, 'backend/src/agentRuntime/finalSubmissionImplementation.ts', 'common exact version table');
+  write(root, 'backend/src/agentRuntime/openAiCandidateIdentity.ts', 'common native identity factory');
   write(root, 'backend/src/agentRuntime/engines/openai/openAiTypedFinalOutputMaterial.ts', 'common material observer');
   write(root, 'Trace/fixture.pftrace', 'shared trace');
   return fs.realpathSync(root);
@@ -227,6 +228,7 @@ describe('LLM execution benchmark controller contracts', () => {
     const legacy = lifecycle.fingerprintObserver(root, HOOK);
     const before = lifecycle.fingerprintObserver(root, HOOK, true);
     for (const relative of ['backend/src/agentRuntime/typedOutputMaterial.ts', 'backend/src/agentRuntime/finalSubmissionImplementation.ts',
+      'backend/src/agentRuntime/openAiCandidateIdentity.ts',
       'backend/src/agentRuntime/engines/openai/openAiTypedFinalOutputMaterial.ts']) {
       const previous = fs.readFileSync(path.join(root, relative));
       write(root, relative, 'changed observer material');
@@ -478,10 +480,10 @@ describe('W0 default-text to native-v2 controller', () => {
       const result: any = {schemaVersion: 'llm_target_preflight@2', nonce: request.nonce, side: request.side, cellId: request.cellId,
         requestedMode: request.requestedMode, observedSourceFingerprint: request.expectedSourceFingerprint,
         declaredConfigFingerprint: request.declaredConfig.fullFingerprint, declaredControlsFingerprint: request.declaredConfig.controlsFingerprint,
-        declaredTreatmentHash: request.treatmentHash, status: 'ready', capturedOutput: lifecycle.TREATMENT_OUTPUTS[request.side], sdk: {...sdk, nodeVersion: process.versions.node},
+        declaredTreatmentHash: request.treatmentHash, status: 'ready', capturedOutput: lifecycle.treatmentOutputs(fixture.options.treatment)[request.side], sdk: {...sdk, nodeVersion: process.versions.node},
         actualResolvedConfig: lifecycle.buildConfigCommitments({model: 'glm-5.3-flash', lightModel: 'glm-5.3-flash',
           baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4', protocol: 'chat_completions',
-          runtime: 'openai-agents-sdk', sdk, outputConfig: lifecycle.TREATMENT_OUTPUTS[request.side]}),
+          runtime: 'openai-agents-sdk', sdk, outputConfig: lifecycle.treatmentOutputs(fixture.options.treatment)[request.side]}),
         purposeContracts: {schemaVersion: 'llm_purpose_controls@1', classification: {
           commonConfig: lifecycle.buildConfigCommitments({model: 'glm-5.3-flash', lightModel: 'glm-5.3-flash'}),
           tokenLimit: {status: 'explicit', field: 'max_tokens', valueCommitment: lifecycle.hash(lifecycle.canonicalJson(['number', '2048']))}},
@@ -514,7 +516,7 @@ describe('W0 default-text to native-v2 controller', () => {
 
   it('requires an explicit supported treatment selection and preserves the no-treatment path', () => {
     expect(controller.parseArgs(cli('/base', '/candidate'))).not.toHaveProperty('treatment');
-    for (const id of [lifecycle.TREATMENT_ID, lifecycle.MIXED_CONTENT_TREATMENT_ID]) {
+    for (const id of [lifecycle.TREATMENT_ID, lifecycle.MIXED_CONTENT_TREATMENT_ID, lifecycle.DUAL_CARRIER_TREATMENT_ID]) {
       expect(controller.parseArgs(cli('/base', '/candidate', ['--treatment', id])).treatment).toBe(id);
     }
     expect(() => controller.parseArgs(cli('/base', '/candidate', ['--treatment', 'assistant_text_to_native_v2@3']))).toThrow('benchmark_treatment_invalid');
@@ -532,6 +534,8 @@ describe('W0 default-text to native-v2 controller', () => {
     expect(lifecycle.hash(JSON.stringify(lifecycle.makeRepresentationTreatment(...configurations)))).toBe(capturedSha);
     expect(lifecycle.hash(JSON.stringify(lifecycle.makeRepresentationTreatment(...configurations, lifecycle.TREATMENT_ID)))).toBe(capturedSha);
     const mixed = lifecycle.makeRepresentationTreatment(...configurations, lifecycle.MIXED_CONTENT_TREATMENT_ID);
+    // Independently captured from saved actual 360309 helper bytes before dual implementation.
+    expect(lifecycle.hash(JSON.stringify(mixed))).toBe('1755ad88bcbf08b086cab42930e268a0e329118639a36d969374533c8a5d40f0');
     expect(mixed).toMatchObject({schemaVersion: 'representation_treatment@2', implementationContracts: {
       candidate: OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@3']}});
     expect(() => lifecycle.makeRepresentationTreatment(...configurations, 'unknown')).toThrow('benchmark_treatment_invalid');
@@ -641,6 +645,36 @@ describe('W0 default-text to native-v2 controller', () => {
         expect(fixture.dependencies.runOwnedVerifier).not.toHaveBeenCalled();
       });
     });
+
+  it('collects the explicit dual treatment with its actual requested mode and exact implementation', async () => {
+    const fixture = treatmentFixture((_input, request, result) => {
+      result.schemaVersion = 'llm_target_preflight@3'; result.outputImplementation = request.side === 'base' ? OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION
+        : {kind: 'typed', ...OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@4']};
+    });
+    fixture.options.treatment = lifecycle.DUAL_CARRIER_TREATMENT_ID;
+    const {artifact} = await controller.runBenchmark(fixture.options, fixture.dependencies);
+    expect(artifact).toMatchObject({measurementOrigin: 'synthetic', candidate: 'assistant_text_to_native_v2_dual@1',
+      treatment: {schemaVersion: 'representation_treatment@2', sides: {candidate: {
+        finalSubmission: 'authored_claim_document_v2_dual', declarationSyntax: 'authoring_v2'}}, implementationContracts: {
+        candidate: OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@4']}}});
+    expect(fixture.dependencies.runOwnedVerifier).toHaveBeenCalledTimes(6);
+  });
+
+  it.each(['old_mode', 'old_tuple', 'wrong_wire', 'requested_only'])('rejects dual preflight %s before paid calls', mutation => {
+    const fixture = treatmentFixture((_input, request, result) => {
+      result.schemaVersion = 'llm_target_preflight@3'; result.outputImplementation = request.side === 'base' ? OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION
+        : {kind: 'typed', ...OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@4']};
+      if (request.side !== 'candidate') return;
+      if (mutation === 'old_mode') result.capturedOutput = lifecycle.TREATMENT_OUTPUTS.candidate;
+      if (mutation === 'old_tuple') result.outputImplementation = {kind: 'typed', ...OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@3']};
+      if (mutation === 'wrong_wire') result.outputImplementation.wireVersion = 'openai_chat_final_wire@2';
+      if (mutation === 'requested_only') delete result.outputImplementation;
+    });
+    fixture.options.treatment = lifecycle.DUAL_CARRIER_TREATMENT_ID;
+    return expect(controller.runBenchmark(fixture.options, fixture.dependencies)).rejects.toThrow('benchmark_preflight_failed').then(() => {
+      expect(fixture.dependencies.runOwnedVerifier).not.toHaveBeenCalled();
+    });
+  });
 
   it('finishes every initial cell implementation gate before any paid sample', async () => {
     const fixture = treatmentFixture((_input, request, result) => {

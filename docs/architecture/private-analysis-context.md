@@ -73,7 +73,7 @@ finalization context 中；公开声明与正文另外经过安全投影。共�
 回执缺失、候选变化或授权失效时保持未核验；序列化结果不能恢复回执。协议固定字段与
 枚举按结构处理，文本值经过投影后再序列化，避免源码内容或带引号的路径破坏 JSON。
 
-实验文档提交保留原始工具参数、`documentJson`、编译正文和完整原始 canonical payload，
+实验函数文档提交保留原始工具参数、`documentJson`、编译正文和完整原始 canonical payload，
 包括无效条目。它们只进入绑定当前运行的私有提交与 finalization context；公开工具事件、
 日志及进度只显示 pending／rejected 摘要。正文中的 JSON、HTML 或声明示例始终是正文，
 不能被重新扫描成声明。新运输的三份原始字符串与展示正文分别逐字绑定，合法的隐私替换
@@ -84,6 +84,15 @@ V2 混合响应的伴随文字保存在本轮 SDK 私有上下文与有界临时
 伴随文字合计上限为 1 MiB，任一分量因容量限制丢失内容时会保留该事实。最终提交的
 签发材料来自唯一工具文档。内部材料观察只保存固定字段的计数和状态，null、未知和
 未保留各自标记，沿当前 run／attempt／请求归属处理取消及迟到事件。
+
+显式 dual mode 的 assistant 文档使用独立私有 `sourceKind: assistant_json` 快照，保留
+原始 `rawAssistantText`、实际 response ID、SDK message ID、原生文档、编译正文和原始
+canonical payload；不伪造 callId、rawArguments 或 handler ACK。只有创建 issuer 时捕获的
+`function_or_assistant_json` 策略允许该来源，模型不能自行选择或扩大权限。每次读取仍
+逐字核对原文及 source／dispatch／version／owner 身份，hash 只用于关联，不能代替相等。
+assistant 载体的公开 origin 为 `sdk_final`，质量与语义复核仍要求已提交状态及匹配的
+活跃 authored 绑定；旧函数来源与 `model_tool_arguments` 的对应关系保持。两种载体共享
+原始声明、私有 quote bindings 和隐私投影规则，持久化记录不能恢复这些能力。
 
 同次运行的语义复核使用已签发声明中的原始文本字段。输入权限同时绑定原始声明、
 展示候选和 canonical 投影；字段路径、所属声明身份与完整文本必须一致。它只跳过

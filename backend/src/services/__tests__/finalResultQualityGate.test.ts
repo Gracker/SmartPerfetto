@@ -74,12 +74,13 @@ function finalizationContext(target: AnalysisResult): AnalysisDeliveryContext {
 }
 
 describe('native v2 delivery requires its live binding', () => {
-  it.each(['submitted', 'missing_submission', 'transport_failure'] as const)(
-    'retains the transport failure for %s without treating the body as an issued submission', outcome => {
+  it.each((['authored_claim_document_v2', 'authored_claim_document_v2_dual'] as const).flatMap(mode =>
+    (['submitted', 'missing_submission', 'transport_failure'] as const).map(outcome => ({mode, outcome}))))(
+    'retains the transport failure for $mode/$outcome without treating the body as an issued submission', ({mode, outcome}) => {
       const target = result({conclusion: 'A completed native body.'});
       const context = finalizationContext(target);
       if (context.entry === 'historical_restore') throw new Error('Unexpected fixture entry');
-      context.finalSubmission = {mode: 'authored_claim_document_v2', outcome};
+      context.finalSubmission = {mode, outcome};
       const assessment = assessFinalResultQualityAssessment({result: target, context});
       expect(assessment.assurance.completion).toBe('failed');
       expect(assessment.issues).toContainEqual(expect.objectContaining({

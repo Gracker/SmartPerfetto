@@ -22,6 +22,7 @@ import type {
   RunSkillRegistryAttribution,
 } from '../../types/selfEvolution';
 import {isFinalSubmissionMode} from '../../agentRuntime/finalSubmissionConfig';
+import {getAuthoredFinalSubmissionModeDescriptor} from '../../agentRuntime/finalSubmissionImplementation';
 import {
   canonicalContentHash,
   immutableCanonicalSnapshot,
@@ -187,9 +188,8 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
         this.runtime.conclusionDeclarationSyntax !== syntax) throw new Error('run_manifest_declaration_syntax_changed');
     const effectiveSyntax = syntax ?? this.runtime.conclusionDeclarationSyntax;
     const effectiveSubmission = finalSubmission ?? this.runtime.finalSubmission;
-    if (effectiveSyntax !== undefined && (
-      effectiveSubmission === 'authored_claim_document_v1' && effectiveSyntax !== 'canonical_v1' ||
-      effectiveSubmission === 'authored_claim_document_v2' && effectiveSyntax !== 'authoring_v2')) {
+    const descriptor = getAuthoredFinalSubmissionModeDescriptor(effectiveSubmission);
+    if (effectiveSyntax !== undefined && descriptor && effectiveSyntax !== descriptor.requiredDeclarationSyntax) {
       throw new Error('run_manifest_output_config_conflict');
     }
     if (input.runtime !== this.runtime.runtime) {

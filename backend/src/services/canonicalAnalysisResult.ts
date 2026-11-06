@@ -298,7 +298,7 @@ export function buildAuthoredCandidateProtocolDiagnostic(snapshot: AuthoredFinal
   const diagnostic = projectCandidateProtocolDiagnostic({
     base: {stage: 'native', candidateIndex: 1, status: compiled.canonicalParse.status,
       sidecarStatus: 'absent', typedJsonStatus: compiled.canonicalParse.status,
-      rawChars: 'documentJson' in snapshot ? snapshot.documentJson.length : snapshot.rawArguments.length, canonicalChars: compiled.body.trim().length, projectionKind: 'preserved'},
+      rawChars: 'sourceKind' in snapshot ? snapshot.rawAssistantText.length : 'documentJson' in snapshot ? snapshot.documentJson.length : snapshot.rawArguments.length, canonicalChars: compiled.body.trim().length, projectionKind: 'preserved'},
     issues: compiled.canonicalParse.issues, payload,
     // Keep the existing linked-count contract. Missing/malformed containers
     // are unknown, never a fabricated empty collection or a parsed valid subset.
@@ -306,6 +306,7 @@ export function buildAuthoredCandidateProtocolDiagnostic(snapshot: AuthoredFinal
       semanticClaimCount: claims.filter(claim => record(claim) && Object.prototype.hasOwnProperty.call(claim, 'semantics')).length,
       sourceBindingCount: sourceBindings.length}} : {}),
   });
+  if ('sourceKind' in snapshot) return diagnostic;
   return {...diagnostic, authoredMaterial: 'documentJson' in snapshot ? {
     rawArgumentsUtf8Bytes: Buffer.byteLength(snapshot.rawArguments, 'utf8'),
     documentInputUtf8Bytes: snapshot.compiled.material.rawInputUtf8Bytes,
@@ -434,7 +435,8 @@ export function canonicalizeAnalysisResult(
   if (options.nativeDeclaration && !isIssuedNativeConclusionDeclaration(options.nativeDeclaration)) {
     throw new Error('unissued_native_conclusion_declaration');
   }
-  const authored = options.nativeDeclaration?.inputKind === 'model_tool_arguments' ? options.nativeDeclaration : undefined;
+  const authored = options.nativeDeclaration?.inputKind === 'model_tool_arguments' || options.nativeDeclaration?.inputKind === 'assistant_json'
+    ? options.nativeDeclaration : undefined;
   // An authored document's body is literal prose, including any protocol-looking examples.
   const display = authored ? {canonicalBody: raw,
     sidecar: {status: 'absent' as const, raw: '', bindingEligibility: 'legacy_unchecked' as const,
@@ -443,7 +445,7 @@ export function canonicalizeAnalysisResult(
     conversation: options.conversation ? {status: 'absent' as const, narrative: raw, machineSegments: [], issues: [],
       outcome: {kind: 'answered' as const, message: raw, evidence: options.conversation.evidence ?? []}} : undefined}
     : inspectCandidateProtocol(raw, options.conversation);
-  const {sidecar, conversation, typedJson} = options.nativeDeclaration && !authored && options.nativeDeclaration.inputKind !== 'model_tool_arguments'
+  const {sidecar, conversation, typedJson} = options.nativeDeclaration && !authored && options.nativeDeclaration.inputKind !== 'model_tool_arguments' && options.nativeDeclaration.inputKind !== 'assistant_json'
     ? inspectCandidateProtocol(options.nativeDeclaration.raw, options.conversation) : display;
   const narrative = display.canonicalBody;
   const intent = options.context?.turnIntent;

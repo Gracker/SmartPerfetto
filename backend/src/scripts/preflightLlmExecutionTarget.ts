@@ -32,7 +32,7 @@ export interface LlmTargetPreflightRequest {
 }
 type PreflightOutputConfig =
   | Readonly<{finalSubmission: 'assistant_text'; declarationSyntax: 'canonical_v1'}>
-  | Readonly<{finalSubmission: 'authored_claim_document_v2'; declarationSyntax: 'authoring_v2'}>;
+  | Readonly<{finalSubmission: 'authored_claim_document_v2' | 'authored_claim_document_v2_dual'; declarationSyntax: 'authoring_v2'}>;
 type PreflightFailureCode = 'invalid_configuration' | 'unsupported_final_submission' | 'source_mismatch' | 'probe_unavailable';
 export type PurposeTokenLimit = Readonly<{status: 'absent'}> | Readonly<{
   status: 'explicit';
@@ -211,8 +211,9 @@ function inspectTarget(request: LlmTargetPreflightRequest, directory: string): L
     let capturedOutput: PreflightOutputConfig;
     if (request.side === 'base' && output.finalSubmission === 'assistant_text' && output.declarationSyntax === 'canonical_v1') {
       capturedOutput = {finalSubmission: 'assistant_text', declarationSyntax: 'canonical_v1'};
-    } else if (request.side === 'candidate' && output.finalSubmission === 'authored_claim_document_v2' && output.declarationSyntax === 'authoring_v2') {
-      capturedOutput = {finalSubmission: 'authored_claim_document_v2', declarationSyntax: 'authoring_v2'};
+    } else if (request.side === 'candidate' && (output.finalSubmission === 'authored_claim_document_v2' ||
+        output.finalSubmission === 'authored_claim_document_v2_dual') && output.declarationSyntax === 'authoring_v2') {
+      capturedOutput = {finalSubmission: output.finalSubmission, declarationSyntax: 'authoring_v2'};
     } else return failed('invalid_configuration');
     const observedSdk = installedOpenAiSdkCompatibility(config.outputConfig.finalSubmission);
     const version = (value: string) => /^\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?$/.test(value) ? value : 'unknown';

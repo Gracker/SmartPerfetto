@@ -99,6 +99,8 @@ observation; output count alone cannot establish truncation. See the
 `SMARTPERFETTO_FINAL_SUBMISSION` selects the main analysis output transport and
 defaults to `assistant_text`. Explicit experimental modes `authored_claim_document_v1`
 and `authored_claim_document_v2` require `canonical_v1` and `authoring_v2`, respectively.
+`authored_claim_document_v2_dual` also requires `authoring_v2` and explicitly enables
+two mutually exclusive carriers.
 Transport and declaration syntax are captured together before classification.
 Eligibility separately checks the actual SDK
 contract, Chat Completions protocol and function-tool primitive facts for every
@@ -131,6 +133,7 @@ Transport versions are checked as exact combinations.
 | V1 | `@1` / `@1` | `@1` / `@1` |
 | Historical V2 | `@2` / `@2` | `@2` / `@1` |
 | Current V2 | `@2` / `@2` | `@3` / `@2` |
+| Explicit V2 dual | `@2` / `@2` | `@4` / `@3` |
 
 Current V2 accepts bounded assistant companion text alongside the unique final
 document function call in the same response. The text must match the SDK's
@@ -139,6 +142,21 @@ complete document supplies the final body. Nonempty refusal, additional pending
 work and incomplete transport block admission. Contract versions come from the
 actual SDK adapter implementation and private attempt. Historical records retain
 their original versions.
+
+Dual retains the complete Zod final tool and the same document grammar. Any actual,
+unknown or malformed action in the terminal response selects the function carrier;
+a failed function cannot fall back to assistant text. Only a response with zero
+actions may submit its whole assistant text as one `{document}` JSON envelope,
+without fence extraction or JSON repair. It requires natural `stop`, complete
+SSE/DONE/EOF, stable provider response identity, and exact agreement with the SDK
+completed message and finalOutput. Original input and prior tool work must be
+complete. After the SDK and original consumer drain, ownership, cancellation and
+authorization are checked again. The function carrier retains
+`model_tool_arguments/tool_calls`; the assistant carrier uses `sdk_final/stop`
+with a separate private `assistant_json` source and live submission binding.
+Public origin alone grants neither verification nor completion. Both deliver the
+same compiler's body through the existing quality gates, without extra retries,
+calls, caps or budgets.
 
 The current typed envelope delivers Conversation text as `answered`, with existing
 evidence. Control-looking body text remains literal. Explicit `needs_user_input`

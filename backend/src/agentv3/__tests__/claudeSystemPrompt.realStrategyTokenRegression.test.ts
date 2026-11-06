@@ -66,6 +66,19 @@ describe('typed prompt with real strategy assets', () => {
     console.info('[AuthoredObjectPrompt:pressure]', JSON.stringify({label,
       tokens: estimatePromptTokens(object.fullPrompt), droppedLabels: object.droppedLabels,
       truncatedLabels: object.truncatedLabels}));
+    const dual = buildSystemPromptParts({...context, declarationSyntax: 'authoring_v2',
+      finalSubmission: 'authored_claim_document_v2_dual',
+      resolvedFinalTool: {role: 'final_candidate_submission', nativeName: 'renamed__native_final_7'}});
+    expect(dual.droppedLabels.every(item => legacy.droppedLabels.includes(item))).toBe(true);
+    expect(dual.truncatedLabels.every(item => legacy.truncatedLabels.includes(item))).toBe(true);
+    expect(estimatePromptTokens(dual.fullPrompt)).toBeLessThanOrEqual(MAX_PROMPT_TOKENS);
+    for (const segment of legacy.segments.filter(item => !item.droppable && !item.truncatable
+      && !item.truncated && item.label !== 'conclusion_declaration')) {
+      expect(dual.segments.find(item => item.label === segment.label)).toEqual(segment);
+    }
+    console.info('[AuthoredDualPrompt:pressure]', JSON.stringify({label,
+      tokens: estimatePromptTokens(dual.fullPrompt), droppedLabels: dual.droppedLabels,
+      truncatedLabels: dual.truncatedLabels}));
     return typed;
   }
 
@@ -159,6 +172,42 @@ describe('typed prompt with real strategy assets', () => {
     console.info('[AuthoredObjectPrompt:token]', JSON.stringify({sceneType, outputLanguage,
       tokens: estimatePromptTokens(parts.fullPrompt), declarationTokens: guide.estimatedTokens,
       droppedLabels: parts.droppedLabels, truncatedLabels: parts.truncatedLabels}));
+  });
+
+  it.each((['startup', 'scrolling'] as const).flatMap(sceneType =>
+    (['zh-CN', 'en'] as const).map(outputLanguage => ({sceneType, outputLanguage}))))
+  ('retains the full shared grammar for dual $sceneType $outputLanguage without additional drops', ({sceneType, outputLanguage}) => {
+    const context = {...makeWorstCaseContext(sceneType), outputLanguage, declarationSyntax: 'authoring_v2' as const,
+      resolvedFinalTool: {role: 'final_candidate_submission' as const, nativeName: 'renamed__dual_final'}};
+    const original = buildSystemPromptParts({...context, finalSubmission: 'authored_claim_document_v2'});
+    const dual = buildSystemPromptParts({...context, finalSubmission: 'authored_claim_document_v2_dual'});
+    const guide = dual.segments.find(segment => segment.label === 'conclusion_declaration')!;
+    const sharedGrammar = renderTemplate(stripTemplateComments(loadPromptTemplate('prompt-authored-final-submission-v2-framing')!), {
+      authoringMaxBytes: String(CONCLUSION_AUTHORING_LIMITS.utf8Bytes),
+      authoringMaxNodes: String(CONCLUSION_AUTHORING_LIMITS.nodes),
+      authoringMaxDepth: String(CONCLUSION_AUTHORING_LIMITS.depth),
+      supportedProofRules: JSON.stringify(SUPPORTED_DETERMINISTIC_CLAIM_RULES),
+    });
+    expect(guide).toMatchObject({tier: 1, droppable: false, truncatable: false});
+    expect(guide.content).toContain(sharedGrammar);
+    expect(guide.content).toContain('call `renamed__dual_final` with `{document}`');
+    expect(guide.content).toContain('return one whole `{document}` JSON assistant message');
+    expect(guide.content).toContain('No extra envelope keys, fences or prose');
+    expect(guide.content).toContain('Compact JSON has no whitespace outside strings');
+    expect(guide.content).toContain('Preserve string/Unicode/Markdown/code content and required JSON escapes');
+    expect(guide.content).toContain('bodyParts join strings/{claimText:"id"} verbatim, no separators');
+    expect(guide.content).toContain('Any action: function-only for that response');
+    expect(guide.content).toContain('no assistant fallback after failure');
+    expect(guide.content).not.toContain('No separate assistant body');
+    expect(guide.content).not.toMatch(/\{\{\w+\}\}/);
+    expect(dual.segments.filter(segment => segment.label !== 'conclusion_declaration'))
+      .toEqual(original.segments.filter(segment => segment.label !== 'conclusion_declaration'));
+    expect(dual.droppedLabels).toEqual(original.droppedLabels);
+    expect(dual.truncatedLabels).toEqual(original.truncatedLabels);
+    expect(estimatePromptTokens(dual.fullPrompt)).toBeLessThanOrEqual(MAX_PROMPT_TOKENS);
+    console.info('[AuthoredDualPrompt:token]', JSON.stringify({sceneType, outputLanguage,
+      tokens: estimatePromptTokens(dual.fullPrompt), declarationTokens: guide.estimatedTokens,
+      droppedLabels: dual.droppedLabels, truncatedLabels: dual.truncatedLabels}));
   });
 
   it('keeps native Linux bounded answers scoped under a full budget', () => {

@@ -45,6 +45,7 @@ import {isUnusedSourceDecision, type SourceExecutionScopeV1, type SourceUseDecis
 import {projectOwnerClaimVerification, projectOwnerClaimSupport,
   projectOwnerConclusionContract} from './security/privateAnalysisProjection';
 import {resolveAnalysisInvestigationRequirements} from '../agentRuntime/analysisInvestigationRequirements';
+import {getAuthoredFinalSubmissionModeDescriptor} from '../agentRuntime/finalSubmissionImplementation';
 import {assessInvestigationAcquisition, assessLedgerAcquisition,
   investigationRequirementNeedsReview} from './finalInvestigationContractGate';
 import type {ResolvedAnalysisInvestigationRequirements} from '../types/analysisInvestigation';
@@ -615,7 +616,8 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
     }
     const sourceUse = context?.sourceUse;
     const sourceScope = context?.sourceScope;
-    const rawDeclaration = nativeDeclaration?.inputKind === 'model_tool_arguments' ? nativeDeclaration.rawCanonicalPayload
+    const rawDeclaration = nativeDeclaration?.inputKind === 'model_tool_arguments' || nativeDeclaration?.inputKind === 'assistant_json'
+      ? nativeDeclaration.rawCanonicalPayload
       : canonical.protocolDiagnostics?.sidecar.rawPayload ??
       canonical.protocolDiagnostics?.typedJson?.rawPayload ?? nativeDeclaration?.contract ?? original.conclusionContract;
     const sourceNotApplicable = Boolean(context && isIssuedFinalizationContext(context) &&
@@ -643,7 +645,8 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
     const actualDelivery = context?.deliveryContext;
     const numericPresentations = assessNumericPresentations({contract: validationContract,
       claims: draft.claimVerificationResult.claimResults, support: draft.claimSupport, body: result.conclusion, candidate,
-      ...(actualDelivery && actualDelivery.entry !== 'historical_restore' && actualDelivery.finalSubmission?.mode === 'authored_claim_document_v2'
+      ...(actualDelivery && actualDelivery.entry !== 'historical_restore' &&
+        getAuthoredFinalSubmissionModeDescriptor(actualDelivery.finalSubmission?.mode)?.representationVersion === 'authored_claim_document@2'
         ? {authoredQuoteContext: {expectedVersion: 'authored_claim_document@2' as const, nativeDeclaration}} : {})});
     draft.claimVerificationResult.claimResults = draft.claimVerificationResult.claimResults.map(claim => {
       const numericPresentation = numericPresentations.get(claim.claimId);

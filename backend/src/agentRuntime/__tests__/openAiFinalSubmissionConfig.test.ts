@@ -5,7 +5,8 @@ import {describe, expect, it} from '@jest/globals';
 import {admitFinalSubmissionConfiguration, installedOpenAiSdkCompatibility} from '../engines/openai/openAiFinalSubmissionConfig';
 import type {OpenAIAgentConfig} from '../engines/openai/openAiConfig';
 import {OPENAI_TYPED_FINAL_CONTRACTS, OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION,
-  expectedOpenAiTypedFinalContract, getOpenAiTypedFinalContractIdentity} from '../finalSubmissionImplementation';
+  expectedOpenAiTypedFinalContract, getOpenAiTypedFinalContractIdentity, getFinalSubmissionModeDescriptor,
+  getAuthoredFinalSubmissionModeDescriptor, isAuthoredFinalSubmissionMode} from '../finalSubmissionImplementation';
 import {AUTHORED_CLAIM_DOCUMENT_VERSION} from '../../agent/core/authoredClaimDocument';
 import {AUTHORED_CLAIM_OBJECT_VERSION} from '../../agent/core/authoredClaimObject';
 import {AUTHORED_CLAIM_DOCUMENT_COMPILER_VERSION, AUTHORED_CLAIM_OBJECT_COMPILER_VERSION} from '../authoredFinalSubmission';
@@ -24,7 +25,7 @@ function config(overrides: Partial<OpenAIAgentConfig> = {}): OpenAIAgentConfig {
 }
 
 describe('shared production final-submission configuration gate', () => {
-  it('keeps all three implementation tuples exact and historical descriptors immutable', () => {
+  it('keeps all implementation tuples exact and historical descriptors immutable', () => {
     const identities = Object.values(OPENAI_TYPED_FINAL_CONTRACTS);
     expect(identities).toEqual([
       {representationVersion: AUTHORED_CLAIM_DOCUMENT_VERSION, compilerVersion: AUTHORED_CLAIM_DOCUMENT_COMPILER_VERSION,
@@ -33,6 +34,8 @@ describe('shared production final-submission configuration gate', () => {
         admissionVersion: 'openai_typed_final_admission@2', wireVersion: 'openai_chat_final_wire@1'},
       {representationVersion: AUTHORED_CLAIM_OBJECT_VERSION, compilerVersion: AUTHORED_CLAIM_OBJECT_COMPILER_VERSION,
         admissionVersion: 'openai_typed_final_admission@3', wireVersion: 'openai_chat_final_wire@2'},
+      {representationVersion: AUTHORED_CLAIM_OBJECT_VERSION, compilerVersion: AUTHORED_CLAIM_OBJECT_COMPILER_VERSION,
+        admissionVersion: 'openai_typed_final_admission@4', wireVersion: 'openai_chat_final_wire@3'},
     ]);
     expect(Object.isFrozen(OPENAI_TYPED_FINAL_CONTRACTS)).toBe(true);
     for (const identity of identities) {
@@ -41,14 +44,33 @@ describe('shared production final-submission configuration gate', () => {
     }
     expect(expectedOpenAiTypedFinalContract('authored_claim_document_v1')).toBe(identities[0]);
     expect(expectedOpenAiTypedFinalContract('authored_claim_document_v2')).toBe(identities[2]);
+    expect(expectedOpenAiTypedFinalContract('authored_claim_document_v2_dual')).toBe(identities[3]);
     expect(OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION).toEqual({kind: 'assistant', nativeContract: 'openai_native_completion_observer@1'});
   });
 
-  it.each([undefined, null, '', 'unknown', 'openai_typed_final_admission@4', '__proto__',
+  it.each([undefined, null, '', 'unknown', 'openai_typed_final_admission@5', '__proto__',
     {admissionVersion: 'openai_typed_final_admission@3'}, 'PRIVATE_VERSION_CANARY'])(
     'does not infer an implementation for an unknown admission descriptor: %p', value => {
       expect(getOpenAiTypedFinalContractIdentity(value)).toBeUndefined();
     });
+
+  it('describes the explicit dual policy without upgrading ordinary v2 or unknown modes', () => {
+    expect(getAuthoredFinalSubmissionModeDescriptor('authored_claim_document_v2_dual')).toEqual({
+      kind: 'typed', requiredDeclarationSyntax: 'authoring_v2', sourcePolicy: 'function_or_assistant_json',
+      ...OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@4'],
+    });
+    expect(getAuthoredFinalSubmissionModeDescriptor('authored_claim_document_v2')?.sourcePolicy).toBe('function_only');
+    expect(getAuthoredFinalSubmissionModeDescriptor('assistant_text')).toBeUndefined();
+    expect(isAuthoredFinalSubmissionMode('assistant_text')).toBe(false);
+    for (const mode of ['authored_claim_document_v1', 'authored_claim_document_v2', 'authored_claim_document_v2_dual']) {
+      expect(isAuthoredFinalSubmissionMode(mode)).toBe(true);
+      expect(Object.isFrozen(getFinalSubmissionModeDescriptor(mode))).toBe(true);
+    }
+    for (const value of [undefined, null, '__proto__', 'authored_claim_document_v2_dual ', 'PRIVATE_MODE_CANARY', {}]) {
+      expect(getFinalSubmissionModeDescriptor(value)).toBeUndefined();
+      expect(isAuthoredFinalSubmissionMode(value)).toBe(false);
+    }
+  });
 
   it('checks the actual installed SDK exports and versions', () => {
     expect(installedOpenAiSdkCompatibility()).toEqual({
@@ -68,6 +90,19 @@ describe('shared production final-submission configuration gate', () => {
     expect(profile?.sdk.adapterContractVersion).toBe('openai_typed_final_admission@3');
     expect(profile?.effective).toMatchObject({finalSubmission: 'authored_claim_document_v2', declarationSyntax: 'authoring_v2'});
     expect(installedOpenAiSdkCompatibility().contractVersion).toBe('openai_typed_final_admission@1');
+  });
+
+  it('admits dual only through the actual installed SDK and pinned function-tool profile', () => {
+    const input = config({outputConfig: {finalSubmission: 'authored_claim_document_v2_dual', declarationSyntax: 'authoring_v2'}});
+    expect(installedOpenAiSdkCompatibility(input.outputConfig.finalSubmission).contractVersion).toBe('openai_typed_final_admission@4');
+    const profile = admitFinalSubmissionConfiguration(input, 'auto')?.get('deepseek-flash');
+    expect(profile?.sdk.adapterContractVersion).toBe('openai_typed_final_admission@4');
+    expect(profile?.effective).toMatchObject(input.outputConfig);
+    expect(profile?.effective.maxOutputTokens).toBeUndefined();
+    for (const override of [{protocol: 'responses' as const}, {lightModel: 'unknown-light'}, {baseURL: 'https://unknown.invalid/v1'}]) {
+      expect(() => admitFinalSubmissionConfiguration({...input, ...override}, 'auto')).toThrow('unsupported_final_submission');
+    }
+    expect(installedOpenAiSdkCompatibility('authored_claim_document_v2').contractVersion).toBe('openai_typed_final_admission@3');
   });
 
   it.each(['canonical_v1', 'authoring_v1', 'authoring_v2'] as const)(

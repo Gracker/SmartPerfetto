@@ -10,7 +10,8 @@ import {AUTHORED_CLAIM_DOCUMENT_COMPILER_VERSION, AUTHORED_FINAL_SUBMISSION_PEND
   AUTHORED_CLAIM_OBJECT_COMPILER_VERSION,
   issueAuthoredFinalSubmission, readAuthoredFinalSubmission, revokeAuthoredFinalSubmissionIssuer,
   type AuthoredFinalSubmissionIssuer, type AuthoredFinalSubmissionOwnerBinding,
-  type AuthoredFinalSubmissionReadInput, type AuthoredFinalSubmissionVersion, type IssuedAuthoredFinalSubmission} from '../../authoredFinalSubmission';
+  type AuthoredFinalSubmissionReadInput, type AuthoredFinalSubmissionAssistantV2ReadInput,
+  type AuthoredFinalSubmissionVersion, type IssuedAuthoredFinalSubmission} from '../../authoredFinalSubmission';
 import type {AuthoredConclusionSubmission} from '../../../services/security/conclusionProtocolProjection';
 import {authoredClaimObjectSchema} from '../../../agent/core/authoredClaimObjectSchema';
 import {createOpenAiTypedFinalOutputMaterial, type OpenAiTypedFinalMaterialOptions} from './openAiTypedFinalOutputMaterial';
@@ -24,6 +25,7 @@ export const OPENAI_TYPED_FINAL_ADMISSION_CONTRACT_VERSION_V2 = 'openai_typed_fi
 export const OPENAI_TYPED_FINAL_WIRE_VERSION = 'openai_chat_final_wire@1';
 export const OPENAI_TYPED_FINAL_RAW_BYTES = 1024 * 1024;
 const MIXED_CONTRACT = OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@3'];
+const DUAL_CONTRACT = OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@4'];
 
 export type OpenAiTypedFinalWireFailure =
   | 'invalid_json' | 'invalid_framing' | 'transport_error' | 'not_sse'
@@ -41,9 +43,19 @@ interface OpenAiTypedFinalWireMaterial {
   readonly toolName: string;
   readonly rawArguments: string;
 }
-export type OpenAiTypedFinalWireReceipt = OpenAiTypedFinalWireMaterial & (
+type FunctionWireReceipt = OpenAiTypedFinalWireMaterial & (
   {readonly wireVersion: typeof OPENAI_TYPED_FINAL_WIRE_VERSION} |
-  {readonly wireVersion: typeof MIXED_CONTRACT.wireVersion; readonly companion: string});
+  {readonly wireVersion: typeof MIXED_CONTRACT.wireVersion | typeof DUAL_CONTRACT.wireVersion; readonly companion: string});
+interface AssistantWireReceipt {
+  readonly sourceKind: 'assistant_json';
+  readonly wireVersion: typeof DUAL_CONTRACT.wireVersion;
+  readonly dispatchOrdinal: number;
+  readonly responseId: string;
+  readonly rawAssistantText: string;
+}
+export type OpenAiTypedFinalWireReceipt = FunctionWireReceipt | AssistantWireReceipt;
+const isAssistantReceipt = (receipt: OpenAiTypedFinalWireReceipt): receipt is AssistantWireReceipt =>
+  'sourceKind' in receipt;
 export interface OpenAiTypedFinalWireEvents {
   readonly dispatchOrdinal?: number;
   materialSnapshot?(): RuntimeTypedOutputMaterial | undefined;
@@ -81,10 +93,12 @@ export function createOpenAiTypedFinalWireCollector(options: OpenAiTypedFinalMat
   readonly wireVersion?: OpenAiTypedFinalContractIdentity['wireVersion'];
 } = {}): OpenAiTypedFinalWireCollector {
   const wireVersion = options.wireVersion ?? OPENAI_TYPED_FINAL_WIRE_VERSION;
-  if (wireVersion !== OPENAI_TYPED_FINAL_WIRE_VERSION && wireVersion !== MIXED_CONTRACT.wireVersion) {
+  if (wireVersion !== OPENAI_TYPED_FINAL_WIRE_VERSION && wireVersion !== MIXED_CONTRACT.wireVersion &&
+    wireVersion !== DUAL_CONTRACT.wireVersion) {
     throw new OpenAiTypedFinalAdmissionError('contract_unavailable');
   }
-  const mixed = wireVersion === MIXED_CONTRACT.wireVersion;
+  const dual = wireVersion === DUAL_CONTRACT.wireVersion;
+  const mixed = wireVersion !== OPENAI_TYPED_FINAL_WIRE_VERSION;
   let ordinal = 0;
   let current: OpenAiTypedFinalWireReceipt | undefined;
   let diagnostic: ReturnType<OpenAiTypedFinalWireCollector['diagnostic']> = {dispatchOrdinal: 0, status: 'pending'};
@@ -109,6 +123,7 @@ export function createOpenAiTypedFinalWireCollector(options: OpenAiTypedFinalMat
       let companion = '', companionBytes = 0, argumentsOverLimit = false, companionOverLimit = false;
       let finishReason: string | undefined;
       let done = false, ended = false;
+      let actionSeen = false;
       const material = createOpenAiTypedFinalOutputMaterial(options, () => rawArguments, mixed
         ? () => ({companion, argumentsOverLimit, companionOverLimit}) : undefined);
       const reject = (reason: OpenAiTypedFinalWireFailure, unsafe = true) => {
@@ -177,6 +192,7 @@ export function createOpenAiTypedFinalWireCollector(options: OpenAiTypedFinalMat
             if (delta.tool_calls === undefined) continue;
             if (!Array.isArray(delta.tool_calls)) {reject('invalid_tool_delta'); continue;}
             for (const item of delta.tool_calls) {
+              actionSeen = true;
               if (!record(item) || !onlyKeys(item, ['index', 'id', 'type', 'function']) ||
                 !Number.isSafeInteger(item.index) || (item.index as number) < 0 ||
                 (item.type !== undefined && item.type !== 'function') ||
@@ -218,11 +234,20 @@ export function createOpenAiTypedFinalWireCollector(options: OpenAiTypedFinalMat
           ended = true;
           if (!framingValid) reject('invalid_framing');
           if (!done) reject('missing_done');
+          if (dual && !actionSeen) {
+            if (finishReason !== 'stop') reject('non_tool_terminal', false);
+            if (!responseId) reject('conflicting_identity');
+            if (failure || unsafeWireFailure || ordinal !== dispatchOrdinal) return;
+            current = Object.freeze({sourceKind: 'assistant_json', wireVersion: DUAL_CONTRACT.wireVersion,
+              dispatchOrdinal, responseId: responseId!, rawAssistantText: companion});
+            diagnostic = {dispatchOrdinal, status: 'complete'};
+            return;
+          }
           if (finishReason !== 'tool_calls') reject('non_tool_terminal', false);
           if (!responseId || !callId || !toolName || !rawArguments || (mixed && toolName !== options.finalToolName)) reject('missing_tool', false);
           if (failure || unsafeWireFailure || ordinal !== dispatchOrdinal) return;
           const retained = {dispatchOrdinal, responseId: responseId!, callId: callId!, toolName, rawArguments};
-          current = Object.freeze(mixed ? {...retained, wireVersion: MIXED_CONTRACT.wireVersion, companion}
+          current = Object.freeze(mixed ? {...retained, wireVersion: dual ? DUAL_CONTRACT.wireVersion : MIXED_CONTRACT.wireVersion, companion}
             : {...retained, wireVersion: OPENAI_TYPED_FINAL_WIRE_VERSION});
           diagnostic = {dispatchOrdinal, status: 'complete'};
         },
@@ -257,13 +282,28 @@ type CompiledV2 = Extract<AuthoredClaimObjectResult, {status: 'compiled'}>;
 interface PendingCommon {
   invocation: OpenAiTypedFinalInvocation;
   context: object;
-  receipt: OpenAiTypedFinalWireReceipt;
+  receipt: FunctionWireReceipt;
   handlerSucceeded: boolean;
 }
 type PendingSubmission = PendingCommon & (
   {representationVersion: typeof AUTHORED_CLAIM_DOCUMENT_VERSION; documentJson: string; compiled: CompiledV1} |
   {representationVersion: typeof AUTHORED_CLAIM_OBJECT_VERSION; nativeDocument: Record<string, unknown>; compiled: CompiledV2});
 interface StopDecision {response: object; processed: object; deadlineAt: number}
+interface AssistantCompletionSnapshot {
+  receipt: AssistantWireReceipt;
+  response: Record<string, unknown>;
+  processed: Record<string, unknown>;
+  agent: object;
+  context: unknown;
+  step: Record<string, unknown>;
+  output: readonly unknown[];
+  newItems: readonly unknown[];
+  message: Record<string, unknown>;
+  messageId: string;
+  text: string;
+  completedAt: number;
+  deadlineAt: number;
+}
 
 /** Compare actual arguments, not a replacement decoded from the wire. The native
  * subtree's own S1 bound excludes the outer transport wrapper's independent byte cap. */
@@ -305,6 +345,7 @@ export function createOpenAiTypedFinalAttempt(input: {
   if (!contractIdentity || contractIdentity.representationVersion !== representationVersion) {
     throw new OpenAiTypedFinalAdmissionError('contract_unavailable');
   }
+  const dual = contractIdentity.admissionVersion === DUAL_CONTRACT.admissionVersion;
   const collector = createOpenAiTypedFinalWireCollector({finalToolName: input.toolName, knownToolNames: input.knownToolNames,
     wireVersion: contractIdentity.wireVersion,
     ...(representationVersion === AUTHORED_CLAIM_OBJECT_VERSION ? {materialProvider: {
@@ -317,6 +358,7 @@ export function createOpenAiTypedFinalAttempt(input: {
   void ready.catch(() => undefined);
   let bound = false, agent: object | undefined, nativeDrain: Promise<unknown> | undefined;
   let naturalCompletion: Promise<boolean> | undefined;
+  let assistantCompletion: AssistantCompletionSnapshot | undefined;
   let pending: PendingSubmission | undefined, decision: StopDecision | undefined;
   let revoked: OpenAiTypedFinalAdmissionFailure | undefined, settled = false;
   let firstCompilerFailure: AuthoredClaimObjectFailure | undefined;
@@ -354,9 +396,108 @@ export function createOpenAiTypedFinalAttempt(input: {
     try {const stream = await Promise.race([ready, cancellation]); assertCurrent(); return stream;}
     finally {input.signal.removeEventListener('abort', onAbort);}
   };
-  const matchesCall = (call: unknown, receipt: OpenAiTypedFinalWireReceipt): boolean => record(call) &&
+  const matchesCall = (call: unknown, receipt: FunctionWireReceipt): boolean => record(call) &&
     call.type === 'function_call' && call.name === receipt.toolName && call.callId === receipt.callId &&
     call.arguments === receipt.rawArguments;
+  /** Work is checked from the actual SDK structures, never inferred from prose. */
+  const checkDualWork = (state: Record<string, unknown>, response: Record<string, unknown>,
+    processed: Record<string, unknown>, currentCallId?: string): void => {
+    for (const key of ['handoffs', 'computerActions', 'shellActions', 'applyPatchActions', 'mcpApprovalRequests']) {
+      if (!Array.isArray(processed[key]) || processed[key].length !== 0) return fail('pending_work');
+    }
+    if (processed.functionToolsNotFound !== undefined && (!Array.isArray(processed.functionToolsNotFound) ||
+      processed.functionToolsNotFound.length !== 0)) return fail('pending_work');
+    if (!(state._pendingAgentToolRuns instanceof Map) || state._pendingAgentToolRuns.size !== 0 ||
+      !Array.isArray(state._modelResponses) || state._modelResponses[state._modelResponses.length - 1] !== response ||
+      !Array.isArray(state._generatedItems)) return fail('pending_work');
+    const seenInput = new Set<string>(), pendingInput = new Set<string>();
+    if (typeof state._originalInput !== 'string') {
+      if (!Array.isArray(state._originalInput)) return fail('contract_unavailable');
+      for (const item of state._originalInput) {
+        if (!record(item)) return fail('pending_work');
+        if (item.type === 'function_call') {
+          if (!nonempty(item.callId) || seenInput.has(item.callId)) return fail('pending_work');
+          seenInput.add(item.callId); pendingInput.add(item.callId);
+        } else if (item.type === 'function_call_result') {
+          if (item.status !== 'completed' || !nonempty(item.callId) || !pendingInput.delete(item.callId)) return fail('pending_work');
+        } else if (item.type !== 'reasoning' && item.type !== 'message' &&
+          !(item.type === undefined && ['user', 'system', 'developer', 'assistant'].includes(String(item.role)))) {
+          return fail('pending_work');
+        }
+      }
+    }
+    if (pendingInput.size || currentCallId !== undefined && seenInput.has(currentCallId)) return fail('pending_work');
+    const priorCalls = new Set<string>(), pendingPrior = new Set<string>();
+    const responseCalls = new Map<string, object>();
+    if (currentCallId !== undefined && Array.isArray(response.output)) {
+      const currentCall = response.output.find(item => record(item) && item.type === 'function_call' && item.callId === currentCallId);
+      if (!record(currentCall)) return fail('pending_work');
+      responseCalls.set(currentCallId, currentCall);
+    }
+    for (const prior of state._modelResponses.slice(0, -1)) {
+      if (!record(prior) || !Array.isArray(prior.output)) return fail('contract_unavailable');
+      for (const item of prior.output) {
+        if (!record(item)) return fail('pending_work');
+        if (item.type === 'function_call') {
+          if (!nonempty(item.callId) || priorCalls.has(item.callId) || seenInput.has(item.callId) ||
+            item.callId === currentCallId) return fail('pending_work');
+          priorCalls.add(item.callId); pendingPrior.add(item.callId); responseCalls.set(item.callId, item);
+        } else if (item.type !== 'message' && item.type !== 'reasoning') return fail('pending_work');
+      }
+    }
+    let currentResultSeen = false;
+    const generatedCalls = new Set<string>();
+    for (const generated of state._generatedItems) {
+      if (!record(generated) || !record(generated.rawItem)) return fail('pending_work');
+      const raw = generated.rawItem;
+      if (raw.type === 'function_call_result') {
+        if (generated.type !== 'tool_call_output_item' || raw.status !== 'completed' || !nonempty(raw.callId)) return fail('pending_work');
+        if (raw.callId === currentCallId) {
+          if (currentResultSeen) return fail('pending_work');
+          currentResultSeen = true;
+        } else if (!pendingPrior.delete(raw.callId)) return fail('pending_work');
+      } else if (raw.type === 'function_call') {
+        if (generated.type !== 'tool_call_item' || !nonempty(raw.callId) ||
+          generatedCalls.has(raw.callId) || responseCalls.get(raw.callId) !== raw) return fail('pending_work');
+        generatedCalls.add(raw.callId);
+      } else if ((raw.type !== 'message' || generated.type !== 'message_output_item') &&
+        (raw.type !== 'reasoning' || generated.type !== 'reasoning_item')) return fail('pending_work');
+    }
+    // The SDK appends this turn's items only after toolUseBehavior returns.
+    // Prior turns must already be complete at both checks; the current final
+    // function has its separate actual handler/ACK/guardrail gate.
+    if (pendingPrior.size || [...priorCalls].some(callId => !generatedCalls.has(callId))) return fail('pending_work');
+  };
+  const readAssistantCompletion = (stream: NativeStream, receipt: AssistantWireReceipt,
+    timing?: Pick<AssistantCompletionSnapshot, 'completedAt' | 'deadlineAt'>): AssistantCompletionSnapshot => {
+    const state = readState(stream), response = state._lastTurnResponse, processed = state._lastProcessedResponse;
+    const step = state._currentStep;
+    if (!agent || state._currentAgent !== agent || !record(state._context) || !collector.isCurrent(receipt) ||
+      !record(response) || response.responseId !== receipt.responseId || !Array.isArray(response.output) ||
+      new Set(response.output).size !== response.output.length || !record(processed) ||
+      !Array.isArray(processed.functions) || processed.functions.length || !Array.isArray(processed.newItems) ||
+      processed.newItems.length !== response.output.length || !record(step) || step.type !== 'next_step_final_output' ||
+      step.output !== receipt.rawAssistantText || stream.finalOutput !== receipt.rawAssistantText ||
+      stream.cancelled || stream.error != null) return fail('sdk_incomplete');
+    const messages = response.output.filter(item => record(item) && item.type === 'message');
+    const message = messages[0];
+    if (messages.length !== 1 || !record(message) || !onlyKeys(message, ['id', 'content', 'role', 'type', 'status']) ||
+      message.id !== receipt.responseId || message.role !== 'assistant' || message.status !== 'completed' ||
+      !Array.isArray(message.content) || message.content.length !== 1 || !record(message.content[0]) ||
+      !onlyKeys(message.content[0], ['type', 'text', 'providerData']) || message.content[0].type !== 'output_text' ||
+      message.content[0].text !== receipt.rawAssistantText) return fail('sdk_incomplete');
+    for (const output of response.output) {
+      if (!record(output) || (output.type !== 'message' && output.type !== 'reasoning')) return fail('pending_work');
+      const counterparts = processed.newItems.filter(item => record(item) && item.rawItem === output);
+      if (counterparts.length !== 1 || !record(counterparts[0]) || counterparts[0].agent !== agent ||
+        counterparts[0].type !== (output.type === 'message' ? 'message_output_item' : 'reasoning_item')) return fail('pending_work');
+    }
+    checkDualWork(state, response, processed);
+    return {receipt, response, processed, agent, context: state._context, step,
+      output: Object.freeze([...response.output]), newItems: Object.freeze([...processed.newItems]),
+      message, messageId: receipt.responseId, text: receipt.rawAssistantText,
+      completedAt: timing?.completedAt ?? Date.now(), deadlineAt: timing?.deadlineAt ?? readDeadline()};
+  };
   const checkSdkState = (stream: NativeStream, context: unknown, submission: PendingSubmission): StopDecision => {
     const state = readState(stream), receipt = submission.receipt;
     if (state._context !== context || context !== submission.context || state._currentAgent !== agent ||
@@ -368,7 +509,7 @@ export function createOpenAiTypedFinalAttempt(input: {
       !matchesCall(processed.functions[0].toolCall, receipt)) return fail('contract_unavailable');
     const calls = response.output.filter(item => record(item) && item.type === 'function_call');
     if (calls.length !== 1 || !matchesCall(calls[0], receipt)) return fail('pending_work');
-    if (receipt.wireVersion === MIXED_CONTRACT.wireVersion) {
+    if (receipt.wireVersion !== OPENAI_TYPED_FINAL_WIRE_VERSION) {
       if (new Set(response.output).size !== response.output.length) return fail('pending_work');
       const messages = response.output.filter(item => record(item) && item.type === 'message');
       const message = messages[0];
@@ -400,6 +541,10 @@ export function createOpenAiTypedFinalAttempt(input: {
       (item.rawItem.type !== 'reasoning' && !matchesCall(item.rawItem, receipt))))) return fail('pending_work');
     if (!(state._pendingAgentToolRuns instanceof Map) || state._pendingAgentToolRuns.size !== 0 ||
       !Array.isArray(state._modelResponses) || !Array.isArray(state._generatedItems)) return fail('pending_work');
+    if (dual) {
+      checkDualWork(state, response, processed, receipt.callId);
+      return {response, processed, deadlineAt: readDeadline()};
+    }
     const previous = new Set<string>();
     for (const prior of state._modelResponses.slice(0, -1)) {
       if (!record(prior) || !Array.isArray(prior.output)) return fail('contract_unavailable');
@@ -421,7 +566,7 @@ export function createOpenAiTypedFinalAttempt(input: {
     return {response, processed, deadlineAt: readDeadline()};
   };
   const wireObserver: OpenAiTypedFinalWireObserver = {startRequest() {
-    if (pending || decision || issued) revoke('subsequent_dispatch');
+    if (pending || decision || assistantCompletion || issued) revoke('subsequent_dispatch');
     const events = collector.startRequest();
     const checkAfter = () => {if (pending && !collector.isCurrent(pending.receipt)) revoke('wire_ineligible');};
     return {dispatchOrdinal: events.dispatchOrdinal, materialSnapshot: events.materialSnapshot,
@@ -449,6 +594,13 @@ export function createOpenAiTypedFinalAttempt(input: {
         nativeDrain = Promise.resolve(drain);
         void nativeDrain.catch(() => undefined);
         naturalCompletion = Promise.resolve(completed).then(() => {
+          const receipt = collector.current();
+          if (dual && receipt && isAssistantReceipt(receipt)) {
+            assertCurrent();
+            if (pending || decision) return fail('sdk_incomplete');
+            assistantCompletion = readAssistantCompletion(stream, receipt);
+            return assistantCompletion.completedAt <= assistantCompletion.deadlineAt;
+          }
           const state = readState(stream);
           return Boolean(decision && pending && Date.now() <= decision.deadlineAt && !stream.cancelled &&
             stream.error == null && record(state._currentStep) && state._currentStep.type === 'next_step_final_output' &&
@@ -465,7 +617,7 @@ export function createOpenAiTypedFinalAttempt(input: {
       if (pending || decision || settled || call.tool !== input.finalTool || !record(call.context) ||
         readState(stream)._context !== call.context) return fail('stale_invocation');
       const receipt = collector.current();
-      if (!receipt || !collector.isCurrent(receipt) || receipt.toolName !== input.toolName || !matchesCall(call.toolCall, receipt)) {
+      if (!receipt || isAssistantReceipt(receipt) || !collector.isCurrent(receipt) || receipt.toolName !== input.toolName || !matchesCall(call.toolCall, receipt)) {
         return fail('wire_ineligible');
       }
       let outer: unknown;
@@ -520,8 +672,38 @@ export function createOpenAiTypedFinalAttempt(input: {
       settled = true;
       assertCurrent(false);
       if (outcomes.some(outcome => outcome.status !== 'fulfilled') || outcomes[1].status !== 'fulfilled' ||
-        outcomes[1].value !== true || !pending?.handlerSucceeded || !decision) return fail('sdk_incomplete');
+        outcomes[1].value !== true) return fail('sdk_incomplete');
       try {
+        if (assistantCompletion) {
+          const snapshot = assistantCompletion, current = readAssistantCompletion(stream, snapshot.receipt, snapshot);
+          const sameOrder = (left: readonly unknown[], right: readonly unknown[]) =>
+            left.length === right.length && left.every((value, index) => value === right[index]);
+          if (current.response !== snapshot.response || current.processed !== snapshot.processed ||
+            current.agent !== snapshot.agent || current.context !== snapshot.context || current.step !== snapshot.step ||
+            current.message !== snapshot.message || current.messageId !== snapshot.messageId || current.text !== snapshot.text ||
+            !sameOrder(current.output, snapshot.output) || !sameOrder(current.newItems, snapshot.newItems) ||
+            !Array.isArray(stream.interruptions) || stream.interruptions.length || readState(stream)._currentTurnInProgress !== false ||
+            snapshot.completedAt > snapshot.deadlineAt) return fail('sdk_incomplete');
+          let outer: unknown;
+          try {outer = JSON.parse(snapshot.text);} catch {return fail('invalid_submission');}
+          if (!record(outer) || Object.keys(outer).length !== 1 || !Object.prototype.hasOwnProperty.call(outer, 'document')) return fail('invalid_submission');
+          const compiled = compileAuthoredClaimObject(outer.document);
+          if (compiled.status !== 'compiled') {firstCompilerFailure ??= compiled.code; return fail('invalid_submission');}
+          assertCurrent(false);
+          const dispatch = {dispatchOrdinal: snapshot.receipt.dispatchOrdinal, responseId: snapshot.receipt.responseId,
+            messageId: snapshot.messageId};
+          issued = issueAuthoredFinalSubmission(input.issuer, {sourceKind: 'assistant_json', ...dispatch,
+            rawAssistantText: snapshot.text, nativeDocument: compiled.privateNativeDocument, compiled});
+          const readInput: AuthoredFinalSubmissionAssistantV2ReadInput = {sourceKind: 'assistant_json',
+            binding: Object.freeze({...input.ownerBinding, ...dispatch, representationVersion: AUTHORED_CLAIM_OBJECT_VERSION,
+              compilerContractVersion: AUTHORED_CLAIM_OBJECT_COMPILER_VERSION}), rawAssistantText: snapshot.text,
+            nativeDocument: structuredClone(compiled.privateNativeDocument), body: compiled.body,
+            rawCanonicalPayload: structuredClone(compiled.rawCanonicalPayload)};
+          const issuedSnapshot = readAuthoredFinalSubmission(issued, readInput);
+          return Object.freeze({submission: issued, input: Object.freeze({...readInput,
+            nativeDocument: issuedSnapshot.nativeDocument, rawCanonicalPayload: issuedSnapshot.compiled.rawCanonicalPayload})});
+        }
+        if (!pending?.handlerSucceeded || !decision) return fail('sdk_incomplete');
         const state = readState(stream);
         const final = checkSdkState(stream, pending.context, pending);
         if (final.response !== decision.response || final.processed !== decision.processed || stream.error != null ||

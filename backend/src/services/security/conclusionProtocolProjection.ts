@@ -4,6 +4,7 @@
 import {isDeepStrictEqual} from 'node:util';
 import {claimAuthoredFinalSubmission, readAuthoredFinalSubmission, revokeAuthoredFinalSubmission,
   type AuthoredFinalSubmissionReadInput, type AuthoredFinalSubmissionV1Hashes, type AuthoredFinalSubmissionV2Snapshot,
+  type AuthoredFinalSubmissionAssistantV2Snapshot,
   type IssuedAuthoredFinalSubmission} from '../../agentRuntime/authoredFinalSubmission';
 import {
   CONCLUSION_PROTOCOL_VALUES, CONCLUSION_CONTRACT_SIDECAR_MARKER, conclusionParseIssueTriageCodes, declaredContractForResult,
@@ -15,7 +16,8 @@ import {
   type ConclusionContractClaimReference,
 } from '../../agent/core/conclusionContract';
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
-import {measureAuthoredJson} from '../../agent/core/authoredClaimDocument';
+import {measureAuthoredJson, AUTHORED_CLAIM_DOCUMENT_VERSION} from '../../agent/core/authoredClaimDocument';
+import {getAuthoredFinalSubmissionModeDescriptor} from '../../agentRuntime/finalSubmissionImplementation';
 import {AUTHORED_CLAIM_OBJECT_VERSION, type AuthoredQuoteBinding} from '../../agent/core/authoredClaimObject';
 import {analysisDeliveryFingerprint, type AnalysisCandidateIdentity, type AnalysisDeliveryContext} from '../../types/analysisDelivery';
 import {isSourceMechanismStatus} from '../codebase/sourceUseDecision';
@@ -57,7 +59,17 @@ interface AuthoredNativeConclusionV2 extends AuthoredNativeConclusionCommon {
   readonly privateNativeDocument: Record<string, unknown>;
   readonly hashes: AuthoredFinalSubmissionV2Snapshot['hashes'];
 }
-export type AuthoredNativeConclusionDeclaration = AuthoredNativeConclusionV1 | AuthoredNativeConclusionV2;
+export interface AuthoredNativeAssistantV2ConclusionDeclaration {
+  readonly inputKind: 'assistant_json';
+  readonly representationVersion: typeof AUTHORED_CLAIM_OBJECT_VERSION;
+  readonly rawAssistantText: string;
+  readonly privateNativeDocument: Record<string, unknown>;
+  readonly body: string;
+  readonly rawCanonicalPayload: unknown;
+  readonly contract?: ConclusionContract;
+  readonly hashes: AuthoredFinalSubmissionAssistantV2Snapshot['hashes'];
+}
+export type AuthoredNativeConclusionDeclaration = AuthoredNativeConclusionV1 | AuthoredNativeConclusionV2 | AuthoredNativeAssistantV2ConclusionDeclaration;
 export type NativeConclusionDeclaration = AssistantNativeConclusionDeclaration | AuthoredNativeConclusionDeclaration;
 /** Private adapter-to-projection handoff; never serialize this capability or its material. */
 export interface AuthoredConclusionSubmission {
@@ -338,7 +350,9 @@ export function issueAuthoredConclusionProtocolProjection(input: {
   const result = projectedResultSnapshot(input.result);
   const nativeCandidate = freeze(input.nativeCandidate), displayCandidate = freeze(input.displayCandidate);
   const submittedToken = submission.submission, submittedInput = submission.input;
-  const expected: AuthoredFinalSubmissionReadInput = 'documentJson' in submittedInput
+  const expected: AuthoredFinalSubmissionReadInput = 'sourceKind' in submittedInput
+    ? {...submittedInput, binding: Object.freeze({...submittedInput.binding})}
+    : 'documentJson' in submittedInput
     ? {...submittedInput, binding: Object.freeze({...submittedInput.binding})}
     : {...submittedInput, binding: Object.freeze({...submittedInput.binding})};
   const snapshot = readAuthoredFinalSubmission(submittedToken, expected);
@@ -351,7 +365,11 @@ export function issueAuthoredConclusionProtocolProjection(input: {
       bodyProjection.text !== result.conclusion) {
     throw new Error('authored_conclusion_projection_mismatch');
   }
-  const original: AuthoredNativeConclusionDeclaration = 'documentJson' in snapshot ? {
+  const original: AuthoredNativeConclusionDeclaration = 'sourceKind' in snapshot ? {
+    inputKind: 'assistant_json', representationVersion: AUTHORED_CLAIM_OBJECT_VERSION, rawAssistantText: snapshot.rawAssistantText,
+    privateNativeDocument: snapshot.nativeDocument, body: snapshot.compiled.body, rawCanonicalPayload: snapshot.compiled.rawCanonicalPayload,
+    contract: snapshot.compiled.canonicalParse.contract as ConclusionContract | undefined, hashes: snapshot.hashes,
+  } : 'documentJson' in snapshot ? {
     inputKind: 'model_tool_arguments', rawArguments: snapshot.rawArguments, documentJson: snapshot.documentJson,
     body: snapshot.compiled.body, rawCanonicalPayload: snapshot.compiled.rawCanonicalPayload,
     contract: snapshot.compiled.canonicalParse.contract as ConclusionContract | undefined, hashes: snapshot.hashes,
@@ -368,10 +386,13 @@ export function issueAuthoredConclusionProtocolProjection(input: {
     publicContractFingerprint: analysisDeliveryFingerprint(result.conclusionContract),
     sourceUseFingerprint: analysisDeliveryFingerprint(result.sourceUseDecision),
     validationFingerprint: analysisDeliveryFingerprint(original), original});
-  const readInput: AuthoredFinalSubmissionReadInput | undefined = 'documentJson' in expected && 'documentJson' in snapshot
+  const readInput: AuthoredFinalSubmissionReadInput | undefined = 'sourceKind' in expected && 'sourceKind' in snapshot
+    ? Object.freeze({...expected, rawAssistantText: snapshot.rawAssistantText, nativeDocument: snapshot.nativeDocument,
+      body: snapshot.compiled.body, rawCanonicalPayload: snapshot.compiled.rawCanonicalPayload, hashes: snapshot.hashes})
+    : 'documentJson' in expected && 'documentJson' in snapshot
     ? Object.freeze({...expected, rawArguments: snapshot.rawArguments, documentJson: snapshot.documentJson,
       body: snapshot.compiled.body, rawCanonicalPayload: snapshot.compiled.rawCanonicalPayload, hashes: snapshot.hashes})
-    : 'nativeDocument' in expected && 'nativeDocument' in snapshot
+    : !('sourceKind' in expected) && !('sourceKind' in snapshot) && 'nativeDocument' in expected && 'nativeDocument' in snapshot
       ? Object.freeze({...expected, rawArguments: snapshot.rawArguments, nativeDocument: snapshot.nativeDocument,
         body: snapshot.compiled.body, rawCanonicalPayload: snapshot.compiled.rawCanonicalPayload, hashes: snapshot.hashes})
       : undefined;
@@ -433,12 +454,12 @@ export function releaseConclusionProtocolProjection(token: IssuedConclusionProto
 export function bindAuthoredFinalDelivery(input: {
   context: AnalysisDeliveryContext; result: AuthoredDeliveryResult; nativeDeclaration: NativeConclusionDeclaration;
 }): void {
-  if (input.nativeDeclaration.inputKind !== 'model_tool_arguments') return;
+  if (input.nativeDeclaration.inputKind !== 'model_tool_arguments' && input.nativeDeclaration.inputKind !== 'assistant_json') return;
   const token = nativeDeclarations.get(input.nativeDeclaration);
   const state = token && issued.get(token);
   const context = input.context;
   const result = projectedResultSnapshot(input.result);
-  if (!state?.authored || context.entry === 'historical_restore' || !context.acceptedCandidate ||
+  if (!state?.authored || context.entry === 'historical_restore' || !authoredSourceMatchesContext(state.original, context) || !context.acceptedCandidate ||
       !sameCandidate(context.acceptedCandidate, state.displayCandidate) ||
       context.acceptedCandidate.conclusionFingerprint !== analysisDeliveryFingerprint(result.conclusion) ||
       result.sessionId !== state.sessionId || result.conclusion !== state.authored.displayBody ||
@@ -449,13 +470,21 @@ export function bindAuthoredFinalDelivery(input: {
   authoredDeliveries.set(context, {projection: token!, result, candidate: freeze(context.acceptedCandidate)});
 }
 
+function authoredSourceMatchesContext(original: NativeConclusionDeclaration, context: AnalysisDeliveryContext): boolean {
+  if (context.entry === 'historical_restore' || context.finalSubmission?.outcome !== 'submitted') return false;
+  const descriptor = getAuthoredFinalSubmissionModeDescriptor(context.finalSubmission.mode);
+  if (!descriptor) return false;
+  if (original.inputKind === 'assistant_json') return descriptor.sourcePolicy === 'function_or_assistant_json' &&
+    descriptor.representationVersion === original.representationVersion && context.outputOrigin === 'sdk_final';
+  if (original.inputKind !== 'model_tool_arguments' || context.outputOrigin !== 'model_tool_arguments') return false;
+  return descriptor.representationVersion === ('documentJson' in original ? AUTHORED_CLAIM_DOCUMENT_VERSION : original.representationVersion);
+}
+
 function currentAuthoredDelivery(context: AnalysisDeliveryContext) {
   const binding = authoredDeliveries.get(context);
   const state = binding && issued.get(binding.projection);
   if (!binding || !state?.authored || context.entry === 'historical_restore' ||
-      context.outputOrigin !== 'model_tool_arguments' || (context.finalSubmission?.mode !== 'authored_claim_document_v1' &&
-        context.finalSubmission?.mode !== 'authored_claim_document_v2') ||
-      context.finalSubmission.outcome !== 'submitted' || !sameCandidate(context.acceptedCandidate, binding.candidate)) return;
+      !authoredSourceMatchesContext(state.original, context) || !sameCandidate(context.acceptedCandidate, binding.candidate)) return;
   try { assertAuthoredCurrent(state); return binding; } catch { return undefined; }
 }
 

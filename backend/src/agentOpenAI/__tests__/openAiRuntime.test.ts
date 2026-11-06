@@ -136,7 +136,7 @@ function attachedDeliveryContext(result: Parameters<typeof finalization.takeFina
   return context?.deliveryContext;
 }
 function assistantNativeRaw(declaration: NativeConclusionDeclaration | undefined): string | undefined {
-  if (declaration?.inputKind === 'model_tool_arguments') throw new Error('Expected an assistant-text native declaration');
+  if (declaration?.inputKind === 'model_tool_arguments' || declaration?.inputKind === 'assistant_json') throw new Error('Expected an assistant-text native declaration');
   return declaration?.raw;
 }
 
@@ -5134,4 +5134,118 @@ describe('R11 mixed native v2 main transport', () => {
     } finally {release.resolve(); await outcome; f.scope.dispose(); restoreClone();}
   });
 
+});
+
+describe('R13 explicit dual main transport', () => {
+  const body = '模型正文🧭\n```json\n{"ordinary":"literal"}\n```';
+  const document = {representationVersion: 'authored_claim_document@2', referenceDictionary: [], semanticFrames: [],
+    contract: {mode: 'need_input', conclusions: null, clusters: null, evidenceChain: null, claims: [],
+      relationProposals: null, sourceClaimBindings: null, uncertainties: null, nextSteps: null, metadata: null}, bodyParts: [body]};
+  const raw = ` \n${JSON.stringify({document})}\t `;
+  const options = {providerId: null, assistantSurface: 'conversation' as const, conversationTraceAttached: false, analysisMode: 'fast' as const};
+  function setup(id: string) {
+    jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(createOpenAiConfigForTest({protocol: 'chat_completions',
+      baseURL: 'https://api.deepseek.com/v1', model: 'deepseek-flash', lightModel: 'deepseek-flash', quickMaxTurns: 3,
+      outputConfig: Object.freeze({finalSubmission: 'authored_claim_document_v2_dual', declarationSyntax: 'authoring_v2'})}));
+    const {runtime, updates} = createRuntimeWithUpdates(), recorder = createRuntimePerformanceRecorder();
+    const scope = createRuntimePerformanceScope({recorder, identity: {runId: id, sessionId: id,
+      scope: {tenantId: 'test', workspaceId: 'test'}}, assertCurrent() {}});
+    const session = sessionContextManager.getOrCreate(id, 'trace');
+    const workingMemory = jest.spyOn(session, 'updateWorkingMemoryFromConclusion');
+    return {runtime, updates, recorder, scope, workingMemory,
+      run: () => scope.run(() => runtime.analyze('What is needed?', id, 'trace', {...options, runId: id}))};
+  }
+  function finalTool(init?: RequestInit) {
+    const request = JSON.parse(String(init?.body)) as {tools: Array<{function: {name: string; parameters: {properties: Record<string, unknown>}}}>};
+    const matching = request.tools.filter(entry => Object.prototype.hasOwnProperty.call(entry.function.parameters.properties, 'document'));
+    expect(matching).toHaveLength(1); expect(Object.keys(matching[0].function.parameters.properties)).toEqual(['document']);
+    return matching[0].function.name;
+  }
+  function assistantWire(text: string, finish = 'stop', extra: Record<string, unknown> = {}) {
+    const split = text.indexOf('🧭') + 1;
+    const choices = [{index: 0, delta: {role: 'assistant', content: text.slice(0, split), ...extra}, finish_reason: null},
+      {index: 0, delta: {content: text.slice(split)}, finish_reason: null},
+      {index: 0, delta: {}, finish_reason: finish}];
+    return choices.map(choice => `data: ${JSON.stringify({id: 'dual-main-response', model: 'observed-model', choices: [choice]})}\n\n`).join('') + 'data: [DONE]\n\n';
+  }
+
+  it.each(['assistant', 'function'] as const)('binds the actual %s source with its native finish and precise observer chain', async lane => {
+    const restoreClone = installCurrentRealmStructuredCloneForTest(), id = `r13-main-${lane}`, f = setup(id);
+    const issue = jest.spyOn(authoredSubmission, 'issueAuthoredFinalSubmission');
+    let actualFinalOutput: (() => unknown) | undefined;
+    const actualRun = Runner.prototype.run;
+    jest.spyOn(Runner.prototype as any, 'run').mockImplementation(async function(this: Runner, ...args: any[]) {
+      const stream = await (actualRun as any).apply(this, args);
+      actualFinalOutput = () => stream.finalOutput; return stream;
+    });
+    const request = jest.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      const name = finalTool(init);
+      return lane === 'assistant' ? new Response(assistantWire(raw), {headers: {'content-type': 'text/event-stream'}})
+        : chatCompletionToolCall('dual-main-response', name, {document});
+    });
+    try {
+      const result = await f.run(); expect(request).toHaveBeenCalledTimes(1); expect(issue).toHaveBeenCalledTimes(1);
+      expect(actualFinalOutput?.()).toBe(lane === 'assistant' ? raw : body);
+      expect(result).toMatchObject({conclusion: body, outputOrigin: lane === 'assistant' ? 'sdk_final' : 'model_tool_arguments',
+        completion: {status: 'completed', sdkFinishReason: lane === 'assistant' ? 'stop' : 'tool_calls'}});
+      const context = finalization.takeFinalizationContext(result)!; finalizationContexts.push(context);
+      expect(context.deliveryContext).toMatchObject({finalSubmission: {mode: 'authored_claim_document_v2_dual', outcome: 'submitted'}});
+      expect(context.hasSemanticTransport).toBe(true);
+      const native = context.getNativeDeclaration(result, new AbortController().signal)!;
+      expect(native).toMatchObject({inputKind: lane === 'assistant' ? 'assistant_json' : 'model_tool_arguments',
+        representationVersion: 'authored_claim_document@2', privateNativeDocument: document, body});
+      if (lane === 'assistant') {expect(native).toHaveProperty('rawAssistantText', raw); expect(native).not.toHaveProperty('rawArguments');}
+      const identity = readConclusionTransportObservation(native)!;
+      const events = f.recorder.seal().finalTransportObservation!.events;
+      const nativeTerminal = events.find(event => event.kind === 'native_terminal')!;
+      const issued = events.find(event => event.kind === (lane === 'assistant' ? 'assistant_document_issued_after_drain' : 'typed_issued_after_drain'))!;
+      expect(issued).toMatchObject({admissionVersion: 'openai_typed_final_admission@4', wireVersion: 'openai_chat_final_wire@3',
+        representationVersion: 'authored_claim_document@2', compilerVersion: 'authored_claim_document_compiler@2'});
+      const retained = events.find(event => event.kind === 'candidate_retained')!;
+      expect(retained).toMatchObject({nativeCandidateKey: identity.nativeCandidateKey,
+        carrier: lane === 'assistant' ? 'assistant_document' : 'model_tool_arguments',
+        authors: [{role: 'body_and_declaration', terminalEventKey: issued.eventKey}]});
+      if (lane === 'assistant') {
+        expect(issued).toMatchObject({sourceKind: 'assistant_json', nativeTerminalEventKey: nativeTerminal.eventKey,
+          nativeCandidateKey: identity.nativeCandidateKey, rawAssistantTextHash: performanceObservation.runtimeObservationHash(raw),
+          compiledBodyHash: performanceObservation.runtimeObservationHash(body),
+          responseKey: performanceObservation.runtimeObservationHash('dual-main-response'),
+          messageKey: performanceObservation.runtimeObservationHash('dual-main-response')});
+        expect(issued).not.toHaveProperty('callKey');
+        expect(nativeTerminal).toMatchObject({fact: {finish: 'stop', sdkStreamCompleted: true,
+          rawMaterial: {status: 'observed', hash: performanceObservation.runtimeObservationHash(raw)}}});
+        expect(events.filter(event => event.kind === 'typed_issued_after_drain')).toHaveLength(0);
+      }
+      expect(events.indexOf(nativeTerminal)).toBeLessThan(events.indexOf(issued));
+      expect(events.indexOf(issued)).toBeLessThan(events.indexOf(retained));
+      expect(f.updates.some(update => update.type === 'answer_token' && update.content?.delta)).toBe(false);
+      expect(f.workingMemory).toHaveBeenCalledTimes(1);
+    } finally {f.scope.dispose(); restoreClone();}
+  });
+
+  it.each(['prose', 'invalid_document', 'length', 'legacy_action'] as const)('keeps failed %s native facts and performs zero typed memory writes', async invalid => {
+    const restoreClone = installCurrentRealmStructuredCloneForTest(), id = `r13-failed-${invalid}`, f = setup(id);
+    const issue = jest.spyOn(authoredSubmission, 'issueAuthoredFinalSubmission');
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const text = invalid === 'prose' ? 'Ordinary assistant answer' : invalid === 'invalid_document' ? '{"document":{}}' : raw;
+    const request = jest.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      finalTool(init);
+      return new Response(assistantWire(text, invalid === 'length' ? 'length' : 'stop', invalid === 'legacy_action'
+        ? {function_call: {name: 'hidden', arguments: '{}'}} : {}), {headers: {'content-type': 'text/event-stream'}});
+    });
+    try {
+      const result = await f.run(); expect(request).toHaveBeenCalledTimes(1); expect(issue).not.toHaveBeenCalled();
+      expect(result.completion).toMatchObject({status: invalid === 'length' ? 'incomplete' : 'completed',
+        sdkFinishReason: invalid === 'length' ? 'length' : 'stop'});
+      expect(result.conclusion).toBe(text); expect(result.outputOrigin).not.toBe('model_tool_arguments');
+      const context = finalization.takeFinalizationContext(result)!; finalizationContexts.push(context);
+      expect(context.deliveryContext).toMatchObject({finalSubmission: {mode: 'authored_claim_document_v2_dual',
+        outcome: invalid === 'length' ? 'transport_failure' : 'missing_submission'}});
+      expect(context.hasSemanticTransport).toBe(false);
+      expect(f.workingMemory).not.toHaveBeenCalled(); expect(f.runtime.recordPatternMemory).not.toHaveBeenCalled();
+      const events = f.recorder.seal().finalTransportObservation!.events;
+      expect(events.some(event => event.kind === 'typed_issued_after_drain' || event.kind === 'assistant_document_issued_after_drain')).toBe(false);
+      expect(f.updates.some(update => update.type === 'answer_token' && update.content?.delta)).toBe(false);
+    } finally {f.scope.dispose(); restoreClone();}
+  });
 });

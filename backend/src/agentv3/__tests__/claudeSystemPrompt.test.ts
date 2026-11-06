@@ -44,6 +44,7 @@ jest.mock('../strategyLoader', () => ({
     if (name === 'prompt-conclusion-ack-rule') return 'ACK: no declaration.';
     if (name === 'prompt-authored-final-submission-delivery') return 'Submit only through {{finalSubmissionToolName}} with documentJson:string.\n{{declarationFraming}}';
     if (name === 'prompt-authored-final-submission-v2-delivery') return 'Native object only through {{finalSubmissionToolName}}.\n{{declarationFraming}}';
+    if (name === 'prompt-authored-final-submission-v2-dual-delivery') return 'Choose {{finalSubmissionToolName}} or whole assistant {document}; any action is function-exclusive, never fall back.\n{{declarationFraming}}';
     if (name === 'prompt-authored-final-submission-v2-framing') return 'authored_claim_document@2; document:object; referenceDictionary integer refs; semanticFrames frameIndex; body_part; {{supportedProofRules}}';
     if (name === 'prompt-authored-final-submission-framing') return 'authored_claim_document@1; contract at $.contract; bodyParts are literals/claimText; compiled is not verified.';
     if (name === 'prompt-conclusion-full-framing') return '{{sidecarOpeningMarker}}\n```json\n{"schemaVersion":"conclusion_contract_v1","mode":"focused_answer","conclusions":[],"clusters":[],"evidenceChain":[],"uncertainties":[],"nextSteps":[]}\n```\n-->';
@@ -385,6 +386,28 @@ describe('typed turn prompt assembly', () => {
     expect(() => buildSystemPromptParts({...fixture(), finalSubmission: 'authored_claim_document_v2', declarationSyntax,
       resolvedFinalTool: {role: 'final_candidate_submission', nativeName: 'final'}} as Parameters<typeof buildSystemPromptParts>[0]))
       .toThrow('requires authoring_v2 syntax and a resolved final tool');
+    expect(() => buildSystemPromptParts({...fixture(), finalSubmission: 'authored_claim_document_v2_dual', declarationSyntax,
+      resolvedFinalTool: {role: 'final_candidate_submission', nativeName: 'final'}} as Parameters<typeof buildSystemPromptParts>[0]))
+      .toThrow('requires authoring_v2 syntax and a resolved final tool');
+  });
+
+  it('uses dedicated dual framing and the same complete grammar with an actual final role', () => {
+    const context = {...fixture(), finalSubmission: 'authored_claim_document_v2_dual' as const,
+      declarationSyntax: 'authoring_v2' as const,
+      resolvedFinalTool: {role: 'final_candidate_submission' as const, nativeName: 'renamed__dual_final'}};
+    const parts = buildSystemPromptParts(context);
+    const declaration = parts.segments.find(segment => segment.label === 'conclusion_declaration')!;
+    expect(declaration).toMatchObject({tier: 1, droppable: false, truncatable: false});
+    expect(declaration.content).toContain('Choose renamed__dual_final or whole assistant {document}');
+    expect(declaration.content).toContain('any action is function-exclusive, never fall back');
+    expect(declaration.content).toContain('referenceDictionary integer refs');
+    expect(declaration.content).toContain('semanticFrames frameIndex');
+    expect(declaration.content).not.toContain('Native object only through');
+    expect(declaration.content).not.toMatch(/\{\{\w+\}\}/);
+    expect(() => buildSystemPromptParts({...context, resolvedFinalTool: undefined})).toThrow('resolved final tool');
+    const legacy = buildSystemPromptParts({...context, finalSubmission: 'authored_claim_document_v2'});
+    expect(parts.segments.filter(segment => segment.label !== 'conclusion_declaration'))
+      .toEqual(legacy.segments.filter(segment => segment.label !== 'conclusion_declaration'));
   });
 
   it('selects transport only from captured context, not ambient final-submission configuration', () => {

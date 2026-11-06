@@ -12,6 +12,7 @@ import {isSemanticClaimIssueCode, SEMANTIC_UNDECLARED_CLAIM_ISSUE_CODE} from './
 import {claimReferences} from './analysisInvestigationPresentation';
 import {claimReferenceIssueCode} from '../types/claimVerification';
 import {hasCurrentAuthoredFinalDelivery} from './security/conclusionProtocolProjection';
+import {isAuthoredFinalSubmissionMode} from '../agentRuntime/finalSubmissionImplementation';
 import type {IdentityResolutionV1} from '../types/identityContract';
 import {
   analysisDeliveryFingerprint,
@@ -378,9 +379,9 @@ export function assessFinalResultQualityAssessment(
       });
     }
   }
-  const submissionFailure = context.finalSubmission?.mode === 'authored_claim_document_v1' ||
-    context.finalSubmission?.mode === 'authored_claim_document_v2'
-    ? context.finalSubmission.outcome !== 'submitted' ? context.finalSubmission.outcome
+  const finalSubmission = context.finalSubmission;
+  const submissionFailure = finalSubmission && isAuthoredFinalSubmissionMode(finalSubmission.mode)
+    ? finalSubmission.outcome !== 'submitted' ? finalSubmission.outcome
       : hasCurrentAuthoredFinalDelivery(result, context) ? undefined : 'transport_failure' : undefined;
   if (submissionFailure) {
     assurance.completion = 'failed';

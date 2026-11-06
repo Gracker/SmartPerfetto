@@ -4,10 +4,11 @@
 import {CONCLUSION_AUTHORING_ENV, resolveConclusionDeclarationSyntax} from '../agent/core/conclusionAuthoring';
 import type {ConclusionDeclarationSyntax} from '../agent/core/conclusionContract';
 import type {ModelExecutionProtocol, ResolvedModelExecutionProfile} from '../services/providerManager/modelExecutionProfile';
-import {expectedOpenAiTypedFinalContract} from './finalSubmissionImplementation';
+import {expectedOpenAiTypedFinalContract, getFinalSubmissionModeDescriptor,
+  getAuthoredFinalSubmissionModeDescriptor, type FinalSubmissionModeKey} from './finalSubmissionImplementation';
 
 export const SMARTPERFETTO_FINAL_SUBMISSION_ENV = 'SMARTPERFETTO_FINAL_SUBMISSION';
-export type FinalSubmissionMode = 'assistant_text' | 'authored_claim_document_v1' | 'authored_claim_document_v2';
+export type FinalSubmissionMode = FinalSubmissionModeKey;
 export interface CapturedAnalysisOutputConfig {
   readonly finalSubmission: FinalSubmissionMode;
   readonly declarationSyntax: ConclusionDeclarationSyntax;
@@ -25,7 +26,7 @@ export class FinalSubmissionConfigurationError extends Error {
 }
 
 export function isFinalSubmissionMode(value: unknown): value is FinalSubmissionMode {
-  return value === 'assistant_text' || value === 'authored_claim_document_v1' || value === 'authored_claim_document_v2';
+  return getFinalSubmissionModeDescriptor(value) !== undefined;
 }
 
 export function assertCapturedAnalysisOutputConfig(config: CapturedAnalysisOutputConfig): void {
@@ -33,8 +34,8 @@ export function assertCapturedAnalysisOutputConfig(config: CapturedAnalysisOutpu
       !['canonical_v1', 'authoring_v1', 'authoring_v2'].includes(config.declarationSyntax)) {
     throw new FinalSubmissionConfigurationError('invalid_configuration', 'captured_config');
   }
-  if (config.finalSubmission === 'authored_claim_document_v1' && config.declarationSyntax !== 'canonical_v1' ||
-      config.finalSubmission === 'authored_claim_document_v2' && config.declarationSyntax !== 'authoring_v2') {
+  const descriptor = getAuthoredFinalSubmissionModeDescriptor(config.finalSubmission);
+  if (descriptor && config.declarationSyntax !== descriptor.requiredDeclarationSyntax) {
     throw new FinalSubmissionConfigurationError('invalid_configuration', 'declaration_syntax_conflict');
   }
 }
@@ -84,7 +85,8 @@ export function assertFinalSubmissionPreDispatch(input: FinalSubmissionPreDispat
     throw new FinalSubmissionConfigurationError('unsupported_final_submission', reason);
   }
   if (input.protocol !== 'chat_completions') unsupported('protocol');
-  const sdkContract = expectedOpenAiTypedFinalContract(input.outputConfig.finalSubmission).admissionVersion;
+  const implementation = expectedOpenAiTypedFinalContract(input.outputConfig.finalSubmission);
+  const sdkContract = implementation.admissionVersion;
   if (input.sdk?.agentsCoreVersion !== '0.13.0' || input.sdk.agentsOpenAiVersion !== '0.13.0' ||
       input.sdk.contractVersion !== sdkContract) unsupported('sdk');
   const selection = input.modelSelection;
@@ -102,7 +104,7 @@ export function assertFinalSubmissionPreDispatch(input: FinalSubmissionPreDispat
     const profile = profiles.find(candidate => candidate.model.requestedId === modelId);
     if (!profile || profile.model.identity !== 'configured' || profile.runtimeKind !== input.runtimeKind ||
         profile.protocol !== input.protocol || profile.sdk.version !== input.sdk.agentsOpenAiVersion ||
-        input.outputConfig.finalSubmission === 'authored_claim_document_v2' && profile.sdk.adapterContractVersion !== sdkContract ||
+        implementation.representationVersion === 'authored_claim_document@2' && profile.sdk.adapterContractVersion !== sdkContract ||
         profile.effective.finalSubmission !== input.outputConfig.finalSubmission ||
         profile.effective.declarationSyntax !== input.outputConfig.declarationSyntax) unsupported('model_set');
     if (profile.server.functionTools.status !== 'supported' ||

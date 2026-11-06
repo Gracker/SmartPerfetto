@@ -1570,6 +1570,12 @@ strategies:
   backend/strategies/prompt-submit-final-document-v2-tool-description.template.md:
     disposition: product-only
     reason: SmartPerfetto native object final tool and pending acknowledgement contract
+  backend/strategies/prompt-authored-final-submission-v2-dual-delivery.template.md:
+    disposition: product-only
+    reason: SmartPerfetto private dual-carrier native document submission contract
+  backend/strategies/prompt-submit-final-document-v2-dual-tool-description.template.md:
+    disposition: product-only
+    reason: SmartPerfetto private final tool and exclusive assistant document carrier contract
   backend/strategies/prompt-conclusion-authoring-framing.template.md:
     disposition: product-only
     reason: SmartPerfetto private declaration authoring transport and captured evidence references

@@ -18,6 +18,8 @@ import {
   revokeAuthoredFinalSubmissionIssuer,
   type AuthoredFinalSubmissionV1ReadInput,
   type AuthoredFinalSubmissionV2ReadInput,
+  type AuthoredFinalSubmissionAssistantV2ReadInput, type AuthoredFinalSubmissionAssistantV2IssueInput,
+  type AuthoredFinalSubmissionSourcePolicy,
 } from '../authoredFinalSubmission';
 
 function rawDocument(text = 'Authored text.'): string {
@@ -486,4 +488,169 @@ it('keeps the scoped clone fixture lossless, alias-preserving and reversible', (
     expect(source.first).toBe(shared); expect(source.cycle).toBe(source);
   } finally {restore();}
   expect(globalThis.structuredClone).toBe(original);
+});
+
+
+function assistantFixture(numberLiteral = '7', overrideText?: string) {
+  const original = nativeFixture(numberLiteral);
+  revokeAuthoredFinalSubmissionIssuer(original.issuer);
+  // The same independent document fixture is now authored as whole assistant text;
+  // no function call/ACK is fabricated or supplied to this source variant.
+  const rawAssistantText = overrideText ?? ` \n${original.input.rawArguments}\n `;
+  const nativeDocument = JSON.parse(rawAssistantText).document;
+  const compiled = compileAuthoredClaimObject(nativeDocument);
+  if (compiled.status !== 'compiled') throw new Error('Assistant fixture must compile');
+  const {owner, binding} = original;
+  const issuer = createAuthoredFinalSubmissionIssuer({binding, representationVersion: AUTHORED_CLAIM_OBJECT_VERSION,
+    sourcePolicy: 'function_or_assistant_json', assertCurrent: () => {if (!owner.active) throw new Error('closed');},
+    assertAttemptCurrent: () => {if (!owner.attemptActive) throw new Error('closed');}});
+  const dispatch = {dispatchOrdinal: 1, responseId: 'assistant-response', messageId: 'assistant-response'};
+  const input: AuthoredFinalSubmissionAssistantV2IssueInput = {sourceKind: 'assistant_json', ...dispatch, rawAssistantText, nativeDocument, compiled};
+  const read: AuthoredFinalSubmissionAssistantV2ReadInput = {sourceKind: 'assistant_json', binding: {...binding, ...dispatch,
+    representationVersion: AUTHORED_CLAIM_OBJECT_VERSION, compilerContractVersion: AUTHORED_CLAIM_OBJECT_COMPILER_VERSION},
+    rawAssistantText, nativeDocument: structuredClone(nativeDocument), body: compiled.body, rawCanonicalPayload: structuredClone(compiled.rawCanonicalPayload)};
+  return {owner, binding, issuer, input, read};
+}
+
+describe('independent assistant JSON source authority', () => {
+  let restoreClone: (() => void) | undefined;
+  beforeEach(() => {restoreClone = installCurrentRealmStructuredCloneForTest();});
+  afterEach(() => {restoreClone?.(); restoreClone = undefined;});
+
+  it('issues a disjoint lossless assistant snapshot without fabricated function identities', () => {
+    const f = assistantFixture(), token = issueAuthoredFinalSubmission(f.issuer, f.input);
+    const snapshot = readAuthoredFinalSubmission(token, f.read);
+    expect(snapshot.sourceKind).toBe('assistant_json'); expect(snapshot.rawAssistantText).toBe(f.input.rawAssistantText);
+    expect(snapshot.compiled).toEqual(f.input.compiled); expect(snapshot.compiled).not.toBe(f.input.compiled); assertFrozen(snapshot);
+    expect(snapshot.hashes).toEqual({rawAssistantTextHash: analysisDeliveryFingerprint(f.input.rawAssistantText),
+      bodyHash: analysisDeliveryFingerprint(f.input.compiled.body), rawCanonicalPayloadHash: analysisDeliveryFingerprint(f.input.compiled.rawCanonicalPayload)});
+    for (const key of ['callId', 'rawArguments', 'documentJson', 'rawArgumentsHash', 'handlerAck']) {
+      expect(snapshot).not.toHaveProperty(key); expect(snapshot.binding).not.toHaveProperty(key); expect(snapshot.hashes).not.toHaveProperty(key);
+    }
+    expect(snapshot.binding).not.toHaveProperty('owner'); expect(Object.isFrozen(f.owner)).toBe(false);
+    f.owner.attemptActive = false; expect(readAuthoredFinalSubmission(token, f.read)).toBe(snapshot);
+    claimAuthoredFinalSubmission(token); expect(() => claimAuthoredFinalSubmission(token)).toThrow('already_claimed');
+    revokeAuthoredFinalSubmission(token); expect(() => readAuthoredFinalSubmission(token, f.read)).toThrow('invalid');
+  });
+
+  it.each([undefined, 'function_only'] as const)('never widens issuer policy from a submitted source tag: %s', sourcePolicy => {
+    const f = assistantFixture();
+    const options: Parameters<typeof createAuthoredFinalSubmissionIssuer>[0] = {binding: f.binding, representationVersion: AUTHORED_CLAIM_OBJECT_VERSION,
+      sourcePolicy: sourcePolicy as AuthoredFinalSubmissionSourcePolicy | undefined, assertCurrent() {}, assertAttemptCurrent() {}};
+    const issuer = createAuthoredFinalSubmissionIssuer(options); options.sourcePolicy = 'function_or_assistant_json';
+    expect(() => issueAuthoredFinalSubmission(issuer, f.input)).toThrow('invalid_input');
+    expect(() => createAuthoredFinalSubmissionIssuer({...options, representationVersion: AUTHORED_CLAIM_DOCUMENT_VERSION})).toThrow('invalid_binding');
+  });
+
+  it('keeps a dual issuer’s function branch on the complete original function snapshot shape', () => {
+    const old = nativeFixture(), dual = createAuthoredFinalSubmissionIssuer({binding: old.binding, representationVersion: AUTHORED_CLAIM_OBJECT_VERSION,
+      sourcePolicy: 'function_or_assistant_json', assertCurrent() {}, assertAttemptCurrent() {}});
+    const oldSnapshot = readAuthoredFinalSubmission(issueAuthoredFinalSubmission(old.issuer, old.input), old.read);
+    const snapshot = readAuthoredFinalSubmission(issueAuthoredFinalSubmission(dual, old.input), old.read);
+    expect(snapshot).toEqual(oldSnapshot); expect(JSON.stringify(snapshot)).toBe(JSON.stringify(oldSnapshot));
+    expect(snapshot).not.toHaveProperty('sourceKind'); expect(snapshot).not.toHaveProperty('rawAssistantText');
+    expect(snapshot.binding).toHaveProperty('callId', 'native-call');
+  });
+
+  it.each(['callId', 'rawArguments', 'documentJson', 'rawArgumentsHash', 'handlerAck', 'completed'] as const)
+    ('rejects a function/authority-only field in the assistant source envelope: %s', field => {
+      const f = assistantFixture(); expect(() => issueAuthoredFinalSubmission(f.issuer, {...f.input, [field]: 'not-authority'})).toThrow('invalid_input');
+    });
+
+  it.each(['prose', 'fence', 'two_objects', 'extra_key', 'array'] as const)('parses only the complete original assistant JSON envelope: %s', kind => {
+    const f = assistantFixture();
+    const rawAssistantText = kind === 'prose' ? 'Assistant prose' : kind === 'fence' ? `\`\`\`json\n${f.input.rawAssistantText}\n\`\`\`` :
+      kind === 'two_objects' ? f.input.rawAssistantText + '{}' : kind === 'array' ? `[${f.input.rawAssistantText}]` :
+        JSON.stringify({...JSON.parse(f.input.rawAssistantText), unexpected: true});
+    expect(() => issueAuthoredFinalSubmission(f.issuer, {...f.input, rawAssistantText})).toThrow('invalid_input');
+  });
+
+  it.each(['sourceKind', 'rawAssistantText', 'nativeDocument', 'compiled', 'root_proxy', 'revoked_proxy', 'native_proxy', 'compiled_getter', 'compiled_proxy', 'symbol_extra', 'nonenum_extra'] as const)
+    ('does not execute source-envelope or compiled-material traps: %s', kind => {
+      const f = assistantFixture(); let executions = 0; let input: unknown = {...f.input};
+      const proxy = (value: object) => new Proxy(value, {get() {executions++; throw new Error('private');},
+        ownKeys() {executions++; throw new Error('private');}, getPrototypeOf() {executions++; throw new Error('private');}});
+      if (['sourceKind', 'rawAssistantText', 'nativeDocument', 'compiled'].includes(kind)) {
+        Object.defineProperty(input, kind, {enumerable: true, get() {executions++; return f.input[kind as keyof typeof f.input];}});
+      } else if (kind === 'root_proxy') input = proxy(input as object);
+      else if (kind === 'revoked_proxy') {const revoked = Proxy.revocable(input as object, {}); revoked.revoke(); input = revoked.proxy;}
+      else if (kind === 'native_proxy') input = {...f.input, nativeDocument: proxy(f.input.nativeDocument as object)};
+      else if (kind === 'compiled_proxy') input = {...f.input, compiled: proxy(f.input.compiled)};
+      else if (kind === 'symbol_extra') Object.defineProperty(input, Symbol('private'), {value: true});
+      else if (kind === 'nonenum_extra') Object.defineProperty(input, 'extra', {value: true, enumerable: false});
+      else {
+        const altered = {...f.input.compiled}; Object.defineProperty(altered, 'body', {enumerable: true, get() {executions++; return f.input.compiled.body;}});
+        input = {...f.input, compiled: altered};
+      }
+      expect(() => issueAuthoredFinalSubmission(f.issuer, input as AuthoredFinalSubmissionAssistantV2IssueInput)).toThrow('invalid_input');
+      expect(executions).toBe(0);
+    });
+
+  it.each(['owner', 'sessionId', 'runId', 'attemptId', 'providerPin', 'authorizationFingerprint', 'dispatchOrdinal', 'responseId', 'messageId',
+    'representationVersion', 'compilerContractVersion'] as const)('binds the actual assistant %s independently', field => {
+    const f = assistantFixture(), token = issueAuthoredFinalSubmission(f.issuer, f.input), snapshot = readAuthoredFinalSubmission(token, f.read);
+    const binding = {...f.read.binding, [field]: field === 'owner' ? {} : field === 'dispatchOrdinal' ? 2 : 'foreign'};
+    expect(() => readAuthoredFinalSubmission(token, {...f.read, binding: binding as typeof f.read.binding, hashes: {...snapshot.hashes}})).toThrow('mismatch');
+  });
+
+  it.each(['sourceKind', 'rawAssistantText', 'nativeDocument', 'body', 'rawCanonicalPayload'] as const)('rejects changed %s with copied source hashes', field => {
+    const f = assistantFixture(), token = issueAuthoredFinalSubmission(f.issuer, f.input), snapshot = readAuthoredFinalSubmission(token, f.read);
+    expect(() => readAuthoredFinalSubmission(token, {...f.read, [field]: field.includes('Document') || field === 'rawCanonicalPayload' ? {} : 'changed',
+      hashes: {...snapshot.hashes}} as AuthoredFinalSubmissionAssistantV2ReadInput)).toThrow('mismatch');
+  });
+
+  it.each(['-0', '1e999'])('preserves canonical-invalid/original numeric %s and refuses a normalized substitute', literal => {
+    const f = assistantFixture(literal), token = issueAuthoredFinalSubmission(f.issuer, f.input), snapshot = readAuthoredFinalSubmission(token, f.read);
+    const original = literal === '-0' ? -0 : Infinity;
+    const value = (snapshot.compiled.rawCanonicalPayload.claims as any[])[0].semantics.numeric.value;
+    expect(Object.is(value, original)).toBe(true); expect(snapshot.compiled.canonicalParse).toEqual(f.input.compiled.canonicalParse);
+    if (literal === '1e999') expect(snapshot.compiled.canonicalParse.status).toBe('partially_valid');
+    const changed = structuredClone(snapshot.compiled.rawCanonicalPayload) as any;
+    changed.claims[0].semantics.numeric.value = literal === '-0' ? 0 : null;
+    expect(() => readAuthoredFinalSubmission(token, {...f.read, rawCanonicalPayload: changed, hashes: {...snapshot.hashes}})).toThrow('mismatch');
+    const other = assistantFixture(literal), fake = structuredClone(other.input.compiled);
+    (fake.rawCanonicalPayload.claims as any[])[0].semantics.numeric.value = literal === '-0' ? 0 : null;
+    expect(() => issueAuthoredFinalSubmission(other.issuer, {...other.input, compiled: fake})).toThrow('invalid_input');
+  });
+
+  it('does not treat UTF8 hash equality as equality of original UTF16 assistant text or body', () => {
+    const base = nativeFixture(), text = base.input.rawArguments.replace('Original literal ', 'Original literal \ud800');
+    revokeAuthoredFinalSubmissionIssuer(base.issuer);
+    const f = assistantFixture('7', text), token = issueAuthoredFinalSubmission(f.issuer, f.input), snapshot = readAuthoredFinalSubmission(token, f.read);
+    const changedText = text.replace('\ud800', '\ufffd'), changedBody = f.read.body.replace('\ud800', '\ufffd');
+    expect(analysisDeliveryFingerprint(changedText)).toBe(snapshot.hashes.rawAssistantTextHash);
+    expect(analysisDeliveryFingerprint(changedBody)).toBe(snapshot.hashes.bodyHash);
+    expect(() => readAuthoredFinalSubmission(token, {...f.read, rawAssistantText: changedText, hashes: {...snapshot.hashes}})).toThrow('mismatch');
+    expect(() => readAuthoredFinalSubmission(token, {...f.read, body: changedBody, hashes: {...snapshot.hashes}})).toThrow('mismatch');
+  });
+
+  it('does not impose a new sum cap over duplicate raw/native/expanded compiler material', () => {
+    const base = nativeFixture(); revokeAuthoredFinalSubmissionIssuer(base.issuer);
+    const document = JSON.parse(base.input.rawArguments).document;
+    document.bodyParts = ['x'.repeat(300_000), 'y'.repeat(300_000)];
+    const f = assistantFixture('7', JSON.stringify({document}));
+    expect(Buffer.byteLength(f.input.rawAssistantText)).toBeLessThan(CONCLUSION_AUTHORING_LIMITS.utf8Bytes);
+    expect(Buffer.byteLength(JSON.stringify(f.input.compiled))).toBeGreaterThan(CONCLUSION_AUTHORING_LIMITS.utf8Bytes);
+    const token = issueAuthoredFinalSubmission(f.issuer, f.input);
+    expect(readAuthoredFinalSubmission(token, f.read).compiled.body).toBe(f.input.compiled.body);
+  });
+
+  it('rejects cross-source reads and revokes a prior source on a second issue attempt', () => {
+    const f = assistantFixture(), token = issueAuthoredFinalSubmission(f.issuer, f.input), old = nativeFixture();
+    expect(() => readAuthoredFinalSubmission(token, old.read)).toThrow('mismatch');
+    const oldToken = issueAuthoredFinalSubmission(old.issuer, old.input);
+    expect(() => readAuthoredFinalSubmission(oldToken, f.read)).toThrow('mismatch');
+    expect(() => issueAuthoredFinalSubmission(f.issuer, old.input)).toThrow('already_issued');
+    expect(() => readAuthoredFinalSubmission(token, f.read)).toThrow('invalid');
+    const current = assistantFixture(), liveToken = issueAuthoredFinalSubmission(current.issuer, current.input);
+    current.owner.active = false; expect(() => readAuthoredFinalSubmission(liveToken, current.read)).toThrow('inactive');
+  });
+
+  it('checks read-envelope data descriptors before any getter or proxy executes', () => {
+    const f = assistantFixture(), token = issueAuthoredFinalSubmission(f.issuer, f.input); let executions = 0;
+    const getter = {...f.read}; Object.defineProperty(getter, 'binding', {enumerable: true, get() {executions++; return f.read.binding;}});
+    expect(() => readAuthoredFinalSubmission(token, getter)).toThrow('mismatch');
+    const proxy = new Proxy(f.read, {get() {executions++; throw new Error('private');}, ownKeys() {executions++; throw new Error('private');}});
+    expect(() => readAuthoredFinalSubmission(token, proxy)).toThrow('mismatch'); expect(executions).toBe(0);
+  });
 });

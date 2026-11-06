@@ -142,7 +142,7 @@ function assessDeliveryIssues(
   const current = context && context.entry !== 'historical_restore' ? context : undefined;
   const completion = current?.completion;
   const origin = current?.outputOrigin;
-  const authoredBody = origin === 'model_tool_arguments' && Boolean(current && hasCurrentAuthoredFinalBody(conclusion, current));
+  const authoredBody = Boolean(current && hasCurrentAuthoredFinalBody(conclusion, current));
   const supportedOrigin = origin === 'sdk_final' || origin === 'assistant_stream' ||
     origin === 'evidence_rendered' || origin === 'runtime_fallback' || authoredBody;
   const nativeKnown = completion?.schemaVersion === 1 &&

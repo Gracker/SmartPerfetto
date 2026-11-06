@@ -1147,8 +1147,9 @@ describe('createClaudeMcpServer', () => {
       return args.document;
     }
 
-    it('registers one native-object final role and preserves its marked literal subtree', async () => {
-      const server = createTestServer({finalSubmission: 'authored_claim_document_v2', allowNewEvidence: false});
+    it.each(['authored_claim_document_v2', 'authored_claim_document_v2_dual'] as const)(
+    'registers one complete %s final role and preserves its marked literal subtree', async finalSubmission => {
+      const server = createTestServer({finalSubmission, allowNewEvidence: false});
       const resolved = server.resolvedFinalTool!;
       expect(server.toolDefinitions.filter(item => item.role === 'final_candidate_submission')).toHaveLength(1);
       expect(resolved.definition).toBe(server.toolDefinitions.find(item => item.role === 'final_candidate_submission'));
@@ -1188,8 +1189,9 @@ describe('createClaudeMcpServer', () => {
       } finally {compile.mockRestore();}
     });
 
-    it('preserves raw invalid canonical values and keeps native compilation separate from verification', async () => {
-      const server = createTestServer({finalSubmission: 'authored_claim_document_v2'});
+    it.each(['authored_claim_document_v2', 'authored_claim_document_v2_dual'] as const)(
+    'preserves raw invalid canonical values for %s without certifying compilation', async finalSubmission => {
+      const server = createTestServer({finalSubmission});
       const document = nativeObjectExample();
       // Copy the ordinary JSON fixture in this realm before adding the invalid number.
       const invalid: typeof document.contract.claims[number] = JSON.parse(JSON.stringify(document.contract.claims[0]));
@@ -1207,16 +1209,35 @@ describe('createClaudeMcpServer', () => {
       expect(server.emittedUpdates).toEqual([]);
     });
 
+    it('keeps the entire actual tool grammar identical for explicit dual submission', () => {
+      const original = createTestServer({finalSubmission: 'authored_claim_document_v2'}).resolvedFinalTool!;
+      const dual = createTestServer({finalSubmission: 'authored_claim_document_v2_dual'}).resolvedFinalTool!;
+      expect(dual.nativeName).toBe(original.nativeName);
+      expect(runtimeToolSpec.createJsonSchemaFromZodRawShape(dual.definition.shared.inputSchema))
+        .toEqual(runtimeToolSpec.createJsonSchemaFromZodRawShape(original.definition.shared.inputSchema));
+      const installedOriginal = createOpenAIToolsFromMcpDefinitions([original.definition])[0];
+      const installedDual = createOpenAIToolsFromMcpDefinitions([dual.definition])[0];
+      if (installedOriginal.type !== 'function' || installedDual.type !== 'function') throw new Error('Expected actual function tools');
+      expect(installedDual.parameters).toEqual(installedOriginal.parameters);
+      expect(installedDual.description).toContain('whole `{document}` JSON assistant message with no actions');
+      expect(installedDual.description).toContain('other envelope keys, Markdown fences or surrounding prose');
+      expect(installedDual.description).toContain('preserve string whitespace/Unicode');
+      expect(installedDual.description).toContain('failure cannot fall back');
+      expect(installedOriginal.description).toContain('Never stringify document or emit a separate assistant answer');
+    });
+
     it.each([{}, {document: 'PRIVATE_NATIVE_DOCUMENT_CANARY'}, {document: {}},
       {document: {}, documentJson: '{}'}, {document: {}, planPhaseId: 'p1'},
       {document: {representationVersion: 'unknown'}}])('refuses malformed native arguments without data or authority: %j', async args => {
-      const server = createTestServer({finalSubmission: 'authored_claim_document_v2'});
-      const result = await server.resolvedFinalTool!.definition.shared.handler(args, {});
-      expect(result.isError).toBe(true);
-      expect(result.structuredContent).toMatchObject({kind: 'authored_final_submission', status: 'rejected'});
-      expect(runtimeToolSpec.stringifyRuntimeToolResult(result)).not.toBe(AUTHORED_FINAL_SUBMISSION_PENDING_ACK);
-      expect(JSON.stringify(result)).not.toContain('PRIVATE_NATIVE_DOCUMENT_CANARY');
-      expect(server.mockTpService.query).not.toHaveBeenCalled();
+      for (const finalSubmission of ['authored_claim_document_v2', 'authored_claim_document_v2_dual'] as const) {
+        const server = createTestServer({finalSubmission});
+        const result = await server.resolvedFinalTool!.definition.shared.handler(args, {});
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent).toMatchObject({kind: 'authored_final_submission', status: 'rejected'});
+        expect(runtimeToolSpec.stringifyRuntimeToolResult(result)).not.toBe(AUTHORED_FINAL_SUBMISSION_PENDING_ACK);
+        expect(JSON.stringify(result)).not.toContain('PRIVATE_NATIVE_DOCUMENT_CANARY');
+        expect(server.mockTpService.query).not.toHaveBeenCalled();
+      }
     });
 
     it('exposes an exact required literal document string only through the explicit typed mode', async () => {
@@ -2309,6 +2330,25 @@ describe('createClaudeMcpServer', () => {
       // Closing a phase with evidence and skipping must stay available.
       expect(description).toMatch(/summary/i);
       expect(description).toMatch(/skip/i);
+    });
+
+    it('accounts for the dedicated dual final description separately from unchanged ordinary tools', () => {
+      const scope: Parameters<typeof createTestServer>[0] = {referenceTraceId: 'reference-trace-456',
+        codeAwareMode: 'metadata_only', codebaseIds: ['app-codebase'],
+        codebaseRegistry: capableCodebaseRegistry(['app-codebase']), sourceDepth: 'mechanism'};
+      const baseline = createTestServer(scope);
+      const dual = createTestServer({...scope, finalSubmission: 'authored_claim_document_v2_dual'});
+      const ordinary = dual.toolDefinitions.filter(def => def.role !== 'final_candidate_submission');
+      const final = dual.toolDefinitions.filter(def => def.role === 'final_candidate_submission');
+      expect(ordinary.map(def => def.shared.description)).toEqual(baseline.toolDefinitions.map(def => def.shared.description));
+      expect(final).toHaveLength(1);
+      const ordinaryChars = ordinary.reduce((sum, def) => sum + def.shared.description.length, 0);
+      const finalChars = final[0].shared.description.length;
+      expect(ordinaryChars).toBeLessThanOrEqual(14_600);
+      expect(finalChars).toBeLessThanOrEqual(1000);
+      expect(final[0].shared.description).toBe(requireToolDescription('prompt-submit-final-document-v2-dual-tool-description'));
+      console.info('[DualToolDescriptionBudget]', JSON.stringify({ordinaryChars, finalChars,
+        totalChars: ordinaryChars + finalChars, finalRoleAllowance: 1000}));
     });
 
     it.each([

@@ -359,6 +359,33 @@ describe('maintained LLM execution target preflight', () => {
     expect(fs.readFileSync(test.output, 'utf8')).not.toContain(CANARY);
   });
 
+  it('observes actual dual implementation through the production gate without running a model', () => {
+    const test = fixture({side: 'candidate', treatmentHash: 'd'.repeat(64)});
+    const result = test.run({SMARTPERFETTO_FINAL_SUBMISSION: 'authored_claim_document_v2_dual',
+      SMARTPERFETTO_CONCLUSION_AUTHORING: 'authoring_v2', OPENAI_AGENTS_PROTOCOL: 'chat_completions',
+      OPENAI_BASE_URL: 'https://api.deepseek.com/v1', OPENAI_MODEL: 'deepseek-flash', OPENAI_LIGHT_MODEL: 'deepseek-flash',
+      OPENAI_ANALYSIS_REASONING_EFFORT: 'none'});
+    expect(result.status).toBe(0);
+    expect(result.observed.sdkModes).toEqual(['authored_claim_document_v2_dual']);
+    expect(result.observed.attempts).toEqual([]);
+    expect(test.receipt()).toMatchObject({schemaVersion: 'llm_target_preflight@3', status: 'ready',
+      capturedOutput: {finalSubmission: 'authored_claim_document_v2_dual', declarationSyntax: 'authoring_v2'},
+      outputImplementation: {kind: 'typed', representationVersion: 'authored_claim_document@2', compilerVersion: 'authored_claim_document_compiler@2',
+        admissionVersion: 'openai_typed_final_admission@4', wireVersion: 'openai_chat_final_wire@3'}});
+    expect(fs.readFileSync(test.output, 'utf8')).not.toContain(CANARY);
+  });
+
+  it.each([{SMARTPERFETTO_CONCLUSION_AUTHORING: 'canonical_v1'}, {OPENAI_AGENTS_PROTOCOL: 'responses'}])(
+    'rejects an actual dual configuration mismatch with no model call: %j', invalid => {
+      const test = fixture({side: 'candidate'});
+      const result = test.run({SMARTPERFETTO_FINAL_SUBMISSION: 'authored_claim_document_v2_dual',
+        SMARTPERFETTO_CONCLUSION_AUTHORING: 'authoring_v2', OPENAI_AGENTS_PROTOCOL: 'chat_completions',
+        OPENAI_BASE_URL: 'https://api.deepseek.com/v1', OPENAI_MODEL: 'deepseek-flash', OPENAI_LIGHT_MODEL: 'deepseek-flash',
+        OPENAI_ANALYSIS_REASONING_EFFORT: 'none', ...invalid});
+      expect(result.status).toBe(1); expect(result.observed.attempts).toEqual([]);
+      expect(test.receipt()).toMatchObject({schemaVersion: 'llm_target_preflight@3', status: 'failed'});
+    });
+
   it('returns fixed real typed-gate refusal without sending a model request', () => {
     const test = fixture({side: 'candidate'});
     const result = test.run({SMARTPERFETTO_FINAL_SUBMISSION: 'authored_claim_document_v1'});

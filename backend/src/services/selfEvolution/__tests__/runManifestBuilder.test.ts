@@ -32,16 +32,19 @@ function recordEmptyRegistry(builder: RunManifestBuilder): void {
 }
 
 describe('run-bound declaration syntax attribution', () => {
-  it('captures native v2 with authoring v2 once and preserves unknown historical fields', () => {
+  it.each(['authored_claim_document_v2', 'authored_claim_document_v2_dual'] as const)(
+  'captures %s with authoring v2 once and preserves unknown historical fields', mode => {
     const legacy = createBuilder(); recordEmptyRegistry(legacy);
     expect(legacy.seal()).not.toHaveProperty('finalSubmission');
     const builder = createBuilder(); recordEmptyRegistry(builder);
     const identity = {runtime: 'qoder-agent-sdk' as const, providerId: 'provider-a'};
-    builder.recordRuntime({...identity, finalSubmission: 'authored_claim_document_v2', conclusionDeclarationSyntax: 'authoring_v2'});
+    builder.recordRuntime({...identity, finalSubmission: mode, conclusionDeclarationSyntax: 'authoring_v2'});
     builder.recordRuntime({...identity, model: 'resolved-model'});
     expect(() => builder.recordRuntime({...identity, finalSubmission: 'authored_claim_document_v1'}))
       .toThrow('run_manifest_final_submission_changed');
-    expect(builder.seal()).toMatchObject({finalSubmission: 'authored_claim_document_v2',
+    expect(() => builder.recordRuntime({...identity, finalSubmission: mode === 'authored_claim_document_v2'
+      ? 'authored_claim_document_v2_dual' : 'authored_claim_document_v2'})).toThrow('run_manifest_final_submission_changed');
+    expect(builder.seal()).toMatchObject({finalSubmission: mode,
       conclusionDeclarationSyntax: 'authoring_v2', model: 'resolved-model'});
   });
 
@@ -51,6 +54,10 @@ describe('run-bound declaration syntax attribution', () => {
     expect(() => builder.recordRuntime({...identity, finalSubmission: 'authored_claim_document_v2', conclusionDeclarationSyntax: syntax}))
       .toThrow('run_manifest_output_config_conflict');
     expect(builder.seal()).not.toHaveProperty('finalSubmission');
+    const dual = createBuilder(); recordEmptyRegistry(dual);
+    expect(() => dual.recordRuntime({...identity, finalSubmission: 'authored_claim_document_v2_dual', conclusionDeclarationSyntax: syntax}))
+      .toThrow('run_manifest_output_config_conflict');
+    expect(dual.seal()).not.toHaveProperty('finalSubmission');
   });
 
 

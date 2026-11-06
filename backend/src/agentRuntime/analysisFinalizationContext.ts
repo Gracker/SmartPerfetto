@@ -18,6 +18,7 @@ import {readConclusionProtocolProjection, releaseConclusionProtocolProjection,
   claimConclusionProtocolProjection, bindAuthoredFinalDelivery, hasCurrentAuthoredFinalDelivery,
   type IssuedConclusionProtocolProjection, type NativeConclusionDeclaration} from '../services/security/conclusionProtocolProjection';
 import {analysisDeliveryFingerprint} from '../types/analysisDelivery';
+import {isAuthoredFinalSubmissionMode} from './finalSubmissionImplementation';
 import {sanitizeSourceUseDecision} from '../services/codebase/sourceUseDecision';
 import {isIssuedInvestigationEvidenceSnapshot,
   type InvestigationEvidenceSnapshot} from '../services/evidence/investigationEvidenceLedger';
@@ -264,8 +265,7 @@ export function attachFinalizationContext(result: AnalysisResult, input: Runtime
   try {
     const deliveryContext = freezeSnapshot(input.deliveryContext);
     if (nativeDeclaration) bindAuthoredFinalDelivery({context: deliveryContext, result, nativeDeclaration});
-    const typedSubmission = deliveryContext.finalSubmission?.mode === 'authored_claim_document_v1' ||
-      deliveryContext.finalSubmission?.mode === 'authored_claim_document_v2';
+    const typedSubmission = isAuthoredFinalSubmissionMode(deliveryContext.finalSubmission?.mode);
     const mayReview = !typedSubmission || deliveryContext.finalSubmission?.outcome === 'submitted' &&
       hasCurrentAuthoredFinalDelivery(result, deliveryContext);
     contexts.set(result, {controller: new AbortController(), value: {
@@ -284,7 +284,8 @@ export function attachFinalizationContext(result: AnalysisResult, input: Runtime
       deliveryCall: closedDeliveryCall(input.deliveryCall),
     }});
   } catch (error) {
-    if (nativeDeclaration?.inputKind === 'model_tool_arguments' && input.protocolProjection) {
+    if ((nativeDeclaration?.inputKind === 'model_tool_arguments' || nativeDeclaration?.inputKind === 'assistant_json') &&
+        input.protocolProjection) {
       releaseConclusionProtocolProjection(input.protocolProjection);
     }
     throw error;

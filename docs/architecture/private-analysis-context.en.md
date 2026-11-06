@@ -166,7 +166,7 @@ serialized results cannot recreate receipts. Protocol fields and enum values
 are projected structurally, then text values are serialized safely so source
 content or quoted paths cannot corrupt JSON.
 
-Experimental document submission preserves original tool arguments, `documentJson`,
+Experimental function-document submission preserves original tool arguments, `documentJson`,
 the compiled body and the whole original canonical payload, including invalid
 items. They remain in a current-run private submission and finalization context;
 public tool events, logs and progress contain only pending/rejected summaries.
@@ -184,6 +184,19 @@ Issued final-submission material comes from the unique tool document. Internal
 material observations retain fixed-field counts and statuses, with distinct
 markers for null, unknown and unretained material. Cancellation and late events
 remain bound to their run, attempt and request.
+
+Assistant documents in explicit dual mode use a separate private
+`sourceKind: assistant_json` snapshot. It retains rawAssistantText, the actual
+response ID, SDK message ID, native document, compiled body and original canonical
+payload, without inventing callId, rawArguments or a handler ACK. Only the
+`function_or_assistant_json` policy captured at issuer creation permits this source;
+model input cannot select or widen it. Every read still compares the original text
+and source/dispatch/version/owner identities exactly. Hashes correlate material but
+cannot replace equality. The assistant carrier has public origin `sdk_final`, while
+quality and semantic review still require submitted state and a matching live
+authored binding. Existing function sources retain their `model_tool_arguments`
+pairing. Both carriers share original declarations, private quote bindings and
+privacy projection rules; persisted records cannot restore these capabilities.
 
 Semantic review within the same run uses original text fields from the issued
 declaration. Input permission binds the native declaration, display candidate,

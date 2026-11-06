@@ -486,7 +486,7 @@ describe('actual bounded typed-final wire collector at the existing terminal fet
       await boundary();
       expect(collector.current()).toBeUndefined();
       source.close(); await reading;
-      expect(collector.current()?.rawArguments).toBe(rawArguments);
+      expect(collector.current()).toMatchObject({rawArguments: rawArguments});
     } finally {await reading;}
   });
 
@@ -497,14 +497,14 @@ describe('actual bounded typed-final wire collector at the existing terminal fet
     for (let at = 0; at < raw.length; at += 8192) pieces.push(raw.slice(at, at + 8192));
     await consumeObserved(streamedArgumentResponse(pieces), collector);
     if (excess) expect(collector.diagnostic()).toMatchObject({status: 'rejected', reason: 'raw_limit'});
-    else expect(collector.current()?.rawArguments).toBe(raw);
+    else expect(collector.current()).toMatchObject({rawArguments: raw});
   });
 
   it('preserves lone surrogates and a surrogate pair split between argument deltas', async () => {
     const collector = createOpenAiTypedFinalWireCollector();
     const pieces = ['a\ud800', '\udc00', '\ud801'];
     await consumeObserved(streamedArgumentResponse(pieces), collector);
-    expect(collector.current()?.rawArguments).toBe(pieces.join(''));
+    expect(collector.current()).toMatchObject({rawArguments: pieces.join('')});
   });
 
   it('revokes an old receipt on another real request and never launders unsafe prior wire', async () => {
@@ -685,7 +685,7 @@ function nativeObjectFixture(): AuthoredClaimObjectInput {
 }
 
 function nativeObjectProbe(options: {
-  contractVersion?: 'openai_typed_final_admission@3';
+  contractVersion?: 'openai_typed_final_admission@3' | 'openai_typed_final_admission@4';
   input?: string | AgentInputItem[];
   maxTurns?: number;
   response?: () => Response;
@@ -746,6 +746,7 @@ function nativeObjectProbe(options: {
   const assertCurrent = () => {if (!ownerCurrent || productController.signal.aborted) throw new Error('owner revoked');};
   const issuer = options.productionBridge ? createAuthoredFinalSubmissionIssuer({binding: ownerBinding,
     representationVersion: 'authored_claim_document@2', assertCurrent,
+    ...(options.contractVersion === 'openai_typed_final_admission@4' ? {sourcePolicy: 'function_or_assistant_json' as const} : {}),
     assertAttemptCurrent: () => {if (!attemptCurrent) throw new Error('attempt ended');}}) : undefined;
   let admission: ReturnType<typeof createOpenAiTypedFinalAttempt> | undefined;
   let submission: AuthoredConclusionSubmission | undefined;
@@ -783,7 +784,7 @@ function nativeObjectProbe(options: {
       if (controller.signal.aborted) throw new Error('prototype_cancelled');
       if (results.length !== 1) throw new Error('prototype_multiple_tools');
       const receipt = collector.current();
-      if (!receipt || observations.sdkRawArguments !== receipt.rawArguments) throw new Error('prototype_raw_mismatch');
+      if (!receipt || 'sourceKind' in receipt || observations.sdkRawArguments !== receipt.rawArguments) throw new Error('prototype_raw_mismatch');
       const wireValue: unknown = JSON.parse(receipt.rawArguments);
       if (!isDeepStrictEqual(wireValue, observations.sdkArgs)) throw new Error('prototype_sdk_args_changed');
       if (!isDeepStrictEqual(wireValue, observations.handlerArgs)) throw new Error('prototype_handler_args_changed');
@@ -866,7 +867,7 @@ describe('S2 P1 native-object installed-SDK feasibility (no product issuer)', ()
       const stream = await h.settle();
       expect(stream.error).toBeNull();
       expect(h.observations.sdkRawArguments).toBe(h.argumentsText);
-      expect(h.collector.current()?.rawArguments).toBe(h.argumentsText);
+      expect(h.collector.current()).toMatchObject({rawArguments: h.argumentsText});
       const expected = JSON.parse(h.argumentsText);
       expect(h.observations.sdkArgs).toEqual(expected); expect(h.observations.handlerArgs).toEqual(expected);
       expect(expected.document.referenceDictionary[1].value).toEqual({kind: 'present', value: null});
@@ -954,7 +955,7 @@ describe('S2 P1 native-object installed-SDK feasibility (no product issuer)', ()
     const h = nativeObjectProbe({argumentsText: '{}' + raw});
     try {
       const stream = await h.settle();
-      expect(h.observations.sdkRawArguments).toBe(raw); expect(h.collector.current()?.rawArguments).toBe('{}' + raw);
+      expect(h.observations.sdkRawArguments).toBe(raw); expect(h.collector.current()).toMatchObject({rawArguments: '{}' + raw});
       expect(stream.error).toMatchObject({message: 'prototype_raw_mismatch'});
     } finally {await h.cleanup();}
   });
@@ -965,7 +966,9 @@ describe('S2 P1 native-object installed-SDK feasibility (no product issuer)', ()
     try {
       const stream = await h.settle();
       expect(h.observations.sdkArgs).not.toHaveProperty('optionalSelector');
-      expect(JSON.parse(h.collector.current()!.rawArguments)).toHaveProperty('optionalSelector', null);
+      const receipt = h.collector.current();
+      if (!receipt || 'sourceKind' in receipt) throw new Error('Expected the original function receipt');
+      expect(JSON.parse(receipt.rawArguments)).toHaveProperty('optionalSelector', null);
       expect(stream.error).toMatchObject({message: 'prototype_sdk_args_changed'});
     } finally {await h.cleanup();}
   });
@@ -1046,7 +1049,7 @@ describe('S2 P2 registry/adapter/native SDK/issued object bridge', () => {
       const issued = h.readSubmission();
       expect(issued.binding.representationVersion).toBe('authored_claim_document@2');
       expect(issued).not.toHaveProperty('documentJson');
-      expect(issued.rawArguments).toBe(h.argumentsText);
+      expect(issued).toMatchObject({rawArguments: h.argumentsText});
       expect(issued.compiled.body).toBe(stream.finalOutput);
       expect(issued.compiled.body).toContain('{"literal":"keep"}');
       expect(issued.compiled.body).toContain('[1,2]');
@@ -1066,7 +1069,7 @@ describe('S2 P2 registry/adapter/native SDK/issued object bridge', () => {
       const issued = h.readSubmission();
       const rawClaim = (issued.compiled.rawCanonicalPayload.claims as Array<{semantics: {numeric: {value: unknown}}}>)[0];
       expect(Object.is(rawClaim.semantics.numeric.value, literal === '1e999' ? Infinity : -0)).toBe(true);
-      expect(issued.rawArguments).toBe(argumentsText);
+      expect(issued).toMatchObject({rawArguments: argumentsText});
       if (literal === '1e999') expect(issued.compiled.canonicalParse.status).not.toBe('valid');
       expect(h.fetcher).toHaveBeenCalledTimes(1);
     } finally {await h.cleanup();}
@@ -1372,9 +1375,9 @@ describe('R11 neutral per-request typed output material', () => {
   it('drops a throwing structure observer without changing the original collector receipt or failure path', () => {
     const collector = make(true, () => {throw new Error('PRIVATE_OBSERVER_FAILURE');}), events = collector.startRequest() as MaterialEvents;
     const args = JSON.stringify({document: nativeObjectFixture()}); events.chunk(chunk(args)); end(events);
-    expect(collector.current()?.rawArguments).toBe(args); expect(collector.diagnostic().status).toBe('complete');
+    expect(collector.current()).toMatchObject({rawArguments: args}); expect(collector.diagnostic().status).toBe('complete');
     expect(events.materialSnapshot?.()).toBeUndefined();
-    expect(collector.current()?.rawArguments).toBe(args); expect(collector.diagnostic().status).toBe('complete');
+    expect(collector.current()).toMatchObject({rawArguments: args}); expect(collector.diagnostic().status).toBe('complete');
   });
 });
 
@@ -1429,7 +1432,7 @@ describe('R11 Stage B mixed-content native final', () => {
         const issued = h.readSubmission();
         expect(stream.finalOutput).toBe(issued.compiled.body);
         expect(stream.finalOutput).not.toBe(companion);
-        expect(issued.rawArguments).toBe(argumentsText());
+        expect(issued).toMatchObject({rawArguments: argumentsText()});
         expect(h.observations.sdkRawArguments).toBe(argumentsText());
         expect(h.observations.sdkArgs).toEqual(JSON.parse(argumentsText()));
         expect(h.observations.handlerArgs).toEqual(h.observations.sdkArgs);
@@ -1838,5 +1841,257 @@ describe('R12 whole-assistant-JSON installed-SDK characterization', () => {
       const second = JSON.parse(String(h.fetcher.mock.calls[1][1]?.body));
       expect(second.messages).toEqual(expect.arrayContaining([expect.objectContaining({role: 'tool', tool_call_id: 'prior-active'})]));
     } finally {release.resolve(); await h.cleanup();}
+  });
+});
+
+describe('R13 explicit dual carrier through the actual installed SDK', () => {
+  let restoreClone: (() => void) | undefined;
+  let issue: jest.SpiedFunction<typeof submissionAuthority.issueAuthoredFinalSubmission>;
+  beforeEach(() => {
+    restoreClone = installCurrentRealmStructuredCloneForTest();
+    issue = jest.spyOn(submissionAuthority, 'issueAuthoredFinalSubmission');
+  });
+  afterEach(() => {issue.mockRestore(); restoreClone?.();});
+  const document = nativeObjectFixture();
+  const whole = JSON.stringify({document});
+  const compiled = compileAuthoredClaimObject(document);
+  if (compiled.status !== 'compiled') throw new Error('Invalid independent native fixture');
+  const dual = (options: Parameters<typeof nativeObjectProbe>[0] = {}) => nativeObjectProbe({
+    productionBridge: true, literalSubtree: true, contractVersion: 'openai_typed_final_admission@4', ...options});
+  function wire(parts: string[], options: {finish?: string | null; done?: boolean;
+    ids?: Array<string | undefined>; extra?: Record<string, unknown>} = {}) {
+    const choices = [...parts.map((content, index) => ({delta: {role: 'assistant', content,
+      ...(index === 0 ? options.extra : {})}, finish_reason: null})),
+      {delta: {}, finish_reason: options.finish === undefined ? 'stop' : options.finish}];
+    return choices.map((choice, index) => `data: ${JSON.stringify({
+      ...(options.ids ? options.ids[index] === undefined ? {} : {id: options.ids[index]} : {id: 'dual-response'}),
+      model: 'fixture-model', choices: [{index: 0, ...choice}],
+    })}\n\n`).join('') + (options.done === false ? '' : 'data: [DONE]\n\n');
+  }
+  const response = (text: string) => new Response(text, {headers: {'content-type': 'text/event-stream'}});
+  function expectNoIssue(h: ReturnType<typeof nativeObjectProbe>) {
+    expect(h.submission()).toBeUndefined(); expect(issue).not.toHaveBeenCalled();
+  }
+
+  it.each(['whole', 'split_unicode', 'outer_whitespace', 'literal_fake_id', 'empty_actions'] as const)
+    ('issues exact assistant source after all original drains for %s', async variation => {
+      const text = variation === 'outer_whitespace' ? ` \n${whole}\t ` : whole;
+      const split = text.indexOf('😀') + 1;
+      const parts = variation === 'split_unicode' ? [text.slice(0, split), text.slice(split)] : [text];
+      const h = dual({response: () => response(wire(parts, {
+        ...(variation === 'literal_fake_id' ? {ids: ['FAKE_ID', 'FAKE_ID']} : {}),
+        ...(variation === 'empty_actions' ? {extra: {tool_calls: []}} : {}),
+      }))});
+      try {
+        const stream = await h.settle();
+        expect(stream.error).toBeNull(); expect(stream.finalOutput).toBe(text);
+        expect(h.fetcher).toHaveBeenCalledTimes(1); expect(issue).toHaveBeenCalledTimes(1);
+        expect(h.observations.handlerCalls).toBe(0); expect(h.observations.drained).toBe(true);
+        expect(h.observations.consumerDrained).toBe(true);
+        const snapshot = h.readSubmission();
+        expect(snapshot).toMatchObject({sourceKind: 'assistant_json', rawAssistantText: text,
+          nativeDocument: document, compiled: {body: compiled.body, rawCanonicalPayload: compiled.rawCanonicalPayload},
+          binding: {dispatchOrdinal: 1, responseId: variation === 'literal_fake_id' ? 'FAKE_ID' : 'dual-response',
+            messageId: variation === 'literal_fake_id' ? 'FAKE_ID' : 'dual-response'}});
+        for (const forbidden of ['rawArguments', 'documentJson', 'callId']) expect(snapshot).not.toHaveProperty(forbidden);
+        expect(snapshot.binding).not.toHaveProperty('callId'); expect(snapshot.hashes).not.toHaveProperty('rawArgumentsHash');
+        h.clearAttempt(); h.controller.abort(); expect(h.readSubmission()).toBe(snapshot);
+      } finally {await h.cleanup();}
+    });
+
+  it.each(['prose', 'fence', 'two_objects', 'extra_key', 'missing_document', 'invalid_document', 'whitespace'] as const)
+    ('rejects whole-source %s without extracting or repairing JSON', async invalid => {
+      const text = invalid === 'prose' ? `Answer ${whole}` : invalid === 'fence' ? `\`\`\`json\n${whole}\n\`\`\``
+        : invalid === 'two_objects' ? whole + whole : invalid === 'extra_key' ? JSON.stringify({document, extra: true})
+        : invalid === 'missing_document' ? '{}' : invalid === 'invalid_document' ? '{"document":{}}' : ' \n ';
+      const h = dual({response: () => response(wire([text]))});
+      try {const stream = await h.settle(); expect(stream.finalOutput).toBe(text); expectNoIssue(h);
+        expect(h.observations.admissionFailure).toMatchObject({code: 'invalid_submission'});}
+      finally {await h.cleanup();}
+    });
+
+  it.each(['length', 'missing_finish', 'missing_done', 'missing_id', 'id_drift', 'fake_id_drift',
+    'refusal', 'legacy_action', 'custom_action', 'malformed_actions', 'unknown_field'] as const)
+    ('refuses %s even when the SDK exposes a whole terminal text', async invalid => {
+      const extra = invalid === 'refusal' ? {refusal: 'fixture refusal'} : invalid === 'legacy_action'
+        ? {function_call: {name: 'hidden', arguments: '{}'}} : invalid === 'custom_action'
+        ? {tool_calls: [{index: 0, id: 'custom', type: 'custom', custom: {name: 'hidden', input: '{}'}}]}
+        : invalid === 'malformed_actions' ? {tool_calls: null} : invalid === 'unknown_field' ? {audio: {data: 'hidden'}} : {};
+      const h = dual({response: () => response(wire([whole], {extra,
+        finish: invalid === 'length' ? 'length' : invalid === 'missing_finish' ? null : 'stop', done: invalid !== 'missing_done',
+        ...(invalid === 'missing_id' ? {ids: [undefined, undefined]} : invalid === 'id_drift' ? {ids: ['first', 'second']}
+          : invalid === 'fake_id_drift' ? {ids: ['FAKE_ID', 'second']} : {}),
+      }))});
+      try {await h.settle(); expectNoIssue(h); expect(h.fetcher).toHaveBeenCalledTimes(1);
+        expect(h.admission()?.diagnostic().status).toBe('rejected');}
+      finally {await h.cleanup();}
+    });
+
+  it('retains the function lane and its actual ACK in dual mode', async () => {
+    const h = dual({response: () => chatResponse(JSON.stringify({document}), {content: whole})});
+    try {const stream = await h.settle(); expect(stream.error).toBeNull(); expect(stream.finalOutput).toBe(compiled.body);
+      expect(h.observations.handlerCalls).toBe(1); expect(issue).toHaveBeenCalledTimes(1);
+      expect(h.readSubmission()).toMatchObject({rawArguments: whole, compiled: {body: compiled.body}});
+      expect(h.readSubmission()).not.toHaveProperty('sourceKind');}
+    finally {await h.cleanup();}
+  });
+
+  it.each(['handler_rewrite', 'function_stop'] as const)('does not fall back to valid assistant JSON after %s', async invalid => {
+    const h = dual({...(invalid === 'handler_rewrite' ? {guardrail: 'output_rewrite' as const} : {}),
+      response: () => invalid === 'function_stop' ? response(wire([whole], {extra: {tool_calls: [{index: 0,
+        id: 'failed-final', type: 'function', function: {name: finalToolName, arguments: whole}}]}}))
+        : chatResponse(whole, {content: whole})});
+    try {await h.settle(); expectNoIssue(h); expect(h.fetcher).toHaveBeenCalledTimes(1);}
+    finally {await h.cleanup();}
+  });
+
+  it.each(['unresolved', 'duplicate', 'orphan', 'resolved'] as const)('checks actual original input work: %s', async kind => {
+    const call: AgentInputItem = {type: 'function_call', callId: 'input-call', name: 'other_fixture', arguments: '{}'};
+    const result: AgentInputItem = {type: 'function_call_result', name: 'other_fixture', callId: 'input-call',
+      status: 'completed', output: 'complete'};
+    const input: AgentInputItem[] = [{role: 'user', content: 'fixture'}, ...(kind === 'orphan' ? [result]
+      : kind === 'unresolved' ? [call] : kind === 'duplicate' ? [call, result, call, result] : [call, result])];
+    const h = dual({input, otherGate: Promise.resolve(), response: () => response(wire([whole]))});
+    try {await h.settle(); expect(h.fetcher).toHaveBeenCalledTimes(1);
+      if (kind === 'resolved') {expect(issue).toHaveBeenCalledTimes(1); expect(h.readSubmission()).toHaveProperty('sourceKind', 'assistant_json');}
+      else {expectNoIssue(h); expect(h.observations.admissionFailure).toMatchObject({code: 'pending_work'});}}
+    finally {await h.cleanup();}
+  });
+
+  it('checks original unresolved work even on the dual function lane', async () => {
+    const h = dual({input: [{role: 'user', content: 'fixture'}, {type: 'function_call', callId: 'prior', name: 'other_fixture', arguments: '{}'}],
+      otherGate: Promise.resolve(), response: () => chatResponse(whole)});
+    try {await h.settle(); expectNoIssue(h); expect(h.observations.handlerCalls).toBe(1);
+      expect(h.observations.admissionFailure).toMatchObject({code: 'pending_work'});}
+    finally {await h.cleanup();}
+  });
+
+  it('R13 pending-result status rejects an in-progress original input result through the actual SDK', async () => {
+    const input: AgentInputItem[] = [{role: 'user', content: 'fixture'},
+      {type: 'function_call', callId: 'input-in-progress', name: 'other_fixture', arguments: '{}'},
+      {type: 'function_call_result', callId: 'input-in-progress', name: 'other_fixture', status: 'in_progress', output: 'partial'}];
+    const h = dual({input, otherGate: Promise.resolve(), response: () => response(wire([whole]))});
+    try {
+      const stream = await h.settle();
+      expect(h.fetcher).toHaveBeenCalledTimes(1); expect(stream.error).toBeNull(); expect(stream.finalOutput).toBe(whole);
+      expect(stream.state._originalInput).toEqual(input);
+      const sent = JSON.parse(String(h.fetcher.mock.calls[0][1]?.body));
+      expect(sent.messages).toEqual(expect.arrayContaining([expect.objectContaining({role: 'tool', tool_call_id: 'input-in-progress'})]));
+      expectNoIssue(h); expect(h.observations.admissionFailure).toMatchObject({code: 'pending_work'});
+    } finally {await h.cleanup();}
+  });
+
+  it('R13 pending-result status rechecks an actual prior generated result after natural completion', async () => {
+    const gate = deferred<void>(); let requests = 0;
+    const h = dual({maxTurns: 2, otherGate: Promise.resolve(), consumerGate: gate.promise,
+      response: () => ++requests === 1 ? response(wire(['prior text'], {ids: ['prior-response', 'prior-response'], finish: 'tool_calls',
+        extra: {tool_calls: [{index: 0, id: 'prior-status-call', type: 'function', function: {name: 'other_fixture', arguments: '{}'}}]}}))
+        : response(wire([whole]))});
+    try {
+      const actual = await h.tracked; await actual.stream.completed; await actual.drain; await boundary();
+      expect(h.fetcher).toHaveBeenCalledTimes(2); expect(actual.stream.finalOutput).toBe(whole);
+      expect(h.observations.consumerDrained).toBe(false); expectNoIssue(h);
+      const generated = actual.stream.state._generatedItems.find(item => item.rawItem.type === 'function_call_result');
+      if (!generated || generated.rawItem.type !== 'function_call_result') throw new Error('Expected actual prior handler output');
+      expect(generated.rawItem).toMatchObject({callId: 'prior-status-call', name: 'other_fixture', status: 'completed'});
+      generated.rawItem.status = 'in_progress';
+      gate.resolve(); await h.settle();
+      expectNoIssue(h); expect(h.observations.admissionFailure).toMatchObject({code: 'pending_work'});
+    } finally {gate.resolve(); await h.cleanup();}
+  });
+
+  it('waits for actual prior handler work and uses only the final response text', async () => {
+    const gate = deferred<void>(); let requests = 0;
+    const h = dual({maxTurns: 2, otherGate: gate.promise, response: () => ++requests === 1
+      ? response(wire(['prior non-document text'], {ids: ['prior-response', 'prior-response'], finish: 'tool_calls',
+        extra: {tool_calls: [{index: 0, id: 'prior-work', type: 'function', function: {name: 'other_fixture', arguments: '{}'}}]}}))
+      : response(wire([whole]))});
+    try {await h.otherEntered.promise; await boundary(); expectNoIssue(h); expect(h.observations.drained).toBe(false);
+      expect(h.fetcher).toHaveBeenCalledTimes(1); gate.resolve(); await h.settle();
+      expect(h.fetcher).toHaveBeenCalledTimes(2); expect(issue).toHaveBeenCalledTimes(1);
+      expect(h.readSubmission()).toMatchObject({sourceKind: 'assistant_json', rawAssistantText: whole, binding: {dispatchOrdinal: 2}});}
+    finally {gate.resolve(); await h.cleanup();}
+  });
+
+  it.each(['unchanged', 'cancel', 'supersede', 'message_text', 'output_order', 'copied_counterpart',
+    'duplicate_output', 'step_replaced', 'orphan_result', 'pending_agent', 'original_pending', 'deadline_after_completion'] as const)
+    ('rechecks the natural snapshot after the original consumer drains: %s', async change => {
+      const gate = deferred<void>(); let deadline = Date.now() + 60_000;
+      const h = dual({consumerGate: gate.promise, deadlineAt: () => deadline,
+        response: () => response(wire([whole], {extra: {reasoning: 'fixture reasoning'}}))});
+      try {
+        const actual = await h.tracked; await actual.stream.completed; await actual.drain; await boundary();
+        expectNoIssue(h); expect(h.observations.consumerDrained).toBe(false);
+        // Mutate the actual SDK state to exercise post-completion tamper rejection.
+        // This view does not replace the stream, getter or any admission material.
+        const state = actual.stream.state as unknown as {
+          _lastTurnResponse: {output: Array<Record<string, unknown>>};
+          _lastProcessedResponse: {newItems: Array<{rawItem: Record<string, unknown>}>};
+          _currentStep: Record<string, unknown>; _currentAgent: unknown;
+          _generatedItems: Array<Record<string, unknown>>; _pendingAgentToolRuns: Map<string, unknown>;
+          _originalInput: AgentInputItem[];
+        };
+        if (change === 'cancel') h.cancel();
+        if (change === 'supersede') h.revokeOwner();
+        if (change === 'deadline_after_completion') deadline = 0;
+        const message = state._lastTurnResponse!.output.find(item => item.type === 'message');
+        if (!message || message.type !== 'message' || !Array.isArray(message.content)) throw new Error('Expected actual assistant message');
+        if (change === 'message_text') message.content = [{type: 'output_text', text: whole + ' '}];
+        if (change === 'output_order') state._lastTurnResponse!.output.reverse();
+        if (change === 'duplicate_output') state._lastTurnResponse!.output.push(message);
+        if (change === 'copied_counterpart') {
+          const counterpart = state._lastProcessedResponse!.newItems.find(item => item.rawItem === message)!;
+          Object.defineProperty(counterpart, 'rawItem', {value: {...message}, configurable: true});
+        }
+        if (change === 'step_replaced') state._currentStep = {...state._currentStep!};
+        if (change === 'orphan_result') state._generatedItems.push({type: 'tool_call_output_item',
+          rawItem: {type: 'function_call_result', callId: 'orphan', output: 'forged'}, agent: state._currentAgent});
+        if (change === 'pending_agent') state._pendingAgentToolRuns.set('unresolved', {});
+        if (change === 'original_pending') state._originalInput = [{type: 'function_call', callId: 'late-input', name: 'other_fixture', arguments: '{}'}];
+        gate.resolve(); await h.settle();
+        if (change === 'unchanged' || change === 'deadline_after_completion') {
+          expect(issue).toHaveBeenCalledTimes(1); expect(h.readSubmission()).toMatchObject({sourceKind: 'assistant_json'});
+        } else expectNoIssue(h);
+      } finally {gate.resolve(); await h.cleanup();}
+    });
+
+  it.each([false, true])('does not equate DONE to EOF or issue before real native drain, cancelled=%s', async cancelled => {
+    const release = deferred<void>(); let pulled = false;
+    const h = dual({response: () => new Response(new ReadableStream<Uint8Array>({async pull(controller) {
+      if (!pulled) {pulled = true; controller.enqueue(new TextEncoder().encode(wire([whole]))); return;}
+      await release.promise;
+      if (cancelled) controller.error(new DOMException('Fixture cancelled', 'AbortError')); else controller.close();
+    }}), {headers: {'content-type': 'text/event-stream'}})});
+    try {const actual = await h.tracked; await h.assistantTextEntered.promise; await boundary();
+      expect(h.observations.drained).toBe(false); expectNoIssue(h);
+      if (cancelled) {h.cancel(); await actual.stream.completed; await boundary();
+        expect(h.observations.drained).toBe(false); expectNoIssue(h);}
+      release.resolve(); await h.settle();
+      if (cancelled) expectNoIssue(h); else expect(issue).toHaveBeenCalledTimes(1);
+      expect(h.observations.drained).toBe(true);
+    } finally {release.resolve(); await h.cleanup();}
+  });
+
+  it.each(['raw_limit', 'unknown_action', 'framing_loss'] as const)('keeps %s sticky across a later apparently complete response', fault => {
+    const collector = createOpenAiTypedFinalWireCollector({wireVersion: 'openai_chat_final_wire@3', finalToolName});
+    const first = collector.startRequest();
+    first.chunk({id: 'first', choices: [{index: 0, delta: fault === 'raw_limit'
+      ? {content: 'x'.repeat(OPENAI_TYPED_FINAL_RAW_BYTES + 1)} : fault === 'unknown_action'
+        ? {function_call: {name: 'hidden', arguments: '{}'}} : {content: whole}, finish_reason: 'stop'}]});
+    first.done(); first.end(fault !== 'framing_loss');
+    const later = collector.startRequest();
+    later.chunk({id: 'later', choices: [{index: 0, delta: {content: whole}, finish_reason: 'stop'}]});
+    later.done(); later.end(true);
+    expect(collector.current()).toBeUndefined(); expect(collector.diagnostic().status).toBe('rejected');
+  });
+
+  it('keeps the combined argument plus assistant buffer bounded in the new wire contract', () => {
+    const collector = createOpenAiTypedFinalWireCollector({wireVersion: 'openai_chat_final_wire@3', finalToolName});
+    const events = collector.startRequest();
+    events.chunk({id: 'bounded-dual', choices: [{index: 0, delta: {content: 'x'.repeat(OPENAI_TYPED_FINAL_RAW_BYTES - 2),
+      tool_calls: [{index: 0, id: 'bounded-call', type: 'function', function: {name: finalToolName, arguments: '{} '}}]}, finish_reason: 'tool_calls'}]});
+    events.done(); events.end(true);
+    expect(collector.current()).toBeUndefined(); expect(collector.diagnostic()).toMatchObject({reason: 'raw_limit'});
+    expect(events.materialSnapshot!()!.retention.combinedRetainedUtf8Bytes).toBeLessThanOrEqual(OPENAI_TYPED_FINAL_RAW_BYTES);
   });
 });
