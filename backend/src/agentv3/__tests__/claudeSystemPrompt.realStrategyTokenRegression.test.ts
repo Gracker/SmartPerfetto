@@ -137,7 +137,11 @@ describe('typed prompt with real strategy assets', () => {
     for (const text of ['renamed__native_final_7', 'authored_claim_document@2', 'referenceDictionary', 'semanticFrames',
       'frameIndex', 'body_part', 'localOccurrence', 'sourceClaimBindings', 'relationProposals', 'json_object',
       'independent', 'Unknown rules/missing proof stay unverified', 'Do not truncate/drop claims',
-      'empty claims are allowed only without facts', 'No omitted keys', 'Present null is SQL NULL']) {
+      'empty claims are allowed only without facts', 'No omitted keys', 'Present null is SQL NULL',
+      'no whitespace outside strings', 'Preserve string/Unicode/Markdown/code content',
+      'required repetition', 'Reuse exact claim text where it belongs',
+      'counts every literal, empty string and claimText reference',
+      'bind all repetitions with explicit occurrence']) {
       expect(guide.content).toContain(text);
     }
     expect(guide.content).toContain(JSON.stringify(SUPPORTED_DETERMINISTIC_CLAIM_RULES));
@@ -155,6 +159,78 @@ describe('typed prompt with real strategy assets', () => {
     console.info('[AuthoredObjectPrompt:token]', JSON.stringify({sceneType, outputLanguage,
       tokens: estimatePromptTokens(parts.fullPrompt), declarationTokens: guide.estimatedTokens,
       droppedLabels: parts.droppedLabels, truncatedLabels: parts.truncatedLabels}));
+  });
+
+  it('keeps native Linux bounded answers scoped under a full budget', () => {
+    const registry = buildStrategyRegistrySnapshotFromDefinitions({
+      definitions: getRegisteredScenes(), overlayGeneration: 'native-bounded-linux-test',
+    });
+    const context: ClaudeAnalysisContext = {
+      query: 'Explain the selected thread states and scheduling wait boundaries.',
+      strategyRegistry: registry,
+      turnIntent: {schemaVersion: 1, status: 'resolved', source: 'semantic', taskKind: 'investigation',
+        sceneId: 'linux', scope: 'bounded_question', deliverable: 'answer', recommendedComplexity: 'full',
+        evidenceAccess: 'read_new', registryFingerprint: registry.registryFingerprint},
+      selectionContext: {kind: 'area', startNs: 10, endNs: 20, tracks: [{uri: 'main', upid: 42, utid: 43}]},
+      codeAwareMode: 'off', codebaseIds: [],
+    };
+    const baseline = buildSystemPromptParts(context);
+    const native = buildSystemPromptParts({...context, declarationSyntax: 'authoring_v2',
+      finalSubmission: 'authored_claim_document_v2',
+      resolvedFinalTool: {role: 'final_candidate_submission', nativeName: 'renamed__native_final_7'}});
+    expect(native.segments.some(segment => segment.label === 'report_requirements')).toBe(false);
+    for (const label of ['selection_context', 'investigation_requirements']) {
+      expect(native.segments.find(segment => segment.label === label)).toBeDefined();
+    }
+    expect(native.segments.filter(segment => segment.label !== 'conclusion_declaration'))
+      .toEqual(baseline.segments.filter(segment => segment.label !== 'conclusion_declaration'));
+    expect(native.droppedLabels).toEqual(baseline.droppedLabels);
+    expect(native.truncatedLabels).toEqual(baseline.truncatedLabels);
+    expect(estimatePromptTokens(native.fullPrompt)).toBeLessThanOrEqual(MAX_PROMPT_TOKENS);
+  });
+
+  it('preserves complete native content and exact quote locations across JSON encodings', () => {
+    const framing = stripTemplateComments(loadPromptTemplate('prompt-authored-final-submission-v2-framing')!);
+    const blocks = [...framing.matchAll(/```json\n([\s\S]*?)\n```/g)];
+    const args = JSON.parse(blocks[blocks.length - 1][1]);
+    const claim = args.document.contract.claims[0];
+    claim.text = '耗时 7.1 ms，保留 "原文" 与 \\ 路径。';
+    args.document.bodyParts = ['## 结果\n\n', '', {claimText: 'elapsed'}, '\n', {claimText: 'elapsed'},
+      '\n```text\n  keep indentation\n```'];
+    claim.semantics.numeric.presentation.quotes = [
+      {kind: 'body_part', text: '7.1 ms', partIndex: 2, localOccurrence: null},
+      {kind: 'body_part', text: '7.1 ms', partIndex: 4, localOccurrence: null},
+    ];
+    const expectedBody = '## 结果\n\n耗时 7.1 ms，保留 "原文" 与 \\ 路径。\n耗时 7.1 ms，保留 "原文" 与 \\ 路径。\n```text\n  keep indentation\n```';
+    const expectedBindings = [expectedBody.indexOf('7.1 ms'), expectedBody.lastIndexOf('7.1 ms')]
+      .map((startUtf16, index) => ({claimOrdinal: 1, quoteOrdinal: index + 1,
+        originalSpan: {startUtf16, endUtf16: startUtf16 + '7.1 ms'.length},
+        canonicalQuote: {text: '7.1 ms', occurrence: index}}));
+    const compact = JSON.stringify(args);
+    const encodings = [compact, JSON.stringify(args, null, 2), compact.replace(/结果/g, '\\u7ed3\\u679c')];
+    const canonical = compileAuthoredClaimObject(args.document);
+    expect(canonical.status).toBe('compiled');
+    if (canonical.status !== 'compiled') throw new Error('Native encoding fixture failed');
+    expect(canonical.body).toBe(expectedBody);
+    expect(canonical.quoteBindings).toEqual(expectedBindings);
+    for (const encoded of encodings) {
+      const decoded = JSON.parse(encoded);
+      expect(decoded).toEqual(args);
+      expect(authoredClaimObjectSchema.safeParse(decoded.document).success).toBe(true);
+      const compiled = compileAuthoredClaimObject(decoded.document);
+      expect(compiled.status).toBe('compiled');
+      if (compiled.status !== 'compiled') throw new Error('Native encoding changed compilation');
+      expect(compiled.body).toBe(expectedBody);
+      expect(compiled.rawCanonicalPayload).toEqual(canonical.rawCanonicalPayload);
+      expect(compiled.quoteBindings).toEqual(expectedBindings);
+      expect(compiled.privateNativeDocument).toEqual(args.document);
+    }
+    const wrongPart = JSON.parse(JSON.stringify(args.document));
+    wrongPart.contract.claims[0].semantics.numeric.presentation.quotes[0].partIndex = 1;
+    expect(compileAuthoredClaimObject(wrongPart)).toMatchObject({status: 'projection_failed', code: 'quote_unresolved'});
+    const ambiguous = JSON.parse(JSON.stringify(args.document));
+    ambiguous.contract.claims[0].text += ' 7.1 ms';
+    expect(compileAuthoredClaimObject(ambiguous)).toMatchObject({status: 'projection_failed', code: 'quote_unresolved'});
   });
 
   it('compiles the actual native example to the independently authored canonical example without asserting proof', () => {

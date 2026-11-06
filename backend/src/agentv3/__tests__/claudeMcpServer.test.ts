@@ -2311,15 +2311,28 @@ describe('createClaudeMcpServer', () => {
       expect(description).toMatch(/skip/i);
     });
 
-    it('compacts registered tool descriptions before exposing runtime definitions', () => {
+    it.each([
+      {finalSubmission: undefined, finalRoleCount: 0},
+      {finalSubmission: 'authored_claim_document_v2', finalRoleCount: 1},
+    ] as const)('compacts registered descriptions for mode $finalSubmission', ({finalSubmission, finalRoleCount}) => {
       // A mechanism-depth run is offered every tool, the patch included.
-      const { tools, toolDefinitions } = createTestServer({
+      const scope: Parameters<typeof createTestServer>[0] = {
         referenceTraceId: 'reference-trace-456',
         codeAwareMode: 'metadata_only',
         codebaseIds: ['app-codebase'],
         codebaseRegistry: capableCodebaseRegistry(['app-codebase']),
         sourceDepth: 'mechanism',
-      });
+      };
+      const baseline = createTestServer(scope);
+      const {tools, toolDefinitions} = createTestServer({...scope, finalSubmission});
+      const finalTools = toolDefinitions.filter(def => def.role === 'final_candidate_submission');
+      const ordinaryTools = toolDefinitions.filter(def => def.role !== 'final_candidate_submission');
+      const describe = (def: typeof toolDefinitions[number]) => ({name: def.name, role: def.role,
+        exposure: def.exposure, evidenceEffect: def.evidenceEffect, description: def.shared.description});
+      expect(ordinaryTools.map(describe)).toEqual(baseline.toolDefinitions.map(describe));
+      expect(finalTools).toHaveLength(finalRoleCount);
+      const ordinaryChars = ordinaryTools.reduce((sum, def) => sum + def.shared.description.length, 0);
+      const finalChars = finalTools.reduce((sum, def) => sum + def.shared.description.length, 0);
 
       const runtimeDescriptions = toolDefinitions.map(def => def.shared.description);
       const sdkDescriptions = [...tools.values()].map(tool => String((tool as any).description ?? ''));
@@ -2332,7 +2345,15 @@ describe('createClaudeMcpServer', () => {
       // 13_000 when `analyze_wait_chain` joined the set, by 200 for
       // `find_codebase_files` and by 400 for `locate_trace_anchor`; raise it
       // only for a new tool, never to make an existing description's growth pass.
-      expect(totalChars).toBeLessThanOrEqual(14_600);
+      expect(ordinaryChars).toBeLessThanOrEqual(14_600);
+      // The final role at frozen commit 47f2bafb added 454 characters. Its
+      // original full native total was 15,049, outside the old default-only
+      // test. Account for that role explicitly and prohibit description growth.
+      expect(finalChars).toBeLessThanOrEqual(454);
+      expect(totalChars).toBe(ordinaryChars + finalChars);
+      expect(totalChars).toBeLessThanOrEqual(14_600 + 454 * finalRoleCount);
+      console.info('[ToolDescriptionBudget]', JSON.stringify({finalSubmission: finalSubmission ?? 'assistant_text',
+        ordinaryChars, finalChars, totalChars, frozenNativeTotalChars: 15_049}));
       for (const description of runtimeDescriptions) {
         expect(description.length).toBeLessThanOrEqual(1000);
         expect(description).not.toMatch(/\n\nExamples:/);
