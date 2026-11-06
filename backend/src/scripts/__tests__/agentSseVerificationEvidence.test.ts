@@ -48,6 +48,11 @@ import * as nativeCapture from '../../services/evidence/rawSqlNativeProvenance';
 import type {PerfettoSqlDocsAsset} from '../../services/perfettoSqlDocs';
 import type {RunningNativeProcessorObservation, TraceInfo} from '../../services/traceProcessorService';
 import type {AnalysisRunTraceProcessorLeases} from '../../services/analysisRunTraceProcessorLease';
+import {compileAuthoredClaimDocument, AUTHORED_CLAIM_DOCUMENT_VERSION} from '../../agent/core/authoredClaimDocument';
+import {AUTHORED_CLAIM_DOCUMENT_COMPILER_VERSION, createAuthoredFinalSubmissionIssuer, issueAuthoredFinalSubmission,
+  readAuthoredFinalSubmission, revokeAuthoredFinalSubmission} from '../../agentRuntime/authoredFinalSubmission';
+import {buildAuthoredCandidateProtocolDiagnostic} from '../../services/canonicalAnalysisResult';
+import {projectCodeAwareStreamingUpdate} from '../../services/security/codeAwareStreamingUpdateProjection';
 
 describe('transparent verification diagnostics', () => {
   it('keeps the source action facet strictly incomplete even when every automatic check passes', () => {
@@ -411,6 +416,48 @@ describe('current-trace slice selection resolution', () => {
 
 describe('owned SSE verifier lifecycle', () => {
   afterEach(() => jest.restoreAllMocks());
+
+  it.each([false, true])('retains issued typed material through actual projection and summary without private payloads: private=%s', async sourceAware => {
+    const documentJson = JSON.stringify({representationVersion: AUTHORED_CLAIM_DOCUMENT_VERSION,
+      contract: {schemaVersion: 'conclusion_contract_v1', mode: 'PRIVATE_MODE_CANARY', conclusions: [], clusters: [],
+        evidenceChain: [], uncertainties: [], nextSteps: [], sourceClaimBindings: [],
+        claims: [{id: 'PRIVATE_ID', text: 'PRIVATE_CLAIM', semantics: false}, null], PRIVATE_DYNAMIC: '/private/source'},
+      bodyParts: ['PUBLIC_BODY_CANARY 中"\\', '\ud83d', '\ude00', 'PRIVATE_BODY_CANARY']}, null, 2);
+    const compiled = compileAuthoredClaimDocument(documentJson);
+    if (compiled.status !== 'compiled') throw new Error('Fixture must compile');
+    const binding = {owner: {}, sessionId: 'typed-sse', runId: 'run', attemptId: 'attempt',
+      providerPin: 'PRIVATE_PIN', authorizationFingerprint: 'PRIVATE_AUTH'};
+    const issuer = createAuthoredFinalSubmissionIssuer({binding, assertCurrent() {}, assertAttemptCurrent() {}});
+    const rawArguments = JSON.stringify({documentJson});
+    const submission = issueAuthoredFinalSubmission(issuer, {dispatchOrdinal: 1, responseId: 'PRIVATE_RESPONSE_ID',
+      callId: 'PRIVATE_CALL_ID', rawArguments, documentJson, compiled});
+    try {
+      const snapshot = readAuthoredFinalSubmission(submission, {binding: {...binding, dispatchOrdinal: 1,
+        responseId: 'PRIVATE_RESPONSE_ID', callId: 'PRIVATE_CALL_ID', representationVersion: AUTHORED_CLAIM_DOCUMENT_VERSION,
+        compilerContractVersion: AUTHORED_CLAIM_DOCUMENT_COMPILER_VERSION}, rawArguments, documentJson,
+        body: compiled.body, rawCanonicalPayload: structuredClone(compiled.rawCanonicalPayload)});
+      const diagnostic = buildAuthoredCandidateProtocolDiagnostic(snapshot);
+      const projected = projectCodeAwareStreamingUpdate('typed-sse', {type: 'progress', timestamp: 1,
+        content: {phase: 'candidate_protocol', candidateProtocolDiagnostic: diagnostic,
+          ...(sourceAware ? {message: 'PRIVATE_SURROUNDING_CANARY'} : {})}}, sourceAware, 'en');
+      expect(projected).not.toBeNull();
+      expect(JSON.stringify(projected)).not.toMatch(/PRIVATE_|PUBLIC_BODY_CANARY|private\/source/);
+      const invalid = {...diagnostic, authoredMaterial: {...diagnostic.authoredMaterial, raw: 'PRIVATE_PAYLOAD'}};
+      const events = [
+        `event: progress\ndata: ${JSON.stringify({phase: 'candidate_protocol', candidateProtocolDiagnostic: invalid})}\n\n`,
+        `event: progress\ndata: ${JSON.stringify(projected!.content)}\n\n`,
+        'event: analysis_completed\ndata: {"success":false,"conclusion":"","partial":true}\n\n',
+      ].join('');
+      jest.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(events));
+      const summary = await collectSseSummary('http://verifier.invalid', 'typed-sse', 1000,
+        {requiredText: [], forbiddenText: []}, {runId: 'run'});
+      expect(summary.candidateProtocolDiagnostics).toEqual([diagnostic]);
+      expect(summary.candidateProtocolDiagnostics?.[0]).toMatchObject({status: 'invalid', claimCount: 2,
+        authoredMaterial: {rawArgumentsUtf8Bytes: Buffer.byteLength(rawArguments), documentInputUtf8Bytes: Buffer.byteLength(documentJson)}});
+      expect(JSON.stringify(summary)).not.toMatch(/PRIVATE_|PUBLIC_BODY_CANARY|private\/source/);
+      expect(summary.terminalAnalysis?.success).toBe(false);
+    } finally {revokeAuthoredFinalSubmission(submission);}
+  });
 
   it('retains at most four shared-schema candidate diagnostics without private surrounding fields or admission authority', async () => {
     const diagnostic = {schemaVersion: 'candidate_protocol_diagnostic@1', stage: 'native', candidateIndex: 1,

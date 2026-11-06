@@ -84,6 +84,18 @@ Pi model JSON may explicitly set `thinkingLevel` (`off/minimal/low/medium/high/x
 
 `OPENAI_ANALYSIS_REASONING_EFFORT` explicitly configures OpenAI runtime main analysis and ordinary continuation; omitting it preserves provider defaults. It does not override classification, declaration repair, timeout output-only closeout or semantic review purpose policies. Validation uses the actual selected model, endpoint, protocol and installed SDK. Generic effort uses native SDK fields and never injects vendor `thinking` into unknown gateways. Recognized DeepSeek Chat maps `none` to disabled thinking; forced-thinking GLM rejects it. This adapter currently expresses `max` through passthrough only on recognized supported Chat interfaces; explicit `max` on unknown gateways or Responses is not yet supported by this adapter. The same isolated provider environment binds the setting into its snapshot; invalid values cannot enter public snapshots. Lower effort still needs real accuracy validation.
 
+`server.outputTokens` records sourced output-parameter bounds and conditional
+defaults only. Currently, official DeepSeek Chat with `deepseek-flash` or
+`deepseek-v4-pro` documents `max_tokens` from 1 to 393216: defaults are 8192 without
+thinking, 65536 with thinking, and 131072 at `max` effort. Input and generated
+tokens remain subject to the total context limit. Other models, protocols and
+gateways remain unknown. Documented defaults never fill an unset
+`effective.maxOutputTokens` or automatically change requests, budgets or existing
+provider snapshots. Explicit `OPENAI_MAX_OUTPUT_TOKENS` still follows the existing
+SDK path. Actual requests, native terminal facts and usage require separate
+observation; output count alone cannot establish truncation. See the
+[DeepSeek Chat API](https://api-docs.deepseek.com/api/create-chat-completion/).
+
 `SMARTPERFETTO_FINAL_SUBMISSION` selects the main analysis output transport and
 defaults to `assistant_text`; `authored_claim_document_v1` is an explicit experiment.
 The mode and declaration syntax are captured together before classification; the
@@ -95,8 +107,10 @@ performance acceptance.
 
 The experiment discovers the tool name from the registry's unique
 `final_candidate_submission` role. The model submits body parts and its original
-canonical declarations in `documentJson`; the deterministic compiler concatenates
-authored text without filling values from evidence. Original wire arguments, SDK
+canonical declarations in `documentJson`. Tool-schema strictness constrains the
+outer string field; JSON inside it still requires independent parsing and
+validation. The deterministic compiler concatenates authored text without filling
+values from evidence. Original wire arguments, SDK
 calls, actual handler success, native final state and background drain jointly
 admit a submission. The shared finalizer still performs evidence, semantic,
 source and report checks. Authorship is `model_tool_arguments`. A missing submission
@@ -104,6 +118,21 @@ or transport failure is a separate product issue: it does not rewrite actual SDK
 completion or start legacy declaration repair or continuation. Program ACK and
 direct-evidence paths without a main call retain their delivery; their actual
 transport is not applicable.
+
+An actually issued, drained typed submission retains its original canonical
+validation status, closed issues and available original entry counts through the existing
+`candidate_protocol` diagnostic. Successful compilation does not imply valid
+declarations. Optional `authoredMaterial` separately measures original arguments,
+the original document, the body and compiler-normalized material. It exposes no
+content, IDs or dynamic field names; nested measurements cannot be added together
+or converted to tokens. Failure-log `wireFinishReason` projects only observed
+closed native terminal facts; missing facts stay absent. Diagnostic failure never
+changes adoption, authorization, completion, repair or budgets. New diagnostics
+cannot fill missing causes in historical failures.
+Request `toolArguments` metrics count historical arguments sent in that request,
+excluding its subsequently generated response. Without a later dispatch, the final
+submission never enters that input counter. Missing material diagnostics do not
+mean zero output size.
 
 ## M10 Independent Feedback Triage
 

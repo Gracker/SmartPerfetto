@@ -9,7 +9,7 @@ import {isFinalSubmissionMode, type FinalSubmissionMode} from '../../agentRuntim
 import {resolveConclusionDeclarationSyntax} from '../../agent/core/conclusionAuthoring';
 import type {ConclusionDeclarationSyntax} from '../../agent/core/conclusionContract';
 
-export const MODEL_EXECUTION_PROFILE_RULESET = 'model_execution_profile_rules@3';
+export const MODEL_EXECUTION_PROFILE_RULESET = 'model_execution_profile_rules@4';
 export type ModelExecutionProtocol = 'chat_completions' | 'responses' | 'anthropic_messages' | 'native' | 'unknown';
 export type ReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type ReasoningSetting = Readonly<{mode: 'disabled'} | {mode: 'enabled'; effort?: ReasoningEffort}>;
@@ -94,6 +94,12 @@ export interface ResolvedModelExecutionProfile {
     toolReasoning: ModelCapabilityFact<'verbatim_native_context'>;
     /** Observed function-call primitive only; neither strict-final nor analysis quality. */
     functionTools: ModelCapabilityFact<'function_call_arguments'>;
+    /** Documented parameter facts only, not available context/output budget or effective settings. Older profiles may omit this fact. */
+    outputTokens?: ModelCapabilityFact<Readonly<{
+      parameter: 'max_tokens';
+      range: Readonly<{minimum: number; maximum: number}>;
+      defaults: Readonly<{thinkingDisabled: number; thinkingEnabled: number; thinkingEnabledMaxEffort: number}>;
+    }>>;
   }>;
   readonly adapter: SdkModelCapabilities;
   readonly effective: ModelEffectiveSettings;
@@ -120,6 +126,7 @@ const NUMERIC_SETTINGS = ['maxOutputTokens', 'maxTurns', 'quickMaxTurns', 'quick
 const GLM_EVIDENCE = 'zai-chat-completion-thinking-2026-11-05';
 const DEEPSEEK_EVIDENCE = 'deepseek-thinking-mode-2026-11-05';
 const DEEPSEEK_REVISION_EVIDENCE = 'deepseek-models-pricing-2026-11-05';
+const DEEPSEEK_OUTPUT_TOKENS_EVIDENCE = 'deepseek-chat-completion-max-tokens-2026-11-06';
 
 function invalid(): never {throw new Error('model_execution_invalid_configuration');}
 function identifier(value: unknown): string {
@@ -224,6 +231,25 @@ function observedFunctionTools(baseUrl: string | undefined, modelId: string | un
     evidenceId: observation.evidenceId} : unknown;
 }
 
+/** https://api-docs.deepseek.com/api/create-chat-completion/ (checked 2026-11-06).
+ * This is the max_tokens parameter range, still subject to total input+output context;
+ * it neither states the context size nor chooses/observes an effective model mode.
+ */
+function documentedOutputTokens(baseUrl: string | undefined, modelId: string | undefined,
+  protocol: ModelExecutionProtocol, unknown: ModelCapabilityFact<never>): ResolvedModelExecutionProfile['server']['outputTokens'] {
+  if (!baseUrl || protocol !== 'chat_completions' ||
+    (modelId !== 'deepseek-flash' && modelId !== 'deepseek-v4-pro')) return unknown;
+  let url: URL;
+  try {url = new URL(baseUrl);} catch {return unknown;}
+  // Independently check the original URL: the older endpoint-family facts have a broader contract.
+  // The raw delimiter check also rejects empty userinfo/query/fragment markers normalized away by URL.
+  if (url.protocol !== 'https:' || url.origin !== 'https://api.deepseek.com' ||
+    url.username || url.password || url.search || url.hash || /[?@#]/.test(baseUrl) ||
+    !['', '/v1', '/chat/completions', '/v1/chat/completions'].includes(url.pathname.replace(/\/$/, ''))) return unknown;
+  return supported({parameter: 'max_tokens', range: {minimum: 1, maximum: 393216},
+    defaults: {thinkingDisabled: 8192, thinkingEnabled: 65536, thinkingEnabledMaxEffort: 131072}}, DEEPSEEK_OUTPUT_TOKENS_EVIDENCE);
+}
+
 function serverFacts(modelId: string | undefined, endpoint: ResolvedModelExecutionProfile['endpoint'], protocol: ModelExecutionProtocol,
   baseUrl: string | undefined): {
   model: ResolvedModelExecutionProfile['model']; server: ResolvedModelExecutionProfile['server'];
@@ -233,7 +259,8 @@ function serverFacts(modelId: string | undefined, endpoint: ResolvedModelExecuti
   const unknown: ModelCapabilityFact<never> = {status: 'unknown', reason: modelId === undefined
     ? 'native_model_unknown' : 'unrecognized_endpoint_model_protocol'};
   const server: ResolvedModelExecutionProfile['server'] = {thinking: unknown, efforts: unknown, effortAliases: unknown,
-    defaultReasoning: unknown, toolReasoning: unknown, functionTools: observedFunctionTools(baseUrl, modelId, protocol, unknown)};
+    defaultReasoning: unknown, toolReasoning: unknown, functionTools: observedFunctionTools(baseUrl, modelId, protocol, unknown),
+    outputTokens: documentedOutputTokens(baseUrl, modelId, protocol, unknown)};
   // Small protocol facts, not a provider model catalog. Preserve the exact requested ID.
   // https://docs.z.ai/api-reference/llm/chat-completion
   if (['glm_coding', 'glm_standard'].includes(endpoint.family) && protocol === 'chat_completions' &&

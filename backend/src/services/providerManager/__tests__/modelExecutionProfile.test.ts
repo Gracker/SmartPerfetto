@@ -14,6 +14,79 @@ function config(overrides: Partial<ResolveModelExecutionProfileInput> = {}): Res
 }
 
 describe('model execution profile facts', () => {
+  it.each(['deepseek-flash', 'deepseek-v4-pro'].flatMap(modelId => [
+    'https://api.deepseek.com', 'https://api.deepseek.com/', 'https://api.deepseek.com/v1',
+    'https://api.deepseek.com/v1/', 'https://api.deepseek.com/chat/completions',
+    'https://api.deepseek.com/v1/chat/completions/', 'https://API.DEEPSEEK.COM:443/v1',
+  ].map(baseUrl => ({modelId, baseUrl}))))('records documented Chat output parameters only for $modelId at $baseUrl', input => {
+    const profile = resolveModelExecutionProfile(config(input));
+    expect(profile.server.outputTokens).toEqual({status: 'supported', source: 'official',
+      evidenceId: 'deepseek-chat-completion-max-tokens-2026-11-06', value: {
+        parameter: 'max_tokens', range: {minimum: 1, maximum: 393216},
+        defaults: {thinkingDisabled: 8192, thinkingEnabled: 65536, thinkingEnabledMaxEffort: 131072},
+      }});
+    expect(profile.effective).not.toHaveProperty('maxOutputTokens');
+    expect(profile.server).not.toHaveProperty('contextSize');
+    expect(profile.server).not.toHaveProperty('availableOutputTokens');
+    expect(profile.rulesetVersion).toBe('model_execution_profile_rules@4');
+  });
+
+  it.each([
+    'http://api.deepseek.com/v1', 'https://api.deepseek.com:8443/v1', 'https://gateway.example/v1',
+    'https://api.deepseek.com.evil.test/v1', 'https://api.deepseek.com@evil.test/v1',
+    'https://user:PRIVATE_CANARY@api.deepseek.com/v1', 'https://@api.deepseek.com/v1',
+    'https://api.deepseek.com/v1?credential=PRIVATE_CANARY', 'https://api.deepseek.com/v1#PRIVATE_CANARY',
+    'https://api.deepseek.com/v1?', 'https://api.deepseek.com/v1#',
+    'https://api.deepseek.com/responses', 'https://api.deepseek.com/anthropic',
+    'https://api.deepseek.com/beta', 'https://api.deepseek.com/unrecognized', 'https://api.deepseek.com/v1//',
+    'not a URL', undefined,
+  ])('independently rejects unofficial or decorated output-fact endpoints: %s', baseUrl => {
+    const profile = resolveModelExecutionProfile(config({modelId: 'deepseek-flash', baseUrl}));
+    expect(profile.server.outputTokens).toEqual({status: 'unknown', reason: 'unrecognized_endpoint_model_protocol'});
+    expect(JSON.stringify(profile)).not.toContain('PRIVATE_CANARY');
+  });
+
+  it('does not silently tighten the older endpoint-family reasoning facts', () => {
+    const profile = resolveModelExecutionProfile(config({modelId: 'deepseek-flash', baseUrl: 'https://api.deepseek.com/v1?extra=1'}));
+    expect(profile.server.thinking).toMatchObject({status: 'supported', value: 'optional'});
+    expect(profile.server.outputTokens?.status).toBe('unknown');
+  });
+
+  it.each(['deepseek-v4-flash', 'deepseek-v4-flash-vision-exp', 'deepseek-chat', 'deepseek-reasoner',
+    'gateway/deepseek-flash', 'deepseek-flash-next', 'DEEPSEEK-FLASH', ' deepseek-flash ', 'glm-5.3-flash'])(
+    'does not extrapolate output parameters to an alias or another model: %s', modelId => {
+      expect(resolveModelExecutionProfile(config({modelId, baseUrl: 'https://api.deepseek.com/v1'})).server.outputTokens)
+        .toEqual({status: 'unknown', reason: 'unrecognized_endpoint_model_protocol'});
+    });
+
+  it.each(['responses', 'anthropic_messages', 'native', 'unknown'] as const)('keeps Chat output facts unknown for %s', protocol => {
+    expect(resolveModelExecutionProfile(config({modelId: 'deepseek-flash', baseUrl: 'https://api.deepseek.com/v1', protocol}))
+      .server.outputTokens).toEqual({status: 'unknown', reason: 'unrecognized_endpoint_model_protocol'});
+  });
+
+  it('keeps GLM and an unknown native model explicitly unknown', () => {
+    expect(resolveModelExecutionProfile(config()).server.outputTokens)
+      .toEqual({status: 'unknown', reason: 'unrecognized_endpoint_model_protocol'});
+    expect(resolveModelExecutionProfile(config({modelId: undefined})).server.outputTokens)
+      .toEqual({status: 'unknown', reason: 'native_model_unknown'});
+  });
+
+  it('does not turn documented defaults or range into effective settings or a new budget validator', () => {
+    const input = config({modelId: 'deepseek-flash', baseUrl: 'https://api.deepseek.com/v1', effective: {
+      authoredReasoning: {mode: 'enabled', effort: 'low'}, sdkEffectiveReasoning: {mode: 'disabled'}, maxOutputTokens: 16384,
+    }});
+    const profile = resolveModelExecutionProfile(input);
+    expect(profile.effective).toEqual(input.effective);
+    expect(profile).not.toHaveProperty('providerSnapshotHash');
+    expect(resolveModelExecutionProfile({...input, effective: {maxOutputTokens: 393217}}).effective.maxOutputTokens).toBe(393217);
+    expect(resolveModelExecutionProfile({...input, effective: {maxOutputTokens: undefined}}).effective)
+      .not.toHaveProperty('maxOutputTokens');
+    const fact = profile.server.outputTokens!;
+    if (fact.status !== 'supported') throw new Error('Expected documented output fact');
+    for (const value of [fact, fact.value, fact.value.range, fact.value.defaults]) expect(Object.isFrozen(value)).toBe(true);
+    expect(resolveModelExecutionProfile(input).fingerprint).toEqual(profile.fingerprint);
+  });
+
   it.each([
     ['glm-5.3-flash', 'https://open.bigmodel.cn/api/coding/paas/v4', 'r5-glm-function-tools'],
     ['deepseek-flash', 'https://api.deepseek.com/v1', 'r5-deepseek-function-tools'],

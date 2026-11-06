@@ -9,7 +9,7 @@ import {renderConclusionContractSidecar, wrapConclusionContractSidecarPayload, p
   type ConclusionContractClaimItem, wrapConclusionAuthoringPayload, conclusionDeclarationValidationPayload} from '../../agent/core/conclusionContract';
 import {analysisDeliveryFingerprint, type AnalysisCompletion, type AnalysisDeliveryContext} from '../../types/analysisDelivery';
 import {canonicalizeAnalysisResult, isIssuedCanonicalAnalysisProjection, inspectCandidateProtocol,
-  buildCandidateProtocolDiagnostic, sanitizeCandidateProtocolDiagnostic} from '../canonicalAnalysisResult';
+  buildCandidateProtocolDiagnostic, buildAuthoredCandidateProtocolDiagnostic, sanitizeCandidateProtocolDiagnostic} from '../canonicalAnalysisResult';
 import {assessFinalResultQualityAssessment} from '../finalResultQualityGate';
 import {runClaimVerification} from '../verifier/claimVerificationRunner';
 import {createDataEnvelope, type DataEnvelope} from '../../types/dataContract';
@@ -107,6 +107,74 @@ function authoredFixture(options: {payload?: Record<string, unknown>; parts?: un
 }
 
 describe('issued authored-document consumers', () => {
+  it.each(['valid', 'partially_valid', 'invalid'] as const)('observes the issued original %s declaration without scanning body or dropping invalid entries', status => {
+    const payload = {...declaration(), sourceClaimBindings: [], claims: [authoredNumeric(),
+      ...(status === 'valid' ? [] : [{id: 'PRIVATE_CLAIM_ID', text: 'PRIVATE_CLAIM_TEXT', kind: 'numeric', semantics: false}])],
+      ...(status === 'invalid' ? {mode: 'PRIVATE_MODE', PRIVATE_DYNAMIC_FIELD: '/private/source'} : {})};
+    const f = authoredFixture({payload, parts: ['PRIVATE_BODY\n', renderConclusionContractSidecar(declaration())]});
+    try {
+      const snapshot = readAuthoredFinalSubmission(f.handoff.submission, f.handoff.input);
+      expect(snapshot.compiled.rawCanonicalPayload).toEqual(payload);
+      if (status === 'partially_valid') {
+        expect(snapshot.compiled.canonicalParse.contract?.claims?.[1]).toMatchObject({valid: false, rawSemantics: false});
+        expect(snapshot.compiled.canonicalParse.contract?.claims?.[1]).not.toHaveProperty('semantics');
+      }
+      if (status === 'invalid') expect(snapshot.compiled.canonicalParse.contract).toBeUndefined();
+      const before = structuredClone(snapshot);
+      const diagnostic = buildAuthoredCandidateProtocolDiagnostic(snapshot);
+      expect(diagnostic).toMatchObject({stage: 'native', candidateIndex: 1, status, sidecarStatus: 'absent', typedJsonStatus: status,
+        rawChars: snapshot.documentJson.length, canonicalChars: snapshot.compiled.body.trim().length,
+        claimCount: status === 'valid' ? 1 : 2, semanticClaimCount: status === 'valid' ? 1 : 2, sourceBindingCount: 0});
+      expect(sanitizeCandidateProtocolDiagnostic(diagnostic)).toEqual(diagnostic);
+      expect(snapshot).toEqual(before);
+      expect(JSON.stringify(diagnostic)).not.toMatch(/PRIVATE_|private\/source|rawPayload|claimText/);
+      if (status === 'invalid') expect(diagnostic.details).toContainEqual(expect.objectContaining({field: '$.mode'}));
+    } finally {f.cleanup();}
+  });
+
+  it.each(['claims_missing', 'claims_invalid', 'bindings_missing', 'bindings_invalid'] as const)(
+    'leaves linked declaration counts unknown for %s', reason => {
+      const payload: Record<string, unknown> = {...declaration(), sourceClaimBindings: []};
+      if (reason === 'claims_missing') delete payload.claims;
+      if (reason === 'claims_invalid') payload.claims = 'PRIVATE_BAD_CONTAINER';
+      if (reason === 'bindings_missing') delete payload.sourceClaimBindings;
+      if (reason === 'bindings_invalid') payload.sourceClaimBindings = {PRIVATE_BAD_CONTAINER: []};
+      const f = authoredFixture({payload, parts: ['Literal body']});
+      try {
+        const diagnostic = buildAuthoredCandidateProtocolDiagnostic(readAuthoredFinalSubmission(f.handoff.submission, f.handoff.input));
+        for (const key of ['claimCount', 'semanticClaimCount', 'sourceBindingCount']) expect(diagnostic).not.toHaveProperty(key);
+        expect(diagnostic.authoredMaterial).toBeDefined();
+        expect(sanitizeCandidateProtocolDiagnostic(diagnostic)).toEqual(diagnostic);
+      } finally {f.cleanup();}
+    });
+
+  it('keeps exact Unicode/escaping input measurements separate from normalized compiled material', () => {
+    const raw = JSON.stringify({representationVersion: AUTHORED_CLAIM_DOCUMENT_VERSION,
+      contract: {...declaration(), sourceClaimBindings: []}, bodyParts: [' \n中"\\', '\ud83d', '\ude00', '\t ']}, null, 2);
+    const f = authoredFixture({raw});
+    try {
+      const snapshot = readAuthoredFinalSubmission(f.handoff.submission, f.handoff.input);
+      const diagnostic = buildAuthoredCandidateProtocolDiagnostic(snapshot);
+      expect(diagnostic.authoredMaterial).toEqual({rawArgumentsUtf8Bytes: Buffer.byteLength(snapshot.rawArguments),
+        documentInputUtf8Bytes: Buffer.byteLength(raw), bodyUtf8Bytes: Buffer.byteLength(f.compiled.body),
+        bodyUtf16Length: f.compiled.body.length, normalizedDocument: f.compiled.material.raw,
+        normalizedExpanded: f.compiled.material.expanded});
+      expect(diagnostic.rawChars).toBe(raw.length);
+      expect(diagnostic.canonicalChars).toBe(f.compiled.body.trim().length);
+      expect(diagnostic.authoredMaterial!.documentInputUtf8Bytes).toBeGreaterThan(diagnostic.authoredMaterial!.normalizedDocument.utf8Bytes);
+      const material = diagnostic.authoredMaterial!;
+      for (const invalid of [
+        {...material, rawArgumentsUtf8Bytes: -1}, {...material, bodyUtf16Length: NaN},
+        {...material, documentInputUtf8Bytes: 1024 * 1024 + 1}, {...material, path: '/private/source'},
+        {...material, normalizedDocument: {...material.normalizedDocument, PRIVATE_DYNAMIC: 'secret'}},
+        {...material, normalizedExpanded: {...material.normalizedExpanded, depth: 25}},
+        {...material, normalizedExpanded: {...material.normalizedExpanded, nodes: 10_001}},
+      ]) expect(sanitizeCandidateProtocolDiagnostic({...diagnostic, authoredMaterial: invalid})).toBeUndefined();
+      const {authoredMaterial: _material, ...oldShape} = diagnostic;
+      expect(sanitizeCandidateProtocolDiagnostic(oldShape)).toEqual(oldShape);
+    } finally {f.cleanup();}
+  });
+
   it.each(['sidecar', 'canonical_json', 'whitespace'] as const)('checks actual typed body presence without carrier scanning: %s', async kind => {
     const body = kind === 'sidecar' ? renderConclusionContractSidecar(declaration())
       : kind === 'canonical_json' ? JSON.stringify(declaration()) : ' \n\t';

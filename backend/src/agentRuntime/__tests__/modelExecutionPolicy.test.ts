@@ -18,6 +18,26 @@ function policy(target = profile(), overrides: Partial<Omit<ResolveModelExecutio
 const deepseek = {modelId: 'deepseek-flash', baseUrl: 'https://api.deepseek.com'};
 
 describe('explicit model execution policy', () => {
+  it.each([undefined, 16384])('keeps documented output defaults descriptive with authored maxOutputTokens=%s', maxOutputTokens => {
+    const target = profile({...deepseek, effective: {
+      authoredReasoning: {mode: 'enabled', effort: 'low'}, sdkEffectiveReasoning: {mode: 'enabled', effort: 'high'},
+      ...(maxOutputTokens !== undefined ? {maxOutputTokens} : {}),
+    }});
+    const {outputTokens, ...legacyServer} = target.server;
+    expect(outputTokens?.status).toBe('supported');
+    for (const selection of ['preserve', 'minimum_legal_candidate'] as const) {
+      const result = policy(target, {purpose: 'review', selection});
+      expect(result).toMatchObject({status: 'ready', controls: {surface: 'none'}, receipt: {
+        outcome: 'preserved', authored: {mode: 'enabled', effort: 'low'}, sdkEffective: {mode: 'enabled', effort: 'high'},
+        mapped: 'unchanged', wireObservation: 'not_observed',
+      }});
+      expect(policy({...target, server: legacyServer}, {purpose: 'review', selection})).toEqual(result);
+      if (result.status === 'ready') expect(result.controls).toEqual({surface: 'none'});
+    }
+    if (maxOutputTokens === undefined) expect(target.effective).not.toHaveProperty('maxOutputTokens');
+    else expect(target.effective.maxOutputTokens).toBe(maxOutputTokens);
+  });
+
   it.each(['classification', 'review', 'declaration_repair', 'answer_turn', 'continuation'] as const)(
     'preserves native configuration for %s unless a candidate was explicitly selected', purpose => {
       expect(policy(profile(), {purpose, selection: 'preserve'})).toMatchObject({status: 'ready', controls: {surface: 'none'},

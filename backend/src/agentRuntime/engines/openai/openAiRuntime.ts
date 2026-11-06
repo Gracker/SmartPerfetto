@@ -30,7 +30,7 @@ import type {ArchitectureInfo} from '../../../agent/detectors/types';
 import {createClaudeMcpServer, loadLearnedSqlFixPairs} from '../../../agentv3/claudeMcpServer';
 import {buildSystemPrompt} from '../../../agentv3/claudeSystemPrompt';
 import {loadPromptTemplate, renderTemplate} from '../../../agentv3/strategyLoader';
-import {inspectCandidateProtocol, buildCandidateProtocolDiagnostic, sanitizeCandidateProtocolDiagnostic,
+import {inspectCandidateProtocol, buildCandidateProtocolDiagnostic, buildAuthoredCandidateProtocolDiagnostic, sanitizeCandidateProtocolDiagnostic,
   type CandidateProtocolDiagnostic} from '../../../services/canonicalAnalysisResult';
 import {extractFindingsFromText} from '../../../agentv3/claudeFindingExtractor';
 import {resolveFocusAppTarget} from '../../focusAppTarget';
@@ -125,7 +125,7 @@ import {createOpenAiTypedFinalAttempt, OPENAI_TYPED_FINAL_ADMISSION_CONTRACT_VER
   type OpenAiTypedFinalWireEvents, type OpenAiTypedFinalWireObserver} from './openAiTypedFinalAdmission';
 import {assertFinalSubmissionPreDispatch, FinalSubmissionConfigurationError,
   type FinalSubmissionSdkCompatibility} from '../../finalSubmissionConfig';
-import {createAuthoredFinalSubmissionIssuer, readAuthoredFinalSubmission} from '../../authoredFinalSubmission';
+import {createAuthoredFinalSubmissionIssuer, readAuthoredFinalSubmission, type AuthoredFinalSubmissionSnapshot} from '../../authoredFinalSubmission';
 import {hasCurrentAuthoredFinalDelivery, type AuthoredConclusionSubmission} from '../../../services/security/conclusionProtocolProjection';
 import {projectRuntimeToolEventPayload} from '../../../services/security/runtimeToolEventProjection';
 import type {RuntimeToolRole} from '../../runtimeToolSpec';
@@ -1419,6 +1419,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           await Promise.allSettled([rawRun, nativeDrain, consumeWork]);
           if (typedAttempt && attemptContractFault) typedAttempt.revoke('contract_unavailable');
           if (typedAttempt && !attemptContractFault) {
+            let observedSubmission: AuthoredFinalSubmissionSnapshot | undefined;
             try {
               authoredSubmission = await typedAttempt.settleAfterDrain(consumeWork ?? Promise.resolve());
               const submitted = readAuthoredFinalSubmission(authoredSubmission.submission, authoredSubmission.input);
@@ -1427,6 +1428,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               finish = {status: 'completed', sdkFinishReason: 'tool_calls'};
               terminationMessage = undefined;
               actualFinalSubmission = {mode: 'authored_claim_document_v1', outcome: 'submitted'};
+              observedSubmission = submitted;
             } catch {
               // Keep the actual assistant terminal (if any); a failed transport is a separate product issue.
               authoredSubmission = undefined;
@@ -1439,9 +1441,20 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
                   ...(diagnostic.reason ? {wireReason: diagnostic.reason} : {}),
                   ...(diagnostic.admissionFailure ? {admissionFailure: diagnostic.admissionFailure} : {}),
                   ...(diagnostic.compilerFailure ? {compilerFailure: diagnostic.compilerFailure} : {}),
+                  ...(diagnostic.wireFinishReason ? {wireFinishReason: diagnostic.wireFinishReason} : {}),
                   dispatchOrdinal: diagnostic.dispatchOrdinal,
                 });
               } catch { /* Diagnostics never change completion or delivery. */ }
+            }
+            // Admission/currentness and adoption above are not observation work.
+            // A diagnostic listener must never recast a successfully issued submission.
+            if (observedSubmission) {
+              try {
+                const candidateProtocolDiagnostic = sanitizeCandidateProtocolDiagnostic(
+                  buildAuthoredCandidateProtocolDiagnostic(observedSubmission));
+                if (candidateProtocolDiagnostic) this.emitUpdate({type: 'progress', content: {phase: 'candidate_protocol',
+                  candidateProtocolDiagnostic}, timestamp: Date.now()});
+              } catch { /* Observation failure cannot revoke or replace the submitted candidate. */ }
             }
           }
           typedAttemptCurrent = false;

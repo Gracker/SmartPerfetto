@@ -386,6 +386,49 @@ async function consumeObserved(response: Response, observer: OpenAiTypedFinalWir
 }
 
 describe('actual bounded typed-final wire collector at the existing terminal fetch boundary', () => {
+  const toolChunk = {id: 'finish-fixture', choices: [{index: 0, delta: {tool_calls: [{index: 0, id: 'finish-call', type: 'function',
+    function: {name: finalToolName, arguments: rawArguments}}]}, finish_reason: null}]};
+  const terminalChunk = (reason: unknown) => ({id: 'finish-fixture', choices: [{index: 0, delta: {}, finish_reason: reason}]});
+
+  it.each(['stop', 'length', 'tool_calls', 'function_call', 'content_filter', 'insufficient_system_resource', 'aborted',
+    'PRIVATE_FINISH_REASON'] as const)('observes a closed actual finish reason without changing admission: %s', reason => {
+    const collector = createOpenAiTypedFinalWireCollector();
+    const events = collector.startRequest();
+    events.chunk(toolChunk); events.chunk(terminalChunk(reason)); events.done(); events.end(true);
+    expect(collector.diagnostic()).toMatchObject({wireFinishReason: reason.startsWith('PRIVATE_') ? 'other' : reason,
+      status: reason === 'tool_calls' ? 'complete' : 'rejected'});
+    expect(Boolean(collector.current())).toBe(reason === 'tool_calls');
+    expect(JSON.stringify(collector.diagnostic())).not.toContain('PRIVATE_');
+    if (reason === 'tool_calls') expect(collector.current()).not.toHaveProperty('wireFinishReason');
+  });
+
+  it('omits absent terminals, resets observations and ignores an older dispatch finish', () => {
+    const collector = createOpenAiTypedFinalWireCollector();
+    const old = collector.startRequest(); old.chunk(toolChunk);
+    const current = collector.startRequest(); current.chunk(toolChunk);
+    expect(collector.diagnostic()).not.toHaveProperty('wireFinishReason');
+    old.chunk(terminalChunk('length')); old.done(); old.end(true);
+    expect(collector.diagnostic()).toEqual({dispatchOrdinal: 2, status: 'pending'});
+    current.chunk(terminalChunk('tool_calls')); current.done(); current.end(true);
+    expect(collector.diagnostic()).toEqual({dispatchOrdinal: 2, status: 'complete', wireFinishReason: 'tool_calls'});
+    const absent = collector.startRequest(); absent.chunk(toolChunk); absent.done(); absent.end(true);
+    expect(collector.diagnostic()).not.toHaveProperty('wireFinishReason');
+    expect(collector.current()).toBeUndefined();
+  });
+
+  it.each([['length', 'stop'], ['PRIVATE_FIRST', 'PRIVATE_SECOND']])('keeps raw conflicting terminal rejection: %s / %s', (first, second) => {
+    const collector = createOpenAiTypedFinalWireCollector();
+    const events = collector.startRequest(); events.chunk(toolChunk);
+    events.chunk(terminalChunk(first)); events.chunk(terminalChunk(second)); events.done(); events.end(true);
+    expect(collector.diagnostic()).toMatchObject({status: 'rejected', reason: 'non_tool_terminal', wireFinishReason: 'other'});
+    // Distinct unknown strings both project to other; they must still poison
+    // admission as a raw conflict, rather than become an equal terminal pair.
+    const next = collector.startRequest(); next.chunk(toolChunk); next.chunk(terminalChunk('tool_calls')); next.done(); next.end(true);
+    expect(collector.current()).toBeUndefined();
+    expect(collector.diagnostic()).toMatchObject({status: 'rejected', reason: 'non_tool_terminal', wireFinishReason: 'tool_calls'});
+    expect(JSON.stringify(collector.diagnostic())).not.toContain('PRIVATE_');
+  });
+
   it('preserves response bytes and reads original argument strings across real SSE chunks', async () => {
     const collector = createOpenAiTypedFinalWireCollector();
     const pieces = [rawArguments.slice(0, 13), rawArguments.slice(13, 27), rawArguments.slice(27)];
@@ -487,7 +530,8 @@ describe('actual typed-final attempt helper with installed SDK and shared issued
       expect(h.submission()).toBeUndefined();
       expect(h.observations.admissionFailure).toMatchObject({code: 'invalid_submission'});
       const before = h.admission()!.diagnostic();
-      expect(before).toEqual({dispatchOrdinal: 1, status: 'complete', admissionFailure: 'invalid_submission', compilerFailure: code});
+      expect(before).toEqual({dispatchOrdinal: 1, status: 'complete', wireFinishReason: 'tool_calls',
+        admissionFailure: 'invalid_submission', compilerFailure: code});
       h.admission()!.revoke('sdk_incomplete');
       expect(h.admission()!.diagnostic()).toEqual(before);
       expect(JSON.stringify(before)).not.toContain('PRIVATE_COMPILER_CANARY');

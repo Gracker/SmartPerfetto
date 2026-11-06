@@ -19,6 +19,10 @@ export type OpenAiTypedFinalWireFailure =
   | 'multiple_tools' | 'conflicting_identity' | 'raw_limit' | 'assistant_content'
   | 'missing_done' | 'data_after_done' | 'missing_tool' | 'non_tool_terminal';
 
+const WIRE_FINISH_REASONS = ['stop', 'length', 'tool_calls', 'function_call', 'content_filter',
+  'insufficient_system_resource', 'aborted', 'other'] as const;
+type WireFinishReason = typeof WIRE_FINISH_REASONS[number];
+
 export interface OpenAiTypedFinalWireReceipt {
   readonly wireVersion: typeof OPENAI_TYPED_FINAL_WIRE_VERSION;
   readonly dispatchOrdinal: number;
@@ -39,7 +43,8 @@ export interface OpenAiTypedFinalWireObserver {
 export interface OpenAiTypedFinalWireCollector extends OpenAiTypedFinalWireObserver {
   current(): OpenAiTypedFinalWireReceipt | undefined;
   isCurrent(receipt: OpenAiTypedFinalWireReceipt): boolean;
-  diagnostic(): {dispatchOrdinal: number; status: 'pending' | 'complete' | 'rejected'; reason?: OpenAiTypedFinalWireFailure};
+  diagnostic(): {dispatchOrdinal: number; status: 'pending' | 'complete' | 'rejected'; reason?: OpenAiTypedFinalWireFailure;
+    wireFinishReason?: WireFinishReason};
 }
 
 const record = (value: unknown): value is Record<string, unknown> =>
@@ -61,17 +66,21 @@ export function createOpenAiTypedFinalWireCollector(): OpenAiTypedFinalWireColle
   let ordinal = 0;
   let current: OpenAiTypedFinalWireReceipt | undefined;
   let diagnostic: ReturnType<OpenAiTypedFinalWireCollector['diagnostic']> = {dispatchOrdinal: 0, status: 'pending'};
+  let wireFinishReason: WireFinishReason | undefined;
   // SDK conversion can discard unknown provider actions. A later response may
   // not erase that uncertainty about this attempt's outstanding work.
   let unsafeWireFailure: OpenAiTypedFinalWireFailure | undefined;
   return {
     current: () => unsafeWireFailure ? undefined : current,
     isCurrent: receipt => current === receipt && !unsafeWireFailure,
-    diagnostic: () => unsafeWireFailure ? {dispatchOrdinal: ordinal, status: 'rejected', reason: unsafeWireFailure} : {...diagnostic},
+    diagnostic: () => ({...(unsafeWireFailure
+      ? {dispatchOrdinal: ordinal, status: 'rejected' as const, reason: unsafeWireFailure} : diagnostic),
+      ...(wireFinishReason ? {wireFinishReason} : {})}),
     startRequest() {
       const dispatchOrdinal = ++ordinal;
       current = undefined;
       diagnostic = {dispatchOrdinal, status: 'pending'};
+      wireFinishReason = undefined;
       let failure: OpenAiTypedFinalWireFailure | undefined;
       let responseId: string | undefined, callId: string | undefined, callIndex: number | undefined;
       let toolName = '', rawArguments = '', argumentBytes = 0;
@@ -114,6 +123,11 @@ export function createOpenAiTypedFinalWireCollector(): OpenAiTypedFinalWireColle
               (!Array.isArray(item) || item.length > 0));
             if (finishReason !== undefined && addsOutput) reject('data_after_done');
             if (choice.finish_reason != null) {
+              if (ordinal === dispatchOrdinal) {
+                const projected = WIRE_FINISH_REASONS.find(reason => reason === choice.finish_reason) ?? 'other';
+                wireFinishReason = wireFinishReason === 'other' || !nonempty(choice.finish_reason) ||
+                  finishReason !== undefined && finishReason !== choice.finish_reason ? 'other' : projected;
+              }
               if (!nonempty(choice.finish_reason) || (finishReason !== undefined && finishReason !== choice.finish_reason)) {
                 reject('non_tool_terminal');
               } else finishReason = choice.finish_reason;

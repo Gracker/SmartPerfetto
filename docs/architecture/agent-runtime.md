@@ -82,6 +82,14 @@ Pi 的 model JSON 可显式设置 `thinkingLevel`（`off/minimal/low/medium/high
 
 `OPENAI_ANALYSIS_REASONING_EFFORT` 可显式配置 OpenAI runtime 的主分析与普通续写，省略时保留服务商默认。它不覆盖分类、声明修复、超时无工具收尾或语义审核各自的用途策略。合法性按实际选中的模型、端点、协议与当前 SDK 验证；通用 effort 通过 SDK 原生字段发送，不向未知网关注入 `thinking`。已识别 DeepSeek Chat 的 `none` 映射为关闭思考；强制思考的 GLM 拒绝 `none`。当前 adapter 仅在已识别且支持的 Chat 接口通过透传表达 `max`，未知网关与 Responses 的显式 `max` 暂不支持。配置进入同一隔离环境的 provider snapshot，非法值不进入公开快照。较低 effort 的准确性仍需真实验证。
 
+`server.outputTokens` 只记录有来源的输出参数范围与条件默认值。当前仅为官方 DeepSeek
+Chat 的 `deepseek-flash` / `deepseek-v4-pro` 记录 `max_tokens`：参数范围 1–393216，
+非思考默认 8192、思考默认 65536、`max` effort 默认 131072；输入与输出仍受总上下文约束。
+其他模型、协议及网关保持 unknown。文档默认值不填入未配置的 `effective.maxOutputTokens`，
+也不自动改变请求、预算或既有 provider snapshot。显式 `OPENAI_MAX_OUTPUT_TOKENS` 仍由现有
+SDK 路径发送；实际请求、原生终态和使用量须分别观测，不能仅由输出数量推断截断原因。
+事实来源见 [DeepSeek Chat API](https://api-docs.deepseek.com/api/create-chat-completion/)。
+
 `SMARTPERFETTO_FINAL_SUBMISSION` 选择主分析输出运输，默认 `assistant_text`；
 `authored_claim_document_v1` 是显式实验配置。它与声明格式在分类调用前一起捕获，
 只允许 `canonical_v1`。实验准入分别检查实际 SDK 合同、Chat Completions 协议及
@@ -89,12 +97,22 @@ Pi 的 model JSON 可显式设置 `thinkingLevel`（`off/minimal/low/medium/high
 已观察到工具调用不代表该模型的文档提交、准确度或性能已经通过验收。
 
 实验运输从实际 registry 的唯一 `final_candidate_submission` role 取得工具名。
-模型用 `documentJson` 提交正文片段和原始 canonical 声明；确定性 compiler 只拼接
-模型所写文字，不从证据补值。原始 wire 参数、SDK 调用、真实 handler 成功、原生 final
+模型用 `documentJson` 提交正文片段和原始 canonical 声明；工具 strict schema 只约束外层
+字符串字段，字符串内的 JSON 仍须独立解析和校验。确定性 compiler 只拼接模型所写文字，
+不从证据补值。原始 wire 参数、SDK 调用、真实 handler 成功、原生 final
 和后台排空共同确认提交，随后仍由共享 finalizer 完成原有证据、语义、源码和报告校验。
 作者来源为 `model_tool_arguments`。实际 main 缺少提交或运输失败是独立产品问题，
 不改写 SDK 的真实完成状态，也不启动旧声明修复或续写。没有 main 调用的程序 ACK／
 直接证据路径保持原交付，其实际运输不适用。
+
+实际签发并完成排空的 typed 提交通过既有 `candidate_protocol` 诊断保留原 canonical
+校验状态、闭集 issue 与可确认的原始条目计数；编译成功不等于声明有效。可选 `authoredMaterial`
+分别记录原参数、原 document、正文与编译器已有 normalized 材料的规模，不输出内容、ID
+或动态字段名，也不能把嵌套计量相加或换算成 token。失败日志中的 `wireFinishReason`
+仅投影实际观察到的闭集原生终态，缺失保持缺失。诊断失败不改变接纳、授权、完成状态、
+修复或预算；历史没有记录的失败不能用新诊断回填原因。
+请求指标中的 `toolArguments` 统计该次请求携带的历史参数，不包含它随后生成的响应；
+没有后续派发时，最终提交不会进入这项输入计数。缺少材料诊断也不代表输出大小为零。
 
 ## M10 独立反馈 triage
 

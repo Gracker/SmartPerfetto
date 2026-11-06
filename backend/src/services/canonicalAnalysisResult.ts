@@ -4,6 +4,8 @@
 
 import {randomUUID} from 'node:crypto';
 import type {AnalysisResult} from '../agent/core/orchestratorTypes';
+import type {AuthoredFinalSubmissionSnapshot} from '../agentRuntime/authoredFinalSubmission';
+import {CONCLUSION_AUTHORING_LIMITS} from '../agent/core/conclusionAuthoring';
 import {deriveConclusionContract} from '../agent/core/conclusionGenerator';
 import {parseConclusionContractSidecar, parseTypedConclusionContractJson, parseConclusionDeclarationPayload,
   declaredFields, declaredContractForResult, type ConclusionContract, type ConclusionBindingEligibility,
@@ -106,6 +108,17 @@ export interface CandidateProtocolDiagnostic {
   invalidClaimCount?: number;
   invalidProposalCount?: number;
   unrepairableCount?: number;
+  /** Numeric observations only; exact input bytes and normalized JSON are distinct measurements. */
+  authoredMaterial?: CandidateAuthoredMaterialDiagnostic;
+}
+
+interface CandidateAuthoredMaterialDiagnostic {
+  rawArgumentsUtf8Bytes: number;
+  documentInputUtf8Bytes: number;
+  bodyUtf8Bytes: number;
+  bodyUtf16Length: number;
+  normalizedDocument: {utf8Bytes: number; nodes: number; depth: number};
+  normalizedExpanded: {utf8Bytes: number; nodes: number; depth: number};
 }
 
 const FRAMING_REASONS = {
@@ -148,13 +161,34 @@ const CANDIDATE_PROTOCOL_DIAGNOSTIC_KEYS = [
   'schemaVersion', 'stage', 'candidateIndex', 'status', 'sidecarStatus', 'typedJsonStatus',
   'issueCodes', 'issueCount', 'rawChars', 'canonicalChars', 'projectionKind',
   'claimCount', 'semanticClaimCount', 'sourceBindingCount', 'invalidClaimCount',
-  'invalidProposalCount', 'unrepairableCount', 'details', 'relationProposalDiagnostics', 'claimDiagnostics', 'framingDiagnostic',
+  'invalidProposalCount', 'unrepairableCount', 'details', 'relationProposalDiagnostics', 'claimDiagnostics', 'framingDiagnostic', 'authoredMaterial',
 ] as const;
 
 const claimDiagnosticKey = (detail: ConclusionClaimDiagnostic) => `${detail.ordinal}:${detail.code}:${detail.field}`;
 
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function sanitizeAuthoredMaterial(value: unknown): CandidateAuthoredMaterialDiagnostic | undefined {
+  const keys = ['rawArgumentsUtf8Bytes', 'documentInputUtf8Bytes', 'bodyUtf8Bytes', 'bodyUtf16Length',
+    'normalizedDocument', 'normalizedExpanded'];
+  const count = (value: unknown, limit: number): value is number =>
+    Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= limit;
+  if (!record(value) || Object.keys(value).length !== keys.length || Object.keys(value).some(key => !keys.includes(key)) ||
+      !keys.slice(0, 4).every(key => count(value[key], CONCLUSION_AUTHORING_LIMITS.utf8Bytes))) return undefined;
+  const material = (item: unknown) => {
+    if (!record(item) || Object.keys(item).length !== 3 ||
+        Object.keys(item).some(key => !['utf8Bytes', 'nodes', 'depth'].includes(key)) ||
+        !count(item.utf8Bytes, CONCLUSION_AUTHORING_LIMITS.utf8Bytes) ||
+        !count(item.nodes, CONCLUSION_AUTHORING_LIMITS.nodes) || !count(item.depth, CONCLUSION_AUTHORING_LIMITS.depth)) return undefined;
+    return {utf8Bytes: item.utf8Bytes, nodes: item.nodes, depth: item.depth};
+  };
+  const normalizedDocument = material(value.normalizedDocument), normalizedExpanded = material(value.normalizedExpanded);
+  if (!normalizedDocument || !normalizedExpanded) return undefined;
+  return {rawArgumentsUtf8Bytes: value.rawArgumentsUtf8Bytes as number,
+    documentInputUtf8Bytes: value.documentInputUtf8Bytes as number, bodyUtf8Bytes: value.bodyUtf8Bytes as number,
+    bodyUtf16Length: value.bodyUtf16Length as number, normalizedDocument, normalizedExpanded};
 }
 
 /** Diagnostics carry only fixed schema locations, never source paths, model text or admission authority. */
@@ -179,6 +213,8 @@ export function sanitizeCandidateProtocolDiagnostic(value: unknown): CandidatePr
   if (invalidCounts.some(count => count !== undefined) &&
       (!invalidCounts.every(count => count === undefined || Number.isSafeInteger(count) && count >= 0) ||
         (data.unrepairableCount ?? 0) > (data.invalidClaimCount ?? 0) + (data.invalidProposalCount ?? 0))) return undefined;
+  const authoredMaterial = data.authoredMaterial === undefined ? undefined : sanitizeAuthoredMaterial(data.authoredMaterial);
+  if (data.authoredMaterial !== undefined && !authoredMaterial) return undefined;
   if (data.framingDiagnostic !== undefined && (!isCandidateFramingDiagnostic(data.framingDiagnostic) ||
       data.status !== 'invalid' || data.sidecarStatus !== 'invalid' || !data.issueCodes.includes('invalid_framing') ||
       data.framingDiagnostic.line > data.rawChars + 1)) return undefined;
@@ -199,6 +235,7 @@ export function sanitizeCandidateProtocolDiagnostic(value: unknown): CandidatePr
     details => data.issueCount >= details.length &&
       details.every(detail => data.issueCodes.includes(detail.code)))) return undefined;
   return {...data, issueCodes: [...data.issueCodes],
+    ...(authoredMaterial ? {authoredMaterial} : {}),
     ...(data.framingDiagnostic ? {framingDiagnostic: {...data.framingDiagnostic}} : {}),
     ...(data.details ? {details: data.details.map(detail => ({...detail}))} : {}),
     ...(data.relationProposalDiagnostics ? {relationProposalDiagnostics:
@@ -220,6 +257,53 @@ export function buildCandidateProtocolDiagnostic(
   const claims = Array.isArray(payload?.claims) ? payload.claims : parsed?.contract?.claims ?? [];
   const sourceBindings = Array.isArray(payload?.sourceClaimBindings) ? payload.sourceClaimBindings
     : parsed?.contract?.sourceClaimBindings ?? [];
+  return projectCandidateProtocolDiagnostic({
+    base: {stage, candidateIndex, status: inspected.status, sidecarStatus: inspected.sidecar.status,
+      typedJsonStatus: inspected.typedJson?.status ?? 'not_checked', rawChars: inspected.rawChars,
+      canonicalChars: inspected.canonicalBody.trim().length,
+      projectionKind: privacyProjection && privacyProjection !== 'preserved' ? privacyProjection
+        : inspected.rawChars !== inspected.canonicalBody.length ? 'protocol_projection' : 'preserved'},
+    issues, payload, framing,
+    ...(parsed?.contract || record(payload) ? {counts: {claimCount: claims.length,
+      semanticClaimCount: claims.filter(claim => claim && typeof claim === 'object' &&
+        Object.prototype.hasOwnProperty.call(claim, 'semantics')).length,
+      sourceBindingCount: sourceBindings.length}} : {}),
+  });
+}
+
+/** Observation of an already issued document, not a parser or an admission boundary. */
+export function buildAuthoredCandidateProtocolDiagnostic(snapshot: AuthoredFinalSubmissionSnapshot): CandidateProtocolDiagnostic {
+  const {compiled} = snapshot;
+  const payload = compiled.rawCanonicalPayload;
+  const claims = payload.claims, sourceBindings = payload.sourceClaimBindings;
+  const diagnostic = projectCandidateProtocolDiagnostic({
+    base: {stage: 'native', candidateIndex: 1, status: compiled.canonicalParse.status,
+      sidecarStatus: 'absent', typedJsonStatus: compiled.canonicalParse.status,
+      rawChars: snapshot.documentJson.length, canonicalChars: compiled.body.trim().length, projectionKind: 'preserved'},
+    issues: compiled.canonicalParse.issues, payload,
+    // Keep the existing linked-count contract. Missing/malformed containers
+    // are unknown, never a fabricated empty collection or a parsed valid subset.
+    ...(Array.isArray(claims) && Array.isArray(sourceBindings) ? {counts: {claimCount: claims.length,
+      semanticClaimCount: claims.filter(claim => record(claim) && Object.prototype.hasOwnProperty.call(claim, 'semantics')).length,
+      sourceBindingCount: sourceBindings.length}} : {}),
+  });
+  return {...diagnostic, authoredMaterial: {
+    rawArgumentsUtf8Bytes: Buffer.byteLength(snapshot.rawArguments, 'utf8'),
+    documentInputUtf8Bytes: compiled.material.rawInputUtf8Bytes,
+    bodyUtf8Bytes: compiled.material.bodyUtf8Bytes, bodyUtf16Length: compiled.material.bodyUtf16Length,
+    normalizedDocument: {...compiled.material.raw}, normalizedExpanded: {...compiled.material.expanded},
+  }};
+}
+
+function projectCandidateProtocolDiagnostic(input: {
+  base: Pick<CandidateProtocolDiagnostic, 'stage' | 'candidateIndex' | 'status' | 'sidecarStatus' |
+    'typedJsonStatus' | 'rawChars' | 'canonicalChars' | 'projectionKind'>;
+  issues: AuthoredFinalSubmissionSnapshot['compiled']['canonicalParse']['issues'];
+  payload?: {readonly claims?: unknown; readonly sourceClaimBindings?: unknown; readonly relationProposals?: unknown};
+  framing?: CandidateFramingDiagnostic;
+  counts?: Pick<CandidateProtocolDiagnostic, 'claimCount' | 'semanticClaimCount' | 'sourceBindingCount'>;
+}): CandidateProtocolDiagnostic {
+  const {issues, payload, framing} = input;
   const details: ConclusionContractStructureDetail[] = [];
   const seenDetails = new Set<string>();
   const relationProposalDiagnostics: ConclusionRelationProposalDiagnostic[] = [];
@@ -250,7 +334,7 @@ export function buildCandidateProtocolDiagnostic(
       if (relationDetail.scope === 'item') invalidProposalOrdinals.add(relationDetail.ordinal);
     }
     const claimDetail = issue.claimDiagnostic;
-    if (claimDetail && claimDetail.code === issue.code && !isConclusionRootParseIssue(issue)) {
+    if (claimDetail && claimDetail.code === issue.code && !isConclusionRootParseIssue({code: issue.code, path: issue.path})) {
       invalidClaimOrdinals.add(claimDetail.ordinal);
     }
     if (isConclusionClaimDiagnostic(claimDetail) && claimDetail.code === issue.code &&
@@ -280,24 +364,20 @@ export function buildCandidateProtocolDiagnostic(
     }
   }
   return {
-    schemaVersion: 'candidate_protocol_diagnostic@1', stage, candidateIndex, status: inspected.status,
-    sidecarStatus: inspected.sidecar.status, typedJsonStatus: inspected.typedJson?.status ?? 'not_checked',
+    schemaVersion: 'candidate_protocol_diagnostic@1', stage: input.base.stage, candidateIndex: input.base.candidateIndex,
+    status: input.base.status, sidecarStatus: input.base.sidecarStatus, typedJsonStatus: input.base.typedJsonStatus,
     issueCodes: [...new Set(issues.map(issue => issue.code))], issueCount: issues.length,
     ...(details.length ? {details} : {}),
     ...(relationProposalDiagnostics.length ? {relationProposalDiagnostics} : {}),
     ...(claimDiagnostics.length ? {claimDiagnostics} : {}),
     ...(framing ? {framingDiagnostic: framing} : {}),
-    rawChars: inspected.rawChars, canonicalChars: inspected.canonicalBody.trim().length,
-    ...(parsed?.contract || payload && typeof payload === 'object' && !Array.isArray(payload) ? {claimCount: claims.length,
-      semanticClaimCount: claims.filter(claim => claim && typeof claim === 'object' &&
-        Object.prototype.hasOwnProperty.call(claim, 'semantics')).length,
-      sourceBindingCount: sourceBindings.length} : {}),
+    rawChars: input.base.rawChars, canonicalChars: input.base.canonicalChars,
+    ...input.counts,
     ...(invalidClaimOrdinals.size || invalidProposalOrdinals.size ? {
       invalidClaimCount: invalidClaimOrdinals.size, invalidProposalCount: invalidProposalOrdinals.size,
       ...(unrepairableCount ? {unrepairableCount} : {}),
     } : {}),
-    projectionKind: privacyProjection && privacyProjection !== 'preserved' ? privacyProjection
-      : inspected.rawChars !== inspected.canonicalBody.length ? 'protocol_projection' : 'preserved',
+    projectionKind: input.base.projectionKind,
   };
 }
 
