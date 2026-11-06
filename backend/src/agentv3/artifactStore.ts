@@ -19,7 +19,7 @@
 
 import type { TraceProcessorQueryProvenance } from '../services/traceProcessorConnectionModel';
 import {randomUUID} from 'crypto';
-import {isDeepStrictEqual} from 'util';
+import {isDeepStrictEqual, types} from 'util';
 import type {RuntimeToolInvocationEvent} from '../agentRuntime/runtimeToolObserver';
 import {captureInvestigationToolObservation, recordCaptureToolCall,
   type InvestigationToolObservation} from '../services/evidence/investigationEvidenceLedger';
@@ -31,7 +31,8 @@ import {capturedEvidenceTable, freezeEvidenceValue, type CapturedEvidenceTable, 
   MODEL_EVIDENCE_TRUNCATED_CELL_LIMIT, type ModelEvidenceProjectionStatus,
   type ModelEvidenceProjectionUnavailableReason} from '../services/evidence/evidenceCapture';
 import {projectModelEvidenceMetadata, type ModelEvidenceMetadata} from '../services/evidence/modelEvidenceMetadata';
-import {createEvidenceReadView, matchesIssuedEvidenceReadRecord, MAX_EVIDENCE_READ_REFERENCES, type EvidenceReadView, type EvidenceReadViewOptions,
+import {createEvidenceReadView, createEvidenceReadSession, matchesIssuedEvidenceReadRecord, MAX_EVIDENCE_READ_REFERENCES,
+  type EvidenceReadSession, type EvidenceReadSessionOptions, type EvidenceReadView, type EvidenceReadViewOptions,
   type EvidenceReadRecord} from '../services/evidence/evidenceReadView';
 import { scopeMetadata, type IdentityResolutionV1, type EvidenceScopeMetadata, type EvidenceScopeProvenanceV1 } from '../types/identityContract';
 import type { DataEnvelopeMeta } from '../types/dataContract';
@@ -511,12 +512,36 @@ export class ArtifactStore {
     return createEvidenceReadView(() => [...this.executionCaptures.values()].filter(record => admitted.has(record)), options, () => observations);
   }
 
+  createEvidenceReadSession(options: EvidenceReadSessionOptions): EvidenceReadSession {
+    const admitted = new Set(this.executionCaptures.values());
+    const observations = [...this.investigationToolObservations.values()];
+    return createEvidenceReadSession(() => [...this.executionCaptures.values()].filter(record => admitted.has(record)),
+      options, () => observations, items => this.areEvidenceReadResolutionsRetained(items));
+  }
+
   /** Check current registration retention. Ownership, trace access and run origin have separate guards. */
   isEvidenceReadResolutionRetained(resolution: unknown): boolean {
     for (const entry of this.executionCaptures.values()) {
       if (matchesIssuedEvidenceReadRecord(resolution, entry)) return true;
     }
     return false;
+  }
+
+  /** A pure complete-set check. Callers establish authorization once before entering this scan. */
+  areEvidenceReadResolutionsRetained(resolutions: readonly unknown[]): boolean {
+    if (types.isProxy(resolutions) || !Array.isArray(resolutions) || Object.getPrototypeOf(resolutions) !== Array.prototype) return false;
+    const length = Object.getOwnPropertyDescriptor(resolutions, 'length')?.value;
+    if (!Number.isSafeInteger(length) || length < 0 || Reflect.ownKeys(resolutions).length !== length + 1) return false;
+    for (let index = 0; index < length; index++) {
+      const descriptor = Object.getOwnPropertyDescriptor(resolutions, String(index));
+      if (!descriptor || !('value' in descriptor)) return false;
+      let retained = false;
+      for (const entry of this.executionCaptures.values()) {
+        if (matchesIssuedEvidenceReadRecord(descriptor.value, entry)) {retained = true; break;}
+      }
+      if (!retained) return false;
+    }
+    return true;
   }
 
   /** Shared admitted-tool observer; records no payload or model-authored success claims. */

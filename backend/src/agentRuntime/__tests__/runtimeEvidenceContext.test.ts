@@ -12,7 +12,8 @@ import {createClaudeMcpServer} from '../../agentv3/claudeMcpServer';
 import {CodebaseRegistry} from '../../services/codebase/codebaseRegistry';
 import * as codebaseServices from '../../services/codebase/defaultCodebaseServices';
 import {captureEvidenceTable} from '../../services/evidence/evidenceCapture';
-import {isIssuedEvidenceReadResolution, type EvidenceReadView} from '../../services/evidence/evidenceReadView';
+import {isIssuedEvidenceReadResolution, matchesEvidenceReadSessionBinding, type EvidenceReadSession,
+  type EvidenceReadSessionOptions, type EvidenceReadView} from '../../services/evidence/evidenceReadView';
 import {buildAnalysisContextAuthorizationFingerprint} from '../../services/resolvedAnalysisContext';
 import {SkillExecutor} from '../../services/skillEngine/skillExecutor';
 import type {TraceProcessorService} from '../../services/traceProcessorService';
@@ -174,6 +175,10 @@ describe('product-owned live evidence continuity', () => {
       serialize: () => run.store.serialize(), clear: () => run.store.clear(),
       createEvidenceReadView: () => run.store.createEvidenceReadView(readOptions),
       isEvidenceReadResolutionRetained: () => run.store.isEvidenceReadResolutionRetained(undefined),
+      areEvidenceReadResolutionsRetained: () => run.store.areEvidenceReadResolutionsRetained([]),
+      createEvidenceReadSession: () => run.store.createEvidenceReadSession({...readOptions, currentRunId: 'first',
+        sessionId: run.sessionId, attemptId: 'a2-exhaustive', productSignal: run.controller.signal,
+        deadlineAtMs: Date.now() + 60_000, assertCurrent() {}}),
     };
     run.binding.release();
     for (const call of Object.values(calls)) expect(call).toThrow();
@@ -415,5 +420,252 @@ describe('A1 run facade retention guard', () => {
     registry.setProviderConsent(registered.codebaseId, options, true, 'a1-retention-test');
     expect(() => run.store.isEvidenceReadResolutionRetained(original)).toThrow();
     expect(consult).not.toHaveBeenCalled();
+  });
+});
+
+describe('A2 run-owned cumulative read session facade', () => {
+  function options(run: ReturnType<typeof bind>, runId: string,
+    overrides: Partial<EvidenceReadSessionOptions> = {}): EvidenceReadSessionOptions {
+    return {...readOptions, currentRunId: runId, sessionId: run.sessionId, attemptId: 'captured-internal-attempt',
+      productSignal: run.controller.signal, deadlineAtMs: Date.now() + 60_000, assertCurrent() {}, ...overrides};
+  }
+
+  it.each(['current', 'reference', 'both'] as const)('admits the actual %s trace-pair subset and binds the physical run identity', async subset => {
+    const runId = `a2-subset-${subset}`, run = bind(contextFor(), runId), current = capture(run.store);
+    const data = {columns: ['metric'], rows: [[9]]};
+    const referenceId = run.store.store({skillId: 'fixture-reference', data,
+      traceProvenance: buildTraceProcessorQueryProvenance({traceId: 'reference-trace', traceSide: 'reference'})});
+    expect(run.store.registerEvidenceCapture(referenceId, captureEvidenceTable(data), {evidenceRefId: 'a2-reference'})).toBe(true);
+    const allowedTraces: EvidenceReadSessionOptions['allowedTraces'] = subset === 'current' ? readOptions.allowedTraces
+      : subset === 'reference' ? [{traceId: 'reference-trace', traceSide: 'reference'}]
+        : [...readOptions.allowedTraces, {traceId: 'reference-trace', traceSide: 'reference'}];
+    const factory = jest.spyOn(ArtifactStore.prototype, 'createEvidenceReadSession');
+    const capturedOptions = options(run, runId, {allowedTraces});
+    const session = run.store.createEvidenceReadSession(capturedOptions);
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(factory.mock.calls[0][0]).toMatchObject({currentRunId: runId, sessionId: run.sessionId, allowedTraces});
+    expect(matchesEvidenceReadSessionBinding(session, {runId, sessionId: run.sessionId,
+      attemptId: capturedOptions.attemptId, productSignal: run.controller.signal})).toBe(true);
+    expect(run.sessionId).not.toBe('conversation');
+    const reads = await session.resolveReferences([
+      {key: 'current', reference: {artifactId: current.id, rowIndex: 5001, column: 'metric'}, requiredColumns: ['metric']},
+      {key: 'reference', reference: {artifactId: referenceId, rowIndex: 0, column: 'metric'}, requiredColumns: ['metric']},
+    ]);
+    expect(reads.map(result => result.status)).toEqual(subset === 'both' ? ['resolved', 'resolved']
+      : subset === 'current' ? ['resolved', 'denied'] : ['denied', 'resolved']);
+    // The facade captures this string; only the later actual issuer can authenticate an attempt.
+    expect(factory.mock.calls[0][0].attemptId).toBe('captured-internal-attempt');
+    session.dispose();
+  });
+
+  it.each([
+    ['foreign-current', [{traceId: 'foreign', traceSide: 'current'}]],
+    ['foreign-reference', [{traceId: 'foreign', traceSide: 'reference'}]],
+    ['side-swap', [{traceId: 'reference-trace', traceSide: 'current'}]],
+    ['unknown-side', [{traceId: 'reference-trace', traceSide: 'other'}]],
+    ['empty-trace', [{traceId: '', traceSide: 'current'}]],
+    ['non-string-trace', [{traceId: 9, traceSide: 'current'}]],
+  ])('rejects %s before creating any backing session', (label, allowedTraces) => {
+    const runId = `a2-invalid-${label}`, run = bind(contextFor(), runId);
+    const factory = jest.spyOn(ArtifactStore.prototype, 'createEvidenceReadSession');
+    expect(() => Reflect.apply(run.store.createEvidenceReadSession, run.store, [{...options(run, runId), allowedTraces}]))
+      .toThrow('runtime_evidence_read_scope_mismatch');
+    expect(factory).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unbound reference trace instead of extending the product scope', () => {
+    const noReference = {...baseOptions, referenceTraceId: undefined};
+    const runId = 'a2-no-reference', run = bind(contextFor(noReference), runId, noReference);
+    const factory = jest.spyOn(ArtifactStore.prototype, 'createEvidenceReadSession');
+    expect(() => run.store.createEvidenceReadSession(options(run, runId,
+      {allowedTraces: [{traceId: 'reference-trace', traceSide: 'reference'}]})))
+      .toThrow('runtime_evidence_read_scope_mismatch');
+    expect(factory).not.toHaveBeenCalled();
+  });
+
+  it.each(['run', 'physical-session'] as const)('rejects a mismatched %s before substituting real owner values', field => {
+    const runId = `a2-identity-${field}`, run = bind(contextFor(), runId);
+    const factory = jest.spyOn(ArtifactStore.prototype, 'createEvidenceReadSession');
+    const captured = options(run, runId, field === 'run' ? {currentRunId: 'different-run'} : {sessionId: 'conversation'});
+    expect(() => run.store.createEvidenceReadSession(captured)).toThrow();
+    expect(factory).not.toHaveBeenCalled();
+  });
+
+  it.each(['facade-batch', 'session-commit'] as const)('checks both captures after the one actual last authorization guard in %s', async entry => {
+    const context = contextFor(), controller = new AbortController(), runId = `a2-last-guard-${entry}`;
+    const sessionId = `conversation:${runId}`;
+    let backing: ArtifactStore | undefined, first: ReturnType<typeof capture> | undefined, replaceFirst = false;
+    const auth = jest.fn(() => {
+      if (replaceFirst) {
+        replaceFirst = false;
+        if (!backing || !first) throw new Error('Expected actual backing store from the forwarded factory');
+        expect(backing.registerEvidenceCapture(first.id, first.witness, {evidenceRefId: `captured:${first.id}`})).toBe(true);
+      }
+    });
+    const binding = context.bind(baseOptions, {runtimeSessionId: sessionId, runId, signal: controller.signal, assertAuthorized: auth});
+    const store = resolveRuntimeEvidenceStore(binding.options, {sessionId, traceId: 'trace'},
+      () => {throw new Error('Unexpected fallback');});
+    first = capture(store, 7); const second = capture(store, 8);
+    const originalFactory = ArtifactStore.prototype.createEvidenceReadSession;
+    jest.spyOn(ArtifactStore.prototype, 'createEvidenceReadSession').mockImplementation(function (this: ArtifactStore, input) {
+      backing = this;
+      return originalFactory.call(this, input);
+    });
+    const ownerGuard = jest.fn(() => {});
+    const session = store.createEvidenceReadSession({...readOptions, currentRunId: runId, sessionId,
+      attemptId: 'last-guard-attempt', productSignal: controller.signal, deadlineAtMs: Date.now() + 60_000,
+      assertCurrent: ownerGuard});
+    const resolutions = await session.resolveReferences([first, second].map(saved => ({key: saved.id,
+      reference: {artifactId: saved.id, rowIndex: 5001, column: 'metric'}, requiredColumns: ['metric']})));
+    expect(resolutions).toMatchObject([{status: 'resolved', row: {metric: 7}}, {status: 'resolved', row: {metric: 8}}]);
+    expect(store.isEvidenceReadResolutionRetained(resolutions[0])).toBe(true);
+    const batch = jest.spyOn(ArtifactStore.prototype, 'areEvidenceReadResolutionsRetained');
+    const single = jest.spyOn(ArtifactStore.prototype, 'isEvidenceReadResolutionRetained');
+    auth.mockClear(); ownerGuard.mockClear(); replaceFirst = true;
+    const retained = entry === 'facade-batch' ? store.areEvidenceReadResolutionsRetained(resolutions)
+      : session.checkRetainedBatchForCommit(resolutions);
+    expect(retained).toBe(false);
+    expect(auth).toHaveBeenCalledTimes(1);
+    expect(ownerGuard).toHaveBeenCalledTimes(entry === 'session-commit' ? 1 : 0);
+    expect(batch).toHaveBeenCalledTimes(1); expect(batch.mock.calls[0][0]).toBe(resolutions);
+    expect(single).not.toHaveBeenCalled();
+    expect(backing!.isEvidenceReadResolutionRetained(resolutions[0])).toBe(false);
+    expect(backing!.isEvidenceReadResolutionRetained(resolutions[1])).toBe(true);
+    expect(resolutions.every(isIssuedEvidenceReadResolution)).toBe(true);
+    session.dispose();
+  });
+
+  it('occupies the session before a real facade authorization callback can reenter it', async () => {
+    const context = contextFor(), controller = new AbortController(), runId = 'a2-facade-busy';
+    const sessionId = `conversation:${runId}`;
+    let session: EvidenceReadSession | undefined, recurse = false, nested: Promise<unknown> | undefined;
+    const authorization = jest.fn(() => {
+      if (!recurse || !session) return;
+      recurse = false;
+      nested = session.resolveReferences([]).then(() => 'unexpected_success', error => error.message);
+      expect(() => session!.checkRetainedBatchForCommit([])).toThrow('evidence_read_session_busy');
+    });
+    const binding = context.bind(baseOptions, {runtimeSessionId: sessionId, runId, signal: controller.signal,
+      assertAuthorized: authorization});
+    const store = resolveRuntimeEvidenceStore(binding.options, {sessionId, traceId: 'trace'},
+      () => {throw new Error('Unexpected fallback');});
+    const saved = capture(store);
+    session = store.createEvidenceReadSession({...readOptions, currentRunId: runId, sessionId,
+      attemptId: 'a2-attempt', productSignal: controller.signal, deadlineAtMs: Date.now() + 60_000, assertCurrent() {}});
+    authorization.mockClear(); recurse = true;
+    expect(await read(session, saved.id)).toMatchObject([{status: 'resolved'}]);
+    expect(await nested).toBe('evidence_read_session_busy');
+    expect(authorization).toHaveBeenCalledTimes(2); // Outer pre/post only; neither nested attempt invokes the guard.
+    expect(session.budgetSnapshot()).toMatchObject({state: 'open', batches: 1, submittedReferences: 1});
+    authorization.mockClear(); recurse = true;
+    const [resolution] = await read(session, saved.id);
+    await nested;
+    authorization.mockClear(); recurse = true;
+    expect(session.checkRetainedBatchForCommit([resolution])).toBe(true);
+    expect(await nested).toBe('evidence_read_session_busy');
+    expect(authorization).toHaveBeenCalledTimes(1);
+    session.dispose();
+  });
+
+  it.each(['release', 'product-cancel', 'supersede', 'context-dispose', 'session-dispose'] as const)
+    ('rejects %s at both session entrypoints before consulting the pure batch', async action => {
+      const context = contextFor(), runId = `a2-lifecycle-${action}`, run = bind(context, runId), saved = capture(run.store);
+      const session = run.store.createEvidenceReadSession(options(run, runId));
+      const [issued] = await read(session, saved.id);
+      const batch = jest.spyOn(ArtifactStore.prototype, 'areEvidenceReadResolutionsRetained');
+      if (action === 'release') run.binding.release();
+      if (action === 'product-cancel') run.controller.abort(new Error('a2-product-stopped'));
+      if (action === 'supersede') bind(context, 'a2-current-successor');
+      if (action === 'context-dispose') context.dispose();
+      if (action === 'session-dispose') session.dispose();
+      await expect(read(session, saved.id)).rejects.toThrow();
+      expect(() => session.checkRetainedBatchForCommit([issued])).toThrow();
+      expect(batch).not.toHaveBeenCalled();
+      expect(isIssuedEvidenceReadResolution(issued)).toBe(true);
+      session.dispose();
+    });
+
+  it('keeps actual source consent revocation authoritative for cumulative reads and the final batch', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-a2-session-consent-')); roots.push(root);
+    const registry = new CodebaseRegistry(path.join(root, 'registry.json'));
+    const registered = registry.register({kind: 'app_source', displayName: 'A2 fixture', rootPath: root,
+      rootAuthorization: 'native_picker', sendToProvider: true, ...baseOptions});
+    jest.spyOn(codebaseServices, 'getDefaultCodebaseRegistry').mockReturnValue(registry);
+    const privateOptions: AnalysisOptions = {...baseOptions, codeAwareMode: 'provider_send', codebaseIds: [registered.codebaseId]};
+    privateOptions.analysisContextFingerprint = buildAnalysisContextAuthorizationFingerprint(privateOptions, privateOptions);
+    const runId = 'a2-private-session', run = bind(contextFor(privateOptions), runId, privateOptions), saved = capture(run.store);
+    const session = run.store.createEvidenceReadSession(options(run, runId));
+    const [issued] = await read(session, saved.id);
+    const batch = jest.spyOn(ArtifactStore.prototype, 'areEvidenceReadResolutionsRetained');
+    registry.setProviderConsent(registered.codebaseId, privateOptions, false, 'a2-session-test');
+    await expect(read(session, saved.id)).rejects.toThrow();
+    expect(() => session.checkRetainedBatchForCommit([issued])).toThrow();
+    expect(batch).not.toHaveBeenCalled();
+    registry.setProviderConsent(registered.codebaseId, privateOptions, true, 'a2-session-test');
+    await expect(read(session, saved.id)).rejects.toThrow();
+    expect(() => session.checkRetainedBatchForCommit([issued])).toThrow();
+    expect(batch).not.toHaveBeenCalled();
+    session.dispose();
+  });
+
+  it.each(['release', 'supersede', 'context-dispose'] as const)
+    ('rejects %s performed synchronously by the last caller guard before the pure batch', async action => {
+      const context = contextFor(), runId = `a2-last-caller-${action}`, run = bind(context, runId), saved = capture(run.store);
+      let commitActionEnabled = false, actionRan = false;
+      const session = run.store.createEvidenceReadSession(options(run, runId, {assertCurrent() {
+        if (!commitActionEnabled) return;
+        commitActionEnabled = false;
+        actionRan = true;
+        if (action === 'release') run.binding.release();
+        if (action === 'supersede') bind(context, 'a2-last-caller-successor');
+        if (action === 'context-dispose') context.dispose();
+      }}));
+      const [issued] = await read(session, saved.id);
+      expect(issued).toMatchObject({status: 'resolved', row: {metric: 7}});
+      expect(isIssuedEvidenceReadResolution(issued)).toBe(true);
+      expect(run.controller.signal.aborted).toBe(false);
+      const batch = jest.spyOn(ArtifactStore.prototype, 'areEvidenceReadResolutionsRetained');
+      commitActionEnabled = true;
+      let failure: unknown;
+      try {session.checkRetainedBatchForCommit([issued]);} catch (error) {failure = error;}
+      expect(actionRan).toBe(true);
+      expect(run.controller.signal.aborted).toBe(false);
+      expect(failure).toBeInstanceOf(DOMException);
+      expect(failure).toMatchObject({name: 'AbortError', message: 'Runtime evidence run is no longer active'});
+      expect(batch).not.toHaveBeenCalled();
+      expect(isIssuedEvidenceReadResolution(issued)).toBe(true);
+      session.dispose();
+    });
+
+  it('rejects actual provider consent revoked synchronously by the last caller guard before the pure batch', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-a2-last-caller-consent-')); roots.push(root);
+    const registry = new CodebaseRegistry(path.join(root, 'registry.json'));
+    const registered = registry.register({kind: 'app_source', displayName: 'A2 last caller fixture', rootPath: root,
+      rootAuthorization: 'native_picker', sendToProvider: true, ...baseOptions});
+    jest.spyOn(codebaseServices, 'getDefaultCodebaseRegistry').mockReturnValue(registry);
+    const privateOptions: AnalysisOptions = {...baseOptions, codeAwareMode: 'provider_send', codebaseIds: [registered.codebaseId]};
+    privateOptions.analysisContextFingerprint = buildAnalysisContextAuthorizationFingerprint(privateOptions, privateOptions);
+    const runId = 'a2-last-caller-consent', run = bind(contextFor(privateOptions), runId, privateOptions), saved = capture(run.store);
+    let revokeOnCommit = false, revoked = false;
+    const session = run.store.createEvidenceReadSession(options(run, runId, {assertCurrent() {
+      if (!revokeOnCommit) return;
+      revokeOnCommit = false;
+      registry.setProviderConsent(registered.codebaseId, privateOptions, false, 'a2-last-caller-test');
+      revoked = true;
+    }}));
+    const [issued] = await read(session, saved.id);
+    expect(issued).toMatchObject({status: 'resolved', row: {metric: 7}});
+    expect(isIssuedEvidenceReadResolution(issued)).toBe(true);
+    expect(run.controller.signal.aborted).toBe(false);
+    const batch = jest.spyOn(ArtifactStore.prototype, 'areEvidenceReadResolutionsRetained');
+    revokeOnCommit = true;
+    let failure: unknown;
+    try {session.checkRetainedBatchForCommit([issued]);} catch (error) {failure = error;}
+    expect(revoked).toBe(true);
+    expect(run.controller.signal.aborted).toBe(false);
+    expect(failure).toBeInstanceOf(Error);
+    expect(batch).not.toHaveBeenCalled();
+    expect(isIssuedEvidenceReadResolution(issued)).toBe(true);
+    session.dispose();
   });
 });

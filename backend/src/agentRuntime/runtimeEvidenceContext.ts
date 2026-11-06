@@ -10,7 +10,7 @@ import {
   buildAnalysisContextAuthorizationFingerprint,
 } from '../services/resolvedAnalysisContext';
 import {resolveKnowledgeScope} from '../services/scopedKnowledgeStore';
-import type {EvidenceReadView} from '../services/evidence/evidenceReadView';
+import type {EvidenceReadSession, EvidenceReadView} from '../services/evidence/evidenceReadView';
 
 export interface RuntimeEvidenceScopeInput {
   logicalSessionId: string;
@@ -232,6 +232,27 @@ function createRunStore(run: RunState): ArtifactStore {
     clear: () => access(() => store.clear()),
     isEvidenceReadResolutionRetained: (resolution: unknown) =>
       access(() => store.isEvidenceReadResolutionRetained(resolution)),
+    areEvidenceReadResolutionsRetained: (resolutions: readonly unknown[]) =>
+      access(() => store.areEvidenceReadResolutionsRetained(resolutions)),
+    createEvidenceReadSession: (input: Parameters<ArtifactStore['createEvidenceReadSession']>[0]): EvidenceReadSession => access(() => {
+      const captured = {...input};
+      const scope = run.context.scope;
+      if (!Array.isArray(captured.allowedTraces)) throw new Error('runtime_evidence_read_scope_mismatch');
+      const allowedTraces = captured.allowedTraces.map(trace => ({traceId: trace?.traceId, traceSide: trace?.traceSide}));
+      if (allowedTraces.some(trace => (trace.traceSide !== 'current' && trace.traceSide !== 'reference') ||
+        typeof trace.traceId !== 'string' || !trace.traceId.trim() || trace.traceId !==
+          (trace.traceSide === 'current' ? scope.traceId : scope.referenceTraceId))) {
+        throw new Error('runtime_evidence_read_scope_mismatch');
+      }
+      if (captured.currentRunId !== run.input.runId || captured.sessionId !== run.input.runtimeSessionId) {
+        throw new Error('runtime_evidence_read_session_identity_mismatch');
+      }
+      const callerGuard = captured.assertCurrent;
+      if (typeof callerGuard !== 'function') throw new Error('invalid_evidence_read_session_options');
+      // The core session occupies busy before either real owner guard can reenter it.
+      return store.createEvidenceReadSession({...captured, allowedTraces, currentRunId: run.input.runId,
+        sessionId: run.input.runtimeSessionId, assertCurrent: () => {callerGuard(); assertRunActive(run);}});
+    }),
     createEvidenceReadView: (...args: Parameters<ArtifactStore['createEvidenceReadView']>): EvidenceReadView => access(() => {
       const scope = run.context.scope;
       if (args[0].allowedTraces.some(trace => trace.traceId !==

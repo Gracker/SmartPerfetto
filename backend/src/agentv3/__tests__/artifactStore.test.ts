@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {describe, expect, it} from '@jest/globals';
+import {describe, expect, it, jest} from '@jest/globals';
 import {createRuntimePerformanceRecorder} from '../../agentRuntime/runtimePerformance';
 import {createRuntimePerformanceScope} from '../../agentRuntime/runtimePerformanceContext';
 import {buildTraceProcessorQueryProvenance} from '../../services/traceProcessorConnectionModel';
@@ -10,7 +10,8 @@ import {sanitizeQueryReview, SQL_EXECUTION_CONTEXTS} from '../../types/queryRevi
 import {ArtifactStore, EVIDENCE_RETENTION_CELLS_ENV, RETAINED_EVIDENCE_CAPTURE_CEILING} from '../artifactStore';
 import {captureEvidenceTable} from '../../services/evidence/evidenceCapture';
 import {attachInvestigationEvidence} from '../../services/evidence/investigationEvidenceLedger';
-import {MAX_EVIDENCE_READ_REFERENCES, isIssuedEvidenceReadResolution} from '../../services/evidence/evidenceReadView';
+import {MAX_EVIDENCE_READ_REFERENCES, isIssuedEvidenceReadResolution,
+  type EvidenceReadSessionOptions} from '../../services/evidence/evidenceReadView';
 import type {EvidenceScopeProvenanceV1} from '../../types/identityContract';
 
 describe('ArtifactStore evidence retention', () => {
@@ -699,5 +700,161 @@ describe('A1 current execution-record retention', () => {
     const revoked = Proxy.revocable(issued, {get: inspect}); revoked.revoke();
     for (const value of [plain, proxy, revoked.proxy]) expect(store.isEvidenceReadResolutionRetained(value)).toBe(false);
     expect(inspected).toBe(0);
+  });
+});
+
+describe('A2 retained batches and fixed session capture sets', () => {
+  function options(overrides: Partial<EvidenceReadSessionOptions> = {}): EvidenceReadSessionOptions {
+    return {ownerKey: 'a2-batch-owner', currentRunId: 'a2-run', sessionId: 'a2-session', attemptId: 'a2-attempt',
+      allowedTraces: [{traceId: 'trace', traceSide: 'current'}], productSignal: new AbortController().signal,
+      deadlineAtMs: Date.now() + 60_000, assertCurrent() {}, ...overrides};
+  }
+  function register(store: ArtifactStore, value = 7) {
+    const data = {columns: ['metric'], rows: [[value]]}, witness = captureEvidenceTable(data);
+    const id = store.store({skillId: 'fixture', data, sourceToolCallId: `a2-capture:${value}`,
+      traceProvenance: buildTraceProcessorQueryProvenance({traceId: 'trace', traceSide: 'current'})});
+    const evidenceRefId = `a2:${id}`;
+    expect(store.registerEvidenceCapture(id, witness, {evidenceRefId, originRunId: 'a2-run'})).toBe(true);
+    return {id, witness, evidenceRefId};
+  }
+  const request = (id: string) => ({key: id, reference: {artifactId: id, rowIndex: 0, column: 'metric'}, requiredColumns: ['metric']});
+
+  it('checks the complete actual record/witness set without consulting an overridable single-item method', async () => {
+    const store = new ArtifactStore(), first = register(store), second = register(store, 8);
+    const session = store.createEvidenceReadSession(options());
+    const reads = await session.resolveReferences([request(first.id), request(second.id)]);
+    expect(reads).toMatchObject([{status: 'resolved', row: {metric: 7}}, {status: 'resolved', row: {metric: 8}}]);
+    const single = jest.spyOn(store, 'isEvidenceReadResolutionRetained').mockImplementation(() => {
+      throw new Error('Batch must not call the public single-item method');
+    });
+    try {
+      expect(store.areEvidenceReadResolutionsRetained(reads)).toBe(true);
+      expect(session.checkRetainedBatchForCommit(reads)).toBe(true);
+      expect(single).not.toHaveBeenCalled();
+      expect(store.areEvidenceReadResolutionsRetained([])).toBe(true); // No claim about an empty table or caption.
+    } finally {single.mockRestore(); session.dispose();}
+  });
+
+  it.each([0, 1])('rejects the entire batch after replacing capture index %i', async replacedIndex => {
+    const store = new ArtifactStore(), captures = [register(store), register(store, 8)];
+    const session = store.createEvidenceReadSession(options());
+    const reads = await session.resolveReferences(captures.map(saved => request(saved.id)));
+    expect(store.areEvidenceReadResolutionsRetained(reads)).toBe(true);
+    const replaced = captures[replacedIndex];
+    expect(store.registerEvidenceCapture(replaced.id, replaced.witness, {evidenceRefId: replaced.evidenceRefId})).toBe(true);
+    expect(store.areEvidenceReadResolutionsRetained(reads)).toBe(false);
+    expect(session.checkRetainedBatchForCommit(reads)).toBe(false);
+    expect(store.isEvidenceReadResolutionRetained(reads[1 - replacedIndex])).toBe(true);
+    expect(reads.every(isIssuedEvidenceReadResolution)).toBe(true);
+    expect(reads).toMatchObject([{row: {metric: 7}}, {row: {metric: 8}}]);
+    session.dispose();
+  });
+
+  it('runs the final bare owner guard once before checking both actual captures', async () => {
+    const store = new ArtifactStore(), first = register(store), second = register(store, 8);
+    let revokeFirst = false;
+    const guard = jest.fn(() => {
+      if (revokeFirst) {
+        revokeFirst = false;
+        expect(store.registerEvidenceCapture(first.id, first.witness, {evidenceRefId: first.evidenceRefId})).toBe(true);
+      }
+    });
+    const session = store.createEvidenceReadSession(options({assertCurrent: guard}));
+    const reads = await session.resolveReferences([request(first.id), request(second.id)]);
+    expect(store.areEvidenceReadResolutionsRetained(reads)).toBe(true);
+    expect(store.isEvidenceReadResolutionRetained(reads[0])).toBe(true);
+    guard.mockClear(); revokeFirst = true;
+    expect(session.checkRetainedBatchForCommit(reads)).toBe(false);
+    expect(guard).toHaveBeenCalledTimes(1);
+    expect(store.isEvidenceReadResolutionRetained(reads[0])).toBe(false);
+    expect(store.isEvidenceReadResolutionRetained(reads[1])).toBe(true);
+    session.dispose();
+  });
+
+  it('rejects hostile outer collections and non-issued elements without executing accessors, proxies or iterators', async () => {
+    const store = new ArtifactStore(), first = register(store), session = store.createEvidenceReadSession(options());
+    const [issued] = await session.resolveReferences([request(first.id)]);
+    let inspected = 0; const inspect = () => {inspected++; throw new Error('Untrusted batch property');};
+    const accessor: unknown[] = []; Object.defineProperty(accessor, '0', {get: inspect});
+    const iterator: unknown[] = [issued]; Object.defineProperty(iterator, Symbol.iterator, {value: inspect});
+    const proxy = new Proxy([issued], {get: inspect, ownKeys: inspect, getPrototypeOf: inspect});
+    const revoked = Proxy.revocable([issued], {get: inspect}); revoked.revoke();
+    const hostileItem = Object.defineProperty({}, 'status', {get: inspect});
+    const values: unknown[] = [undefined, null, {}, 'not-a-list', accessor, iterator, proxy, revoked.proxy,
+      [hostileItem], [{...issued}], [JSON.parse(JSON.stringify(issued))], [{status: 'missing'}], [undefined]];
+    for (const value of values) {
+      expect(Reflect.apply(store.areEvidenceReadResolutionsRetained, store, [value])).toBe(false);
+      expect(Reflect.apply(session.checkRetainedBatchForCommit, session, [value])).toBe(false);
+    }
+    expect(inspected).toBe(0);
+    expect(store.areEvidenceReadResolutionsRetained(Object.freeze([issued]))).toBe(true);
+    session.dispose();
+  });
+
+  it('rejects another store and restored display snapshots while preserving the original immutable fact', async () => {
+    const store = new ArtifactStore(), first = register(store), session = store.createEvidenceReadSession(options());
+    const reads = await session.resolveReferences([request(first.id)]);
+    const other = new ArtifactStore(); register(other);
+    const restored = ArtifactStore.fromSnapshot(JSON.parse(JSON.stringify(store.serialize())));
+    expect(other.areEvidenceReadResolutionsRetained(reads)).toBe(false);
+    expect(restored.areEvidenceReadResolutionsRetained(reads)).toBe(false);
+    expect(store.areEvidenceReadResolutionsRetained(reads)).toBe(true);
+    expect(reads.every(isIssuedEvidenceReadResolution)).toBe(true);
+    session.dispose();
+  });
+
+  it('freezes the admitted capture set at session creation without losing unrelated retained captures or payload-only eviction', async () => {
+    const store = new ArtifactStore(1), first = register(store), session = store.createEvidenceReadSession(options());
+    const [original] = await session.resolveReferences([request(first.id)]);
+    const later = register(store, 8);
+    expect(store.get(first.id)).toBeUndefined(); // Only the display/payload LRU was evicted.
+    expect(await session.resolveReferences([request(first.id), request(later.id)])).toMatchObject([
+      {status: 'resolved', row: {metric: 7}}, {status: 'missing', reason: 'evidence_not_retained'},
+    ]);
+    expect(session.checkRetainedBatchForCommit([original])).toBe(true);
+    const fresh = store.createEvidenceReadSession(options());
+    expect(await fresh.resolveReferences([request(later.id)])).toMatchObject([{status: 'resolved', row: {metric: 8}}]);
+    fresh.dispose(); session.dispose();
+  });
+
+  it.each(['clear', 'replace', 'evict'] as const)('does not resurrect a cached read after %s', async action => {
+    const previous = process.env[EVIDENCE_RETENTION_CELLS_ENV];
+    if (action === 'evict') process.env[EVIDENCE_RETENTION_CELLS_ENV] = '1';
+    try {
+      const store = new ArtifactStore(), first = register(store), session = store.createEvidenceReadSession(options());
+      const [original] = await session.resolveReferences([request(first.id)]);
+      expect(original).toMatchObject({status: 'resolved', row: {metric: 7}});
+      if (action === 'clear') {store.clear(); expect(register(store, 9).id).toBe(first.id);}
+      if (action === 'replace') expect(store.registerEvidenceCapture(first.id,
+        captureEvidenceTable({columns: ['metric'], rows: [[9]]}), {evidenceRefId: first.evidenceRefId})).toBe(true);
+      if (action === 'evict') register(store, 9);
+      expect(await session.resolveReferences([request(first.id)]))
+        .toMatchObject([{status: 'missing', reason: 'evidence_not_retained'}]);
+      expect(session.checkRetainedBatchForCommit([original])).toBe(false);
+      expect(isIssuedEvidenceReadResolution(original)).toBe(true);
+      expect(original).toMatchObject({row: {metric: 7}});
+      session.dispose();
+    } finally {
+      if (previous === undefined) delete process.env[EVIDENCE_RETENTION_CELLS_ENV];
+      else process.env[EVIDENCE_RETENTION_CELLS_ENV] = previous;
+    }
+  });
+
+  it('keeps a real standalone dedupe in the admitted set and retains its cached metadata identity', async () => {
+    const store = new ArtifactStore(), data = {columns: ['metric'], rows: [[7]]};
+    const descriptor = {meta: {type: 'sql_result' as const, version: '2.0', source: 'producer', timestamp: 0,
+      evidenceRefId: 'a2-standalone', sourceToolCallId: 'a2-producer', traceId: 'trace', traceSide: 'current' as const},
+      display: {layer: 'list' as const, format: 'table' as const, title: 'Standalone'}, originRunId: 'a2-run'};
+    expect(store.registerStandaloneEvidenceCapture(captureEvidenceTable(data), descriptor)).toBe(true);
+    const session = store.createEvidenceReadSession(options());
+    const one = {key: 'standalone', reference: {evidenceRefId: 'a2-standalone', rowIndex: 0, column: 'metric'}, requiredColumns: ['metric']};
+    const [original] = await session.resolveReferences([one]);
+    expect(store.registerStandaloneEvidenceCapture(captureEvidenceTable(data), descriptor)).toBe(true);
+    const [again] = await session.resolveReferences([one]);
+    if (original.status !== 'resolved' || again.status !== 'resolved') throw new Error('Expected standalone issued reads');
+    expect(again.record).toBe(original.record); expect(again).not.toBe(original);
+    expect(session.checkRetainedBatchForCommit([original, again])).toBe(true);
+    expect(session.budgetSnapshot()).toMatchObject({used: {references: 2, cells: 1}, reusedCells: 1, reusedRecordMetadata: 1});
+    session.dispose();
   });
 });
