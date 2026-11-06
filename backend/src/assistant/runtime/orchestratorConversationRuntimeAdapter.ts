@@ -46,6 +46,9 @@ import {
 } from '../application/conversationSessionService';
 import {analysisHasPrivateContext} from '../../services/security/analysisPrivateContext';
 import {withDurableLearningPermission} from '../../services/security/durableLearning';
+import {getTraceProcessorService} from '../../services/traceProcessorService';
+import {prepareAnalysisRunTraceProcessorLeases, type AnalysisRunTraceProcessorLeases} from '../../services/analysisRunTraceProcessorLease';
+import {runTraceIdentity} from '../../agentRuntime/runtimeTraceAttachment';
 
 export interface OrchestratorConversationRuntimeOptions {
   analysisOptions?: Omit<AnalysisOptions, 'analysisMode' | 'runId'>;
@@ -287,14 +290,41 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
         input.privateContext,
       );
       assertRuntimeTaskWorkRemaining(taskAdmission.admission.task);
-      const analysis = performanceScope.run(() => this.updateExecution.run(state, () => this.orchestrator.analyze(prompt,
-        runtimeSessionId, traceId, runtimeOptions))
-        .then(result => this.finalizeRuntimeResult(result, input, state, dataEnvelopes,
-          () => {
-            this.orchestrator.off('update', onUpdate);
-            this.assertActive(input, state);
-            answerDraft?.settle();
-          }, outputLanguage, privateKnowledge))
+      const task = taskAdmission.admission.task;
+      const analysis = performanceScope.run(() => this.updateExecution.run(state, async () => {
+        let leases: AnalysisRunTraceProcessorLeases | undefined;
+        const assertCurrent = () => this.assertActive(input, state);
+        try {
+          const identity = runTraceIdentity(traceId, runtimeOptions);
+          if (identity.currentTraceId) {
+            assertRuntimeTaskWorkRemaining(task);
+            leases = await prepareAnalysisRunTraceProcessorLeases({service: getTraceProcessorService(),
+              scope: resolveKnowledgeScope(analysisOptions), runId: input.runId, sessionId: runtimeSessionId,
+              currentTraceId: identity.currentTraceId, referenceTraceId: identity.referenceTraceId,
+              signal: state.controller.signal, assertCurrent,
+              onInvalidated: error => state.controller.abort(error)});
+            assertCurrent();
+            assertRuntimeTaskWorkRemaining(task);
+          }
+          const analyzeAndFinalize = async () => {
+            assertCurrent();
+            assertRuntimeTaskWorkRemaining(task);
+            const result = await this.orchestrator.analyze(prompt, runtimeSessionId, traceId, runtimeOptions);
+            // The existing finalization boundary takes and disposes a late
+            // private context before it rejects a cancelled/superseded owner.
+            return this.finalizeRuntimeResult(result, input, state, dataEnvelopes, () => {
+              this.orchestrator.off('update', onUpdate);
+              this.assertActive(input, state);
+              answerDraft?.settle();
+            }, outputLanguage, privateKnowledge);
+          };
+          return await (leases ? leases.run(analyzeAndFinalize) : analyzeAndFinalize());
+        } finally {
+          // This belongs to the physical promise, not awaitExecution's Stop
+          // race. A late prepare releases only the old run's exact group.
+          leases?.release();
+        }
+      })
         .finally(() => {
           evidenceBinding?.release();
           // Physical sessions are unique: late cleanup cannot touch a newer turn.

@@ -566,3 +566,184 @@ export async function resolveCapabilityTraceProcessorIdentity(
 export function clearCapabilityRuntimeIdentityCaches(): void {
   fileDigestCache.clear();
 }
+
+/** Internal capabilities, never recovered from stored metadata or a pathname. */
+export interface ManagedTraceInputGrant {readonly kind: 'managed_trace_input'}
+export interface LoadedTraceSourcePin {readonly kind: 'loaded_trace_source'}
+export interface ManagedTraceLoadContext {
+  readonly grant: ManagedTraceInputGrant;
+  readonly serviceOwner: object;
+  readonly registration: object;
+  readonly assertCurrent: () => void;
+  readonly sourcePin?: LoadedTraceSourcePin;
+}
+export interface ManagedTraceSourceBinding {
+  readonly serviceOwner: object;
+  readonly registration: object;
+  readonly traceId: string;
+  readonly finalPath: string;
+}
+interface ManagedInputState {
+  readonly traceId: string;
+  readonly finalPath: string;
+  readonly identity: FileIdentity;
+  readonly sha256: string;
+  binding?: ManagedTraceSourceBinding;
+  revoked: boolean;
+}
+interface ManagedLoadState {
+  readonly context: ManagedTraceLoadContext;
+  readonly input: ManagedInputState;
+  readonly processorOwner: object;
+  readonly binaryPin: string;
+}
+export interface ManagedTraceLoadAttempt {readonly kind: 'managed_trace_load'}
+interface LoadedSourceState extends ManagedLoadState {
+  readonly pin: LoadedTraceSourcePin;
+  revoked: boolean;
+}
+const managedInputs = new WeakMap<ManagedTraceInputGrant, ManagedInputState>();
+const managedLoads = new WeakMap<ManagedTraceLoadAttempt, ManagedLoadState>();
+const loadedSources = new WeakMap<LoadedTraceSourcePin, LoadedSourceState>();
+const processorSources = new WeakMap<object, LoadedSourceState>();
+const revokedProcessorSources = new WeakSet<object>();
+
+export class ManagedTraceSourceUnavailableError extends Error {
+  readonly code = 'managed_trace_source_unavailable';
+  constructor() {super('managed_trace_source_unavailable');}
+}
+
+async function grantMaterializedInput(traceId: string, finalPath: string): Promise<ManagedTraceInputGrant | undefined> {
+  const normalizedPath = path.resolve(finalPath);
+  const material = await defaultSecureFileReader(normalizedPath, {kind: 'sha256'});
+  if (material.status !== 'ready' || !material.sha256) return undefined;
+  const grant: ManagedTraceInputGrant = Object.freeze({kind: 'managed_trace_input'});
+  managedInputs.set(grant, {traceId, finalPath: normalizedPath, identity: material.identity,
+    sha256: material.sha256, revoked: false});
+  return grant;
+}
+
+/** Replace the caller's existing copy; do not add a second copy or ever remove its source. */
+export async function copyManagedTraceInput(input: {sourcePath: string; finalPath: string; traceId: string}): Promise<ManagedTraceInputGrant | undefined> {
+  const {sourcePath, finalPath, traceId} = input;
+  await fs.promises.copyFile(sourcePath, finalPath);
+  return grantMaterializedInput(traceId, finalPath);
+}
+
+/** Replace the controlled temporary upload's existing rename. */
+export async function moveManagedTraceInput(input: {tempPath: string; finalPath: string; traceId: string}): Promise<ManagedTraceInputGrant | undefined> {
+  const {tempPath, finalPath, traceId} = input;
+  await fs.promises.rename(tempPath, finalPath);
+  return grantMaterializedInput(traceId, finalPath);
+}
+
+export function bindManagedTraceInput(input: ManagedTraceSourceBinding & {grant: ManagedTraceInputGrant}): void {
+  const {grant, serviceOwner, registration, traceId, finalPath} = input;
+  const state = managedInputs.get(grant);
+  if (!state || state.revoked || state.binding || state.traceId !== traceId || state.finalPath !== path.resolve(finalPath)) {
+    throw new ManagedTraceSourceUnavailableError();
+  }
+  state.binding = Object.freeze({serviceOwner, registration, traceId, finalPath: state.finalPath});
+}
+
+export function revokeManagedTraceInput(grant: ManagedTraceInputGrant): void {
+  const state = managedInputs.get(grant);
+  if (state) state.revoked = true;
+}
+
+function currentManagedInput(context: ManagedTraceLoadContext, binding: ManagedTraceSourceBinding): ManagedInputState | undefined {
+  const state = managedInputs.get(context.grant);
+  if (!state || state.revoked || !state.binding || state.binding.serviceOwner !== binding.serviceOwner ||
+    state.binding.registration !== binding.registration || state.traceId !== binding.traceId ||
+    state.finalPath !== path.resolve(binding.finalPath) || context.serviceOwner !== state.binding.serviceOwner ||
+    context.registration !== state.binding.registration) return undefined;
+  context.assertCurrent();
+  return state;
+}
+
+async function sameManagedMaterial(state: ManagedInputState): Promise<boolean> {
+  if (state.revoked) return false;
+  const material = await defaultSecureFileReader(state.finalPath, {kind: 'sha256'});
+  if (material.status !== 'ready' || !material.sha256) return false;
+  if (!sameIdentity(state.identity, material.identity) || state.sha256 !== material.sha256) {
+    state.revoked = true;
+    return false;
+  }
+  return !state.revoked;
+}
+
+function binarySourcePin(identity: CapabilityManifestTraceProcessorIdentityV1): string | undefined {
+  return identity.source === 'bundled' && GIT_REVISION_PATTERN.test(identity.gitRevision) &&
+    identity.stdlibRevision === identity.gitRevision ? identity.gitRevision : undefined;
+}
+
+function loadedSourceCurrent(pin: LoadedTraceSourcePin, visited = new Set<LoadedTraceSourcePin>()): LoadedSourceState | undefined {
+  const state = loadedSources.get(pin);
+  if (!state || state.revoked || revokedProcessorSources.has(state.processorOwner) ||
+    processorSources.get(state.processorOwner) !== state || visited.has(pin)) return undefined;
+  visited.add(pin);
+  if (currentManagedInput(state.context, state.input.binding!) !== state.input ||
+    state.context.sourcePin && !loadedSourceCurrent(state.context.sourcePin, visited)) return undefined;
+  return state;
+}
+
+/** Sync identity accessor only; callers verify source bytes with the async current assertion. */
+export function readLoadedTraceSourcePin(processorOwner: object): LoadedTraceSourcePin | undefined {
+  const state = processorSources.get(processorOwner);
+  try {return state && loadedSourceCurrent(state.pin) ? state.pin : undefined;} catch {return undefined;}
+}
+
+export function revokeLoadedTraceSourcePin(processorOwner: object): void {
+  revokedProcessorSources.add(processorOwner);
+  const state = processorSources.get(processorOwner);
+  if (state) state.revoked = true;
+}
+
+export async function assertLoadedTraceSourcePinCurrent(pin: LoadedTraceSourcePin,
+  binding: ManagedTraceSourceBinding & {assertCurrent(): void}): Promise<void> {
+  try {
+    binding.assertCurrent();
+    const state = loadedSourceCurrent(pin);
+    if (!state || currentManagedInput(state.context, binding) !== state.input || !await sameManagedMaterial(state.input)) {
+      throw new ManagedTraceSourceUnavailableError();
+    }
+    binding.assertCurrent();
+    if (loadedSourceCurrent(pin) !== state) throw new ManagedTraceSourceUnavailableError();
+  } catch {throw new ManagedTraceSourceUnavailableError();}
+}
+
+/** Loader-only: optional source qualification never changes ordinary parent loading. */
+export async function beginManagedTraceLoad(input: ManagedTraceSourceBinding & {context: ManagedTraceLoadContext;
+  processorOwner: object; binaryIdentity: CapabilityManifestTraceProcessorIdentityV1}): Promise<ManagedTraceLoadAttempt | undefined> {
+  try {
+    const context = Object.freeze({...input.context});
+    const state = currentManagedInput(context, input), binaryPin = binarySourcePin(input.binaryIdentity);
+    if (!state || !binaryPin || processorSources.has(input.processorOwner) || revokedProcessorSources.has(input.processorOwner)) return undefined;
+    if (context.sourcePin) {
+      await assertLoadedTraceSourcePinCurrent(context.sourcePin, {...input, assertCurrent: context.assertCurrent});
+      if (loadedSources.get(context.sourcePin)?.input !== state || loadedSources.get(context.sourcePin)?.binaryPin !== binaryPin) return undefined;
+    }
+    if (!await sameManagedMaterial(state) || currentManagedInput(context, input) !== state) return undefined;
+    const attempt: ManagedTraceLoadAttempt = Object.freeze({kind: 'managed_trace_load'});
+    managedLoads.set(attempt, {context, input: state, processorOwner: input.processorOwner, binaryPin});
+    return attempt;
+  } catch {return undefined;}
+}
+
+/** Only called after the actual first native load and its binary/schema revalidation. */
+export async function completeManagedTraceLoad(attempt: ManagedTraceLoadAttempt,
+  binaryIdentity: CapabilityManifestTraceProcessorIdentityV1): Promise<LoadedTraceSourcePin | undefined> {
+  const state = managedLoads.get(attempt);
+  managedLoads.delete(attempt);
+  if (!state) return undefined;
+  try {
+    if (binarySourcePin(binaryIdentity) !== state.binaryPin || !await sameManagedMaterial(state.input) ||
+      currentManagedInput(state.context, state.input.binding!) !== state.input || processorSources.has(state.processorOwner) ||
+      revokedProcessorSources.has(state.processorOwner) ||
+      state.context.sourcePin && !loadedSourceCurrent(state.context.sourcePin)) return undefined;
+    const pin: LoadedTraceSourcePin = Object.freeze({kind: 'loaded_trace_source'});
+    const loaded = {...state, pin, revoked: false};
+    loadedSources.set(pin, loaded); processorSources.set(state.processorOwner, loaded);
+    return pin;
+  } catch {return undefined;}
+}

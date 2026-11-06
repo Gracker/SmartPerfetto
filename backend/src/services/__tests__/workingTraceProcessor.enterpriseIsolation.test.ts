@@ -4,12 +4,13 @@
 
 import {EventEmitter} from 'events';
 import fs from 'fs/promises';
+import nodeFs from 'fs';
 import http from 'http';
 import os from 'os';
 import path from 'path';
 import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 import {traceProcessorConfig} from '../../config';
-import {resetPortPool} from '../portPool';
+import {getPortPool, resetPortPool} from '../portPool';
 import {
   decodeQueryArgsSql,
   encodeQueryResult,
@@ -30,6 +31,9 @@ import {
   TraceProcessorService,
   type TraceProcessor,
 } from '../traceProcessorService';
+import * as managedSource from '../capabilityManifestRuntimeIdentity';
+import * as nativeProvenance from '../evidence/rawSqlNativeProvenance';
+import {TraceProcessorSqlWorker} from '../traceProcessorSqlWorker';
 
 function okResult(rows: unknown[][] = []): QueryResult {
   return {
@@ -282,6 +286,177 @@ describe('WorkingTraceProcessor enterprise isolation anchors', () => {
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  it('lets only one of two different groups reserve the last strict child slot while starting', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'native-child-slot-'));
+    const tracePath = path.join(root, 'trace'); await fs.writeFile(tracePath, 'trace bytes');
+    const previousMax = (TraceProcessorFactory as any).maxProcessors;
+    (TraceProcessorFactory as any).maxProcessors = 1;
+    process.env[TP_ADMISSION_CONTROL_ENV] = 'false';
+    const gate = deferred<void>();
+    const initialize = jest.spyOn(WorkingTraceProcessor.prototype, 'initialize').mockImplementation(async function(this: WorkingTraceProcessor) {
+      await gate.promise; this.status = 'ready';
+    });
+    const first = TraceProcessorFactory.create('trace-a', tracePath, {processorKey: 'group-a-child', leaseId: 'group-a',
+      leaseMode: 'isolated', analysisRunPrivate: true, strictChildSlot: true});
+    try {
+      expect(TraceProcessorFactory.get('group-a-child')?.status).toBe('initializing');
+      await expect(TraceProcessorFactory.create('trace-b', tracePath, {processorKey: 'group-b-child', leaseId: 'group-b',
+        leaseMode: 'isolated', analysisRunPrivate: true, strictChildSlot: true})).rejects.toMatchObject({code: 'native_child_slot_unavailable'});
+      expect(initialize).toHaveBeenCalledTimes(1);
+      expect(TraceProcessorFactory.get('group-b-child')).toBeUndefined();
+      gate.resolve(); const child = await first;
+      expect(TraceProcessorFactory.isPrivateAnalysisPort(child.httpPort)).toBe(true);
+    } finally {gate.resolve(); await first.catch(() => undefined); TraceProcessorFactory.cleanup();
+      (TraceProcessorFactory as any).maxProcessors = previousMax; await fs.rm(root, {recursive: true, force: true});}
+  });
+
+  it('rechecks the strict slot on a port retry after another group wins the released slot', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'native-child-retry-'));
+    const tracePath = path.join(root, 'trace'); await fs.writeFile(tracePath, 'trace bytes');
+    const previousMax = (TraceProcessorFactory as any).maxProcessors;
+    (TraceProcessorFactory as any).maxProcessors = 1;
+    process.env[TP_ADMISSION_CONTROL_ENV] = 'false';
+    const gate = deferred<void>();
+    const initialize = jest.spyOn(WorkingTraceProcessor.prototype, 'initialize').mockImplementation(async function(this: WorkingTraceProcessor) {
+      if (this.traceId === 'trace-a') throw new Error(`PORT_IN_USE:${this.httpPort}`);
+      await gate.promise; this.status = 'ready';
+    });
+    let competitor: Promise<WorkingTraceProcessor> | undefined;
+    const pool = getPortPool(), originalBlock = pool.blockPort.bind(pool);
+    jest.spyOn(pool, 'blockPort').mockImplementation(port => {
+      originalBlock(port);
+      competitor = TraceProcessorFactory.create('trace-b', tracePath, {processorKey: 'group-b-child', leaseId: 'group-b',
+        leaseMode: 'isolated', analysisRunPrivate: true, strictChildSlot: true});
+    });
+    try {
+      await expect(TraceProcessorFactory.create('trace-a', tracePath, {processorKey: 'group-a-child', leaseId: 'group-a',
+        leaseMode: 'isolated', analysisRunPrivate: true, strictChildSlot: true})).rejects.toMatchObject({code: 'native_child_slot_unavailable'});
+      expect(initialize).toHaveBeenCalledTimes(2); // A's failed port and B's reserved starting slot, no A replacement.
+      expect(TraceProcessorFactory.get('group-a-child')).toBeUndefined();
+      expect(TraceProcessorFactory.get('group-b-child')?.status).toBe('initializing');
+      gate.resolve(); await competitor;
+    } finally {gate.resolve(); await competitor?.catch(() => undefined); TraceProcessorFactory.cleanup();
+      (TraceProcessorFactory as any).maxProcessors = previousMax; await fs.rm(root, {recursive: true, force: true});}
+  });
+
+  it('rechecks the strict child slot after an actual allocated listener synchronously starts another group', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'native-child-reentry-'));
+    const tracePath = path.join(root, 'trace'); await fs.writeFile(tracePath, 'trace bytes');
+    const previousMax = (TraceProcessorFactory as any).maxProcessors;
+    (TraceProcessorFactory as any).maxProcessors = 1;
+    process.env[TP_ADMISSION_CONTROL_ENV] = 'false';
+    const gate = deferred<void>();
+    const initialize = jest.spyOn(WorkingTraceProcessor.prototype, 'initialize').mockImplementation(async function(this: WorkingTraceProcessor) {
+      await gate.promise; this.status = 'ready';
+    });
+    const destroy = jest.spyOn(WorkingTraceProcessor.prototype, 'destroy');
+    const workerDestroy = jest.spyOn(TraceProcessorSqlWorker.prototype, 'destroy');
+    const pool = getPortPool();
+    let competitor: Promise<WorkingTraceProcessor> | undefined;
+    pool.once('allocated', () => {
+      competitor = TraceProcessorFactory.create('trace-b', tracePath, {processorKey: 'group-b-child', leaseId: 'group-b',
+        leaseMode: 'isolated', analysisRunPrivate: true, strictChildSlot: true});
+      void competitor.catch(() => undefined);
+    });
+    const first = TraceProcessorFactory.create('trace-a', tracePath, {processorKey: 'group-a-child', leaseId: 'group-a',
+      leaseMode: 'isolated', analysisRunPrivate: true, strictChildSlot: true});
+    void first.catch(() => undefined);
+    try {
+      expect([TraceProcessorFactory.get('group-a-child'), TraceProcessorFactory.get('group-b-child')].filter(Boolean)).toHaveLength(1);
+      await expect(first).rejects.toMatchObject({code: 'native_child_slot_unavailable'});
+      expect(initialize).toHaveBeenCalledTimes(1);
+      expect(initialize.mock.contexts[0]).toBe(TraceProcessorFactory.get('group-b-child'));
+      expect(destroy).toHaveBeenCalledTimes(1);
+      expect(destroy.mock.contexts[0]).toMatchObject({traceId: 'trace-a', status: 'error'});
+      expect(workerDestroy).toHaveBeenCalledTimes(1);
+      expect(pool.getPort('group-a-child')).toBeNull();
+      expect(pool.getStats().allocated).toBe(1);
+      gate.resolve(); const child = await competitor!;
+      expect(pool.getPort('group-b-child')).toBe(child.httpPort);
+    } finally {
+      gate.resolve(); await Promise.allSettled([first, competitor]); TraceProcessorFactory.cleanup();
+      (TraceProcessorFactory as any).maxProcessors = previousMax;
+      await fs.rm(root, {recursive: true, force: true});
+    }
+    expect(pool.getStats().allocated).toBe(0);
+  });
+
+  it('keeps ordinary working soft-overage behavior when existing processors are leased', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'working-soft-slot-'));
+    const tracePath = path.join(root, 'trace'); await fs.writeFile(tracePath, 'trace bytes');
+    const previousMax = (TraceProcessorFactory as any).maxProcessors;
+    (TraceProcessorFactory as any).maxProcessors = 1;
+    process.env[TP_ADMISSION_CONTROL_ENV] = 'false';
+    jest.spyOn(WorkingTraceProcessor.prototype, 'initialize').mockImplementation(async function(this: WorkingTraceProcessor) {this.status = 'ready';});
+    try {
+      const first = await TraceProcessorFactory.create('trace-a', tracePath, {leaseId: 'lease-a'});
+      const second = await TraceProcessorFactory.create('trace-b', tracePath, {leaseId: 'lease-b'});
+      expect(TraceProcessorFactory.get('trace-a')).toBe(first);
+      expect(TraceProcessorFactory.get('trace-b')).toBe(second);
+    } finally {TraceProcessorFactory.cleanup(); (TraceProcessorFactory as any).maxProcessors = previousMax;
+      await fs.rm(root, {recursive: true, force: true});}
+  });
+
+  it.each(['stable', 'changed', 'cancelled', 'destroyed'] as const)
+  ('publishes a managed pin only around the first actual loader completion: %s', async outcome => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'working-loaded-pin-'));
+    const original = path.join(root, 'source'), finalPath = path.join(root, 'managed');
+    await fs.writeFile(original, 'trace bytes');
+    const grant = (await managedSource.copyManagedTraceInput({sourcePath: original, finalPath, traceId: 'trace'}))!;
+    const binding = {grant, serviceOwner: {}, registration: {}, traceId: 'trace', finalPath};
+    managedSource.bindManagedTraceInput(binding);
+    const gate = deferred<void>(), entered = deferred<void>();
+    let current = true;
+    const context = {...binding, assertCurrent: () => {if (!current) throw new Error('PRIVATE_CANCEL_CAUSE');}};
+    jest.spyOn(nodeFs, 'existsSync').mockReturnValue(true);
+    jest.spyOn(nativeProvenance, 'initializeRawSqlNativeProvenance').mockResolvedValue();
+    jest.spyOn(nativeProvenance, 'revalidateRawSqlNativeProvenance').mockResolvedValue();
+    jest.spyOn(managedSource, 'resolveCapabilityTraceProcessorIdentity').mockResolvedValue({source: 'bundled',
+      gitRevision: 'a'.repeat(40), stdlibRevision: 'a'.repeat(40)});
+    const sourceEligibility = jest.spyOn(WorkingTraceProcessor.prototype, 'getNativeProvenanceSnapshot')
+      .mockReturnValue({status: 'trusted', nativeSchemaEligible: true});
+    jest.spyOn(WorkingTraceProcessor.prototype as any, 'startHttpServer').mockImplementation(async () => {entered.resolve(); await gate.promise;});
+    jest.spyOn(WorkingTraceProcessor.prototype as any, 'executeHttpQuery').mockResolvedValue(okResult([[1]]));
+    const processor = new WorkingTraceProcessor('trace', finalPath, {managedTraceInput: context});
+    const work = processor.initialize(); void work.catch(() => undefined);
+    try {
+      await entered.promise;
+      expect(processor.getLoadedTraceSourcePin()).toBeUndefined();
+      if (outcome === 'changed') await fs.writeFile(finalPath, 'replacement trace bytes');
+      if (outcome === 'cancelled') current = false;
+      if (outcome === 'destroyed') processor.destroy();
+      gate.resolve();
+      if (outcome === 'destroyed') await expect(work).rejects.toThrow('Processor destroyed during initialization');
+      else await work;
+      const pin = processor.getLoadedTraceSourcePin();
+      if (outcome === 'stable') {
+        expect(pin).toBeDefined();
+        sourceEligibility.mockRestore();
+        processor.invalidateNativeProvenance();
+        expect(processor.getLoadedTraceSourcePin()).toBe(pin); // Source bytes do not rehabilitate SQL provenance.
+        expect(processor.getNativeProvenanceSnapshot().status).toBe('tainted');
+        await expect(managedSource.assertLoadedTraceSourcePinCurrent(pin!, context)).resolves.toBeUndefined();
+      } else expect(pin).toBeUndefined();
+      if (outcome !== 'destroyed') expect(processor.status).toBe('ready'); // Optional parent qualification is not a new load gate.
+    } finally {gate.resolve(); await work.catch(() => undefined); processor.destroy(); await fs.rm(root, {recursive: true, force: true});}
+  });
+
+  it('keeps legacy parent loading and native provenance initialization without a materializer grant', async () => {
+    jest.spyOn(nodeFs, 'existsSync').mockReturnValue(true);
+    const initializeNative = jest.spyOn(nativeProvenance, 'initializeRawSqlNativeProvenance').mockResolvedValue();
+    const revalidateNative = jest.spyOn(nativeProvenance, 'revalidateRawSqlNativeProvenance').mockResolvedValue();
+    const sourceIdentity = jest.spyOn(managedSource, 'resolveCapabilityTraceProcessorIdentity');
+    jest.spyOn(WorkingTraceProcessor.prototype as any, 'startHttpServer').mockResolvedValue(undefined);
+    jest.spyOn(WorkingTraceProcessor.prototype as any, 'executeHttpQuery').mockResolvedValue(okResult([[1]]));
+    const processor = new WorkingTraceProcessor('legacy', '/fixture/legacy.trace');
+    try {
+      await processor.initialize();
+      expect(processor.status).toBe('ready');
+      expect(initializeNative).toHaveBeenCalledTimes(1); expect(revalidateNative).toHaveBeenCalledTimes(1);
+      expect(sourceIdentity).not.toHaveBeenCalled(); expect(processor.getLoadedTraceSourcePin()).toBeUndefined();
+    } finally {processor.destroy();}
   });
 
   it('shares failed creation for one lease key while an independent key can install a processor', async () => {

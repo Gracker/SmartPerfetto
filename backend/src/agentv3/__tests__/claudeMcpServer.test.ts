@@ -33,6 +33,12 @@ import * as path from 'path';
 import net from 'net';
 import Database from 'better-sqlite3';
 import type {QueryResult} from '../../services/traceProcessorService';
+import {OriginalTraceEvidenceRefusal, OriginalTraceEvidenceQueryUnknownError, type OriginalTraceEvidenceQueryOptions} from '../../services/originalTraceEvidence';
+import {createRuntimeRunAuthorization} from '../../agentRuntime/runAuthorizationFence';
+import {RuntimeExecutionGuard} from '../../agentRuntime/runtimeExecutionGuard';
+import {getDefaultCodebaseRegistry, resetDefaultCodebaseRegistryForTests} from '../../services/codebase/defaultCodebaseServices';
+import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
+import {summarizeToolCallInput} from '../toolCallSummary';
 import type {SkillDefinition} from '../../services/skillEngine/types';
 import type { AnalysisPlanV3, AnalysisNote, Hypothesis, TracePairContext, UncertaintyFlag } from '../types';
 import type { OutputLanguage } from '../outputLanguage';
@@ -400,6 +406,7 @@ function createDeferred<T = void>() {
 }
 
 function createTestServer(options: {
+  emitUpdates?: boolean;
   finalSubmission?: FinalSubmissionMode;
   runId?: string;
   canInvokeTool?: () => boolean;
@@ -454,6 +461,10 @@ function createTestServer(options: {
 
   const mockTpService = {
     query: jest.fn(async (_traceId: string, _sql: string): Promise<QueryResult> => ({ columns: ['id'], rows: [[1]], durationMs: 5 })),
+    queryOriginalTraceEvidence: jest.fn(async (_traceId: string, _sql: string, queryOptions: OriginalTraceEvidenceQueryOptions): Promise<QueryResult> => {
+      queryOptions.assertAuthorized();
+      return {columns: ['dur'], rows: [[33]], durationMs: 5};
+    }),
   };
   const mockSkillExecutor = {
     prepareInvocation: jest.fn(async (_skillId: string, _traceId: string, params: Record<string, any> = {}, inherited: Record<string, any> = {}) =>
@@ -489,7 +500,7 @@ function createTestServer(options: {
   };
 
   const artifactStore = options.artifactStore === null ? undefined : options.artifactStore || new ArtifactStore() as any;
-  const { server, allowedTools, toolDefinitions, sourceUse, sourceAuthorization, resolvedFinalTool } = createClaudeMcpServer({
+  const serverOptions = {
     finalSubmission: options.finalSubmission,
     traceId: 'test-trace-123',
     userQuery: options.userQuery,
@@ -502,7 +513,7 @@ function createTestServer(options: {
     artifactStore,
     packageName: options.packageName,
     focusTarget: options.focusTarget,
-    emitUpdate: (u: any) => emittedUpdates.push(u),
+    emitUpdate: options.emitUpdates === false ? undefined : (u: any) => emittedUpdates.push(u),
     sceneType: options.sceneType,
     cachedArchitecture: options.cachedArchitecture,
     codeAwareMode: options.codeAwareMode,
@@ -545,7 +556,8 @@ function createTestServer(options: {
         commonCapabilities: ['slice'],
       },
     } : {}),
-  } as any);
+  } as any;
+  const { server, allowedTools, toolDefinitions, sourceUse, sourceAuthorization, resolvedFinalTool } = createClaudeMcpServer(serverOptions);
 
   // Extract tool handlers from the mock SDK server
   const tools: Map<string, ToolDef> = new Map();
@@ -557,6 +569,7 @@ function createTestServer(options: {
   }
 
   return {
+    serverOptions,
     resolvedFinalTool,
     tools,
     allowedTools,
@@ -774,6 +787,306 @@ function analysisSnapshot(
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
+
+describe('MCP original trace SQL context', () => {
+  let sequence = 0;
+  const publicRun = () => {
+    const lease = new RuntimeExecutionGuard().begin({runtime: 'openai-agents-sdk', sessionId: `original-${++sequence}`});
+    return {lease, ...createRuntimeRunAuthorization({options: {}, executionLease: lease})};
+  };
+  const variants = [
+    ['execute_sql', 'current', false], ['execute_sql', 'current', true],
+    ['execute_sql_on', 'current', false], ['execute_sql_on', 'current', true],
+    ['execute_sql_on', 'reference', false], ['execute_sql_on', 'reference', true],
+  ] as const;
+
+  it.each(variants)('passes literal SQL and the same result through %s/%s summary=%s', async (toolName, trace, summary) => {
+    const {fence, lease} = publicRun();
+    const h = createTestServer({runAuthorization: fence, referenceTraceId: 'original-reference'});
+    const nativeResult = {columns: ['dur'], rows: [[33]], durationMs: 7};
+    const evidence = jest.requireActual<typeof import('../../services/evidence/evidenceCapture')>('../../services/evidence/evidenceCapture');
+    // The real service/managed-source/native proof boundary has its separate real-TP owner.
+    const capture = jest.spyOn(evidence, 'captureRawSqlEvidence');
+    h.mockTpService.queryOriginalTraceEvidence.mockResolvedValue(nativeResult);
+    const sql = ' \nSELECT dur FROM slice WHERE id = 1; -- retain literal bytes\n';
+    try {
+      expect(fence.enforced).toBe(false);
+      const payload = await callTool(h.tools, toolName, {sql, summary, executionContext: 'original_trace',
+        ...(toolName === 'execute_sql_on' ? {trace} : {})});
+      const target = trace === 'reference' ? 'original-reference' : 'test-trace-123';
+      expect(h.mockTpService.queryOriginalTraceEvidence).toHaveBeenCalledWith(target, sql,
+        expect.objectContaining({assertAuthorized: expect.any(Function)}));
+      expect(h.mockTpService.query).not.toHaveBeenCalled();
+      expect(capture.mock.calls[0][0]).toBe(nativeResult);
+      expect(capture.mock.calls[0][1]).toEqual({traceId: target, traceSide: trace});
+      expect(payload).toMatchObject({success: true, executionContext: 'original_trace', executableSql: sql,
+        stdlibInjectedModules: [], traceId: target, traceSide: trace,
+        queryReview: {observedExecution: {executed: true, executionContext: 'original_trace'}}});
+      expect(payload).not.toHaveProperty('sqlRewrites');
+      if (summary) expect((toolName === 'execute_sql_on' ? payload.summary : payload).sampleRows[0].values).toEqual([33]);
+      else expect(payload.rows).toEqual([[33]]);
+      expect(nativeResult).toEqual({columns: ['dur'], rows: [[33]], durationMs: 7});
+      const envelopes = h.emittedUpdates.filter(update => update.type === 'data').flatMap(update => update.content);
+      expect(envelopes.some(envelope => envelope.meta?.queryReview?.observedExecution.executionContext === 'original_trace')).toBe(true);
+    } finally {capture.mockRestore(); lease.settle();}
+  });
+
+  it.each(['execute_sql', 'execute_sql_on'])('keeps omitted %s params hash and working namespace unchanged', async toolName => {
+    const {fence, lease} = publicRun();
+    const h = createTestServer({runAuthorization: fence, referenceTraceId: 'original-reference'});
+    h.mockTpService.query.mockResolvedValue({columns: ['dur'], rows: [[999]], durationMs: 1});
+    const sql = 'SELECT dur FROM slice WHERE id = 1';
+    const params = {...(toolName === 'execute_sql_on' ? {trace: 'reference'} : {}), sql, summary: false};
+    try {
+      const omitted = await callTool(h.tools, toolName, params);
+      const working = await callTool(h.tools, toolName, {...params, executionContext: 'working'});
+      const original = await callTool(h.tools, toolName, {...params, executionContext: 'original_trace'});
+      expect(omitted.paramsHash).toBe(summarizeToolCallInput(toolName, params).paramsHash);
+      expect(working.paramsHash).toBe(summarizeToolCallInput(toolName, {...params, executionContext: 'working'}).paramsHash);
+      expect(new Set([omitted.paramsHash, working.paramsHash, original.paramsHash]).size).toBe(3);
+      expect(omitted.rows).toEqual([[999]]);
+      expect(working.rows).toEqual([[999]]);
+      expect(original.rows).toEqual([[33]]);
+      expect(omitted.executionContext).toBe('working');
+      expect(h.mockTpService.query).toHaveBeenCalledTimes(2);
+      const definition = h.toolDefinitions.find(item => item.name === toolName)!;
+      const schema = runtimeToolSpec.createJsonSchemaFromZodRawShape(definition.shared.inputSchema);
+      expect(schema).toMatchObject({properties: {executionContext: {enum: ['working', 'original_trace']}}});
+      expect(schema).not.toHaveProperty('properties.executionContext.default');
+      expect(schema).not.toHaveProperty('required', expect.arrayContaining(['executionContext']));
+      expect(definition.shared.evidenceEffect).toBe('acquire');
+      expect(definition.shared.role).toBeUndefined();
+    } finally {lease.settle();}
+  });
+
+  it.each(['execute_sql', 'execute_sql_on'])('preserves %s artifact context without an SSE emitter', async toolName => {
+    const {fence, lease} = publicRun();
+    const h = createTestServer({runAuthorization: fence, referenceTraceId: 'original-reference', emitUpdates: false});
+    h.mockTpService.queryOriginalTraceEvidence.mockResolvedValue({columns: ['dur'], rows: Array.from({length: 51}, () => [33]), durationMs: 1});
+    try {
+      const payload = await callTool(h.tools, toolName, {sql: 'SELECT dur FROM slice', executionContext: 'original_trace',
+        ...(toolName === 'execute_sql_on' ? {trace: 'reference'} : {})});
+      expect(payload.artifactId).toBeDefined();
+      const stored = h.artifactStore.fetch(payload.artifactId, 'full');
+      expect(stored.queryReview.observedExecution.executionContext).toBe('original_trace');
+      expect(payload.artifact.queryReview.observedExecution.executionContext).toBe('original_trace');
+      expect(h.emittedUpdates).toHaveLength(0);
+    } finally {lease.settle();}
+  });
+
+  it.each(['invalid-context', null, {kind: 'original_trace'}])('does not reroute an invalid explicit context to working: %j', async executionContext => {
+    const h = createTestServer();
+    const payload = await callTool(h.tools, 'execute_sql', {sql: 'SELECT dur FROM slice', executionContext});
+    expect(payload).toMatchObject({success: false, error: 'invalid_sql_execution_context', executed: false});
+    expect(payload).not.toHaveProperty('queryReview');
+    expect(h.mockTpService.query).not.toHaveBeenCalled();
+    expect(h.mockTpService.queryOriginalTraceEvidence).not.toHaveBeenCalled();
+  });
+
+  it.each(['missing', 'shape', 'spread', 'json'])('refuses a %s fence before original reader dispatch', async kind => {
+    const {fence, lease} = publicRun();
+    const fake = kind === 'missing' ? undefined : kind === 'shape'
+      ? {...fence, enforced: true} : kind === 'spread' ? {...fence} : JSON.parse(JSON.stringify(fence));
+    const h = createTestServer({runAuthorization: fake});
+    try {
+      const payload = await callTool(h.tools, 'execute_sql', {sql: 'SELECT dur FROM slice', executionContext: 'original_trace'});
+      expect(payload).toMatchObject({success: false, executed: false, requestedExecutionContext: 'original_trace', unsupportedReason: 'reader_unavailable'});
+      expect(payload).not.toHaveProperty('executionContext');
+      expect(payload).not.toHaveProperty('queryReview');
+      expect(h.mockTpService.queryOriginalTraceEvidence).not.toHaveBeenCalled();
+      expect(h.mockTpService.query).not.toHaveBeenCalled();
+      expect(h.artifactStore.store).not.toHaveBeenCalled();
+    } finally {lease.settle();}
+  });
+
+  it.each([false, true])('captures the original options fence once, initially present=%s', async present => {
+    const {fence, lease} = publicRun();
+    const h = createTestServer({runAuthorization: present ? fence : undefined});
+    h.serverOptions.runAuthorization = present ? {...fence} : fence;
+    try {
+      const payload = await callTool(h.tools, 'execute_sql', {sql: 'SELECT dur FROM slice', executionContext: 'original_trace'});
+      expect(payload.success).toBe(present);
+      expect(h.mockTpService.queryOriginalTraceEvidence).toHaveBeenCalledTimes(present ? 1 : 0);
+    } finally {lease.settle();}
+  });
+
+  it.each(['execute_sql', 'execute_sql_on'])('keeps %s acquisition blocked under existing_only', async toolName => {
+    const {fence, lease} = publicRun();
+    const h = createTestServer({runAuthorization: fence, referenceTraceId: 'original-reference', allowNewEvidence: false});
+    try {
+      expect(h.toolDefinitions.some(item => item.name === toolName)).toBe(false);
+      expect(h.mockTpService.queryOriginalTraceEvidence).not.toHaveBeenCalled();
+    } finally {lease.settle();}
+  });
+
+  it.each(['reader_unavailable', 'trace_not_authorized', 'source_unavailable', 'unsupported_query', 'processor_unavailable', 'capacity_unavailable'] as const)(
+    'returns closed %s refusal without fallback or executed review', async reason => {
+      const {fence, lease} = publicRun();
+      const h = createTestServer({runAuthorization: fence, referenceTraceId: 'original-reference'});
+      const evidence = jest.requireActual<typeof import('../../services/evidence/evidenceCapture')>('../../services/evidence/evidenceCapture');
+      const capture = jest.spyOn(evidence, 'captureRawSqlEvidence');
+      h.mockTpService.queryOriginalTraceEvidence.mockRejectedValue(new OriginalTraceEvidenceRefusal(reason));
+      try {
+        for (const toolName of ['execute_sql', 'execute_sql_on']) {
+          const sql = 'INCLUDE PERFETTO MODULE android.frames.timeline; SELECT * FROM slice JOIN thread USING(utid)';
+          const payload = await callTool(h.tools, toolName, {sql, executionContext: 'original_trace',
+            ...(toolName === 'execute_sql_on' ? {trace: 'reference'} : {})});
+          expect(payload).toMatchObject({success: false, executed: false, unsupportedReason: reason, requestedExecutionContext: 'original_trace'});
+          expect(payload).not.toHaveProperty('queryReview');
+          expect(payload).not.toHaveProperty('executionContext');
+          const calls = h.mockTpService.queryOriginalTraceEvidence.mock.calls;
+          expect(calls[calls.length - 1][1]).toBe(sql);
+        }
+        expect(capture).not.toHaveBeenCalled();
+        expect(h.mockTpService.query).not.toHaveBeenCalled();
+        expect(h.artifactStore.store).not.toHaveBeenCalled();
+        expect(h.emittedUpdates.some(update => update.type === 'data')).toBe(false);
+      } finally {capture.mockRestore(); lease.settle();}
+    },
+  );
+
+  it.each([new OriginalTraceEvidenceQueryUnknownError(), new Error('PRIVATE_NATIVE_PATH_CANARY')])(
+    'keeps native failure without QueryResult execution unknown', async failure => {
+      const {fence, lease} = publicRun();
+      const h = createTestServer({runAuthorization: fence});
+      h.mockTpService.queryOriginalTraceEvidence.mockRejectedValue(failure);
+      try {
+        const payload = await callTool(h.tools, 'execute_sql', {sql: 'SELECT dur FROM slice', executionContext: 'original_trace'});
+        expect(payload).toMatchObject({success: false, execution: 'unknown', error: 'original_trace_execution_unknown'});
+        expect(payload).not.toHaveProperty('executed');
+        expect(payload).not.toHaveProperty('executionContext');
+        expect(payload).not.toHaveProperty('queryReview');
+        expect(JSON.stringify(payload)).not.toContain('PRIVATE_NATIVE_PATH_CANARY');
+        expect(h.artifactStore.store).not.toHaveBeenCalled();
+        expect(h.mockTpService.query).not.toHaveBeenCalled();
+      } finally {lease.settle();}
+    },
+  );
+
+  it.each(['execute_sql', 'execute_sql_on'])('propagates %s owner changes without relying on cancellation wording', async toolName => {
+    const {fence, lease} = publicRun();
+    const h = createTestServer({runAuthorization: fence, referenceTraceId: 'original-reference'});
+    try {
+      for (const message of ['Analysis run is no longer current', 'CLI run is no longer current',
+        'Conversation run is no longer current', 'Analysis TraceProcessor leases released', 'Analysis Trace changed during execution']) {
+        const failure = new DOMException(message, 'AbortError');
+        h.mockTpService.queryOriginalTraceEvidence.mockRejectedValue(failure);
+        await expect(callTool(h.tools, toolName, {sql: 'SELECT dur FROM slice', executionContext: 'original_trace',
+          ...(toolName === 'execute_sql_on' ? {trace: 'reference'} : {})})).rejects.toBe(failure);
+      }
+      expect(h.mockTpService.query).not.toHaveBeenCalled();
+      expect(h.artifactStore.store).not.toHaveBeenCalled();
+      expect(h.emittedUpdates.some(update => update.type === 'data')).toBe(false);
+    } finally {lease.settle();}
+  });
+
+  it.each(variants)('records actual QueryResult error context for %s/%s summary=%s', async (toolName, trace, summary) => {
+    const {fence, lease} = publicRun();
+    const h = createTestServer({runAuthorization: fence, referenceTraceId: 'original-reference'});
+    h.mockTpService.queryOriginalTraceEvidence.mockResolvedValue({columns: [], rows: [], durationMs: 1, error: 'query error'});
+    try {
+      const payload = await callTool(h.tools, toolName, {sql: 'SELECT missing FROM slice', summary,
+        executionContext: 'original_trace', ...(toolName === 'execute_sql_on' ? {trace} : {})});
+      expect(payload).toMatchObject({success: false, executionContext: 'original_trace',
+        queryReview: {observedExecution: {executed: true, executionContext: 'original_trace'}}});
+      expect(h.mockTpService.query).not.toHaveBeenCalled();
+    } finally {lease.settle();}
+  });
+
+  it('keeps context from the actual branch when the caller changes its tag during the await', async () => {
+    const {fence, lease} = publicRun();
+    const h = createTestServer({runAuthorization: fence});
+    let finish!: (value: QueryResult) => void;
+    let start!: () => void;
+    const started = new Promise<void>(resolve => {start = resolve;});
+    h.mockTpService.queryOriginalTraceEvidence.mockImplementation(() => new Promise(resolve => {finish = resolve; start();}));
+    const args = {sql: 'SELECT dur FROM slice', executionContext: 'original_trace'};
+    try {
+      const pending = callTool(h.tools, 'execute_sql', args);
+      await started;
+      args.executionContext = 'working';
+      finish({columns: ['dur'], rows: [[33]], durationMs: 1});
+      expect(await pending).toMatchObject({executionContext: 'original_trace', rows: [[33]]});
+    } finally {lease.settle();}
+  });
+
+  it('propagates public-run cancellation during the original read without capture', async () => {
+    const {fence, lease} = publicRun();
+    const h = createTestServer({runAuthorization: fence});
+    const controller = new AbortController();
+    let finish!: () => void;
+    let start!: () => void;
+    const waiting = new Promise<void>(resolve => {finish = resolve;});
+    const started = new Promise<void>(resolve => {start = resolve;});
+    h.mockTpService.queryOriginalTraceEvidence.mockImplementation(async (_trace, _sql, options) => {
+      options.assertAuthorized(); start(); await waiting;
+      options.signal?.throwIfAborted(); options.assertAuthorized();
+      return {columns: ['dur'], rows: [[33]], durationMs: 1};
+    });
+    const evidence = jest.requireActual<typeof import('../../services/evidence/evidenceCapture')>('../../services/evidence/evidenceCapture');
+    const capture = jest.spyOn(evidence, 'captureRawSqlEvidence');
+    try {
+      const call = callToolWithExtra(h.tools, 'execute_sql', {sql: 'SELECT dur FROM slice', executionContext: 'original_trace'},
+        {signal: controller.signal});
+      await started;
+      controller.abort(new Error('public run cancelled'));
+      finish();
+      await expect(call).rejects.toMatchObject({code: 'TRACE_PROCESSOR_QUERY_CANCELLED'});
+      expect(capture).not.toHaveBeenCalled();
+      expect(h.artifactStore.store).not.toHaveBeenCalled();
+      expect(h.mockTpService.query).not.toHaveBeenCalled();
+    } finally {finish(); capture.mockRestore(); lease.settle();}
+  });
+
+  it.each(['before', 'during'])('uses a real private factory fence and registry revoke %s original query', async when => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'original-mcp-auth-'));
+    const previousLogDir = process.env.SMARTPERFETTO_BACKEND_LOG_DIR;
+    process.env.SMARTPERFETTO_BACKEND_LOG_DIR = directory;
+    resetDefaultCodebaseRegistryForTests();
+    const lease = new RuntimeExecutionGuard().begin({runtime: 'openai-agents-sdk', sessionId: `private-${++sequence}`});
+    let finish: () => void = () => undefined;
+    const evidence = jest.requireActual<typeof import('../../services/evidence/evidenceCapture')>('../../services/evidence/evidenceCapture');
+    const capture = jest.spyOn(evidence, 'captureRawSqlEvidence');
+    try {
+      const registry = getDefaultCodebaseRegistry();
+      const sourcePath = fs.mkdtempSync(path.join(directory, 'source-'));
+      const source = registry.register({kind: 'app_source', displayName: 'Fixture', rootPath: sourcePath, sendToProvider: true});
+      const selection = {codeAwareMode: 'provider_send' as const, codebaseIds: [source.codebaseId]};
+      const options = {...selection, analysisContextFingerprint:
+        resolvedAnalysisContext.buildAnalysisContextAuthorizationFingerprint(selection, resolveKnowledgeScope({}))};
+      const {fence} = createRuntimeRunAuthorization({options, executionLease: lease});
+      expect(fence.enforced).toBe(true);
+      const h = createTestServer({...selection, codebaseRegistry: registry, runAuthorization: fence});
+      let start!: () => void;
+      const started = new Promise<void>(resolve => {start = resolve;});
+      const waiting = new Promise<void>(resolve => {finish = resolve;});
+      h.mockTpService.queryOriginalTraceEvidence.mockImplementation(async (_trace, _sql, queryOptions) => {
+        queryOptions.assertAuthorized(); start(); await waiting;
+        queryOptions.assertAuthorized();
+        return {columns: ['dur'], rows: [[33]], durationMs: 1};
+      });
+      if (when === 'before') registry.setProviderConsent(source.codebaseId, {}, false, 'owner');
+      const call = callTool(h.tools, 'execute_sql', {sql: 'SELECT dur FROM slice', executionContext: 'original_trace'});
+      if (when === 'during') {
+        await started;
+        registry.setProviderConsent(source.codebaseId, {}, false, 'owner');
+        finish();
+      }
+      await expect(call).rejects.toThrow('analysis_context_changed_restart_required');
+      expect(lease.signal.aborted).toBe(true);
+      expect(h.mockTpService.queryOriginalTraceEvidence).toHaveBeenCalledTimes(when === 'before' ? 0 : 1);
+      expect(capture).not.toHaveBeenCalled();
+      expect(h.mockTpService.query).not.toHaveBeenCalled();
+      expect(h.artifactStore.store).not.toHaveBeenCalled();
+    } finally {
+      finish(); capture.mockRestore(); lease.settle();
+      if (previousLogDir === undefined) delete process.env.SMARTPERFETTO_BACKEND_LOG_DIR;
+      else process.env.SMARTPERFETTO_BACKEND_LOG_DIR = previousLogDir;
+      resetDefaultCodebaseRegistryForTests();
+      fs.rmSync(directory, {recursive: true, force: true});
+    }
+  });
+});
 
 describe('createClaudeMcpServer', () => {
   it.each([
@@ -1980,6 +2293,9 @@ describe('createClaudeMcpServer', () => {
       expect(descriptionByName.get('execute_sql')).toContain('steps/art-*!=tables');
       expect(descriptionByName.get('execute_sql')).toContain('fetch_artifact, not VALUES');
       expect(descriptionByName.get('execute_sql')).toContain('Current trace');
+      expect(descriptionByName.get('execute_sql')).toContain('original_trace: native SELECT only');
+      expect(descriptionByName.get('execute_sql')).toContain('no rewrite/INCLUDE/JOIN/CTE/fallback; default working');
+      expect(descriptionByName.get('execute_sql_on')).toContain('see execute_sql');
       expect(descriptionByName.get('execute_sql_on')).toContain('trace=current/reference');
       expect(descriptionByName.get('execute_sql_on')).toContain('summary=true: stats+samples');
       expect(descriptionByName.get('resolve_hypothesis')).toContain('exact immutable statement');

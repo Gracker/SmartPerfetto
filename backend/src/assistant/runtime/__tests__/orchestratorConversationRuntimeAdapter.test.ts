@@ -35,8 +35,19 @@ import {buildTraceProcessorQueryProvenance} from '../../../services/traceProcess
 import {renderConclusionContractSidecar, type ConclusionContract} from '../../../agent/core/conclusionContract';
 import {NO_PRIVATE_CONTEXT} from '../../../services/security/analysisPrivateContext';
 import {resolveDurableLearningPermission} from '../../../services/security/durableLearning';
+import type {prepareAnalysisRunTraceProcessorLeases, AnalysisRunTraceProcessorLeases} from '../../../services/analysisRunTraceProcessorLease';
 
 const mockFinalize = jest.fn<(input: FinalizeAnalysisResultInput) => Promise<FinalizedAnalysisResult>>();
+const mockPrepareLeases = jest.fn<typeof prepareAnalysisRunTraceProcessorLeases>();
+const mockTraceService = {} as TraceProcessorService;
+jest.mock('../../../services/analysisRunTraceProcessorLease', () => ({
+  ...jest.requireActual<typeof import('../../../services/analysisRunTraceProcessorLease')>('../../../services/analysisRunTraceProcessorLease'),
+  prepareAnalysisRunTraceProcessorLeases: (...args: Parameters<typeof prepareAnalysisRunTraceProcessorLeases>) => mockPrepareLeases(...args),
+}));
+jest.mock('../../../services/traceProcessorService', () => ({
+  ...jest.requireActual<typeof import('../../../services/traceProcessorService')>('../../../services/traceProcessorService'),
+  getTraceProcessorService: () => mockTraceService,
+}));
 jest.mock('../../../services/finalizeAnalysisResult', () => ({
   finalizeAnalysisResult: (input: FinalizeAnalysisResultInput) => mockFinalize(input),
 }));
@@ -60,6 +71,9 @@ function deferred<T>() {
 }
 
 beforeEach(() => {
+  mockPrepareLeases.mockReset();
+  mockPrepareLeases.mockImplementation(async input => ({entries: [], assertCurrent: input.assertCurrent,
+    run: async fn => {input.assertCurrent(); const value = await fn(); input.assertCurrent(); return value;}, release: jest.fn()}));
   mockFinalize.mockReset();
   mockFinalize.mockImplementation(async input => {
     try {
@@ -477,6 +491,87 @@ function result(conclusion: string, sessionId = 'runtime-session'): AnalysisResu
 }
 
 describe('OrchestratorConversationRuntimeAdapter', () => {
+  it('owns the attached pair through finalization using the actual non-default actor scope', async () => {
+    const order: string[] = [];
+    mockPrepareLeases.mockImplementation(async input => ({entries: [], assertCurrent: input.assertCurrent,
+      run: async fn => {order.push('enter'); const value = await fn(); order.push('exit'); return value;},
+      release: () => {order.push('release');}}));
+    const previousFinalize = mockFinalize.getMockImplementation()!;
+    mockFinalize.mockImplementation(async input => {order.push('finalize'); return previousFinalize(input);});
+    const orchestrator = createOrchestrator(async () => {order.push('analyze'); return result('Attached answer');});
+    const actor = {tenantId: 'tenant-r8', workspaceId: 'workspace-r8', userId: 'user-r8'};
+    const adapter = new OrchestratorConversationRuntimeAdapter(orchestrator,
+      {analysisOptions: {...actor, referenceTraceId: 'trace-reference'}});
+    await adapter.run({sessionId: 'conversation', runId: 'pair-run', query: 'q', history: [],
+      traceContext: {kind: 'attached', traceId: 'trace-current'}});
+    expect(mockPrepareLeases).toHaveBeenCalledWith(expect.objectContaining({scope: actor,
+      currentTraceId: 'trace-current', referenceTraceId: 'trace-reference', runId: 'pair-run',
+      sessionId: conversationRuntimeSessionId('conversation', 'pair-run'), service: mockTraceService}));
+    expect(order).toEqual(['enter', 'analyze', 'finalize', 'exit', 'release']);
+    await adapter.dispose();
+  });
+
+  it('does not prepare any Trace group for a trace-less conversation', async () => {
+    const adapter = new OrchestratorConversationRuntimeAdapter(createOrchestrator(async () => result('No trace')));
+    await adapter.run({sessionId: 'conversation', runId: 'none', query: 'q', history: [], traceContext: {kind: 'none'}});
+    expect(mockPrepareLeases).not.toHaveBeenCalled();
+    await adapter.dispose();
+  });
+
+  it('cancels the current attached runtime on group invalidation and releases after late work settles', async () => {
+    const started = deferred<void>();
+    const lateResult = deferred<AnalysisResult>();
+    const release = jest.fn();
+    mockPrepareLeases.mockImplementationOnce(async input => ({entries: [], assertCurrent: input.assertCurrent,
+      run: async fn => fn(), release}));
+    const orchestrator = createOrchestrator(async () => {started.resolve(); return lateResult.promise;});
+    const adapter = new OrchestratorConversationRuntimeAdapter(orchestrator);
+    const pending = adapter.run({sessionId: 'conversation', runId: 'invalidated', query: 'q', history: [],
+      traceContext: {kind: 'attached', traceId: 'trace-current'}});
+    await started.promise;
+    mockPrepareLeases.mock.calls[0][0].onInvalidated!(new DOMException('Trace changed', 'AbortError'));
+    await expect(pending).resolves.toMatchObject({kind: 'cancelled'});
+    expect(orchestrator.abortSession).toHaveBeenCalledWith(conversationRuntimeSessionId('conversation', 'invalidated'));
+    expect(release).not.toHaveBeenCalled();
+    lateResult.resolve(result('Late result'));
+    await nextImmediate();
+    expect(mockFinalize).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledTimes(1);
+    await adapter.dispose();
+  });
+
+  it('returns Stop during cold prepare and releases its late group without analyzing or touching a successor', async () => {
+    const cold = deferred<AnalysisRunTraceProcessorLeases>();
+    mockPrepareLeases.mockImplementationOnce(() => cold.promise);
+    const oldRelease = jest.fn();
+    const oldRun = jest.fn();
+    const currentStarted = deferred<void>();
+    const currentResult = deferred<AnalysisResult>();
+    const orchestrator = createOrchestrator(async () => {currentStarted.resolve(); return currentResult.promise;});
+    const adapter = new OrchestratorConversationRuntimeAdapter(orchestrator);
+    const old = adapter.run({sessionId: 'conversation', runId: 'old-cold', query: 'q', history: [],
+      traceContext: {kind: 'attached', traceId: 'trace-current'}});
+    await nextImmediate();
+    expect(mockPrepareLeases).toHaveBeenCalledTimes(1);
+    await adapter.cancel('conversation', 'old-cold');
+    await expect(old).resolves.toMatchObject({kind: 'cancelled'});
+    expect(oldRelease).not.toHaveBeenCalled();
+    const current = adapter.run({sessionId: 'conversation', runId: 'new-cold', query: 'q', history: [],
+      traceContext: {kind: 'attached', traceId: 'trace-current'}});
+    await currentStarted.promise;
+    mockPrepareLeases.mock.calls[0][0].onInvalidated!(new DOMException('Late old Trace invalidation', 'AbortError'));
+    cold.resolve({entries: [], assertCurrent() {}, run: async fn => {oldRun(fn); return fn();}, release: oldRelease});
+    await nextImmediate();
+    expect(oldRelease).toHaveBeenCalledTimes(1);
+    expect(oldRun).not.toHaveBeenCalled();
+    expect(orchestrator.analyze).toHaveBeenCalledTimes(1);
+    expect(orchestrator.abortSession).toHaveBeenCalledTimes(1);
+    expect(orchestrator.abortSession).toHaveBeenCalledWith(conversationRuntimeSessionId('conversation', 'old-cold'));
+    expect(mockFinalize).not.toHaveBeenCalled();
+    currentResult.resolve(result('New answer'));
+    expect((await current).kind).toBe('answered');
+    await adapter.dispose();
+  });
   it('does not bind, seal or mutate a foreign manifest recorder supplied to a conversation', async () => {
     const foreign = createRuntimePerformanceRecorder();
     const source = {identity: {runId: 'foreign-run', sessionId: 'foreign-session',

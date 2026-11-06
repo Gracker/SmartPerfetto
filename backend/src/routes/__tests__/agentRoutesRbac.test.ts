@@ -1014,22 +1014,18 @@ describe('agent route RBAC', () => {
       const secondLoadRelease = new Promise<void>((resolve) => {
         releaseSecondLoad = resolve;
       });
-      const getOrLoadTrace = jest.fn(async () => {
+      const service = await registeredTraceFixture([{traceId, tracePath}]);
+      jest.spyOn(service, 'getOrLoadTrace').mockImplementation(async () => {
         loadCount += 1;
         if (loadCount === 2) {
           markSecondLoadStarted();
           await secondLoadRelease;
         }
-        return {
-          id: traceId,
-          filename: `${traceId}.trace`,
-          size: 11,
-          filePath: tracePath,
-          uploadTime: new Date(),
-          status: 'ready',
-        };
+        const trace = service.getTrace(traceId);
+        if (!trace) throw new Error('Missing registered provider-race Trace fixture');
+        return trace;
       });
-      setTraceProcessorServiceForTests({getOrLoadTrace} as any);
+      setTraceProcessorServiceForTests(service);
       const analyze = jest.spyOn(ClaudeRuntime.prototype, 'analyze').mockImplementation(async (
         _query,
         sessionId,
@@ -1093,16 +1089,10 @@ describe('agent route RBAC', () => {
           userId: 'analyst-user',
         });
       }
-      const getOrLoadTrace = jest.fn(async (traceId: string) => ({
-        id: traceId,
-        filename: `${traceId}.trace`,
-        size: 11,
-        filePath: tracePaths.get(traceId),
-        uploadTime: new Date(),
-        status: 'ready',
-      }));
-      setTraceProcessorServiceForTests({getOrLoadTrace} as any);
-      jest.spyOn(ClaudeRuntime.prototype, 'analyze').mockImplementation(async (
+      const service = await registeredTraceFixture([...tracePaths].map(([traceId, tracePath]) => ({traceId, tracePath})));
+      const getOrLoadTrace = jest.mocked(service.getOrLoadTrace);
+      setTraceProcessorServiceForTests(service);
+      const analyze = jest.spyOn(ClaudeRuntime.prototype, 'analyze').mockImplementation(async (
         _query,
         sessionId,
       ) => ({
@@ -1138,6 +1128,7 @@ describe('agent route RBAC', () => {
       await analystHeaders(request(app).get(
         `/api/agent/v1/conversation/${attached.body.sessionId}/stream?runId=${attached.body.runId}`,
       ));
+      expect(analyze).toHaveBeenCalledTimes(2);
       const changed = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
         .send({
           sessionId: attached.body.sessionId,

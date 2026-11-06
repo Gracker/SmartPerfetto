@@ -44,6 +44,13 @@ export interface RunAuthorizationCheck {
   settled(): Promise<void>;
 }
 
+const issuedRunAuthorizationChecks = new WeakSet<object>();
+
+/** @internal Issuer identity only; callers must still intersect current run/trace/lease checks. */
+export function isIssuedRunAuthorizationCheck(value: unknown): value is RunAuthorizationCheck {
+  return typeof value === 'object' && value !== null && issuedRunAuthorizationChecks.has(value);
+}
+
 export interface RuntimeRunAuthorization {
   readonly fence: RunAuthorizationCheck;
   /** The lease, then the fence: the check before an in-process step. */
@@ -112,6 +119,7 @@ export function createRuntimeRunAuthorization(input: {
     revoke: () => end(revoked ?? new AnalysisContextAuthorizationChangedError()),
     settled: () => ending,
   };
+  issuedRunAuthorizationChecks.add(fence);
   return {
     fence,
     assertActive: () => {

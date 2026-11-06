@@ -107,7 +107,7 @@ export interface ArtifactQueryReviewRef {
   >;
   observedExecution: Pick<
     QueryReviewV1['observedExecution'],
-    'executed' | 'durationMs' | 'rowCount' | 'truncated'
+    'executed' | 'executionContext' | 'durationMs' | 'rowCount' | 'truncated'
   >;
   counts: {
     reads: number;
@@ -241,6 +241,9 @@ function queryReviewRefForArtifact(review: QueryReviewV1): ArtifactQueryReviewRe
     },
     observedExecution: {
       executed: true,
+      ...(review.observedExecution.executionContext === undefined ? {} : {
+        executionContext: review.observedExecution.executionContext,
+      }),
       durationMs: review.observedExecution.durationMs,
       rowCount: review.observedExecution.rowCount,
       truncated: review.observedExecution.truncated,

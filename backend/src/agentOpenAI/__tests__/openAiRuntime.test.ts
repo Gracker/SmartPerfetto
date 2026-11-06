@@ -22,6 +22,7 @@ import {chatCompletionResponse, chatCompletionToolCall, createOpenAiConfigForTes
 import {McpToolRegistry} from '../../agentv3/mcpToolRegistry';
 import {createOpenAIToolsFromMcpDefinitions} from '../openAiToolAdapter';
 import {prepareAnalysisRunTraceProcessorLeases, type AnalysisRunTraceProcessorService} from '../../services/analysisRunTraceProcessorLease';
+import {OriginalTraceEvidenceRefusal} from '../../services/originalTraceEvidence';
 import type {TraceProcessorLeaseRecord} from '../../services/traceProcessorLeaseStore';
 import * as finalization from '../../agentRuntime/analysisFinalizationContext';
 import * as runtimeCallStats from '../../services/runtimeCallStats';
@@ -1109,6 +1110,8 @@ describe('OpenAI native drain ownership', () => {
         requiresIsolation: !query?.leaseId, reason: query?.leaseId ? 'trusted' : 'shared_tainted'}),
       ensureProcessorForLease: jest.fn(async () => ({})), cleanupLeaseProcessor: cleanup,
       runWithLeases: async <T>(_contexts: unknown, fn: () => Promise<T>) => fn(),
+      prepareOriginalTraceEvidenceReader: () => async () => {throw new OriginalTraceEvidenceRefusal('reader_unavailable');},
+      runWithOriginalTraceReader: async <T>(_reader: unknown, fn: () => Promise<T>) => fn(),
     }) as unknown as AnalysisRunTraceProcessorService;
     let record: TraceProcessorLeaseRecord = {id: `lease-${sessionId}`, tenantId: scope.tenantId,
       workspaceId: scope.workspaceId, traceId: 'trace', mode: 'isolated', state: 'pending', rssBytes: null,

@@ -164,6 +164,16 @@ OpenAI runtime 不复制工具逻辑，而是读取同一份 `McpToolRegistry`�
 
 当前 production runtime 保持同一个产品合约：输入通过各自 pinned provider 的原生无工具 transport 解析为共享 typed intent，输出交给同一个产品层 finalizer 和报告边界。Claude 使用 in-process MCP、tool allowlist 和可配置 sub-agent，每轮开启新的 SDK session；OpenAI 使用同一工具注册表适配的 function tools，SDK history 只在本轮内用于续写/恢复调用，不写入快照、也不用 `previousResponseId` 跨轮续接；Pi 使用 request-scoped native tools；OpenCode 使用每次分析的隔离 server/MCP bridge；Qoder 通过 SDK in-process bridge 复用共享工具。OpenCode/Qoder 的内建文件、shell 等工具隔离规则不变。各 SDK 的调用节奏、流式事件、恢复和成本/超时语义仍有差异。
 
+SQL 工具的 `executionContext` 独立于模型、预算和源码权限。省略或 `working` 使用
+当前工作区（包括已加载模块和临时表）；`original_trace` 显式请求本轮原始 Trace 的
+受限原生读取。后者不改写 SQL、不自动加载模块，也不在拒绝后换回工作区。它只接受
+当前 parser 完整支持的单一原生关系查询，单位与行身份仍来自实际执行回执。
+
+普通分析、CLI 和有 Trace 的 Conversation 在同一 run 租约内持有读取资源到 finalization；
+无 Trace 对话不创建处理器。原生读取实例按已授权 Trace 懒创建并复用，当前与对比 Trace
+保持各自身份。上下文标签和 Query Review 只描述实际执行，不授予证据权威；历史缺失标签
+保持未知。来源、配额、授权或运行状态不足时明确拒绝，取消和撤权继续终止原运行。
+
 ## 并发、观测与准入
 
 并发默认 fail closed。一个 runtime/session 同时只允许一个分析执行；工具默认独占，只有显式标记且已准入的可交换只读工具可在同一 request 内重叠。每个 trace processor 实例仍由一个 SQL worker 串行执行查询，因此同一 trace/processor 的 SQL 不会因为工具并发而同时进入 processor；不同 processor/trace 或已准入的纯读准备工作可以重叠。processor 创建与恢复使用 single-flight，取消后旧执行不能覆盖新 session state。

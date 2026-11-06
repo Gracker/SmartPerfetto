@@ -1003,6 +1003,7 @@ describe('enterprise trace metadata routes', () => {
       'fixture.trace',
       'trace-content'.length,
       expectedTracePath,
+      expect.objectContaining({kind: 'managed_trace_input'}),
     );
 
     const row = readTraceAsset(traceId);
@@ -1134,6 +1135,7 @@ describe('enterprise trace metadata routes', () => {
       filename,
       'trace-content'.length,
       expect.any(String),
+      expect.objectContaining({kind: 'managed_trace_input'}),
     );
     expect(JSON.parse(readTraceAsset(traceId)!.metadata_json)).toEqual(
       expect.objectContaining({filename}),
@@ -1713,7 +1715,9 @@ describe('enterprise trace metadata routes', () => {
       'url-stream.trace',
       Buffer.byteLength(traceBytes),
       expectedTracePath,
+      expect.objectContaining({kind: 'managed_trace_input'}),
     );
+    expect(JSON.stringify(uploadRes.body)).not.toContain('managed_trace_input');
   });
 
   it('blocks enterprise cleanup when scoped trace processor leases still have active holders and audits the attempt', async () => {

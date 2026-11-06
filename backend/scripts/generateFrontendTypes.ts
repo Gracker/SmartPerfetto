@@ -146,7 +146,14 @@ export interface CaseKnowledgeReportRecommendation {
   };
 }`;
 
+const sqlExecutionContexts = extractConstArrayValues(
+  fs.readFileSync(path.join(projectRoot, 'backend/src/types/queryReviewContract.ts'), 'utf8'),
+  'SQL_EXECUTION_CONTEXTS',
+);
+if (sqlExecutionContexts.length === 0) throw new Error('SQL execution context contract unavailable');
 const queryReviewFrontendContent = `export const QUERY_REVIEW_SCHEMA_VERSION = 1 as const;
+
+export type SqlExecutionContext = ${sqlExecutionContexts.map(value => `'${value}'`).join(' | ')};
 
 export type QueryReviewProducerKind = 'execute_sql' | 'execute_sql_on' | 'invoke_skill';
 export type QueryReviewConfidence = 'declared' | 'observed' | 'partial';
@@ -199,6 +206,7 @@ export interface QueryReviewGuardrailV1 {
 
 export interface QueryReviewObservedExecutionV1 {
   executed: true;
+  executionContext?: SqlExecutionContext;
   executableSql?: string;
   sqlRewrites?: string[];
   stdlibInjectedModules?: string[];

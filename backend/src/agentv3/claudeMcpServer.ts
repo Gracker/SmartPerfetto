@@ -2,7 +2,8 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import type {RunAuthorizationCheck} from '../agentRuntime/runAuthorizationFence';
+import {isIssuedRunAuthorizationCheck, type RunAuthorizationCheck} from '../agentRuntime/runAuthorizationFence';
+import {OriginalTraceEvidenceRefusal, OriginalTraceEvidenceQueryUnknownError} from '../services/originalTraceEvidence';
 import {createRuntimeToolResult, runtimeToolReceiptMetadata} from '../agentRuntime/runtimeToolResult';
 import {diagnoseConclusionDraft, draftDiagnosticOwnerKey, DRAFT_DECLARATION_MAX_BYTES} from '../services/draftDeclarationDiagnostics';
 import {assertSceneRuntimeCapability} from '../agent/scene/sceneRuntimeBinding';
@@ -174,7 +175,7 @@ import {
 
 import { buildSqlQueryReview } from '../services/queryReview/queryReviewBuilder';
 import { buildSkillQueryReview } from '../services/queryReview/skillQueryReviewBuilder';
-import { compactQueryReviewForToolResponse, type QueryReviewV1 } from '../types/queryReviewContract';
+import {compactQueryReviewForToolResponse, SQL_EXECUTION_CONTEXTS, type QueryReviewV1, type SqlExecutionContext} from '../types/queryReviewContract';
 import { RagStore, getDefaultRagStore } from '../services/ragStore';
 import {ragChunkAudience} from '../services/rag/ragChunkAudience';
 import {
@@ -1417,6 +1418,8 @@ function lightweightPreviewIndexes(results: readonly {layer?: string}[], limit: 
 
 export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   const { traceId, traceProcessorService, skillExecutor, packageName, emitUpdate, onSkillResult, analysisNotes, artifactStore } = options;
+  // Issuer identity is separate from the private-context `enforced` flag below.
+  const originalTraceAuthorization = options.runAuthorization;
   const artifactAccessPolicy = resolveArtifactAccessPolicy(options.userQuery);
   const artifactSummaryState = new Map<string, { complete?: boolean }>();
   const recentSqlErrors: SqlErrorFixPair[] = options.recentSqlErrors || [];
@@ -2465,8 +2468,20 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     sql: string,
     traceSide: TraceProcessorTraceSide = 'current',
     signal?: AbortSignal,
+    executionContext: SqlExecutionContext = 'working',
   ) {
     throwIfTraceProcessorQueryCancelled(signal);
+    if (executionContext === 'original_trace') {
+      if (!isIssuedRunAuthorizationCheck(originalTraceAuthorization)) {
+        throw new OriginalTraceEvidenceRefusal('reader_unavailable');
+      }
+      const assertAuthorized = () => originalTraceAuthorization.assertCurrentInTurn();
+      assertAuthorized();
+      const result = await traceProcessorService.queryOriginalTraceEvidence(targetTraceId, sql, {signal, assertAuthorized});
+      assertAuthorized();
+      return {result, finalSql: sql, injected: [], normalizedSql: sql, sqlRewrites: [],
+        traceProvenance: buildScopedTraceProvenance(targetTraceId, traceSide), executionContext};
+    }
     const normalized = normalizeRawSql(sql);
     const { sql: finalSql, injected } = injectStdlibIncludes(normalized.sql);
     const traceProvenance = buildScopedTraceProvenance(targetTraceId, traceSide);
@@ -2492,7 +2507,25 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       traceProvenance,
       normalizedSql: normalized.sql,
       sqlRewrites: normalized.rewrites,
+      executionContext: 'working' as const,
     };
+  }
+
+  function originalTraceFailure(error: unknown, signal?: AbortSignal) {
+    // Current-owner/lease AbortErrors need not contain cancellation wording.
+    if ((error instanceof DOMException || error instanceof Error) && error.name === 'AbortError') throw error;
+    rethrowIfTraceProcessorQueryCancelled(error);
+    throwIfTraceProcessorQueryCancelled(signal);
+    if (isIssuedRunAuthorizationCheck(originalTraceAuthorization)) originalTraceAuthorization.assertCurrentInTurn();
+    if (error instanceof OriginalTraceEvidenceRefusal) {
+      return policyRefusal('use_authorized_existing_evidence', {
+        error: 'original_trace_refused', unsupportedReason: error.reason,
+        requestedExecutionContext: 'original_trace', executed: false,
+      }, {isError: true});
+    }
+    return createRuntimeToolResult({success: false, requestedExecutionContext: 'original_trace', execution: 'unknown',
+      error: error instanceof OriginalTraceEvidenceQueryUnknownError ? error.code : 'original_trace_execution_unknown'},
+    {isError: true});
   }
 
   const executeSql = tool(
@@ -2501,6 +2534,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     requireToolDescription('prompt-sql-evidence-guidance'),
     {
       planPhaseId: z.string().optional().describe('Optional explicit plan phase ID for this invocation.'),
+      executionContext: z.enum(SQL_EXECUTION_CONTEXTS).optional().describe('SQL execution namespace.'),
       sql: z.string().describe(
         'The SQL query to execute. Use Perfetto stdlib tables/functions (e.g. android_jank_cuj, slice, thread, process).'
       ),
@@ -2508,9 +2542,12 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         'When true, returns column statistics (min/max/avg/percentiles) + 10 most interesting sample rows instead of full results. Use for large result sets where you need aggregate understanding, not row-level data. Default: false.'
       ),
     },
-    async ({ sql, summary, planPhaseId }, extra) => {
+    async ({ sql, summary, planPhaseId, executionContext }, extra) => {
       const signal = getRuntimeToolSignal(extra);
       throwIfTraceProcessorQueryCancelled(signal);
+      if (executionContext !== undefined && !SQL_EXECUTION_CONTEXTS.includes(executionContext)) {
+        return createRuntimeToolResult({success: false, error: 'invalid_sql_execution_context', executed: false}, {isError: true});
+      }
       const artifactSqlHint = artifactSqlMisuseHint(sql, outputLanguage);
       if (artifactSqlHint) {
         return {
@@ -2521,16 +2558,17 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
       const producer = createEvidenceProducerContext(
         'execute_sql',
-        {sql, summary, planPhaseId},
+        {sql, summary, planPhaseId, ...(executionContext === undefined ? {} : {executionContext})},
         localize(outputLanguage, '执行当前 Trace SQL，验证本阶段的具体数据点。', 'Run SQL on the current trace to verify this phase of evidence.'),
       );
       try {
         const sqlStart = Date.now();
-        const { result, finalSql, injected, traceProvenance, normalizedSql, sqlRewrites } = await runRawSqlWithIncludeInjection(
+        const { result, finalSql, injected, traceProvenance, normalizedSql, sqlRewrites, executionContext: actualExecutionContext } = await runRawSqlWithIncludeInjection(
           traceId,
           sql,
           'current',
           signal,
+          executionContext,
         );
         const processIdentityWarning = rawSqlProcessIdentityWarning(normalizedSql);
         const success = !result.error;
@@ -2549,6 +2587,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
               stdlibInjectedModules: injected,
               traceProvenance,
               producer,
+              executionContext: actualExecutionContext,
             })
           : undefined;
         const shouldReturnSqlSummary = success && result.rows.length > 0 && (summary || !!sqlArtifact);
@@ -2646,6 +2685,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
                 truncated: false,
                 captureStore: artifactStore, executionWitness,
                 sqlRewrites,
+                executionContext: actualExecutionContext,
                 toolName: 'execute_sql',
                 outputLanguage,
               },
@@ -2675,6 +2715,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             paramsHash: producer.paramsHash,
             planPhaseId: producer.planPhaseId,
             executableSql: finalSql,
+            executionContext: actualExecutionContext,
             ...(sqlRewrites.length > 0 ? { sqlRewrites } : {}),
             stdlibInjectedModules: injected,
             ...(processIdentityWarning ? { processIdentityWarning } : {}),
@@ -2699,6 +2740,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
               truncated,
               captureStore: artifactStore, executionWitness,
               sqlRewrites,
+              executionContext: actualExecutionContext,
               toolName: 'execute_sql',
               rowCount: result.rows.length,
               outputLanguage,
@@ -2723,6 +2765,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           paramsHash: producer.paramsHash,
           planPhaseId: producer.planPhaseId,
           executableSql: finalSql,
+          executionContext: actualExecutionContext,
           ...(sqlRewrites.length > 0 ? { sqlRewrites } : {}),
           stdlibInjectedModules: injected,
           ...(processIdentityWarning ? { processIdentityWarning } : {}),
@@ -2736,6 +2779,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           paramsHash: producer.paramsHash,
           planPhaseId: producer.planPhaseId,
           executableSql: finalSql,
+          executionContext: actualExecutionContext,
           sqlRewrites,
           stdlibInjectedModules: injected,
           processIdentityWarning,
@@ -2745,6 +2789,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           decorate: text => consumeWatchdogWarning(text + (success ? getReasoningNudge() : '')),
         });
       } catch (err) {
+        if (executionContext === 'original_trace') return originalTraceFailure(err, signal);
         rethrowIfTraceProcessorQueryCancelled(err);
         const errMsg = (err as Error).message;
         const traceProvenance = buildScopedTraceProvenance(traceId, 'current');
@@ -6903,6 +6948,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     requireToolDescription('prompt-sql-evidence-guidance'),
     {
       planPhaseId: z.string().optional().describe('Optional explicit plan phase ID for this invocation.'),
+      executionContext: z.enum(SQL_EXECUTION_CONTEXTS).optional().describe('SQL execution namespace.'),
       trace: z.enum(['current', 'reference']).describe(
         'Which trace to query: "current" = primary trace loaded in Perfetto, "reference" = comparison trace.'
       ),
@@ -6911,9 +6957,12 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         'When true, returns column statistics + sample rows instead of full results. Default: false.'
       ),
     },
-    async ({ trace, sql, summary, planPhaseId }, extra) => {
+    async ({ trace, sql, summary, planPhaseId, executionContext }, extra) => {
       const signal = getRuntimeToolSignal(extra);
       throwIfTraceProcessorQueryCancelled(signal);
+      if (executionContext !== undefined && !SQL_EXECUTION_CONTEXTS.includes(executionContext)) {
+        return createRuntimeToolResult({success: false, error: 'invalid_sql_execution_context', executed: false}, {isError: true});
+      }
       const artifactSqlHint = artifactSqlMisuseHint(sql, outputLanguage);
       if (artifactSqlHint) {
         return {
@@ -6926,17 +6975,18 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const traceLabel = `[${traceLocationDisplayLabel(trace)}]`;
       const producer = createEvidenceProducerContext(
         'execute_sql_on',
-        {trace, sql, summary, planPhaseId},
+        {trace, sql, summary, planPhaseId, ...(executionContext === undefined ? {} : {executionContext})},
         comparisonSqlProducerReason(trace),
         trace,
       );
       try {
         const sqlStart = Date.now();
-        const { result, finalSql, injected, traceProvenance, normalizedSql, sqlRewrites } = await runRawSqlWithIncludeInjection(
+        const { result, finalSql, injected, traceProvenance, normalizedSql, sqlRewrites, executionContext: actualExecutionContext } = await runRawSqlWithIncludeInjection(
           targetTraceId,
           sql,
           trace,
           signal,
+          executionContext,
         );
         const processIdentityWarning = rawSqlProcessIdentityWarning(normalizedSql);
         const success = !result.error;
@@ -6955,6 +7005,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
               stdlibInjectedModules: injected,
               traceProvenance,
               producer,
+              executionContext: actualExecutionContext,
             })
           : undefined;
         const shouldReturnSqlSummary = success && result.rows.length > 0 && (summary || !!sqlArtifact);
@@ -6978,6 +7029,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
                 truncated: false,
                 captureStore: artifactStore, executionWitness,
                 sqlRewrites,
+                executionContext: actualExecutionContext,
                 toolName: 'execute_sql_on',
                 outputLanguage,
               },
@@ -7009,6 +7061,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             paramsHash: producer.paramsHash,
             planPhaseId: producer.planPhaseId,
             executableSql: finalSql,
+            executionContext: actualExecutionContext,
             ...(sqlRewrites.length > 0 ? { sqlRewrites } : {}),
             stdlibInjectedModules: injected,
             ...(processIdentityWarning ? { processIdentityWarning } : {}),
@@ -7035,6 +7088,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
               truncated,
               captureStore: artifactStore, executionWitness,
               sqlRewrites,
+              executionContext: actualExecutionContext,
               toolName: 'execute_sql_on',
               rowCount: result.rows.length,
               outputLanguage,
@@ -7060,6 +7114,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           paramsHash: producer.paramsHash,
           planPhaseId: producer.planPhaseId,
           executableSql: finalSql,
+          executionContext: actualExecutionContext,
           ...(sqlRewrites.length > 0 ? { sqlRewrites } : {}),
           stdlibInjectedModules: injected,
           ...(processIdentityWarning ? { processIdentityWarning } : {}),
@@ -7074,6 +7129,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           paramsHash: producer.paramsHash,
           planPhaseId: producer.planPhaseId,
           executableSql: finalSql,
+          executionContext: actualExecutionContext,
           sqlRewrites,
           stdlibInjectedModules: injected,
           processIdentityWarning,
@@ -7084,6 +7140,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           decorate: text => consumeWatchdogWarning(success ? text + getReasoningNudge() : text),
         });
       } catch (e: any) {
+        if (executionContext === 'original_trace') return originalTraceFailure(e, signal);
         rethrowIfTraceProcessorQueryCancelled(e);
         const traceProvenance = buildScopedTraceProvenance(targetTraceId, trace);
         return {
@@ -7869,6 +7926,7 @@ function storeSqlResultArtifact(
   artifactStore: ArtifactStore | undefined,
   input: {
     toolName: 'execute_sql' | 'execute_sql_on';
+    executionContext: SqlExecutionContext;
     executionWitness?: EvidenceTableWitness;
     columns: string[];
     rows: any[][];
@@ -7899,6 +7957,13 @@ function storeSqlResultArtifact(
   });
   if (input.executionWitness) artifactStore.registerEvidenceCapture?.(artifactId, input.executionWitness,
     stableSqlEvidenceRefId(input.sql, input.columns, input.rows, input.traceProvenance, input.producer));
+  // Retain namespace metadata even for an in-process caller without an SSE emitter.
+  artifactStore.updateQueryReview(artifactId, buildSqlQueryReview({
+    producerKind: input.toolName, executionContext: input.executionContext,
+    executableSql: input.sql, outputColumns: input.columns, artifactId,
+    producer: input.producer, traceProvenance: input.traceProvenance,
+    rowCount: input.rows.length, truncated: false, stdlibInjectedModules: input.stdlibInjectedModules,
+  }));
   return {
     artifactId,
     artifactSummary: artifactStore.generateCompactSummary(artifactId),
@@ -8479,6 +8544,7 @@ function emitSqlDataEnvelope(
     durationMs?: number;
     truncated?: boolean;
     sqlRewrites?: string[];
+    executionContext?: SqlExecutionContext;
     toolName?: 'execute_sql' | 'execute_sql_on';
     rowCount?: number;
     outputLanguage?: OutputLanguage;
@@ -8488,6 +8554,7 @@ function emitSqlDataEnvelope(
   const toolName = options?.toolName ?? 'execute_sql';
   const queryReview = buildSqlQueryReview({
     producerKind: toolName,
+    executionContext: options?.executionContext,
     executableSql: sql,
     outputColumns: columns.map((col: string) => ({ name: col, type: inferSqlColumnType(col) })),
     traceProvenance,
@@ -8567,6 +8634,7 @@ function emitSqlSummaryDataEnvelope(
     durationMs?: number;
     truncated?: boolean;
     sqlRewrites?: string[];
+    executionContext?: SqlExecutionContext;
     toolName?: 'execute_sql' | 'execute_sql_on';
     outputLanguage?: OutputLanguage;
   },
@@ -8583,6 +8651,7 @@ function emitSqlSummaryDataEnvelope(
   const toolName = options?.toolName ?? 'execute_sql';
   const queryReview = buildSqlQueryReview({
     producerKind: toolName,
+    executionContext: options?.executionContext,
     executableSql: sql,
     outputColumns: summary.columns,
     traceProvenance,
@@ -8650,6 +8719,7 @@ function emitSqlSummaryDataEnvelope(
 }
 
 interface SqlFailureToolPayloadInput {
+  executionContext?: SqlExecutionContext;
   error: string;
   trace?: string;
   traceSide?: TraceProcessorTraceSide;
@@ -8683,6 +8753,7 @@ function buildSqlFailureToolPayload(input: SqlFailureToolPayloadInput): Record<s
   const queryReview = input.executableSql
     ? buildSqlQueryReview({
         producerKind: input.sourceToolCallId?.startsWith('execute_sql_on') ? 'execute_sql_on' : 'execute_sql',
+        executionContext: input.executionContext,
         executableSql: input.executableSql,
         outputColumns: [],
         traceProvenance: input.traceProvenance,
@@ -8737,6 +8808,7 @@ function buildSqlFailureToolPayload(input: SqlFailureToolPayloadInput): Record<s
     paramsHash: input.paramsHash,
     planPhaseId: input.planPhaseId,
     executableSql: input.executableSql,
+    ...(input.executionContext === undefined ? {} : {executionContext: input.executionContext}),
     ...(queryReview ? { queryReview: compactQueryReviewForToolResponse(queryReview) } : {}),
     ...(input.sqlRewrites && input.sqlRewrites.length > 0 ? { sqlRewrites: input.sqlRewrites } : {}),
     stdlibInjectedModules: input.stdlibInjectedModules || [],

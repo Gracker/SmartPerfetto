@@ -70,6 +70,7 @@
         "src/types/evidenceContract.ts!",
         "src/types/externalIssueReporting.ts!",
         "src/types/identityContract.ts!",
+        "src/types/queryReviewContract.ts!",
         "scripts/**/*.ts!",
         "src/**/*.test.ts",
         "src/**/__tests__/**/*.ts",

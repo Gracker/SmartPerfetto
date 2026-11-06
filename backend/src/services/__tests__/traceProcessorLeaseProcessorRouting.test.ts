@@ -24,6 +24,7 @@ import {
   type TraceProcessor,
 } from '../traceProcessorService';
 import {detectFocusApps} from '../../agentv3/focusAppDetector';
+import {OriginalTraceEvidenceRefusal} from '../originalTraceEvidence';
 
 function okResult(label: string): QueryResult {
   return {
@@ -50,6 +51,45 @@ describe('TraceProcessorService lease processor routing', () => {
     jest.restoreAllMocks();
     TraceProcessorFactory.cleanup();
     setTraceProcessorLeaseStoreForTests(null);
+  });
+
+  it('keeps the internal original reader local to one service and preserves its exact result', async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'sp-original-als-'));
+    try {
+      const first = new TraceProcessorService(directory);
+      const other = new TraceProcessorService(directory);
+      const options = {assertAuthorized: jest.fn()};
+      await expect(first.queryOriginalTraceEvidence('trace', 'SELECT 1', options))
+        .rejects.toMatchObject({executed: false, reason: 'reader_unavailable'});
+      const result = okResult('exact-object');
+      const reader = jest.fn(async () => result);
+      await first.runWithOriginalTraceReader(reader, async () => {
+        expect(await first.queryOriginalTraceEvidence('trace', 'SELECT 1', options)).toBe(result);
+        await expect(other.queryOriginalTraceEvidence('trace', 'SELECT 1', options))
+          .rejects.toMatchObject({executed: false, reason: 'reader_unavailable'});
+      });
+      expect(reader).toHaveBeenCalledTimes(1);
+      await expect(first.queryOriginalTraceEvidence('trace', 'SELECT 1', options)).rejects.toBeInstanceOf(OriginalTraceEvidenceRefusal);
+    } finally {await fs.rm(directory, {recursive: true, force: true});}
+  });
+
+  it('does not create native resources or upgrade ordinary unmanaged registrations', async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'sp-original-unmanaged-'));
+    try {
+      const service = new TraceProcessorService(directory);
+      const file = path.join(directory, 'legacy.trace');
+      await fs.writeFile(file, 'legacy bytes');
+      await service.initializeUploadWithId('legacy', 'legacy.trace', 12, file);
+      const acquireChild = jest.fn(() => ({traceId: 'legacy', leaseId: 'child', mode: 'isolated'}));
+      const reader = service.prepareOriginalTraceEvidenceReader({traceId: 'legacy', leaseId: 'working', mode: 'shared'}, {
+        signal: new AbortController().signal, assertCurrent() {}, acquireChild, childReady() {}, childFailed() {},
+      });
+      expect(acquireChild).not.toHaveBeenCalled();
+      await expect(reader('legacy', 'SELECT dur FROM slice', {assertAuthorized() {}}))
+        .rejects.toMatchObject({executed: false, reason: 'source_unavailable'});
+      expect(acquireChild).not.toHaveBeenCalled();
+      expect(await fs.readFile(file, 'utf8')).toBe('legacy bytes');
+    } finally {await fs.rm(directory, {recursive: true, force: true});}
   });
 
   it('routes shared work by traceId and isolated work by lease processor key', async () => {

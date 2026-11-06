@@ -94,9 +94,9 @@ selected sources.
 
 Personal deployments also use the shared run lease lifecycle for analysis SQL.
 When a verified local processor loses native provenance through viewer access
-or SQL changes, a run can create a dedicated instance within the existing RAM
-budget, retaining current/reference Trace identities. Ordinary HTTP analysis,
-smart root runs and CLI keep the same instances through finalization and clean
+or SQL changes, a run can create a dedicated instance under the existing RAM
+admission policy, retaining current/reference Trace identities. Ordinary HTTP analysis,
+smart root runs, CLI and attached-Trace Conversation keep the same instances through finalization and clean
 up on completion, cancellation and late initialization. Stats, viewer attachment
 and RPC aliases do not expose dedicated connections. External RPC and unknown
 binaries cannot gain provenance through cloning; failed admission does not
@@ -110,11 +110,41 @@ share one instance until its first invalidation. Invalidation only downgrades
 and advances the epoch: an execution issued before it and completed after it
 gains no unit authority, and later runs isolate.
 
-This does not derive units for arbitrary SQL. Bounded questions skip unrelated
-prefetch under the actual runtime policy. Full-scene module loading can still
-invalidate native provenance; subsequent Skills use their own execution capture
-semantics, and raw SQL without authority remains unknown. Tools and module loads
-do not each create another processor.
+Omitted or `executionContext=working` retains existing workspace SQL semantics.
+Identity resolution, Skills and probes can still invalidate that instance through
+module loading. Skills then use their own execution-capture semantics; missing
+raw-SQL unit authority remains unknown. A relation name alone cannot reroute a
+query: a workspace may contain a different table with the same name.
+
+Explicit `original_trace` selects a separate restricted native reader within the
+run. Only single pinned-prelude relation queries fully recognized by the current
+parser qualify; JOINs, subqueries, CTEs, workspace tables and INCLUDE are refused.
+The original SQL runs once without rewriting, and its actual result is captured;
+new authority is never attached to an old workspace result. Pre-dispatch refusal
+creates no execution review, capture or artifact. Actual SQL errors and worker
+exceptions without an actual result retain failed execution and unknown execution,
+respectively. Cancellation or revocation is never recast as ordinary refusal.
+
+This path requires an application-materialized Trace. Successful CLI copies and
+completed HTTP upload renames issue private input grants bound to the service and
+current registration. Only the first successful actual load, with matching file
+identity and SHA checks, can issue a loaded-source pin. Ordinary path registration,
+old instances and JSON recovery cannot backfill it. Children use the same input
+under the application's immutable lifecycle and check its pin, binary/docs pins,
+authorization, current owner and Trace pair before and after work. Absence of
+private source context does not forbid an authorized Trace read; factory-fence
+origin and these permissions are separate checks. Model fields, copied tokens and
+serialization cannot grant this capability.
+
+Each run lazily creates at most one private native reader per distinct Trace and
+shares its initialization. Its namespace is separate, its port is private, and a
+failed reader is neither restarted nor replaced within the run. Creation follows
+strict instance-count admission and existing RAM policy; unknown RSS is no exact
+free-memory guarantee. Missing capacity or provenance never falls back to the
+workspace or causes repeated loads. Lease/late-initialization cleanup preserves
+user Trace files; requesting release and observing native exit remain separate.
+The source guarantee concerns application-controlled materialization, not malicious
+same-UID changes to the application's private directory.
 
 Answers without source dependencies do not need a passed source verdict. Only
 the shared finalizer can issue `source: not_applicable`, using the current
@@ -171,19 +201,18 @@ call chain, or causality, and complete body semantic review still applies.
 Malformed entries anywhere in the binding array cannot be filtered into an
 absent declaration.
 
-Raw SQL units also require execution evidence. Only an owned processor whose
-binary and documentation pins match, and which has not been exposed through
-uncontrolled SQL/RPC or a disclosed native port, can issue field metadata for a
-proven direct projection. Currently only formal `DURATION` columns provide ns;
-aliases and `*` expansion must match the actual output and original schema.
-Parsed scalar expressions retain their output positions, allowing other direct
-columns to keep their lineage without assigning units to computed columns.
-Aggregates, grouping and joins remain outside this row correspondence proof.
-The queue checks
-provenance before and after execution and binds units to the SQL and result with
-an in-process receipt; JSON field metadata grants no authority. Invalidated
-processors still execute queries, but recreating a name or identical DDL cannot
-restore their native provenance.
+Raw SQL units require execution evidence from an owned processor with matching
+binary/documentation pins and trusted native provenance. Direct `DURATION`
+columns provide ns; aliases and star expansion must match actual output and the
+formal schema. Existing quantity-expression rules also support selected duration
+conversions, timestamp differences, MIN/MAX clipping in the native timestamp
+scale, and count units. A computed representation unit does not establish a
+native row, clock, subject or causality. Unsupported expressions remain unknown;
+column names never determine units. The queue checks provenance before and after
+execution and binds semantics to the SQL and actual result with an in-process
+receipt. JSON metadata grants no authority. SQL/module changes and port exposure
+only downgrade provenance; recreating a name or identical DDL cannot restore it.
+Previously completed immutable captures remain readable.
 
 When the formal schema has exactly one `ID` column and the query returns that
 original column, the native execution receipt also retains its relation, row ID

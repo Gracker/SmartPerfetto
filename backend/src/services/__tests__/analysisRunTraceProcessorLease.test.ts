@@ -9,6 +9,7 @@ import {analysisRunTraceProcessorFailureSide, prepareAnalysisRunTraceProcessorLe
 import type {TraceProcessorLeaseRecord} from '../traceProcessorLeaseStore';
 import type {TraceInfo, TraceProcessorLeaseQueryContext} from '../traceProcessorService';
 import type {TraceMetadata} from '../traceMetadataStore';
+import type {RunOwnedOriginalTraceReader} from '../originalTraceEvidence';
 
 const scope = {tenantId: 'personal', workspaceId: 'default', userId: 'local'};
 function fixture() {
@@ -18,6 +19,7 @@ function fixture() {
   const policies = new Map<string, AnalysisRunProcessorPolicy>();
   const records = new Map<string, TraceProcessorLeaseRecord>();
   const als = new AsyncLocalStorage<TraceProcessorLeaseQueryContext[]>();
+  const nativeAls = new AsyncLocalStorage<RunOwnedOriginalTraceReader>();
   const controller = new AbortController();
   const emitter = new EventEmitter();
   const getPolicy = jest.fn((id: string, options?: {leaseId?: string}) => options?.leaseId
@@ -25,6 +27,12 @@ function fixture() {
     : policies.get(id) ?? {sourceKind: 'local_file', requiresIsolation: true, reason: 'shared_tainted'});
   const ensure = jest.fn(async (id: string) => {events.push(`create:${id}`); return {} as any;});
   const cleanup = jest.fn((_traceId: string, _leaseId: string, _mode: string) => true);
+  const prepareReader = jest.fn<AnalysisRunTraceProcessorService['prepareOriginalTraceEvidenceReader']>((_context, owner) =>
+    async (_traceId, _sql, options) => {
+      owner.assertCurrent(); options.assertAuthorized();
+      const child = owner.acquireChild(); owner.childReady(child);
+      return {columns: ['lease'], rows: [[child.leaseId]], durationMs: 1};
+    });
   const service = Object.assign(emitter, {
     getTrace: (id: string) => traces.get(id),
     getTraceFilePath: (id: string) => `/registered/${id}.trace`,
@@ -33,10 +41,13 @@ function fixture() {
     ensureProcessorForLease: ensure,
     cleanupLeaseProcessor: cleanup,
     runWithLeases: jest.fn(async <T>(contexts: TraceProcessorLeaseQueryContext[], fn: () => Promise<T>) => als.run(contexts, fn)),
+    prepareOriginalTraceEvidenceReader: prepareReader,
+    runWithOriginalTraceReader: <T>(reader: RunOwnedOriginalTraceReader, fn: () => Promise<T>) => nativeAls.run(reader, fn),
   }) as unknown as AnalysisRunTraceProcessorService;
   const acquire = jest.fn((_scope: unknown, id: string, holder: any, options: any) => {
     events.push(`acquire:${id}`);
-    const lease: TraceProcessorLeaseRecord = {id: `lease-${id}`, tenantId: scope.tenantId, workspaceId: scope.workspaceId,
+    const leaseId = `lease-${id}${holder.metadata?.executionContext === 'original_trace' ? '-original' : ''}`;
+    const lease: TraceProcessorLeaseRecord = {id: leaseId, tenantId: scope.tenantId, workspaceId: scope.workspaceId,
       traceId: id, mode: options.mode, state: 'pending', rssBytes: null, heartbeatAt: 0, expiresAt: null,
       holderCount: 1, holders: [{id: `holder-${id}`, leaseId: `lease-${id}`, holderType: holder.holderType,
         holderRef: holder.holderRef, windowId: null, heartbeatAt: 0, expiresAt: null, createdAt: 0, metadata: holder.metadata}]};
@@ -55,11 +66,48 @@ function fixture() {
     uploadedAt: new Date(0).toISOString(), status: 'ready', externalRpc: true, port: 9178}));
   const input = {service, scope, runId: 'run', sessionId: 'session', currentTraceId: 'current',
     signal: controller.signal, assertCurrent: jest.fn(), onInvalidated: (error: Error) => controller.abort(error), store, ensureBackingMetadata, readMetadata};
-  return {input, events, traces, policies, getPolicy, records, controller, emitter, ensure, cleanup, store, als, ensureBackingMetadata, readMetadata};
+  return {input, events, traces, policies, getPolicy, records, controller, emitter, ensure, cleanup, store, als,
+    nativeAls, prepareReader, ensureBackingMetadata, readMetadata};
 }
 afterEach(() => {jest.useRealTimers();});
 
 describe('analysis-run TraceProcessor leases', () => {
+  it('keeps lazy native holders separate from working ALS and releases both trace sides', async () => {
+    const f = fixture();
+    const handle = await prepareAnalysisRunTraceProcessorLeases({...f.input, referenceTraceId: 'reference'});
+    expect(f.prepareReader).toHaveBeenCalledTimes(2);
+    expect(f.store.acquireHolder).toHaveBeenCalledTimes(2); // No native resource at prepare.
+    try {
+      await handle.run(async () => {
+        const query = f.nativeAls.getStore()!;
+        const options = {assertAuthorized: jest.fn()};
+        expect((await query('current', 'SELECT dur FROM slice', options)).rows).toEqual([['lease-current-original']]);
+        expect((await query('current', 'SELECT dur FROM slice', options)).rows).toEqual([['lease-current-original']]);
+        expect((await query('reference', 'SELECT dur FROM slice', options)).rows).toEqual([['lease-reference-original']]);
+        expect(f.als.getStore()!.map(context => context.leaseId)).toEqual(['lease-current', 'lease-reference']);
+        expect(f.store.acquireHolder).toHaveBeenCalledTimes(4);
+      });
+    } finally {handle.release();}
+    expect(f.cleanup.mock.calls.map(call => call[1])).toEqual([
+      'lease-reference-original', 'lease-current-original', 'lease-reference', 'lease-current']);
+  });
+
+  it('rejects foreign Trace, withdrawn authorization and escaped stale reader before native allocation', async () => {
+    const f = fixture();
+    const handle = await prepareAnalysisRunTraceProcessorLeases(f.input);
+    let reader!: RunOwnedOriginalTraceReader;
+    await handle.run(async () => {
+      reader = f.nativeAls.getStore()!;
+      await expect(reader('foreign', 'SELECT dur FROM slice', {assertAuthorized() {}}))
+        .rejects.toMatchObject({executed: false, reason: 'trace_not_authorized'});
+      const withdrawn = new Error('authorization withdrawn');
+      await expect(reader('current', 'SELECT dur FROM slice', {assertAuthorized() {throw withdrawn;}})).rejects.toBe(withdrawn);
+      expect(f.store.acquireHolder).toHaveBeenCalledTimes(1);
+    });
+    handle.release();
+    await expect(reader('current', 'SELECT dur FROM slice', {assertAuthorized() {}})).rejects.toMatchObject({name: 'AbortError'});
+    expect(f.store.acquireHolder).toHaveBeenCalledTimes(1);
+  });
   it('pins both holders before admission and keeps tools/finalization in the same lease group', async () => {
     const f = fixture();
     const handle = await prepareAnalysisRunTraceProcessorLeases({...f.input, referenceTraceId: 'reference'});

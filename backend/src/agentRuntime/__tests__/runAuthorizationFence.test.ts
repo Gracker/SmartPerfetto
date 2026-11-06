@@ -11,7 +11,7 @@ import {getDefaultCodebaseRegistry, resetDefaultCodebaseRegistryForTests} from '
 import {StoreUnreadableError} from '../../utils/storedData';
 import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
 import {RuntimeExecutionGuard} from '../runtimeExecutionGuard';
-import {createRuntimeRunAuthorization, throwIfRunAuthorizationRevoked} from '../runAuthorizationFence';
+import {createRuntimeRunAuthorization, isIssuedRunAuthorizationCheck, throwIfRunAuthorizationRevoked} from '../runAuthorizationFence';
 
 const PRIVATE = {codeAwareMode: 'provider_send' as const, codebaseIds: ['cb-private'],
   analysisContextFingerprint: 'fingerprint-at-admission'};
@@ -31,6 +31,28 @@ const revokeAll = () => jest.spyOn(contextAuthorization, 'assertCurrentAnalysisC
 
 describe('run authorization fence', () => {
   afterEach(() => { jest.restoreAllMocks(); });
+
+  it.each([{}, PRIVATE])('brands the original public/private factory fence, not copies or lookalikes: %j', options => {
+    const {fence, lease} = run(options);
+    try {
+      expect(isIssuedRunAuthorizationCheck(fence)).toBe(true);
+      for (const value of [undefined, null, {}, {...fence}, JSON.parse(JSON.stringify(fence)),
+        {enforced: true, assertCurrentInTurn: () => undefined}]) {
+        expect(isIssuedRunAuthorizationCheck(value)).toBe(false);
+      }
+    } finally {lease.settle();}
+  });
+
+  it('keeps issuer identity separate from current authorization', () => {
+    revokeAll();
+    const {fence, lease} = run();
+    try {
+      expect(isIssuedRunAuthorizationCheck(fence)).toBe(true);
+      expect(() => fence.assertCurrentInTurn()).toThrow('analysis_context_changed_restart_required');
+      expect(isIssuedRunAuthorizationCheck(fence)).toBe(true);
+      expect(lease.signal.aborted).toBe(true);
+    } finally {lease.settle();}
+  });
 
   it('is a no-op for a run without private context', () => {
     const read = revokeAll();

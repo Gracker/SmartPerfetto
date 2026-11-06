@@ -199,6 +199,22 @@ codebase permission, `referenceTraceId`, comparison context and evidence access.
 Budget mode neither grants permission nor silently removes authorized tools.
 `existing_only` strictly prohibits new acquisition.
 
+The SQL tools' `executionContext` is independent of model, budget and source
+permission. Omitted or `working` uses the current workspace, including loaded
+modules and temporary tables. `original_trace` explicitly requests restricted
+native reads of this run's original Trace. It neither rewrites SQL nor injects
+modules, and refusal never switches back to the workspace. Admission accepts
+only single native-relation queries fully supported by the existing parser;
+units and row identity still require the actual execution receipt.
+
+Ordinary analysis, CLI and attached-Trace Conversation keep reading resources in
+the same run lease through finalization; trace-less conversations start no
+processor. Native readers are created lazily and reused per authorized Trace,
+with separate current/reference identities. Context labels and Query Review
+record execution rather than granting proof; missing historical labels remain
+unknown. Missing source, capacity, authorization or current ownership causes an
+explicit refusal; cancellation and revocation still end the original run.
+
 ## Concurrency, Observability, And Admission
 
 Concurrency fails closed by default. A runtime/session permits only one active

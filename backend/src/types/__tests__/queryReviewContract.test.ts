@@ -6,6 +6,7 @@ import {describe, expect, it} from '@jest/globals';
 import {createDataEnvelope} from '../dataContract';
 import {
   QUERY_REVIEW_SCHEMA_VERSION,
+  SQL_EXECUTION_CONTEXTS,
   compactQueryReviewForToolResponse,
   sanitizeQueryReview,
   type QueryReviewV1,
@@ -31,6 +32,24 @@ function validReview(overrides: Partial<QueryReviewV1> = {}): QueryReviewV1 {
 }
 
 describe('queryReviewContract', () => {
+  it.each(SQL_EXECUTION_CONTEXTS)('retains actual execution context %s without proof authority', executionContext => {
+    const review = sanitizeQueryReview(validReview({observedExecution: {executed: true, executionContext}}))!;
+    expect(review.observedExecution.executionContext).toBe(executionContext);
+    expect(compactQueryReviewForToolResponse(review).observedExecution.executionContext).toBe(executionContext);
+    expect(createDataEnvelope({columns: ['dur'], rows: [[1]]}, {
+      type: 'sql_result', source: 'execute_sql', title: 'SQL', queryReview: review,
+    }).meta.queryReview?.observedExecution.executionContext).toBe(executionContext);
+    expect(review.allowedUse).toBe('review_metadata_only');
+    expect(review).not.toHaveProperty('proofEligible');
+  });
+
+  it.each([undefined, null, '', 'ORIGINAL_TRACE', 'context-canary', {}])(
+    'leaves unknown or historical execution context absent: %j', executionContext => {
+      const review = sanitizeQueryReview({...validReview(), observedExecution: {executed: true, executionContext}})!;
+      expect(review.observedExecution).not.toHaveProperty('executionContext');
+      expect(compactQueryReviewForToolResponse(review).observedExecution).not.toHaveProperty('executionContext');
+    },
+  );
   it('sanitizes a valid review and strips SQL from compact tool output', () => {
     const review = sanitizeQueryReview(validReview());
     expect(review?.id).toBe('qr:execute_sql:abc');

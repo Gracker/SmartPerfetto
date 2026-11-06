@@ -11,6 +11,7 @@ import {
   sanitizeQueryReview,
   type QueryReviewProducerKind,
   type QueryReviewV1,
+  type SqlExecutionContext,
 } from '../../types/queryReviewContract';
 import {
   introspectSqlForQueryReview,
@@ -28,6 +29,7 @@ export interface QueryReviewProducerInput {
 
 export interface BuildSqlQueryReviewInput {
   producerKind: Extract<QueryReviewProducerKind, 'execute_sql' | 'execute_sql_on'>;
+  executionContext?: SqlExecutionContext;
   executableSql?: string;
   outputColumns?: SqlReviewOutputColumn[];
   traceProvenance?: TraceProcessorQueryProvenance;
@@ -190,6 +192,7 @@ export function buildSqlQueryReview(input: BuildSqlQueryReviewInput): QueryRevie
     limitations,
     observedExecution: {
       executed: true,
+      executionContext: input.executionContext,
       executableSql: input.executableSql,
       sqlRewrites: input.sqlRewrites,
       stdlibInjectedModules: input.stdlibInjectedModules,

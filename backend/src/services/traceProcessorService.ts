@@ -12,7 +12,9 @@ import {
   WorkingTraceProcessor,
   TraceProcessorFactory,
   normalizeTraceProcessorRpcPort,
+  NativeChildSlotUnavailableError,
 } from './workingTraceProcessor';
+import {TraceProcessorAdmissionError} from './traceProcessorRamBudget';
 import type {
   TraceProcessorBoundedQueryOptions,
   TraceProcessorQueryOptions,
@@ -35,7 +37,14 @@ import {
 } from './traceProcessorCancellation';
 import {currentRunManifestAttributionSink} from './selfEvolution/runManifestLifecycle';
 import {splitSqlStatements} from './sqlStdlibDependencyAnalyzer';
-import type {ResolveCapabilityTraceProcessorIdentityInput} from './capabilityManifestRuntimeIdentity';
+import {copyManagedTraceInput, bindManagedTraceInput, revokeManagedTraceInput,
+  assertLoadedTraceSourcePinCurrent, ManagedTraceSourceUnavailableError, resolveCapabilityTraceProcessorIdentity,
+  type ManagedTraceInputGrant, type ResolveCapabilityTraceProcessorIdentityInput} from './capabilityManifestRuntimeIdentity';
+import {OriginalTraceEvidenceRefusal, OriginalTraceEvidenceQueryUnknownError,
+  type OriginalTraceEvidenceQueryOptions, type RunOwnedOriginalTraceReader} from './originalTraceEvidence';
+import {analyzeRawSqlDirectProjection} from './evidence/rawSqlDirectProjection';
+import {loadPerfettoSqlDocsAsset} from './perfettoSqlDocs';
+import {AnalysisContextAuthorizationChangedError} from './resolvedAnalysisContext';
 import {parseStoredJson} from '../utils/storedData';
 
 export interface TraceInfo {
@@ -190,6 +199,7 @@ function recordRunManifestSqlStatements(sql: string, success: boolean): void {
 export class TraceProcessorService extends EventEmitter {
   private traces: Map<string, TraceInfo> = new Map();
   private traceSources = new WeakMap<TraceInfo, 'local_file' | 'external_rpc'>();
+  private managedTraceInputs = new WeakMap<TraceInfo, ManagedTraceInputGrant>();
   /** Deletion tombstones block same-id registration and disk reload until teardown settles. */
   private traceDeletionInProgress: Map<string, Promise<void>> = new Map();
   private processors: Map<string, TraceProcessor> = new Map();
@@ -214,6 +224,7 @@ export class TraceProcessorService extends EventEmitter {
   private leaseRestartCancelledOwnerTokens: Map<string, LeaseRestartOwnerToken> = new Map();
   private readonly queryLeaseContext =
     new AsyncLocalStorage<TraceProcessorLeaseQueryContext | TraceProcessorLeaseQueryContextMap>();
+  private readonly originalTraceReader = new AsyncLocalStorage<RunOwnedOriginalTraceReader>();
 
   constructor(
     uploadDir = getTracesDir(),
@@ -237,8 +248,29 @@ export class TraceProcessorService extends EventEmitter {
     if (this.traceDeletionInProgress.has(traceInfo.id)) {
       throw new Error(`Trace ${traceInfo.id} deletion in progress`);
     }
+    const prior = this.traces.get(traceInfo.id);
+    if (prior) this.revokeManagedInput(prior);
     this.traces.set(traceInfo.id, traceInfo);
     this.traceSources.set(traceInfo, source);
+  }
+
+  private revokeManagedInput(trace: TraceInfo): void {
+    const grant = this.managedTraceInputs.get(trace);
+    if (grant) revokeManagedTraceInput(grant);
+    this.managedTraceInputs.delete(trace);
+  }
+
+  private bindManagedInput(trace: TraceInfo, grant: ManagedTraceInputGrant | undefined): void {
+    if (!grant) return;
+    try {
+      bindManagedTraceInput({grant, serviceOwner: this, registration: trace,
+        traceId: trace.id, finalPath: this.getTraceFilePath(trace.id)});
+      this.managedTraceInputs.set(trace, grant);
+    } catch {
+      // Source pin availability only controls original_trace. Ordinary loading
+      // keeps its existing behavior when optional source observations fail.
+      revokeManagedTraceInput(grant);
+    }
   }
 
   private processorKeyForLease(
@@ -305,6 +337,177 @@ export class TraceProcessorService extends EventEmitter {
     }
     if (Object.keys(traceLeases).length === 0) return fn();
     return this.queryLeaseContext.run({ traceLeases }, fn);
+  }
+
+  /** Internal run group binding. No reader capability is exposed to tool JSON. */
+  public runWithOriginalTraceReader<T>(reader: RunOwnedOriginalTraceReader, fn: () => Promise<T>): Promise<T> {
+    return this.originalTraceReader.run(reader, fn);
+  }
+
+  public async queryOriginalTraceEvidence(
+    traceId: string, rawSql: string, options: OriginalTraceEvidenceQueryOptions,
+  ): Promise<QueryResult> {
+    options.signal?.throwIfAborted();
+    options.assertAuthorized();
+    const reader = this.originalTraceReader.getStore();
+    if (!reader) throw new OriginalTraceEvidenceRefusal('reader_unavailable');
+    return reader(traceId, rawSql, options);
+  }
+
+  /** Capture this group's actual parent now; lazy admission never borrows a later replacement. */
+  public prepareOriginalTraceEvidenceReader(parentContext: TraceProcessorLeaseQueryContext, owner: {
+    signal: AbortSignal;
+    assertCurrent(): void;
+    acquireChild(): TraceProcessorLeaseQueryContext;
+    childReady(context: TraceProcessorLeaseQueryContext): void;
+    childFailed(context: TraceProcessorLeaseQueryContext): void;
+  }): RunOwnedOriginalTraceReader {
+    const traceId = parentContext.traceId;
+    const registration = this.traces.get(traceId);
+    const grant = registration && this.managedTraceInputs.get(registration);
+    const parent = this.processors.get(this.processorKeyForLease(traceId, parentContext.leaseId, parentContext.mode));
+    const sourcePin = parent instanceof WorkingTraceProcessor ? parent.getLoadedTraceSourcePin() : undefined;
+    let pending: Promise<{processor: WorkingTraceProcessor; context: TraceProcessorLeaseQueryContext}> | undefined;
+    let unavailable = false;
+    const assertRun = () => {
+      owner.signal.throwIfAborted();
+      owner.assertCurrent();
+      this.requireActiveLease(traceId, parentContext);
+    };
+    const assertOwner = (options: OriginalTraceEvidenceQueryOptions) => {
+      assertRun();
+      options.signal?.throwIfAborted();
+      options.assertAuthorized();
+    };
+    const assertSource = async (options: OriginalTraceEvidenceQueryOptions) => {
+      assertOwner(options);
+      if (!registration || !grant || !sourcePin || !(parent instanceof WorkingTraceProcessor) ||
+          this.traces.get(traceId) !== registration || this.traceSources.get(registration) !== 'local_file' ||
+          parent.getLoadedTraceSourcePin() !== sourcePin) throw new ManagedTraceSourceUnavailableError();
+      await assertLoadedTraceSourcePinCurrent(sourcePin, {serviceOwner: this, registration, traceId,
+        finalPath: this.getTraceFilePath(traceId), assertCurrent: () => assertOwner(options)});
+      assertOwner(options);
+    };
+    const assertSourceBeforeDispatch = async (options: OriginalTraceEvidenceQueryOptions) => {
+      try {await assertSource(options);} catch (error) {
+        // The pin API closes its own errors; run/auth cancellation still takes
+        // precedence over a source refusal at this outer ownership boundary.
+        assertOwner(options);
+        if (error instanceof ManagedTraceSourceUnavailableError) {
+          unavailable = true;
+          throw new OriginalTraceEvidenceRefusal('source_unavailable');
+        }
+        throw error;
+      }
+    };
+    const initialize = async (options: OriginalTraceEvidenceQueryOptions) => {
+      assertOwner(options);
+      let context: TraceProcessorLeaseQueryContext;
+      try {context = owner.acquireChild();} catch (error) {
+        assertOwner(options);
+        if (error instanceof AnalysisContextAuthorizationChangedError || error instanceof Error && error.name === 'AbortError') throw error;
+        rethrowIfTraceProcessorQueryCancelled(error);
+        throw new OriginalTraceEvidenceRefusal('processor_unavailable');
+      }
+      const key = this.processorKeyForLease(traceId, context.leaseId, context.mode);
+      // These exact facts were checked before allocation and are checked again
+      // by the loader; no new pin is minted from a current pathname here.
+      if (!registration || !grant || !sourcePin) throw new OriginalTraceEvidenceRefusal('source_unavailable');
+      const creation = TraceProcessorFactory.create(traceId, this.getTraceFilePath(traceId), {
+        processorKey: key, leaseId: context.leaseId, leaseMode: 'isolated', analysisRunPrivate: true,
+        strictChildSlot: true, managedTraceInput: {grant, serviceOwner: this, registration,
+          sourcePin, assertCurrent: () => {assertRun(); this.requireActiveLease(traceId, context);}},
+      });
+      this.processorCreationInProgress.set(key, creation);
+      this.processorCreationOwners.set(key, registration);
+      let processor: TraceProcessor | undefined;
+      try {
+        processor = await creation;
+        assertOwner(options);
+        this.requireActiveLease(traceId, context);
+        if (!(processor instanceof WorkingTraceProcessor) || !processor.analysisRunPrivate ||
+            processor.getNativeProvenanceSnapshot().status !== 'trusted' ||
+            !processor.getNativeProvenanceSnapshot().nativeSchemaEligible || !processor.getLoadedTraceSourcePin()) {
+          throw new OriginalTraceEvidenceRefusal('processor_unavailable');
+        }
+        await assertSource(options);
+        owner.childReady(context);
+        this.publishProcessor(key, traceId, processor);
+        return {processor, context};
+      } catch (error) {
+        if (processor) this.discardProcessor(key, processor);
+        owner.childFailed(context);
+        assertOwner(options);
+        rethrowIfTraceProcessorQueryCancelled(error);
+        if (error instanceof OriginalTraceEvidenceRefusal) throw error;
+        if (error instanceof ManagedTraceSourceUnavailableError) throw new OriginalTraceEvidenceRefusal('source_unavailable');
+        throw new OriginalTraceEvidenceRefusal(error instanceof NativeChildSlotUnavailableError || error instanceof TraceProcessorAdmissionError
+          ? 'capacity_unavailable' : 'processor_unavailable');
+      } finally {
+        if (this.processorCreationInProgress.get(key) === creation) {
+          this.processorCreationInProgress.delete(key);
+          this.processorCreationOwners.delete(key);
+        }
+      }
+    };
+    return async (requestedTraceId, rawSql, options) => {
+      assertOwner(options);
+      if (requestedTraceId !== traceId) throw new OriginalTraceEvidenceRefusal('trace_not_authorized');
+      if (unavailable) throw new OriginalTraceEvidenceRefusal('processor_unavailable');
+      const analysis = analyzeRawSqlDirectProjection(rawSql);
+      if (!analysis.pureRead || !analysis.relation || !(analysis.projections?.length || analysis.unitExpressions?.length)) {
+        throw new OriginalTraceEvidenceRefusal('unsupported_query');
+      }
+      await assertSourceBeforeDispatch(options);
+      const binary = await resolveCapabilityTraceProcessorIdentity((parent as WorkingTraceProcessor).getRuntimeBinarySelection());
+      assertOwner(options);
+      const docs = loadPerfettoSqlDocsAsset();
+      const relations = docs?.entries.filter(entry => entry.package === 'prelude' &&
+        (entry.type === 'table' || entry.type === 'view') && entry.name.toLowerCase() === analysis.relation!.name.toLowerCase());
+      if (binary.source !== 'bundled' || !binary.gitRevision || binary.stdlibRevision !== binary.gitRevision ||
+          docs?.generatedFrom !== binary.gitRevision || relations?.length !== 1 || !relations[0].columns?.length) {
+        throw new OriginalTraceEvidenceRefusal('unsupported_query');
+      }
+      // Cache rejection as well as success: one run never repeatedly loads a failed lane.
+      pending ??= initialize(options);
+      const {processor, context} = await pending;
+      assertOwner(options);
+      this.requireActiveLease(traceId, context);
+      const key = this.processorKeyForLease(traceId, context.leaseId, context.mode);
+      if (this.processors.get(key) !== processor || TraceProcessorFactory.get(key) !== processor ||
+          processor.status === 'error' || processor.getNativeProvenanceSnapshot().status !== 'trusted' ||
+          !processor.getLoadedTraceSourcePin()) {
+        unavailable = true;
+        throw new OriginalTraceEvidenceRefusal('processor_unavailable');
+      }
+      await assertSourceBeforeDispatch(options);
+      const signal = options.signal ? AbortSignal.any([owner.signal, options.signal]) : owner.signal;
+      let result: QueryResult;
+      try {
+        // Deliberately bypass processorForQuery: this exact child must never auto-recover.
+        result = await this.runWithLease(context, () => processor.query(rawSql, {signal}));
+      } catch (error) {
+        unavailable = true;
+        assertOwner(options);
+        rethrowIfTraceProcessorQueryCancelled(error);
+        throw new OriginalTraceEvidenceQueryUnknownError();
+      }
+      assertOwner(options);
+      this.requireActiveLease(traceId, context);
+      try {await assertSource(options);} catch (error) {
+        unavailable = true;
+        assertOwner(options);
+        if (error instanceof ManagedTraceSourceUnavailableError) throw new OriginalTraceEvidenceQueryUnknownError();
+        throw error;
+      }
+      if (this.processors.get(key) !== processor || TraceProcessorFactory.get(key) !== processor ||
+          processor.getNativeProvenanceSnapshot().status !== 'trusted') {
+        unavailable = true;
+        throw new OriginalTraceEvidenceQueryUnknownError();
+      }
+      recordRunManifestSqlStatements(rawSql, !result.error);
+      return result;
+    };
   }
 
   private resolveLeaseQueryContext(
@@ -395,6 +598,7 @@ export class TraceProcessorService extends EventEmitter {
     filename: string,
     size: number,
     filePath?: string,
+    managedInput?: ManagedTraceInputGrant,
   ): Promise<void> {
     const traceInfo: TraceInfo = {
       id: traceId,
@@ -406,6 +610,7 @@ export class TraceProcessorService extends EventEmitter {
     };
 
     this.storeTraceInfo(traceInfo, 'local_file');
+    this.bindManagedInput(traceInfo, managedInput);
     this.emit('trace-initialized', traceInfo);
   }
 
@@ -474,6 +679,7 @@ export class TraceProcessorService extends EventEmitter {
         `Trace ${traceId} still has an active processor`,
       );
     }
+    this.revokeManagedInput(trace);
     this.traces.delete(traceId);
     this.emit('trace-unregistered', traceId);
     return true;
@@ -596,12 +802,18 @@ export class TraceProcessorService extends EventEmitter {
     }
 
     const analysisRunPrivate = Boolean(lease && lease.traceId === traceId && isPrivateAnalysisLease(lease));
+    const grant = this.managedTraceInputs.get(traceOwner);
     const priorFactoryProcessor = TraceProcessorFactory.get(processorKey);
     const creation = TraceProcessorFactory.create(traceId, filePath, {
       processorKey,
       leaseId: leaseContext?.leaseId,
       leaseMode: leaseContext?.mode ?? 'shared',
       ...(analysisRunPrivate ? {analysisRunPrivate: true} : {}),
+      ...(grant ? {managedTraceInput: {grant, serviceOwner: this, registration: traceOwner,
+        assertCurrent: () => {
+          if (this.traces.get(traceId) !== traceOwner) throw createTraceProcessorQueryCancelledError();
+          this.requireActiveLease(traceId, leaseIdentity);
+        }}} : {}),
     }).then(processor => {
       try {
         if (this.traces.get(traceId) !== traceOwner) throw new Error(`Trace ${traceId} changed during processor creation`);
@@ -1458,6 +1670,7 @@ export class TraceProcessorService extends EventEmitter {
     // longer the current instance for this id.
     const filePath = trace.filePath || path.join(this.uploadDir, `${traceId}.trace`);
     const traceSource = this.traceSources.get(trace) ?? 'local_file';
+    this.revokeManagedInput(trace);
     this.traces.delete(traceId);
 
     const pendingCreations = Array.from(this.processorCreationInProgress.entries())
@@ -1587,8 +1800,13 @@ export class TraceProcessorService extends EventEmitter {
 
     // Copy file to upload directory
     const destPath = this.getTraceFilePath(traceId);
-    fs.copyFileSync(filePath, destPath);
+    const managedInput = await copyManagedTraceInput({sourcePath: filePath, finalPath: destPath, traceId});
     traceInfo.filePath = destPath;
+    if (this.traces.get(traceId) !== traceInfo) {
+      if (managedInput) revokeManagedTraceInput(managedInput);
+      throw createTraceProcessorQueryCancelledError();
+    }
+    this.bindManagedInput(traceInfo, managedInput);
 
     // Process the trace
     await this.processTrace(traceId);

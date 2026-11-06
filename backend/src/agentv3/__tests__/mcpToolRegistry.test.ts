@@ -10,6 +10,8 @@ import * as runtimeToolSpec from '../../agentRuntime/runtimeToolSpec';
 import {createRuntimeToolResult, readRuntimeToolResultFacts} from '../../agentRuntime/runtimeToolResult';
 import {recordPlanOrPrePlanToolCall} from '../planToolCallRecorder';
 import {isPolicyRefusalResult} from '../toolNarration';
+import {createRuntimeRunAuthorization, isIssuedRunAuthorizationCheck} from '../../agentRuntime/runAuthorizationFence';
+import {RuntimeExecutionGuard} from '../../agentRuntime/runtimeExecutionGuard';
 import type {AnalysisPlanV3} from '../types';
 
 import {
@@ -136,6 +138,23 @@ describe('McpToolRegistry — basic registration', () => {
       handler: async () => createRuntimeToolResult({success: true}), exposure: 'public', evidenceEffect: 'acquire'});
     await registry.list()[0].shared.handler({}, {});
     expect(authorization.assertCurrentInTurn).not.toHaveBeenCalled();
+  });
+
+  it('does not turn a factory-issued public fence into new private checks for ordinary tools', async () => {
+    const lease = new RuntimeExecutionGuard().begin({runtime: 'openai-agents-sdk', sessionId: 'public-tool'});
+    const {fence} = createRuntimeRunAuthorization({options: {}, executionLease: lease});
+    const check = jest.spyOn(fence, 'assertCurrentInTurn');
+    const body = jest.fn(async () => createRuntimeToolResult({success: true}));
+    try {
+      expect(isIssuedRunAuthorizationCheck(fence)).toBe(true);
+      expect(fence.enforced).toBe(false);
+      const registry = new McpToolRegistry({runAuthorization: fence});
+      registry.registerShared({name: 'execute_sql', description: 'sql', inputSchema: {},
+        handler: body, exposure: 'public', evidenceEffect: 'acquire'});
+      await registry.list()[0].shared.handler({}, {});
+      expect(body).toHaveBeenCalledTimes(1);
+      expect(check).not.toHaveBeenCalled();
+    } finally {check.mockRestore(); lease.settle();}
   });
 
   it('fails a call whose own check saw the revoke only after the run cancel settled', async () => {

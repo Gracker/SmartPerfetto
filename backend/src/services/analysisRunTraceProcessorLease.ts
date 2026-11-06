@@ -8,12 +8,13 @@ import type {TraceInfo, TraceProcessorService, TraceProcessorLeaseQueryContext,
   TraceProcessorAnalysisRunPolicy} from './traceProcessorService';
 import type {TraceProcessorLeaseModeDecision} from './traceProcessorLeaseModeDecision';
 import {ensureTraceProcessorLeaseBackingMetadata, readTraceMetadata, type TraceMetadata} from './traceMetadataStore';
+import {OriginalTraceEvidenceRefusal, type RunOwnedOriginalTraceReader} from './originalTraceEvidence';
 
 type TraceSide = 'current' | 'reference';
 export type AnalysisRunProcessorPolicy = TraceProcessorAnalysisRunPolicy;
 export type AnalysisRunTraceProcessorService = Pick<TraceProcessorService,
   'getTrace' | 'getTraceFilePath' | 'getTraceSourceKind' | 'getAnalysisRunProcessorPolicy' | 'ensureProcessorForLease' |
-  'cleanupLeaseProcessor' | 'runWithLeases' | 'on' | 'off'>;
+  'cleanupLeaseProcessor' | 'runWithLeases' | 'prepareOriginalTraceEvidenceReader' | 'runWithOriginalTraceReader' | 'on' | 'off'>;
 type LeaseStore = Pick<TraceProcessorLeaseStore, 'acquireHolder' | 'releaseHolder' | 'markStarting' |
   'markReady' | 'markFailed' | 'beginDraining' | 'heartbeatHolder'>;
 export interface AnalysisRunTraceProcessorLeaseEntry {
@@ -57,6 +58,7 @@ export async function prepareAnalysisRunTraceProcessorLeases(input: {
   const store = input.store ?? getTraceProcessorLeaseStore();
   const entries: Array<AnalysisRunTraceProcessorLeaseEntry & {holder: TraceProcessorHolderInput;
     trace: TraceInfo; sourceKind: ReturnType<TraceProcessorService['getTraceSourceKind']>; integrityIsolation: boolean}> = [];
+  const nativeEntries: Array<AnalysisRunTraceProcessorLeaseEntry & {holder: TraceProcessorHolderInput}> = [];
   let released = false;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let activeSide: TraceSide = 'current';
@@ -69,7 +71,7 @@ export async function prepareAnalysisRunTraceProcessorLeases(input: {
     clearInterval(heartbeat);
     input.signal.removeEventListener('abort', release);
     for (const event of ['trace-initialized', 'trace-unregistered', 'trace-deleted']) service.off(event, changedTrace);
-    for (const entry of [...entries].reverse()) {
+    for (const entry of [...entries, ...nativeEntries].reverse()) {
       try {store.releaseHolder(scope, entry.lease.id, 'agent_run', entry.holder.holderRef);} catch { /* already released */ }
       if (entry.privateProcessor) {
         try {store.beginDraining(scope, entry.lease.id);} catch { /* failed or already terminal */ }
@@ -149,7 +151,7 @@ export async function prepareAnalysisRunTraceProcessorLeases(input: {
     heartbeat = setInterval(() => {
       try {
         assertCurrent();
-        for (const entry of entries) store.heartbeatHolder(scope, entry.lease.id, entry.holder);
+        for (const entry of [...entries, ...nativeEntries]) store.heartbeatHolder(scope, entry.lease.id, entry.holder);
       } catch (error) {invalidate(error instanceof Error ? error : new Error('Analysis lease heartbeat failed'));}
     }, 30_000);
     heartbeat.unref();
@@ -175,17 +177,59 @@ export async function prepareAnalysisRunTraceProcessorLeases(input: {
       }
       if (entry.lease.state === 'starting') entry.lease = store.markReady(scope, entry.lease.id);
     }
+    const readers = new Map<string, RunOwnedOriginalTraceReader>();
+    for (const entry of entries) {
+      let child: typeof nativeEntries[number] | undefined;
+      const reader = service.prepareOriginalTraceEvidenceReader(entry.context, {
+        signal: input.signal, assertCurrent,
+        acquireChild: () => {
+          assertCurrent();
+          if (child) return child.context;
+          const holder: TraceProcessorHolderInput = {holderType: 'agent_run',
+            holderRef: `${input.runId}:original_trace:${entry.side}`, runId: input.runId, sessionId: input.sessionId,
+            metadata: {analysisRunPrivate: true, traceSide: entry.side, executionContext: 'original_trace'}};
+          const lease = store.acquireHolder(scope, entry.context.traceId, holder, {mode: 'isolated'});
+          child = {side: entry.side, lease, holder, privateProcessor: true,
+            decision: {mode: 'isolated', reason: 'original_trace'},
+            context: {traceId: entry.context.traceId, leaseId: lease.id, mode: 'isolated', leaseScope: scope,
+              holder: {holderType: holder.holderType, holderRef: holder.holderRef}}};
+          nativeEntries.push(child);
+          child.lease = store.markStarting(scope, lease.id);
+          return child.context;
+        },
+        childReady: context => {
+          assertCurrent();
+          if (!child || child.context !== context) throw new OriginalTraceEvidenceRefusal('processor_unavailable');
+          child.lease = store.markReady(scope, child.lease.id);
+        },
+        childFailed: context => {
+          if (!released && child?.context === context && child.lease.state === 'starting') {
+            try {child.lease = store.markFailed(scope, child.lease.id);} catch { /* retain the initialization error */ }
+          }
+        },
+      });
+      readers.set(entry.context.traceId, reader);
+    }
+    const reader: RunOwnedOriginalTraceReader = async (traceId, sql, options) => {
+      assertCurrent();
+      options.signal?.throwIfAborted();
+      options.assertAuthorized();
+      const selected = readers.get(traceId);
+      if (!selected) throw new OriginalTraceEvidenceRefusal('trace_not_authorized');
+      return selected(traceId, sql, options);
+    };
     return {entries, assertCurrent, release, run: async <T>(fn: () => Promise<T>) => {
       assertCurrent();
       try {
-        const value = await service.runWithLeases(entries.map(entry => entry.context), fn);
+        const value = await service.runWithOriginalTraceReader(reader,
+          () => service.runWithLeases(entries.map(entry => entry.context), fn));
         assertCurrent();
         return value;
       } finally {
         // Cancellation releases ownership immediately; catch any instance that settled later.
         // Normal callbacks retain the same group for subsequent finalization work.
         if (released) {
-          for (const entry of [...entries].reverse()) {
+          for (const entry of [...entries, ...nativeEntries].reverse()) {
             try {cleanupProcessor(entry);} catch { /* preserve the callback's error or cancellation */ }
           }
         }

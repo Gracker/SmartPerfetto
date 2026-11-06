@@ -3,6 +3,9 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 export const QUERY_REVIEW_SCHEMA_VERSION = 1 as const;
+export const SQL_EXECUTION_CONTEXTS = ['working', 'original_trace'] as const;
+/** Observed namespace only; neither a capability nor proof eligibility. */
+export type SqlExecutionContext = typeof SQL_EXECUTION_CONTEXTS[number];
 
 export type QueryReviewProducerKind = 'execute_sql' | 'execute_sql_on' | 'invoke_skill';
 export type QueryReviewConfidence = 'declared' | 'observed' | 'partial';
@@ -55,6 +58,8 @@ export interface QueryReviewGuardrailV1 {
 
 export interface QueryReviewObservedExecutionV1 {
   executed: true;
+  /** Absent for historical or unknown execution context. */
+  executionContext?: SqlExecutionContext;
   executableSql?: string;
   sqlRewrites?: string[];
   stdlibInjectedModules?: string[];
@@ -257,8 +262,10 @@ function sanitizeGuardrails(value: unknown): QueryReviewGuardrailV1[] {
 
 function sanitizeObservedExecution(value: unknown): QueryReviewObservedExecutionV1 | undefined {
   if (!isRecord(value) || value.executed !== true) return undefined;
+  const executionContext = SQL_EXECUTION_CONTEXTS.find(context => context === value.executionContext);
   return {
     executed: true,
+    ...(executionContext === undefined ? {} : {executionContext}),
     executableSql: boundedString(value.executableSql, MAX_SQL_CHARS),
     sqlRewrites: stringList(value.sqlRewrites, 12, 180),
     stdlibInjectedModules: stringList(value.stdlibInjectedModules, 24, 160),

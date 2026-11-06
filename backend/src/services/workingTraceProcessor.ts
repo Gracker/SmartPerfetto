@@ -37,6 +37,9 @@ import {
   type TraceProcessorRamBudgetStats,
 } from './traceProcessorRamBudget';
 import { getTraceProcessorLeaseStore } from './traceProcessorLeaseStore';
+import {beginManagedTraceLoad, completeManagedTraceLoad, readLoadedTraceSourcePin, revokeLoadedTraceSourcePin,
+  resolveCapabilityTraceProcessorIdentity, ManagedTraceSourceUnavailableError,
+  type ManagedTraceLoadContext, type ManagedTraceLoadAttempt, type LoadedTraceSourcePin} from './capabilityManifestRuntimeIdentity';
 
 const IS_TEST_ENV = process.env.NODE_ENV === 'test' || process.env.JEST_WORKER_ID !== undefined;
 const GIB = 1024 * 1024 * 1024;
@@ -586,6 +589,15 @@ export interface TraceProcessorCreateOptions {
   leaseMode?: 'shared' | 'isolated' | string;
   /** Derived by the service from a scoped server-owned analysis lease. */
   analysisRunPrivate?: boolean;
+  /** Internal materializer/registration capability, never inferred from a path. */
+  managedTraceInput?: ManagedTraceLoadContext;
+  /** Native evidence child admission; ordinary working processors retain their soft limit. */
+  strictChildSlot?: boolean;
+}
+
+export class NativeChildSlotUnavailableError extends Error {
+  readonly code = 'native_child_slot_unavailable';
+  constructor() {super('native_child_slot_unavailable');}
 }
 
 function probeOk(startTime: number, detail?: string): TraceProcessorHealthProbeResult {
@@ -676,6 +688,9 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
   private readonly leaseId?: string;
   private readonly leaseMode: 'shared' | 'isolated' | string;
   public readonly analysisRunPrivate: boolean;
+  private readonly managedTraceInput?: ManagedTraceLoadContext;
+  private readonly strictChildSlot: boolean;
+  private nativeLoadStarted = false;
   private runtimeBinarySelection?: Readonly<{
     source: 'local_binary';
     selectedPath: string;
@@ -721,6 +736,10 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
 
   public getNativeProvenanceSnapshot(): RawSqlNativeProvenanceSnapshot {
     return readRawSqlNativeProvenanceSnapshot(this.nativeProvenance);
+  }
+
+  public getLoadedTraceSourcePin(): LoadedTraceSourcePin | undefined {
+    return this.isDestroyed ? undefined : readLoadedTraceSourcePin(this);
   }
 
   public getRuntimeStats(): TraceProcessorRuntimeStats {
@@ -773,6 +792,14 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
     this.leaseId = options.leaseId;
     this.leaseMode = options.leaseMode ?? 'shared';
     this.analysisRunPrivate = this.leaseMode === 'isolated' && options.analysisRunPrivate === true;
+    this.strictChildSlot = options.strictChildSlot === true;
+    if (options.managedTraceInput) {
+      const context = Object.freeze({...options.managedTraceInput});
+      this.managedTraceInput = Object.freeze({...context, assertCurrent: () => {
+        if (this.isDestroyed) throw new ManagedTraceSourceUnavailableError();
+        context.assertCurrent();
+      }});
+    }
     const native = createRawSqlNativeProvenance(this.id,
       CRITICAL_STDLIB_MODULES.map(module => `INCLUDE PERFETTO MODULE ${module};`), this.traceId);
     this.nativeProvenance = native.provenance;
@@ -820,7 +847,23 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
 
     // Start trace_processor_shell in HTTP mode
     try {
+      const firstLoad = !this.nativeLoadStarted;
+      this.nativeLoadStarted = true;
+      if (!firstLoad) revokeLoadedTraceSourcePin(this);
+      const managed = this.managedTraceInput;
+      const child = managed?.sourcePin !== undefined;
+      if (child && (!firstLoad || !this.strictChildSlot || !this.analysisRunPrivate)) throw new ManagedTraceSourceUnavailableError();
       await initializeRawSqlNativeProvenance(this.nativeProvenance, binarySelection);
+      if (this.isDestroyed) throw new Error('Processor destroyed during initialization');
+      let managedLoad: ManagedTraceLoadAttempt | undefined;
+      if (firstLoad && managed) {
+        try {
+          managedLoad = await beginManagedTraceLoad({context: managed, serviceOwner: managed.serviceOwner,
+            registration: managed.registration, traceId: this.traceId, finalPath: this.tracePath, processorOwner: this,
+            binaryIdentity: await resolveCapabilityTraceProcessorIdentity(binarySelection)});
+        } catch { /* Missing optional source identity never blocks ordinary working loads. */ }
+      }
+      if (child && !managedLoad) throw new ManagedTraceSourceUnavailableError();
       if (this.isDestroyed) throw new Error('Processor destroyed during initialization');
       await this.startHttpServer(binarySelection);
 
@@ -832,6 +875,12 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
         throw new Error(`Server verification failed: ${testResult.error}`);
       }
       await revalidateRawSqlNativeProvenance(this.nativeProvenance, binarySelection);
+      if (this.isDestroyed) throw new Error('Processor destroyed during initialization');
+      if (managedLoad && this.getNativeProvenanceSnapshot().nativeSchemaEligible) {
+        try {await completeManagedTraceLoad(managedLoad, await resolveCapabilityTraceProcessorIdentity(binarySelection));}
+        catch { /* Preserve parent loading when only the new source pin is unavailable. */ }
+      }
+      if (child && !this.getLoadedTraceSourcePin()) throw new ManagedTraceSourceUnavailableError();
       if (this.isDestroyed) throw new Error('Processor destroyed during initialization');
       this.sampleRss();
 
@@ -1277,6 +1326,7 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
   }
 
   destroy(): void {
+    revokeLoadedTraceSourcePin(this);
     this.invalidateNativeProvenance();
     if (!IS_TEST_ENV) {
       console.log(`[TraceProcessor] Destroying processor ${this.id} for trace ${this.traceId}`);
@@ -1389,6 +1439,8 @@ export class TraceProcessorFactory {
     const processorKey = options.processorKey ?? traceId;
     // Check if processor already exists and is ready
     const existing = this.processors.get(processorKey);
+    // The run group owns reuse/singleflight of a strict child, not this generic key lookup.
+    if (options.strictChildSlot && existing) throw new NativeChildSlotUnavailableError();
     if (existing instanceof WorkingTraceProcessor && existing.status === 'ready') {
       console.log(`[TraceProcessorFactory] Reusing existing processor for trace ${traceId} (${processorKey})`);
       return existing;
@@ -1400,39 +1452,47 @@ export class TraceProcessorFactory {
       this.remove(processorKey);
     }
 
-    // Clean up oldest unleased idle processors if too many. A UI WebSocket does
-    // not increment activeQueries, so lease-backed processors must be preserved.
-    while (this.processors.size >= this.maxProcessors) {
-      const idle = Array.from(this.processors.entries())
-        .find(([, processor]) => {
-          const traceIdHasActiveLeaseHolders =
-            processor instanceof WorkingTraceProcessor &&
-            getTraceProcessorLeaseStore().hasActiveHoldersForTrace(processor.traceId);
-          return isTraceProcessorEvictionCandidate(processor, traceIdHasActiveLeaseHolders);
-        });
-      if (idle) {
-        console.log(`[TraceProcessorFactory] Cleaning up idle processor: ${idle[0]}`);
-        idle[1].destroy();
-        this.processors.delete(idle[0]);
-      } else {
-        // All candidates are busy or lease-backed. RAM admission remains the
-        // authoritative guard for a temporary process-count overage.
-        console.warn(`[TraceProcessorFactory] All ${this.processors.size} processors are busy or leased, allowing temporary over-limit`);
-        break;
+    const admit = () => {
+      // Clean up oldest unleased idle processors if too many. A UI WebSocket does
+      // not increment activeQueries, so lease-backed processors must be preserved.
+      while (this.processors.size >= this.maxProcessors) {
+        const idle = Array.from(this.processors.entries())
+          .find(([, processor]) => {
+            if (options.strictChildSlot && processor.status === 'initializing') return false;
+            const traceIdHasActiveLeaseHolders =
+              processor instanceof WorkingTraceProcessor &&
+              getTraceProcessorLeaseStore().hasActiveHoldersForTrace(processor.traceId);
+            return isTraceProcessorEvictionCandidate(processor, traceIdHasActiveLeaseHolders);
+          });
+        if (idle) {
+          console.log(`[TraceProcessorFactory] Cleaning up idle processor: ${idle[0]}`);
+          idle[1].destroy();
+          this.processors.delete(idle[0]);
+        } else {
+          if (options.strictChildSlot) throw new NativeChildSlotUnavailableError();
+          // All candidates are busy or lease-backed. RAM admission remains the
+          // authoritative guard for a temporary process-count overage.
+          console.warn(`[TraceProcessorFactory] All ${this.processors.size} processors are busy or leased, allowing temporary over-limit`);
+          break;
+        }
       }
-    }
 
-    const traceSizeBytes = fs.statSync(tracePath).size;
-    assertTraceProcessorAdmission({
-      traceId,
-      traceSizeBytes,
-      processors: Array.from(this.processors.values()).map(processor => processor.getRuntimeStats()),
-    });
+      const traceSizeBytes = fs.statSync(tracePath).size;
+      assertTraceProcessorAdmission({
+        traceId,
+        traceSizeBytes,
+        processors: Array.from(this.processors.values()).map(processor => processor.getRuntimeStats()),
+      });
+    };
+    if (!options.strictChildSlot) admit();
 
     const maxAttempts = 8;
     let lastError: any;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      // No await from this final count/RAM check through constructor and starting map insertion.
+      // Every bounded port retry must compete for a slot again.
+      if (options.strictChildSlot) admit();
       // Create new processor (allocates a port from the pool)
       console.log(`[TraceProcessorFactory] Creating new HTTP-mode processor for trace ${traceId} (${processorKey}) (attempt ${attempt}/${maxAttempts})`);
       const processor = new WorkingTraceProcessor(traceId, tracePath, {
@@ -1440,8 +1500,15 @@ export class TraceProcessorFactory {
         processorKey,
       });
 
+      // Port allocation emits synchronously: another group can reserve the last
+      // slot while this constructor is running, even though there was no await.
+      if (options.strictChildSlot && this.processors.size >= this.maxProcessors) {
+        processor.destroy();
+        throw new NativeChildSlotUnavailableError();
+      }
+
       processor.on('error', () => {
-        this.processors.delete(processorKey);
+        if (this.processors.get(processorKey) === processor) this.processors.delete(processorKey);
       });
 
       this.processors.set(processorKey, processor);
@@ -1458,7 +1525,7 @@ export class TraceProcessorFactory {
         } catch {
           // ignore
         }
-        this.processors.delete(processorKey);
+        if (this.processors.get(processorKey) === processor) this.processors.delete(processorKey);
 
         // Retry with a different port if the chosen port is already in use by another process.
         // destroy() already detached this attempt's port from processorKey, so

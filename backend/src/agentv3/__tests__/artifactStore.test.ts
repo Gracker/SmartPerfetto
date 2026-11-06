@@ -6,7 +6,7 @@ import {describe, expect, it} from '@jest/globals';
 import {createRuntimePerformanceRecorder} from '../../agentRuntime/runtimePerformance';
 import {createRuntimePerformanceScope} from '../../agentRuntime/runtimePerformanceContext';
 import {buildTraceProcessorQueryProvenance} from '../../services/traceProcessorConnectionModel';
-import {sanitizeQueryReview} from '../../types/queryReviewContract';
+import {sanitizeQueryReview, SQL_EXECUTION_CONTEXTS} from '../../types/queryReviewContract';
 import {ArtifactStore, EVIDENCE_RETENTION_CELLS_ENV, RETAINED_EVIDENCE_CAPTURE_CEILING} from '../artifactStore';
 import {captureEvidenceTable} from '../../services/evidence/evidenceCapture';
 import {attachInvestigationEvidence} from '../../services/evidence/investigationEvidenceLedger';
@@ -464,7 +464,7 @@ describe('ArtifactStore', () => {
     );
   });
 
-  it('projects a bounded query review ref while preserving full review data', () => {
+  it.each([...SQL_EXECUTION_CONTEXTS, undefined])('projects a bounded query review ref with context %s while preserving full data', executionContext => {
     const store = new ArtifactStore();
     const queryReview = sanitizeQueryReview({
       schemaVersion: 1,
@@ -502,6 +502,7 @@ describe('ArtifactStore', () => {
       )),
       observedExecution: {
         executed: true,
+        ...(executionContext === undefined ? {} : {executionContext}),
         executableSql: `SELECT ${'column, '.repeat(300)} 1`,
         durationMs: 42,
         rowCount: 147,
@@ -533,6 +534,8 @@ describe('ArtifactStore', () => {
       expect(projected).not.toHaveProperty('filters');
       expect(projected).not.toHaveProperty('outputShape');
       expect(projected).not.toHaveProperty('guardrails');
+      if (executionContext === undefined) expect(projected?.observedExecution).not.toHaveProperty('executionContext');
+      else expect(projected?.observedExecution.executionContext).toBe(executionContext);
       expect(Buffer.byteLength(JSON.stringify(projected))).toBeLessThan(1_500);
     }
     expect(compact.queryReview?.limitations).toHaveLength(2);
@@ -542,6 +545,8 @@ describe('ArtifactStore', () => {
     expect(full.queryReview.guardrails).toHaveLength(16);
     expect(full.queryReview.limitations).toHaveLength(12);
     expect(full.queryReview.observedExecution.executableSql).toContain('SELECT');
+    if (executionContext === undefined) expect(full.queryReview.observedExecution).not.toHaveProperty('executionContext');
+    else expect(full.queryReview.observedExecution.executionContext).toBe(executionContext);
   });
 });
 

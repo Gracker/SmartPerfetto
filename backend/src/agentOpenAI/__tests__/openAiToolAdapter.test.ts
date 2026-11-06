@@ -14,8 +14,44 @@ import {createJsonSchemaFromZodRawShape, preserveRuntimeLiteralStrings} from '..
 import {chatCompletionResponse} from '../../../tests/helpers/openAiRuntimeFixture';
 import {AUTHORED_FINAL_SUBMISSION_PENDING_ACK} from '../../agentRuntime/authoredFinalSubmission';
 import type {createOpenAiTypedFinalAttempt} from '../../agentRuntime/engines/openai/openAiTypedFinalAdmission';
+import {SQL_EXECUTION_CONTEXTS} from '../../types/queryReviewContract';
 
 describe('createOpenAIToolsFromMcpDefinitions', () => {
+  it.each([null, ...SQL_EXECUTION_CONTEXTS])('preserves optional SQL context %s through the installed SDK', async executionContext => {
+    const sql = ' \nSELECT dur FROM slice WHERE id = 1; -- literal\n';
+    const handler = jest.fn(async (_args: Record<string, unknown>) => createRuntimeToolResult({success: true}));
+    const registry = new McpToolRegistry();
+    registry.registerShared({name: 'execute_sql', exposure: 'public', evidenceEffect: 'acquire', description: 'SQL',
+      inputSchema: {sql: z.string(), executionContext: z.enum(SQL_EXECUTION_CONTEXTS).optional()}, handler});
+    const [adapted] = createOpenAIToolsFromMcpDefinitions(registry.list());
+    const fetchImpl = jest.fn<typeof fetch>()
+      .mockResolvedValueOnce(chatCompletionResponse('sql-call', {role: 'assistant', content: '', tool_calls: [{
+        id: 'call_sql', type: 'function', function: {name: adapted.name,
+          arguments: JSON.stringify({sql, executionContext, planPhaseId: null})},
+      }]}, 'tool_calls'))
+      .mockResolvedValueOnce(chatCompletionResponse('sql-done', {role: 'assistant', content: 'Done'}, 'stop'));
+    setTracingDisabled(true);
+    const provider = new OpenAIProvider({openAIClient: new OpenAI({apiKey: 'fixture-only',
+      baseURL: 'https://fixture.invalid/v1', fetch: fetchImpl}), useResponses: false});
+    try {
+      const runner = new Runner({modelProvider: provider, tracingDisabled: true});
+      const stream = await runner.run(new Agent({name: 'fixture', model: 'fixture-model', tools: [adapted]}),
+        'Read once', {maxTurns: 3, stream: true});
+      for await (const _event of stream) { /* Native SDK flow; fake provider only. */ }
+      await stream.completed;
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(handler.mock.calls[0][0]).toEqual({sql, ...(executionContext === null ? {} : {executionContext})});
+      for (const [, init] of fetchImpl.mock.calls) {
+        const field = JSON.parse(String(init!.body)).tools[0].function.parameters.properties.executionContext;
+        expect(field).not.toHaveProperty('default');
+        expect(JSON.stringify(field)).toContain('working');
+        expect(JSON.stringify(field)).toContain('original_trace');
+        expect(JSON.stringify(field)).toContain('null');
+      }
+    } finally {await provider.close();}
+  });
+
   it('binds private hooks to the actual returned tool and exact handler document, without an extra capability', async () => {
     const documentJson = '  {"literal":"null","bodyParts":["  exact  "]}  ';
     const order: string[] = [];

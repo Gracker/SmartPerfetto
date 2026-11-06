@@ -4,8 +4,10 @@
 
 import fs from 'fs';
 import path from 'path';
+import ts from 'typescript';
 
 import {describe, expect, it} from '@jest/globals';
+import {SQL_EXECUTION_CONTEXTS} from '../queryReviewContract';
 
 import {
   ANALYSIS_COMPLETED_PUBLIC_TYPE_PATHS,
@@ -33,6 +35,35 @@ const fragment = receiptFragment();
 const generated = `/** header */\n\nexport type Before = 1;\n\n${fragment}\n\nexport type After = 2;\n`;
 const outOfSync = (frontend: string, content = fragment) =>
   findOutOfSyncContractFragments(frontend, [{name: 'AnalysisReceipt', content}]);
+
+describe('QueryReview frontend execution context contract', () => {
+  it('mirrors the closed enum and optional observed field without a historical default', () => {
+    const frontendPath = path.resolve(backendSrc,
+      '../../perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/generated/data_contract.types.ts');
+    const parse = (text: string) => ts.createSourceFile('contract.ts', text, ts.ScriptTarget.Latest, true);
+    const frontend = parse(fs.readFileSync(frontendPath, 'utf8'));
+    for (const source of [parse(read('types/queryReviewContract.ts')), frontend]) {
+      const observed = source.statements.find((node): node is ts.InterfaceDeclaration =>
+        ts.isInterfaceDeclaration(node) && node.name.text === 'QueryReviewObservedExecutionV1');
+      if (!observed) throw new Error('Missing QueryReview observed execution contract');
+      const field = observed.members.find((node): node is ts.PropertySignature =>
+        ts.isPropertySignature(node) && node.name.getText(source) === 'executionContext');
+      if (!field) throw new Error('Missing QueryReview execution context field');
+      expect(field.questionToken).toBeDefined();
+      expect(field.type?.getText(source)).toBe('SqlExecutionContext');
+    }
+    const alias = frontend.statements.find((node): node is ts.TypeAliasDeclaration =>
+      ts.isTypeAliasDeclaration(node) && node.name.text === 'SqlExecutionContext');
+    if (!alias || !ts.isUnionTypeNode(alias.type)) throw new Error('Missing SQL execution context union');
+    const values = alias.type.types.map(node => {
+      if (!ts.isLiteralTypeNode(node) || !ts.isStringLiteral(node.literal)) {
+        throw new Error('Nonliteral SQL execution context');
+      }
+      return node.literal.text;
+    });
+    expect(values).toEqual(SQL_EXECUTION_CONTEXTS);
+  });
+});
 
 describe('AnalysisReceipt frontend contract', () => {
   it('extracts the complete receipt declarations and their dependencies from the backend source', () => {

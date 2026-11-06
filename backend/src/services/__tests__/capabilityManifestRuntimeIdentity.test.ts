@@ -13,6 +13,9 @@ import {
   resolveCapabilityTraceProcessorIdentity,
   sanitizeCapabilityTraceProcessorReportedVersion,
   type CapabilityRuntimeIdentityDependencies,
+  copyManagedTraceInput, moveManagedTraceInput, bindManagedTraceInput, revokeManagedTraceInput,
+  beginManagedTraceLoad, completeManagedTraceLoad, readLoadedTraceSourcePin, revokeLoadedTraceSourcePin,
+  assertLoadedTraceSourcePinCurrent, type ManagedTraceInputGrant, type LoadedTraceSourcePin,
 } from '../capabilityManifestRuntimeIdentity';
 
 const TRACE_SHA =
@@ -102,6 +105,117 @@ afterEach(async () => {
   const roots = tempRoots;
   tempRoots = [];
   await Promise.all(roots.map(root => rm(root, {recursive: true, force: true})));
+});
+
+describe('managed trace materialization and actual-load source pins', () => {
+  const binary = {source: 'bundled' as const, gitRevision: GIT_A, stdlibRevision: GIT_A};
+  async function fixture(mode: 'copy' | 'move' = 'copy') {
+    const root = await makeTempRoot(), original = path.join(root, 'external.trace'), finalPath = path.join(root, 'managed.trace');
+    await writeFile(original, 'immutable trace bytes');
+    const grant = mode === 'copy' ? await copyManagedTraceInput({sourcePath: original, finalPath, traceId: 'trace'})
+      : await moveManagedTraceInput({tempPath: original, finalPath, traceId: 'trace'});
+    expect(grant).toBeDefined();
+    const binding = {serviceOwner: {}, registration: {}, traceId: 'trace', finalPath};
+    bindManagedTraceInput({...binding, grant: grant!});
+    let current = true;
+    const assertCurrent = () => {if (!current) throw new Error('PRIVATE_OWNER_CAUSE');};
+    const context = {grant: grant!, serviceOwner: binding.serviceOwner, registration: binding.registration, assertCurrent};
+    const processorOwner = {};
+    const begin = () => beginManagedTraceLoad({...binding, context, processorOwner, binaryIdentity: binary});
+    return {root, original, finalPath, grant: grant!, binding, context, processorOwner, begin,
+      invalidate: () => {current = false;}, current: {...binding, assertCurrent}};
+  }
+
+  it.each(['copy', 'move'] as const)('issues only from a real %s and the same first-load bytes', async mode => {
+    const f = await fixture(mode);
+    if (mode === 'copy') await writeFile(f.original, 'external file can change after materialization');
+    else await expect(fs.promises.stat(f.original)).rejects.toMatchObject({code: 'ENOENT'});
+    expect(readLoadedTraceSourcePin(f.processorOwner)).toBeUndefined();
+    const attempt = await f.begin(); expect(attempt).toBeDefined();
+    const pin = await completeManagedTraceLoad(attempt!, binary); expect(pin).toBeDefined();
+    expect(readLoadedTraceSourcePin(f.processorOwner)).toBe(pin);
+    await expect(assertLoadedTraceSourcePinCurrent(pin!, f.current)).resolves.toBeUndefined();
+    await expect(completeManagedTraceLoad(attempt!, binary)).resolves.toBeUndefined();
+    revokeManagedTraceInput(f.grant);
+    expect(readLoadedTraceSourcePin(f.processorOwner)).toBeUndefined();
+    expect(await fs.promises.readFile(f.finalPath, 'utf8')).toBe('immutable trace bytes');
+  });
+
+  it('does not turn a path, copied token, foreign service or registration into a grant', async () => {
+    const f = await fixture();
+    for (const grant of [{kind: 'managed_trace_input'}, {...f.grant}, JSON.parse(JSON.stringify(f.grant))] as ManagedTraceInputGrant[]) {
+      expect(() => bindManagedTraceInput({...f.binding, grant})).toThrow('managed_trace_source_unavailable');
+      await expect(beginManagedTraceLoad({...f.binding, processorOwner: {}, binaryIdentity: binary,
+        context: {...f.context, grant}})).resolves.toBeUndefined();
+    }
+    expect(() => bindManagedTraceInput({...f.binding, grant: f.grant})).toThrow('managed_trace_source_unavailable');
+    for (const changed of [{serviceOwner: {}}, {registration: {}}, {traceId: 'other'}, {finalPath: f.original}]) {
+      await expect(beginManagedTraceLoad({...f.binding, ...changed, context: {...f.context, ...changed},
+        processorOwner: {}, binaryIdentity: binary})).resolves.toBeUndefined();
+    }
+  });
+
+  it.each(['before', 'during', 'after'] as const)('rejects a managed-path replacement %s the actual load', async when => {
+    const f = await fixture();
+    const replacement = path.join(f.root, 'replacement');
+    await writeFile(replacement, 'immutable trace bytes'); // Even identical bytes cannot replace the materialized identity.
+    const attempt = when === 'before' ? undefined : await f.begin();
+    const pin = when === 'after' ? await completeManagedTraceLoad(attempt!, binary) : undefined;
+    await rename(replacement, f.finalPath);
+    if (when === 'before') await expect(f.begin()).resolves.toBeUndefined();
+    else if (when === 'during') await expect(completeManagedTraceLoad(attempt!, binary)).resolves.toBeUndefined();
+    else await expect(assertLoadedTraceSourcePinCurrent(pin!, f.current)).rejects.toMatchObject({code: 'managed_trace_source_unavailable'});
+    expect(readLoadedTraceSourcePin(f.processorOwner)).toBeUndefined();
+  });
+
+  it.each(['cancel', 'revoke', 'destroy'] as const)('never publishes a late load after %s', async reason => {
+    const f = await fixture(), attempt = await f.begin();
+    if (reason === 'cancel') f.invalidate();
+    else if (reason === 'revoke') revokeManagedTraceInput(f.grant);
+    else revokeLoadedTraceSourcePin(f.processorOwner);
+    await expect(completeManagedTraceLoad(attempt!, binary)).resolves.toBeUndefined();
+    expect(readLoadedTraceSourcePin(f.processorOwner)).toBeUndefined();
+  });
+
+  it('rejects a changed binary or documentation pin instead of publishing a new source fact', async () => {
+    for (const changed of [{...binary, gitRevision: GIT_B}, {...binary, stdlibRevision: GIT_B},
+      {source: 'custom' as const, binarySha256: BINARY_SHA, stdlibRevision: GIT_A}]) {
+      const f = await fixture(), attempt = await f.begin();
+      await expect(completeManagedTraceLoad(attempt!, changed)).resolves.toBeUndefined();
+      expect(readLoadedTraceSourcePin(f.processorOwner)).toBeUndefined();
+    }
+  });
+
+  it('binds the child to the original live parent pin and rejects copied pins', async () => {
+    const f = await fixture(), parentPin = (await completeManagedTraceLoad((await f.begin())!, binary))!;
+    for (const sourcePin of [{...parentPin}, JSON.parse(JSON.stringify(parentPin))] as LoadedTraceSourcePin[]) {
+      await expect(beginManagedTraceLoad({...f.binding, context: {...f.context, sourcePin}, processorOwner: {},
+        binaryIdentity: binary})).resolves.toBeUndefined();
+      await expect(assertLoadedTraceSourcePinCurrent(sourcePin, f.current)).rejects.toMatchObject({code: 'managed_trace_source_unavailable'});
+    }
+    const child = {}, childAttempt = await beginManagedTraceLoad({...f.binding, context: {...f.context, sourcePin: parentPin},
+      processorOwner: child, binaryIdentity: binary});
+    const childPin = (await completeManagedTraceLoad(childAttempt!, binary))!;
+    await expect(assertLoadedTraceSourcePinCurrent(childPin, f.current)).resolves.toBeUndefined();
+    revokeLoadedTraceSourcePin(f.processorOwner);
+    expect(readLoadedTraceSourcePin(child)).toBeUndefined();
+    await expect(assertLoadedTraceSourcePinCurrent(childPin, f.current)).rejects.toMatchObject({code: 'managed_trace_source_unavailable'});
+  });
+
+  it('preserves a successful copy without granting source authority when hashing is unavailable', async () => {
+    const root = await makeTempRoot(), sourcePath = path.join(root, 'source'), finalPath = path.join(root, 'managed');
+    await writeFile(sourcePath, 'retained bytes');
+    jest.spyOn(fs.promises, 'open').mockRejectedValueOnce(new Error('PRIVATE_HASH_CAUSE'));
+    await expect(copyManagedTraceInput({sourcePath, finalPath, traceId: 'trace'})).resolves.toBeUndefined();
+    expect(await fs.promises.readFile(finalPath, 'utf8')).toBe('retained bytes');
+  });
+
+  it.each(['copy', 'move'] as const)('does not issue a token when the real %s fails', async mode => {
+    const root = await makeTempRoot(), missing = path.join(root, 'missing'), finalPath = path.join(root, 'managed');
+    await expect(mode === 'copy' ? copyManagedTraceInput({sourcePath: missing, finalPath, traceId: 'trace'})
+      : moveManagedTraceInput({tempPath: missing, finalPath, traceId: 'trace'})).rejects.toMatchObject({code: 'ENOENT'});
+    await expect(fs.promises.stat(finalPath)).rejects.toMatchObject({code: 'ENOENT'});
+  });
 });
 
 describe('CapabilityManifest reported trace processor version sanitizer', () => {

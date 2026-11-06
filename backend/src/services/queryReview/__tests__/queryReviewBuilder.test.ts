@@ -5,8 +5,16 @@
 import {describe, expect, it} from '@jest/globals';
 import {buildTraceProcessorQueryProvenance} from '../../traceProcessorConnectionModel';
 import {buildSqlQueryReview} from '../queryReviewBuilder';
+import {SQL_EXECUTION_CONTEXTS} from '../../../types/queryReviewContract';
 
 describe('queryReviewBuilder', () => {
+  it.each([...SQL_EXECUTION_CONTEXTS, undefined])('records only supplied actual context: %s', executionContext => {
+    const review = buildSqlQueryReview({producerKind: 'execute_sql', executionContext,
+      executableSql: 'SELECT dur FROM slice', outputColumns: ['dur']})!;
+    if (executionContext === undefined) expect(review.observedExecution).not.toHaveProperty('executionContext');
+    else expect(review.observedExecution.executionContext).toBe(executionContext);
+    expect(review.allowedUse).toBe('review_metadata_only');
+  });
   it('builds SQL reviews with provenance, guardrails, and bounded use', () => {
     const review = buildSqlQueryReview({
       producerKind: 'execute_sql_on',

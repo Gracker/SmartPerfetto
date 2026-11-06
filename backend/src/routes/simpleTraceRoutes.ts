@@ -15,6 +15,7 @@ import { resolveFeatureConfig } from '../config';
 import { attachRequestContext, requireRequestContext, type RequestContext } from '../middleware/auth';
 import { sendRouteError, sendRouteFailure } from '../middleware/routeFailure';
 import { getTraceProcessorService, isPrivateAnalysisLease } from '../services/traceProcessorService';
+import {moveManagedTraceInput, type ManagedTraceInputGrant} from '../services/capabilityManifestRuntimeIdentity';
 import {traceProcessorProcessorKey} from '../services/traceProcessorConnectionModel';
 import { getPortPool } from '../services/portPool';
 import { TraceProcessorFactory, type TraceProcessorRuntimeStats } from '../services/workingTraceProcessor';
@@ -676,11 +677,12 @@ async function finalizeTraceUpload(
   finalPath: string,
   context: RequestContext,
   uploadSource: 'local' | 'url',
+  managedInput?: ManagedTraceInputGrant,
 ): Promise<FinalizedTraceUploadInfo | undefined> {
   const tps = getTraceProcessorService();
 
   if (tps) {
-    await tps.initializeUploadWithId(traceId, filename, size, finalPath);
+    await tps.initializeUploadWithId(traceId, filename, size, finalPath, managedInput);
     console.log(`[TraceProcessor] Initialized upload with traceId: ${traceId}`);
   }
 
@@ -778,10 +780,6 @@ async function cleanupFile(filePath: string | undefined): Promise<void> {
   } catch {
     // Best-effort cleanup only.
   }
-}
-
-async function renameTraceAtomically(tempPath: string, finalPath: string): Promise<void> {
-  await fs.rename(tempPath, finalPath);
 }
 
 function createUploadSizeLimitStream(maxBytes: number): { stream: Transform; getBytesWritten: () => number } {
@@ -903,12 +901,12 @@ router.post(
       // Move file to traces directory with proper name
       const tracesDir = path.dirname(file.path);
       const finalPath = path.join(tracesDir, `${traceId}.trace`);
-      await renameTraceAtomically(file.path, finalPath);
+      const managedInput = await moveManagedTraceInput({tempPath: file.path, finalPath, traceId});
 
       console.log(`File uploaded successfully: ${filename} -> ${traceId}`);
 
       // Get trace status and processor port from service
-      const traceInfo = await finalizeTraceUpload(traceId, filename, file.size, finalPath, context, 'local');
+      const traceInfo = await finalizeTraceUpload(traceId, filename, file.size, finalPath, context, 'local', managedInput);
       if (!traceUploadHasRpcTarget(traceInfo)) {
         sendTraceProcessorUnavailable(res, traceInfo);
         return;
@@ -1016,6 +1014,7 @@ router.post('/upload-url', async (req, res) => {
     const tempPath = path.join(tracesDir, tempUploadFilename());
     const finalPath = path.join(tracesDir, `${traceId}.trace`);
     let size = 0;
+    let managedInput: ManagedTraceInputGrant | undefined;
     try {
       size = await streamResponseBodyToTempFile(response, tempPath);
       const quotaDecision = evaluateTraceUploadQuota(context, size);
@@ -1023,7 +1022,7 @@ router.post('/upload-url', async (req, res) => {
         await cleanupFile(tempPath);
         return sendTraceQuotaDenied(res, quotaDecision);
       }
-      await renameTraceAtomically(tempPath, finalPath);
+      managedInput = await moveManagedTraceInput({tempPath, finalPath, traceId});
     } catch (streamError) {
       await cleanupFile(tempPath);
       throw streamError;
@@ -1031,7 +1030,7 @@ router.post('/upload-url', async (req, res) => {
 
     console.log(`URL trace fetched successfully: ${sanitizedPublicHttpUrl(response.finalUrl)} -> ${traceId}`);
 
-    const traceInfo = await finalizeTraceUpload(traceId, filename, size, finalPath, context, 'url');
+    const traceInfo = await finalizeTraceUpload(traceId, filename, size, finalPath, context, 'url', managedInput);
     if (!traceUploadHasRpcTarget(traceInfo)) {
       sendTraceProcessorUnavailable(res, traceInfo);
       return;
