@@ -15,6 +15,7 @@ import type {StreamingUpdate} from '../../agent/types';
 import {MaxTurnsExceededError, OpenAIChatCompletionsModel, OpenAIResponsesModel, OpenAIProvider, Runner, RunContext, StreamedRunResult, tool, withTrace, type ModelSettings} from '@openai/agents';
 import {z} from 'zod';
 import {OpenAIRuntime, __testing} from '../openAiRuntime';
+import {createOpenAiTypedFinalWireCollector} from '../../agentRuntime/engines/openai/openAiTypedFinalAdmission';
 import {createAnswerDraftStream, createProjectedAnswerDraft} from '../../agentRuntime/answerDraftStream';
 import type {AnalysisPlanV3, PlanPhase} from '../../agentv3/types';
 import type {SessionStateSnapshot} from '../../agentv3/sessionStateSnapshot';
@@ -4561,4 +4562,327 @@ describe('OpenAI common final-transport observation at actual SDK boundaries', (
       expect(recorder.seal().finalTransportObservation!.events.find(event => event.kind === 'native_terminal')).toMatchObject({drainStatus: 'fulfilled'});
     } finally {release.resolve(); await work.catch(() => undefined); scope.dispose();}
   });
+});
+
+describe('R11 request-local typed output observation', () => {
+  const options = {providerId: null, assistantSurface: 'conversation' as const, conversationTraceAttached: false,
+    analysisMode: 'fast' as const};
+  const documentJson = JSON.stringify({representationVersion: 'authored_claim_document@1',
+    contract: {schemaVersion: 'conclusion_contract_v1', mode: 'need_input', conclusions: [], clusters: [],
+      evidenceChain: [], claims: [], uncertainties: [], nextSteps: []}, bodyParts: ['PRIVATE_REQUEST_LOCAL_BODY']});
+  function configure() {
+    jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(createOpenAiConfigForTest({
+      protocol: 'chat_completions', baseURL: 'https://api.deepseek.com/v1', model: 'deepseek-flash', lightModel: 'deepseek-flash',
+      quickMaxTurns: 5, quickTargetTurns: 4,
+      outputConfig: Object.freeze({finalSubmission: 'authored_claim_document_v1', declarationSyntax: 'canonical_v1'})}));
+  }
+  function finalResponse(init: RequestInit | undefined, responseId: string) {
+    const sent = JSON.parse(String(init?.body)) as {tools: Array<{function: {name: string; parameters: {properties: Record<string, unknown>}}}>};
+    const finalTools = sent.tools.filter(item => Object.prototype.hasOwnProperty.call(item.function.parameters.properties, 'documentJson'));
+    expect(finalTools).toHaveLength(1);
+    return chatCompletionToolCall(responseId, finalTools[0].function.name, {documentJson});
+  }
+  function fixture(id: string) {
+    const runtime = createOpenAiRuntimeForTest();
+    const recorder = createRuntimePerformanceRecorder();
+    const scope = createRuntimePerformanceScope({recorder,
+      identity: {runId: id, sessionId: id, scope: {tenantId: 'test', workspaceId: 'test'}}, assertCurrent() {}});
+    const run = () => scope.run(() => runtime.analyze(id, id, 'trace', {...options, runId: id}));
+    const retainContext = (result: Parameters<typeof finalization.takeFinalizationContext>[0]) => {
+      const context = finalization.takeFinalizationContext(result); if (context) finalizationContexts.push(context);
+    };
+    return {runtime, recorder, scope, run, retainContext};
+  }
+  function materialEvents(recorder: ReturnType<typeof createRuntimePerformanceRecorder>) {
+    return recorder.seal().finalTransportObservation?.events.filter(event => String(event.kind) === 'typed_output_observed') ?? [];
+  }
+
+  it('binds two real Runner turns after logical-call advance and observes each request once', async () => {
+    configure(); const f = fixture('r11-two-turns');
+    const ordinary = tool({name: 'read_observation_fixture', description: 'Read test fixture', parameters: z.object({}), execute: async () => 'fixture result'});
+    const prepare = f.runtime.prepareAnalysisContext.bind(f.runtime);
+    jest.spyOn(f.runtime, 'prepareAnalysisContext').mockImplementation(async (...args: unknown[]) => {
+      const prepared = await prepare(...args);
+      return {...prepared, tools: [...prepared.tools, ordinary]};
+    });
+    const request = jest.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(chatCompletionToolCall('r11-ordinary', ordinary.name, {}))
+      .mockImplementationOnce(async (_input, init) => finalResponse(init, 'r11-final'));
+    try {
+      const result = await f.run(); f.retainContext(result);
+      expect(result).toMatchObject({outputOrigin: 'model_tool_arguments', conclusion: 'PRIVATE_REQUEST_LOCAL_BODY', completion: {status: 'completed'}});
+      const events = materialEvents(f.recorder);
+      const dispatches = f.recorder.seal().finalTransportObservation!.events.filter(event => event.kind === 'main_dispatch');
+      expect(events).toHaveLength(2); expect(dispatches).toHaveLength(2);
+      for (let index = 0; index < 2; index++) expect(events[index]).toMatchObject({
+        attemptKey: dispatches[index].attemptKey, logicalCallKey: dispatches[index].logicalCallKey,
+        collectorDispatchOrdinal: index + 1, material: {transport: {doneSeen: true, eofSeen: true, framing: 'valid'}}});
+      expect(dispatches[0].logicalCallKey).not.toBe(dispatches[1].logicalCallKey);
+      expect(events[0]).toMatchObject({material: {wireToolRole: 'other_tool'}});
+      expect(events[1]).toMatchObject({material: {wireToolRole: 'final_role'}});
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(events)).not.toMatch(/PRIVATE_REQUEST_LOCAL_BODY|r11-final|read_observation_fixture|documentJson/);
+    } finally {f.scope.dispose();}
+  });
+
+  it('keeps an actual SDK retry on one logical key with two collector ordinals and unchanged rejection', async () => {
+    configure(); const f = fixture('r11-retry');
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const request = jest.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('{"error":{"message":"retry fixture"}}', {status: 429,
+        headers: {'content-type': 'application/json', 'retry-after-ms': '1'}}))
+      .mockImplementationOnce(async (_input, init) => finalResponse(init, 'r11-retry-final'));
+    try {
+      const result = await f.run(); f.retainContext(result);
+      // Stage A preserves the original collector's unsafe not_sse failure across a retry.
+      expect(result.outputOrigin).not.toBe('model_tool_arguments'); expect(result.completion?.status).toBe('failed');
+      const events = materialEvents(f.recorder);
+      const dispatches = f.recorder.seal().finalTransportObservation!.events.filter(event => event.kind === 'main_dispatch');
+      expect(events).toHaveLength(2); expect(dispatches).toHaveLength(2);
+      expect(dispatches[0].logicalCallKey).toBe(dispatches[1].logicalCallKey);
+      expect(events[0]).toMatchObject({attemptKey: dispatches[0].attemptKey, logicalCallKey: dispatches[0].logicalCallKey,
+        collectorDispatchOrdinal: 1, material: {transport: {doneSeen: false, eofSeen: false}}});
+      expect(events[1]).toMatchObject({attemptKey: dispatches[1].attemptKey, logicalCallKey: dispatches[1].logicalCallKey,
+        collectorDispatchOrdinal: 2, material: {wireToolRole: 'final_role'}});
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(String(request.mock.calls[0][1]?.body)).toBe(String(request.mock.calls[1][1]?.body));
+    } finally {f.scope.dispose();}
+  });
+
+  it.each([false, true])('keeps overlapping real Runner requests local when the older recorder is sealed=%s', async sealed => {
+    configure(); const older = fixture(`r11-older-${sealed}`), newer = fixture(`r11-newer-${sealed}`);
+    const entered = createDeferred<void>(), release = createDeferred<void>();
+    const request = jest.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      if (String(init?.body).includes(`r11-older-${sealed}`)) {entered.resolve(); await release.promise; return finalResponse(init, 'r11-old-final');}
+      return finalResponse(init, 'r11-new-final');
+    });
+    const oldWork = older.run(); void oldWork.catch(() => undefined);
+    try {
+      await entered.promise;
+      const sealedReceipt = sealed ? JSON.stringify(older.recorder.seal()) : undefined;
+      const newResult = await newer.run(); newer.retainContext(newResult);
+      release.resolve(); const oldResult = await oldWork; older.retainContext(oldResult);
+      expect(newResult.completion?.status).toBe('completed'); expect(oldResult.completion?.status).toBe('completed');
+      const oldEvents = materialEvents(older.recorder), newEvents = materialEvents(newer.recorder);
+      expect(oldEvents).toHaveLength(sealed ? 0 : 1); expect(newEvents).toHaveLength(1);
+      const newDispatch = newer.recorder.seal().finalTransportObservation!.events.find(event => event.kind === 'main_dispatch')!;
+      expect(newEvents[0]).toMatchObject({attemptKey: newDispatch.attemptKey, logicalCallKey: newDispatch.logicalCallKey, collectorDispatchOrdinal: 1});
+      if (sealed) expect(JSON.stringify(older.recorder.seal())).toBe(sealedReceipt);
+      else {
+        const oldDispatch = older.recorder.seal().finalTransportObservation!.events.find(event => event.kind === 'main_dispatch')!;
+        expect(oldEvents[0]).toMatchObject({attemptKey: oldDispatch.attemptKey, logicalCallKey: oldDispatch.logicalCallKey, collectorDispatchOrdinal: 1});
+        expect(oldDispatch.attemptKey).not.toBe(newDispatch.attemptKey);
+      }
+      expect(request).toHaveBeenCalledTimes(2);
+    } finally {release.resolve(); await oldWork.catch(() => undefined); older.scope.dispose(); newer.scope.dispose();}
+  });
+
+  it('drops an unbound preauthorization request without a fetch or invented dispatch event', async () => {
+    configure(); const f = fixture('r11-auth-rejected'); let revoked = false;
+    const actualRun = Runner.prototype.run;
+    jest.spyOn(Runner.prototype as any, 'run').mockImplementation(function(this: Runner, ...args: any[]) {
+      revoked = true; return (actualRun as any).apply(this, args);
+    });
+    const assertAuthorization = contextAuthorization.assertCurrentAnalysisContextAuthorization;
+    jest.spyOn(contextAuthorization, 'assertCurrentAnalysisContextAuthorization').mockImplementation((...args) => {
+      if (revoked) throw new contextAuthorization.AnalysisContextAuthorizationChangedError();
+      return assertAuthorization(...args);
+    });
+    const request = jest.spyOn(globalThis, 'fetch');
+    try {
+      await expect(f.scope.run(() => f.runtime.analyze('Question', 'r11-auth-rejected', 'trace', admitted({...options,
+        runId: 'r11-auth-rejected', codeAwareMode: 'provider_send', codebaseIds: ['codebase-a']}))))
+        .rejects.toThrow('analysis_context_changed_restart_required');
+      expect(request).not.toHaveBeenCalled();
+      expect(materialEvents(f.recorder)).toHaveLength(0);
+      expect(f.recorder.seal().finalTransportObservation).toMatchObject({truncated: expect.any(Number)});
+      expect(f.recorder.seal().finalTransportObservation!.truncated).toBeGreaterThan(0);
+      expect(f.recorder.seal().finalTransportObservation!.events.some(event => event.kind === 'main_dispatch')).toBe(false);
+    } finally {f.scope.dispose();}
+  });
+
+  it('keeps actual request bytes, handler and outcome unchanged when the material recorder throws', async () => {
+    configure(); const bodies: string[] = [];
+    const request = jest.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      bodies.push(String(init?.body)); return finalResponse(init, 'r11-neutral-final');
+    });
+    const execute = async (id: string) => {
+      const f = fixture(id);
+      try {
+        const result = await f.scope.run(() => f.runtime.analyze('Same question', id, 'trace', {...options, runId: id}));
+        f.retainContext(result);
+        return {conclusion: result.conclusion, outputOrigin: result.outputOrigin, completion: result.completion?.status,
+          material: materialEvents(f.recorder)};
+      } finally {f.scope.dispose();}
+    };
+    const before = await execute('r11-neutral-before');
+    expect(before.material).toHaveLength(1);
+    const record = performanceObservation.recordRuntimeFinalTransportEvent;
+    const observer = jest.spyOn(performanceObservation, 'recordRuntimeFinalTransportEvent').mockImplementation((source, event) => {
+      if (String(event.kind) === 'typed_output_observed') throw new Error('PRIVATE_MATERIAL_LOGGER');
+      return record(source, event);
+    });
+    try {
+      const after = await execute('r11-neutral-after');
+      expect({...after, material: undefined}).toEqual({...before, material: undefined});
+      expect(after.material).toHaveLength(0);
+    } finally {observer.mockRestore();}
+    expect(request).toHaveBeenCalledTimes(2); expect(bodies[1]).toBe(bodies[0]);
+  });
+
+  it('closes observation after an actual response-body read error without inventing EOF or changing failure', async () => {
+    configure(); const f = fixture('r11-body-read-error');
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const request = jest.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      let pulled = false;
+      return new Response(new ReadableStream<Uint8Array>({pull(controller) {
+        if (pulled) {controller.error(new Error('PRIVATE_RESPONSE_BODY_ERROR')); return;}
+        pulled = true;
+        controller.enqueue(new TextEncoder().encode('data: {"id":"r11-body-error","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}\n\n'));
+      }}), {headers: {'content-type': 'text/event-stream'}});
+    });
+    try {
+      const result = await f.run(); f.retainContext(result);
+      expect(result.completion?.status).toBe('failed'); expect(result.outputOrigin).not.toBe('model_tool_arguments');
+      const events = materialEvents(f.recorder);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({collectorDispatchOrdinal: 1,
+        material: {transport: {doneSeen: false, eofSeen: false, framing: 'unknown'}}});
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(events)).not.toMatch(/PRIVATE_RESPONSE_BODY_ERROR|r11-body-error/);
+    } finally {f.scope.dispose();}
+  });
+
+  it.each([false, true])('waits for cancelled native body work and never invents EOF or writes after seal=%s', async sealed => {
+    configure(); const id = `r11-cancel-held-${sealed}`, f = fixture(id);
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const entered = createDeferred<void>(), release = createDeferred<void>(), firstSdkOutput = createDeferred<void>();
+    const ready = createDeferred<{completed: Promise<void>; drain: Promise<void>}>();
+    let nativeSettled = false, executionSettled = false;
+    const actualRun = Runner.prototype.run;
+    jest.spyOn(Runner.prototype as any, 'run').mockImplementation(async function(this: Runner, ...args: any[]) {
+      const stream = await (actualRun as any).apply(this, args);
+      const drain: Promise<void> = stream._getStreamLoopPromise();
+      void drain.then(() => {nativeSettled = true;}, () => {nativeSettled = true;});
+      const iterate = stream[Symbol.asyncIterator].bind(stream);
+      stream[Symbol.asyncIterator] = async function* () {
+        for await (const event of iterate()) {
+          if (event.type === 'raw_model_stream_event' && event.data?.type === 'output_text_delta') firstSdkOutput.resolve();
+          yield event;
+        }
+      };
+      ready.resolve({completed: stream.completed, drain});
+      return stream;
+    });
+    const request = jest.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      let pulled = false;
+      return new Response(new ReadableStream<Uint8Array>({async pull(controller) {
+        if (!pulled) {
+          pulled = true;
+          controller.enqueue(new TextEncoder().encode('data: {"id":"cancel-held","choices":[{"index":0,"delta":{"role":"assistant","content":"PRIVATE_CANCEL_PREFIX"},"finish_reason":null}]}\n\n'));
+          return;
+        }
+        entered.resolve();
+        // A real pending response read ignores abort until its held work settles.
+        // The actual SDK native drain is observed, never replaced with a fixture promise.
+        await release.promise;
+        controller.error(new DOMException('Fixture body cancelled', 'AbortError'));
+      }}), {headers: {'content-type': 'text/event-stream'}});
+    });
+    const observed = jest.spyOn(f.recorder, 'recordFinalTransportEvent');
+    const work: Promise<unknown> = f.run();
+    const outcome = work.then(() => 'returned', () => 'rejected').finally(() => {executionSettled = true;});
+    try {
+      await entered.promise;
+      const native = await ready.promise;
+      // ReadableStream can prefetch before the SDK owns a read. Wait for a real
+      // SDK output event and its next event-loop turn before exercising abort.
+      await firstSdkOutput.promise;
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(nativeSettled).toBe(false);
+      f.runtime.abortSession(id);
+      await native.completed;
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(nativeSettled).toBe(false); expect(executionSettled).toBe(false);
+      expect(observed.mock.calls.filter(([event]) => String(event.kind) === 'typed_output_observed')).toHaveLength(0);
+      const sealedReceipt = sealed ? JSON.stringify(f.recorder.seal()) : undefined;
+      release.resolve();
+      expect(await outcome).toBe('rejected');
+      await native.drain.catch(() => undefined);
+      expect(nativeSettled).toBe(true);
+      const events = materialEvents(f.recorder);
+      expect(events).toHaveLength(sealed ? 0 : 1);
+      if (sealed) expect(JSON.stringify(f.recorder.seal())).toBe(sealedReceipt);
+      else expect(events[0]).toMatchObject({collectorDispatchOrdinal: 1,
+        material: {transport: {doneSeen: false, eofSeen: false, framing: 'unknown'}}});
+      expect(f.recorder.seal().finalTransportObservation!.events.some(event => event.kind === 'typed_issued_after_drain')).toBe(false);
+      expect(request).toHaveBeenCalledTimes(1);
+    } finally {release.resolve(); await outcome; f.scope.dispose();}
+  });
+
+  it('drops a conflicting duplicate authorization binding while leaving the injected transport behavior unchanged', async () => {
+    configure(); const f = fixture('r11-duplicate-binding');
+    const compat = reasoningCompat.createMimoReasoningContentFetch;
+    // The real compatibility implementation calls baseFetch once. This injected
+    // violation tests the observation boundary without changing that production code.
+    jest.spyOn(reasoningCompat, 'createMimoReasoningContentFetch').mockImplementation(baseFetch => compat(async (input, init) => {
+      await baseFetch!(input, init);
+      return baseFetch!(input, init);
+    }));
+    const request = jest.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => finalResponse(init, 'r11-duplicate-final'));
+    try {
+      const result = await f.run(); f.retainContext(result);
+      expect(result).toMatchObject({outputOrigin: 'model_tool_arguments', completion: {status: 'completed'}});
+      expect(materialEvents(f.recorder)).toHaveLength(0);
+      expect(f.recorder.seal().finalTransportObservation!.truncated).toBe(1);
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(String(request.mock.calls[0][1]?.body)).toBe(String(request.mock.calls[1][1]?.body));
+    } finally {f.scope.dispose();}
+  });
+
+
+  it('drops a foreign-attempt ticket without changing wire admission and does not backfill it', () => {
+    const f = fixture('r11-foreign-ticket');
+    const attemptKey = 'a'.repeat(64), logicalCallKey = 'b'.repeat(64);
+    const scope = Object.freeze({attemptKey, onAuthorizedDispatch: () => undefined});
+    const collector = createOpenAiTypedFinalWireCollector();
+    const events = collector.startRequest();
+    events.chunk({id: 'no-tool', choices: [{index: 0, delta: {role: 'assistant'}, finish_reason: 'stop'}]});
+    events.done(); events.end(true);
+    const fail = jest.fn(events.fail);
+    const initial = collector.diagnostic();
+    try {
+      f.scope.run(() => {
+        const wrong = __testing.createOpenAiWireRequestTicket(scope, {...events, fail}, undefined);
+        wrong.bindAuthorizedDispatch({attemptKey: 'c'.repeat(64), logicalCallKey});
+        wrong.bindAuthorizedDispatch({attemptKey, logicalCallKey});
+        wrong.close(); wrong.close();
+      });
+      expect(materialEvents(f.recorder)).toHaveLength(0);
+      expect(f.recorder.seal().finalTransportObservation!.truncated).toBe(1);
+      expect(collector.diagnostic()).toEqual(initial); expect(fail).not.toHaveBeenCalled();
+    } finally {f.scope.dispose();}
+  });
+
+  it('bounds pending request observation at 512 and removes each closed ticket exactly once', () => {
+    const f = fixture('r11-ticket-cap');
+    const attemptKey = 'a'.repeat(64), logicalCallKey = 'b'.repeat(64);
+    const scope = Object.freeze({attemptKey, onAuthorizedDispatch: () => undefined});
+    const pending = new Set<ReturnType<typeof __testing.createOpenAiWireRequestTicket>>();
+    const collector = createOpenAiTypedFinalWireCollector();
+    try {
+      f.scope.run(() => {
+        for (let index = 0; index < 513; index++) {
+          const ticket = __testing.createOpenAiWireRequestTicket(scope, collector.startRequest(), undefined);
+          ticket.track(pending); ticket.bindAuthorizedDispatch({attemptKey, logicalCallKey});
+          if (index === 512) {expect(pending.size).toBe(512); ticket.close(); ticket.close();}
+        }
+        for (const ticket of pending) {ticket.close(); ticket.close();}
+      });
+      expect(pending.size).toBe(0);
+      expect(materialEvents(f.recorder)).toHaveLength(512);
+      expect(f.recorder.seal().finalTransportObservation!.truncated).toBe(1);
+    } finally {f.scope.dispose();}
+  });
+
 });

@@ -336,7 +336,9 @@ function createSourceFacetSettlement({repositoryRoot, reportPath, request}) {
 
 function fingerprintObserver(root, reviewedHookContractFingerprint, finalTransport = false) {
   if (!HASH.test(reviewedHookContractFingerprint || '')) throw new Error('benchmark_observer_hook_fingerprint_invalid');
-  const inputs = finalTransport ? [...OBSERVER_INPUTS, 'backend/src/scripts/agentE2eMetrics.ts'] : OBSERVER_INPUTS;
+  const inputs = finalTransport ? [...OBSERVER_INPUTS, 'backend/src/scripts/agentE2eMetrics.ts',
+    'backend/src/agentRuntime/typedOutputMaterial.ts',
+    'backend/src/agentRuntime/engines/openai/openAiTypedFinalOutputMaterial.ts'] : OBSERVER_INPUTS;
   for (const relative of inputs) {
     const stat = fs.lstatSync(path.join(root, relative));
     if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('benchmark_observer_source_missing');

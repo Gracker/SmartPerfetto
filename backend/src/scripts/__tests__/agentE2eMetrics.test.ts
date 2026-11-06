@@ -220,3 +220,55 @@ describe('model-source metrics do not upgrade configured fallbacks', () => {
         modelSource: 'provider_reported', ...mutation}]})).toThrow('metrics_');
     });
 });
+
+
+describe('R11 typed material metrics consumption', () => {
+  function material() {
+    return {schemaVersion: 'typed_output_material@1', wireToolRole: 'final_role',
+      transport: {doneSeen: true, eofSeen: true, framing: 'valid', finishReason: 'length'},
+      decoded: {arguments: {utf8Bytes: 1048577, utf16Chars: 1048577, utf8Precision: 'lower_bound', utf16Precision: 'lower_bound'},
+        companion: {utf8Bytes: 1, utf16Chars: 1, utf8Precision: 'exact', utf16Precision: 'exact'}},
+      retention: {arguments: {status: 'over_limit', retainedUtf8Bytes: 1000}, companion: {status: 'not_retained', retainedUtf8Bytes: 0},
+        refusal: {status: 'not_observed', retainedUtf8Bytes: 0}, combinedRetainedUtf8Bytes: 1000},
+      json: {status: 'not_parsed'}, representation: 'unknown', structure: {status: 'not_observed'}};
+  }
+  function observation(value: unknown) {
+    const event = {kind: 'typed_output_observed', attemptKey: 'a'.repeat(64), logicalCallKey: 'b'.repeat(64),
+      collectorDispatchOrdinal: 2, material: value, sequence: 1, offsetMs: 1};
+    return {schemaVersion: 'final_transport_observation@1', events: [{...event, eventKey: canonicalContentHash(event)}], truncated: 0};
+  }
+  it('preserves failed output material separately from usage, actual transport and delivery status', () => {
+    const finalTransportObservation = observation(material());
+    const result = readAgentE2eMetrics(identity, () => ({...manifest,
+      performance: {...performance, finalTransportObservation}} as unknown as RunManifestV1));
+    expect(result).toMatchObject({status: 'sealed', performance: {finalTransportObservation}});
+    expect(JSON.stringify(result)).not.toContain('typed_issued_after_drain');
+    expect(JSON.stringify(result)).not.toContain('candidate_retained');
+  });
+  it.each([
+    {privateText: 'PRIVATE_R11_METRICS_CANARY'},
+    {structure: {status: 'not_observed', claims: 0}},
+    {retention: {...material().retention, combinedRetainedUtf8Bytes: 999}},
+    {decoded: {arguments: {...material().decoded.arguments, utf16Chars: -1}}},
+    {transport: {...material().transport, finishReason: 'PRIVATE_R11_METRICS_CANARY'}},
+    {json: {status: 'complete_json'}},
+  ])('rejects legally rehashed malformed material without exposing its content: %j', mutation => {
+    const finalTransportObservation = observation({...material(), ...mutation});
+    const result = readAgentE2eMetrics(identity, () => ({...manifest,
+      performance: {...performance, finalTransportObservation}} as unknown as RunManifestV1));
+    expect(result).toEqual({schemaVersion: 'llm_execution_metrics_artifact@1', status: 'invalid_receipt'});
+    expect(JSON.stringify(result)).not.toContain('PRIVATE_R11');
+  });
+  it('rejects impossible complete-retention facts even after the event is legitimately rehashed', () => {
+    const value = {...material(), decoded: {...material().decoded,
+      arguments: {utf8Bytes: 1_000_000_000, utf16Chars: 1_000_000_000, utf8Precision: 'exact', utf16Precision: 'exact'}},
+      retention: {...material().retention, arguments: {status: 'complete', retainedUtf8Bytes: 1_000_000_000},
+        combinedRetainedUtf8Bytes: 1_000_000_000}};
+    const result = readAgentE2eMetrics(identity, () => ({...manifest,
+      performance: {...performance, finalTransportObservation: observation(value)}} as unknown as RunManifestV1));
+    expect(result).toEqual({schemaVersion: 'llm_execution_metrics_artifact@1', status: 'invalid_receipt'});
+  });
+  it('does not invent an observation when default assistant has no final role', () => {
+    expect(projectAgentE2ePerformance(performance)).not.toHaveProperty('finalTransportObservation');
+  });
+});

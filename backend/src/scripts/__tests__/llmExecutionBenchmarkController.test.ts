@@ -29,6 +29,8 @@ function checkout(root: string, changed = false) {
   for (const name of ['modelRequestMetrics', 'runtimePerformance', 'runtimePerformanceContext']) {
     write(root, `backend/src/agentRuntime/${name}.ts`, 'common observer');
   }
+  write(root, 'backend/src/agentRuntime/typedOutputMaterial.ts', 'common material schema');
+  write(root, 'backend/src/agentRuntime/engines/openai/openAiTypedFinalOutputMaterial.ts', 'common material observer');
   write(root, 'Trace/fixture.pftrace', 'shared trace');
   return fs.realpathSync(root);
 }
@@ -214,6 +216,25 @@ describe('LLM execution benchmark controller contracts', () => {
     expect(lifecycle.fingerprintObserver(root, HOOK).hookEvidence).toBe('reviewed_contract_not_automatic_wire_equivalence');
     fs.symlinkSync(path.join(root, 'backend/src/example.ts'), path.join(root, 'backend/src/foreign.ts'));
     expect(() => lifecycle.fingerprintSourceTree(root)).toThrow('benchmark_source_symlink');
+  });
+
+  it('binds the neutral material observer and schema in final transport fingerprints without importing candidate-only schema', () => {
+    const root = checkout(path.join(directory, 'candidate'));
+    write(root, 'backend/src/scripts/agentE2eMetrics.ts', 'common metrics');
+    const legacy = lifecycle.fingerprintObserver(root, HOOK);
+    const before = lifecycle.fingerprintObserver(root, HOOK, true);
+    for (const relative of ['backend/src/agentRuntime/typedOutputMaterial.ts',
+      'backend/src/agentRuntime/engines/openai/openAiTypedFinalOutputMaterial.ts']) {
+      const previous = fs.readFileSync(path.join(root, relative));
+      write(root, relative, 'changed observer material');
+      expect(lifecycle.fingerprintObserver(root, HOOK, true).coreFingerprint).not.toBe(before.coreFingerprint);
+      expect(lifecycle.fingerprintObserver(root, HOOK)).toEqual(legacy);
+      fs.writeFileSync(path.join(root, relative), previous);
+    }
+    write(root, 'backend/src/agent/core/authoredClaimObjectSchema.ts', 'candidate-only injected schema');
+    expect(lifecycle.fingerprintObserver(root, HOOK, true)).toEqual(before);
+    fs.unlinkSync(path.join(root, 'backend/src/agentRuntime/typedOutputMaterial.ts'));
+    expect(() => lifecycle.fingerprintObserver(root, HOOK, true)).toThrow();
   });
 
   it('fingerprints token budgets independently of credential fields', () => {

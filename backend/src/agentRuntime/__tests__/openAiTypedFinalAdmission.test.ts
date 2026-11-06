@@ -7,7 +7,9 @@ import {Agent, OpenAIProvider, Runner, shellTool, tool,
   type FunctionToolResult, type RunContext} from '@openai/agents';
 import OpenAI from 'openai';
 import {z} from 'zod';
-import {compileAuthoredClaimDocument} from '../../agent/core/authoredClaimDocument';
+import {compileAuthoredClaimDocument, measureAuthoredJson} from '../../agent/core/authoredClaimDocument';
+import {CONCLUSION_PROTOCOL_VALUES} from '../../agent/core/conclusionContract';
+import type {RuntimeTypedOutputMaterial} from '../typedOutputMaterial';
 import {compileAuthoredClaimObject, type AuthoredClaimObjectResult} from '../../agent/core/authoredClaimObject';
 import {authoredClaimObjectSchema, type AuthoredClaimObjectInput} from '../../agent/core/authoredClaimObjectSchema';
 import {createJsonSchemaFromZodRawShape, normalizeRuntimeToolArgs, preserveRuntimeLiteralJson} from '../runtimeToolSpec';
@@ -1117,5 +1119,242 @@ describe('S2 P2 registry/adapter/native SDK/issued object bridge', () => {
       expect(h.admission()?.diagnostic()).toMatchObject({admissionFailure: 'wire_ineligible'});
       expect(h.fetcher).toHaveBeenCalledTimes(1);
     } finally {gate.resolve(); await h.cleanup();}
+  });
+});
+
+
+/** A-only observations: these tests require the old mixed-content rejection to remain. */
+describe('R11 neutral per-request typed output material', () => {
+  const provider = () => ({representationVersion: 'authored_claim_document@2' as const,
+    rootKeys: Object.keys(authoredClaimObjectSchema.shape),
+    contractKeys: Object.keys(authoredClaimObjectSchema.shape.contract.shape), measure: measureAuthoredJson});
+  // Optional access keeps the pre-implementation RED an assertion about missing observation,
+  // not a missing-module/import exception. The implementation must supply this per-request API.
+  type MaterialEvents = ReturnType<ReturnType<typeof createOpenAiTypedFinalWireCollector>['startRequest']> & {
+    readonly dispatchOrdinal?: number; materialSnapshot?(): RuntimeTypedOutputMaterial | undefined;
+  };
+  const make = (withProvider = true, measure = measureAuthoredJson) => createOpenAiTypedFinalWireCollector({
+    finalToolName, ...(withProvider ? {materialProvider: {...provider(), measure}} : {})});
+  const chunk = (args: string, extras: Record<string, unknown> = {}, index = 0) => ({id: 'material-response', choices: [{index: 0,
+    delta: {...extras, tool_calls: [{index, id: `material-call-${index}`, type: 'function', function: {name: finalToolName, arguments: args}}]}, finish_reason: null}]});
+  const end = (events: MaterialEvents, reason = 'tool_calls', done = true) => {
+    events.chunk({id: 'material-response', choices: [{index: 0, delta: {}, finish_reason: reason}]});
+    if (done) events.done(); events.end(true);
+  };
+  const read = (events: MaterialEvents) => {
+    const material = events.materialSnapshot?.();
+    expect(material).toBeDefined();
+    if (!material) throw new Error('Expected closed material observation');
+    return material;
+  };
+
+  it('measures retained complete v2 arguments even when assistant_content rejected the same response', () => {
+    const collector = make(), events = collector.startRequest() as MaterialEvents;
+    const document = nativeObjectFixture(), args = JSON.stringify({document}, null, 2);
+    events.chunk(chunk(args, {content: 'PRIVATE_COMPANION'})); end(events);
+    expect(collector.current()).toBeUndefined();
+    expect(collector.diagnostic()).toMatchObject({status: 'rejected', reason: 'assistant_content'});
+    const material = read(events);
+    expect(events.dispatchOrdinal).toBe(1);
+    expect(material).toMatchObject({schemaVersion: 'typed_output_material@1', wireToolRole: 'final_role',
+      transport: {doneSeen: true, eofSeen: true, framing: 'valid', finishReason: 'tool_calls'},
+      decoded: {arguments: {utf8Bytes: Buffer.byteLength(args), utf16Chars: args.length, utf8Precision: 'exact', utf16Precision: 'exact'},
+        companion: {utf8Bytes: 17, utf16Chars: 17, utf8Precision: 'exact'}},
+      retention: {arguments: {status: 'complete', retainedUtf8Bytes: Buffer.byteLength(args)},
+        companion: {status: 'not_retained', retainedUtf8Bytes: 0}, combinedRetainedUtf8Bytes: Buffer.byteLength(args)},
+      json: {status: 'complete_json'}, representation: 'authored_claim_document@2', structure: {status: 'measured'}});
+    expect(JSON.stringify(material)).not.toMatch(/PRIVATE_COMPANION|data:fixture|numeric.cell|material-call|rawArguments/);
+    expect(Object.isFrozen(material)).toBe(true);
+  });
+
+  it('preserves the old unsafe raw_limit diagnostic while independently refusing to parse a valid retained prefix', () => {
+    const collector = make(), events = collector.startRequest() as MaterialEvents;
+    events.chunk(chunk('{}', {content: 'prefix'}));
+    events.chunk({id: 'material-response', choices: [{index: 0, delta: {tool_calls: [{index: 0,
+      function: {arguments: 'x'.repeat(OPENAI_TYPED_FINAL_RAW_BYTES + 1)}}]}, finish_reason: null}]});
+    events.chunk({id: 'material-response', choices: [{index: 0, delta: {tool_calls: [{index: 0, function: {arguments: ' '}}]}, finish_reason: null}]});
+    end(events);
+    // The original collector's unsafeWireFailure takes precedence over its earlier soft content rejection.
+    expect(collector.diagnostic()).toMatchObject({reason: 'raw_limit'});
+    const material = read(events);
+    expect(material).toMatchObject({transport: {doneSeen: true, eofSeen: true}, retention: {arguments: {status: 'over_limit', retainedUtf8Bytes: 2}},
+      decoded: {arguments: {utf8Precision: 'lower_bound'}}, json: {status: 'not_parsed'}, structure: {status: 'not_observed'}});
+    expect(collector.current()).toBeUndefined();
+  });
+
+  it.each(['length', 'missing_done', 'invalid_json'] as const)('separates observed JSON from native completion: %s', failure => {
+    const collector = make(), events = collector.startRequest() as MaterialEvents;
+    events.chunk(chunk(failure === 'invalid_json' ? '{"document":' : JSON.stringify({document: nativeObjectFixture()})));
+    end(events, failure === 'length' ? 'length' : 'tool_calls', failure !== 'missing_done');
+    const material = read(events);
+    expect(material.transport).toMatchObject({eofSeen: true, doneSeen: failure !== 'missing_done'});
+    expect(material.json.status).toBe(failure === 'invalid_json' ? 'invalid_json' : 'complete_json');
+    if (failure !== 'invalid_json') expect(collector.current()).toBeUndefined();
+  });
+
+  it('uses the payload discriminant and leaves structure unknown without the candidate-only schema provider', () => {
+    const collector = make(false), events = collector.startRequest() as MaterialEvents;
+    events.chunk(chunk(JSON.stringify({document: nativeObjectFixture()}))); end(events);
+    expect(read(events)).toMatchObject({representation: 'authored_claim_document@2', json: {status: 'complete_json'}, structure: {status: 'not_observed'}});
+    const foreign = collector.startRequest() as MaterialEvents;
+    foreign.chunk(chunk(JSON.stringify({document: {...nativeObjectFixture(), representationVersion: 'private-unknown-version'}}))); end(foreign);
+    expect(read(foreign)).toMatchObject({representation: 'unknown', structure: {status: 'not_observed'}});
+  });
+
+  it('preserves original invalid entries, nullable kind and exact text reuse without normalizing them', () => {
+    const document = nativeObjectFixture();
+    const raw = {...document, contract: {...document.contract, claims: [
+      {kind: 'numeric', text: 'A'}, {kind: null, text: 'A'}, {text: '{"x":1}'}, {}, 7, {kind: 'invented', text: 'other'}]},
+      bodyParts: ['A', '{"x":1}', {claimText: 'not-resolved'}, false]};
+    const collector = make(), events = collector.startRequest() as MaterialEvents;
+    events.chunk(chunk(JSON.stringify({document: raw}))); end(events);
+    const material = read(events);
+    if (material.structure.status !== 'measured') throw new Error('Expected raw structure counts');
+    expect(material.structure.collections.claims).toEqual({status: 'array', items: 6});
+    expect(material.structure.claimKinds).toEqual({counts: Object.fromEntries(CONCLUSION_PROTOCOL_VALUES.claimKind.map(kind => [kind, kind === 'numeric' ? 1 : 0])), absent: 3, unclassified: 2});
+    expect(material.structure.bodyParts).toEqual({literalPartCount: 2, literalPartTextUtf8Bytes: 8, claimTextUseCount: 1, unclassifiedPartCount: 1});
+    expect(material.structure.exactTextReuse).toEqual({duplicateClaimTextCount: 1, duplicateClaimTextUtf8Bytes: 1,
+      literalPartMatchingClaimTextCount: 2, literalPartMatchingClaimTextUtf8Bytes: 8});
+    const partition = material.structure.partition;
+    expect(partition.status).toBe('measured');
+    if (partition.status !== 'measured') throw new Error('Expected normalized partition');
+    expect(partition.claims).toBe(Buffer.byteLength(JSON.stringify(raw.contract.claims)));
+    expect(partition.totalNormalizedUtf8Bytes).toBe(Buffer.byteLength(JSON.stringify({document: raw})));
+    expect(partition.referenceDictionary + partition.semanticFrames + partition.claims + partition.bodyParts + partition.contractOther + partition.overhead)
+      .toBe(partition.totalNormalizedUtf8Bytes);
+    expect(material.structure).not.toHaveProperty('assembledBodyBytes');
+  });
+
+  it.each(['missing', 'null', 'wrong_type', 'empty'] as const)('does not turn %s collections into valid-subset zeroes', shape => {
+    const document = nativeObjectFixture();
+    const raw: Record<string, unknown> = {...document, contract: {...document.contract}};
+    const contract = raw.contract as Record<string, unknown>;
+    if (shape === 'missing') delete contract.claims;
+    if (shape === 'null') contract.claims = null;
+    if (shape === 'wrong_type') contract.claims = 'PRIVATE_WRONG_CONTAINER';
+    if (shape === 'empty') contract.claims = [];
+    const collector = make(), events = collector.startRequest() as MaterialEvents;
+    events.chunk(chunk(JSON.stringify({document: raw}))); end(events);
+    const material = read(events);
+    if (material.structure.status !== 'measured') throw new Error('Expected observed container status');
+    expect(material.structure.collections.claims).toEqual(shape === 'empty' ? {status: 'array', items: 0} : {status: shape});
+    if (shape !== 'empty') expect(material.structure.claimKinds).toBeUndefined();
+  });
+
+  it.each(['root', 'contract'])('does not absorb an unknown %s key into normalized overhead', location => {
+    const document = nativeObjectFixture();
+    const raw = location === 'root' ? {...document, PRIVATE_UNKNOWN: 'secret'} : {...document, contract: {...document.contract, PRIVATE_UNKNOWN: 'secret'}};
+    const collector = make(), events = collector.startRequest() as MaterialEvents;
+    events.chunk(chunk(JSON.stringify({document: raw}))); end(events);
+    const material = read(events);
+    expect(material.structure).toMatchObject({status: 'measured', partition: {status: 'unsupported_shape'}});
+    expect(JSON.stringify(material)).not.toContain('PRIVATE_UNKNOWN');
+  });
+
+  it('keeps per-call Unicode tails separate in ambiguous multi-tool output', () => {
+    const collector = make(), events = collector.startRequest() as MaterialEvents;
+    events.chunk(chunk('\ud83d', {}, 0)); events.chunk(chunk('\ude00', {}, 1)); end(events);
+    expect(read(events)).toMatchObject({wireToolRole: 'ambiguous', decoded: {arguments: {utf8Bytes: 6, utf16Chars: 2, utf8Precision: 'exact'}},
+      retention: {arguments: {status: 'ambiguous'}}, json: {status: 'not_parsed'}, structure: {status: 'not_observed'}});
+    expect(collector.current()).toBeUndefined();
+  });
+
+  it('does not pair surrogate halves across a conflicting call id at the same index', () => {
+    const events = make().startRequest() as MaterialEvents;
+    events.chunk(chunk('\ud83d'));
+    events.chunk({id: 'material-response', choices: [{index: 0, delta: {tool_calls: [{index: 0, id: 'different-call',
+      type: 'function', function: {arguments: '\ude00'}}]}, finish_reason: null}]}); end(events);
+    const material = read(events);
+    expect(material).toMatchObject({wireToolRole: 'unknown', decoded: {arguments: {utf8Precision: 'lower_bound', utf16Chars: 2}}, json: {status: 'not_parsed'}});
+    expect(material.decoded.arguments!.utf8Bytes).toBeLessThanOrEqual(6);
+  });
+
+  it('bounds tool identity tracking and marks lost byte precision rather than joining unrelated surrogate halves', () => {
+    const collector = make(), events = collector.startRequest() as MaterialEvents;
+    for (let index = 0; index < 10_001; index++) events.chunk(chunk(index % 2 ? '\ude00' : '\ud83d', {}, index));
+    end(events);
+    const material = read(events);
+    expect(material.wireToolRole).toBe('ambiguous');
+    expect(material.decoded.arguments?.utf8Precision).toBe('lower_bound');
+    expect(material.decoded.arguments!.utf8Bytes).toBeLessThanOrEqual(30_003);
+    expect(material.json.status).toBe('not_parsed');
+  });
+
+  it('holds independent request snapshots when an old response finishes after a newer request starts', () => {
+    const collector = make(), old = collector.startRequest() as MaterialEvents;
+    old.chunk(chunk(JSON.stringify({document: nativeObjectFixture()})));
+    const newer = collector.startRequest() as MaterialEvents; newer.chunk(chunk('{}'));
+    end(old, 'length'); end(newer);
+    expect(old.dispatchOrdinal).toBe(1); expect(newer.dispatchOrdinal).toBe(2);
+    expect(read(old)).toMatchObject({transport: {finishReason: 'length'}, representation: 'authored_claim_document@2'});
+    expect(read(newer)).toMatchObject({transport: {finishReason: 'tool_calls'}, representation: 'unknown'});
+  });
+
+  it('preserves one call’s surrogate tail through empty chunks and freezes earlier snapshots', () => {
+    const collector = make(), events = collector.startRequest() as MaterialEvents;
+    events.chunk(chunk('\ud83d'));
+    const prefix = read(events);
+    for (const fragment of ['', '\ude00']) events.chunk({id: 'material-response', choices: [{index: 0,
+      delta: {tool_calls: [{index: 0, function: {arguments: fragment}}]}, finish_reason: null}]});
+    end(events);
+    expect(prefix).toMatchObject({transport: {eofSeen: false, framing: 'unknown'}, decoded: {arguments: {utf8Bytes: 3, utf16Chars: 1}}, json: {status: 'not_parsed'}});
+    expect(read(events)).toMatchObject({decoded: {arguments: {utf8Bytes: 4, utf16Chars: 2, utf8Precision: 'exact', utf16Precision: 'exact'}}});
+  });
+
+  it.each([true, false])('classifies an ordinary tool only from the captured installed list: %s', known => {
+    const collector = createOpenAiTypedFinalWireCollector({finalToolName, ...(known ? {knownToolNames: ['actual_read_tool']} : {})});
+    const events = collector.startRequest() as MaterialEvents;
+    events.chunk({id: 'material-response', choices: [{index: 0, delta: {tool_calls: [{index: 0, id: 'call', type: 'function',
+      function: {name: 'actual_read_tool', arguments: '{"document":{}}'}}]}, finish_reason: null}]}); end(events);
+    expect(read(events)).toMatchObject({wireToolRole: known ? 'other_tool' : 'unknown', json: {status: 'not_parsed'},
+      representation: known ? 'not_applicable' : 'unknown', structure: {status: known ? 'not_applicable' : 'not_observed'}});
+  });
+
+  it('measures native no-tool output without parsing it as a final document', () => {
+    const events = make().startRequest() as MaterialEvents;
+    events.chunk({id: 'material-response', choices: [{index: 0, delta: {content: 'ordinary progress', refusal: ''}, finish_reason: null}]}); end(events, 'stop');
+    expect(read(events)).toMatchObject({wireToolRole: 'no_tool', representation: 'not_applicable', structure: {status: 'not_applicable'},
+      retention: {arguments: {status: 'not_observed', retainedUtf8Bytes: 0}, refusal: {status: 'complete', retainedUtf8Bytes: 0}}});
+  });
+
+  it('does not call an interrupted prefix complete JSON before actual EOF', () => {
+    const events = make().startRequest() as MaterialEvents;
+    events.chunk(chunk(JSON.stringify({document: nativeObjectFixture()}))); events.done(); events.fail('transport_error');
+    expect(read(events)).toMatchObject({transport: {doneSeen: true, eofSeen: false, framing: 'unknown'}, json: {status: 'not_parsed'}});
+  });
+
+  it('shares the UTF8 saturation domain while keeping the actual smaller UTF16 count exact', () => {
+    const events = make().startRequest() as MaterialEvents;
+    const text = '中'.repeat(Math.floor(OPENAI_TYPED_FINAL_RAW_BYTES / 3) + 1);
+    events.chunk(chunk(text)); end(events);
+    expect(read(events)).toMatchObject({decoded: {arguments: {utf8Bytes: OPENAI_TYPED_FINAL_RAW_BYTES + 1,
+      utf8Precision: 'lower_bound', utf16Chars: text.length, utf16Precision: 'exact'}}, retention: {arguments: {status: 'over_limit'}}});
+  });
+
+  it('bounds cumulative identity names across calls without changing the old raw collector', () => {
+    const events = make().startRequest() as MaterialEvents;
+    for (const index of [0, 1]) events.chunk({id: 'material-response', choices: [{index: 0, delta: {tool_calls: [{index,
+      id: `call-${index}`, type: 'function', function: {name: 'x'.repeat(OPENAI_TYPED_FINAL_RAW_BYTES / 2), arguments: '{}'}}]}, finish_reason: null}]});
+    end(events);
+    expect(read(events)).toMatchObject({wireToolRole: 'ambiguous', json: {status: 'not_parsed'}});
+  });
+
+  it('reports original SQL NULL slots and measurement resource limits without a compiler verdict', () => {
+    const document = nativeObjectFixture(), events = make().startRequest() as MaterialEvents;
+    events.chunk(chunk(JSON.stringify({document}))); end(events);
+    const countNull = (value: unknown): number => value === null ? 1 : value && typeof value === 'object'
+      ? Object.values(value).reduce<number>((sum, item) => sum + countNull(item), 0) : 0;
+    expect(read(events).structure).toMatchObject({status: 'measured', explicitNullCount: countNull(document)});
+    const limited = make(true, () => 'nodes').startRequest() as MaterialEvents;
+    limited.chunk(chunk(JSON.stringify({document}))); end(limited);
+    expect(read(limited)).toMatchObject({json: {status: 'complete_json'}, representation: 'authored_claim_document@2', structure: {status: 'resource_limit'}});
+  });
+
+  it('drops a throwing structure observer without changing the original collector receipt or failure path', () => {
+    const collector = make(true, () => {throw new Error('PRIVATE_OBSERVER_FAILURE');}), events = collector.startRequest() as MaterialEvents;
+    const args = JSON.stringify({document: nativeObjectFixture()}); events.chunk(chunk(args)); end(events);
+    expect(collector.current()?.rawArguments).toBe(args); expect(collector.diagnostic().status).toBe('complete');
+    expect(events.materialSnapshot?.()).toBeUndefined();
+    expect(collector.current()?.rawArguments).toBe(args); expect(collector.diagnostic().status).toBe('complete');
   });
 });
