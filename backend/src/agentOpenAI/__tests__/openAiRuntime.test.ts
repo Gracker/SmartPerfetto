@@ -547,6 +547,46 @@ describe('OpenAI actual typed final main integration', () => {
     } finally {release.resolve(); await work.catch(() => undefined);}
   });
 
+  it('R14 logs only the closed quote location after the actual failed consumer drains', async () => {
+    jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(typedConfig({outputConfig: Object.freeze({
+      finalSubmission: 'authored_claim_document_v2', declarationSyntax: 'authoring_v2'})}));
+    const document = {representationVersion: 'authored_claim_document@2', referenceDictionary: [],
+      semanticFrames: [{predicate: 'numeric.cell', polarity: 'affirmed', discourse: 'asserted', quantifier: 'one', modality: 'certain', conditions: null, population: 'cited_rows'}],
+      contract: {mode: 'focused_answer', conclusions: null, clusters: null, evidenceChain: null, relationProposals: null,
+        sourceClaimBindings: null, uncertainties: null, nextSteps: null, metadata: null, claims: [{id: 'PRIVATE_ID_CANARY', conclusionId: null,
+          text: 'PRIVATE_CLAIM_CANARY', kind: 'numeric', references: [], artifactRefs: null, relationRefs: null, supportLevel: null,
+          semantics: {frameIndex: 0, subjectRefs: null, objectRefs: null, timeRangeNs: null, numeric: {operator: 'eq', value: 10, unit: 'ms',
+            presentation: {unit: 'ms', decimalPlaces: 0, rounding: 'half_away_from_zero', quotes: [{kind: 'body_part', text: '10 ms', partIndex: 0, localOccurrence: null}]}}}}]},
+      bodyParts: ['PRIVATE_BODY_CANARY 10 ms and 10 ms']};
+    const warnings = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const entered = createDeferred<void>(), release = createDeferred<void>(), realRun = Runner.prototype.run;
+    jest.spyOn(Runner.prototype as any, 'run').mockImplementation(async function(this: Runner, ...args: any[]) {
+      const stream = await (realRun as any).apply(this, args), iterate = stream[Symbol.asyncIterator].bind(stream);
+      stream[Symbol.asyncIterator] = async function* () {try {yield* iterate();} finally {entered.resolve(); await release.promise;}};
+      return stream;
+    });
+    const request = jest.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      const tools = JSON.parse(String(init?.body)).tools;
+      const candidates = tools.filter((entry: any) => entry.function?.parameters?.properties?.document); expect(candidates).toHaveLength(1);
+      return chatCompletionToolCall('r14-quote-response', candidates[0].function.name, {document});
+    });
+    const {runtime, updates} = createRuntimeWithUpdates();
+    const work = runtime.analyze('Question', 'r14-quote-private', 'trace', options); void work.catch(() => undefined);
+    try {
+      await entered.promise;
+      expect(warnings.mock.calls.filter(([prefix]) => prefix === '[OpenAIRuntime] typed final admission failed')).toHaveLength(0);
+      release.resolve(); const result = await work;
+      const diagnostics = warnings.mock.calls.filter(([prefix]) => prefix === '[OpenAIRuntime] typed final admission failed');
+      expect(diagnostics).toEqual([['[OpenAIRuntime] typed final admission failed', {wireStatus: 'complete', admissionFailure: 'invalid_submission',
+        compilerFailure: 'quote_unresolved', wireFinishReason: 'tool_calls', dispatchOrdinal: 1,
+        compilerFailureLocation: {reason: 'local_ambiguous', claimOrdinal: 1, quoteOrdinal: 1, partIndex: 0,
+          localMatchCount: {count: 2, precision: 'exact'}}}]]);
+      expect(result.conclusion).toBe(''); expect(request).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(diagnostics)).not.toMatch(/PRIVATE_|10 ms|rawArguments|nativeDocument/);
+      expect(JSON.stringify(updates)).not.toContain('PRIVATE_');
+    } finally {release.resolve(); await work.catch(() => undefined);}
+  });
+
   it('settles a typed SDK startup throw without hanging its unbound submission gate or leaking the error', async () => {
     jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(typedConfig());
     const {runtime, updates} = createRuntimeWithUpdates();
@@ -5248,4 +5288,39 @@ describe('R13 explicit dual main transport', () => {
       expect(f.updates.some(update => update.type === 'answer_token' && update.content?.delta)).toBe(false);
     } finally {f.scope.dispose(); restoreClone();}
   });
+});
+
+describe('R14 quote diagnostic log whitelist', () => {
+  const valid = () => ({reason: 'local_no_match', claimOrdinal: 1, quoteOrdinal: 2, partIndex: 0,
+    localMatchCount: {count: 0, precision: 'exact'}});
+  it('copies only closed fields and distinguishes omitted occurrence from explicit zero', () => {
+    const input = valid(), projected = __testing.projectCompilerFailureLocation(input);
+    expect(projected).toEqual(input); expect(projected).not.toBe(input);
+    expect(projected?.localMatchCount).not.toBe(input.localMatchCount); expect(projected).not.toHaveProperty('localOccurrence');
+    expect(__testing.projectCompilerFailureLocation({...input, localOccurrence: 0})).toEqual({...input, localOccurrence: 0});
+    expect(__testing.projectCompilerFailureLocation({...input, reason: 'local_ambiguous', localMatchCount: {count: 17, precision: 'at_least'}}))
+      .toMatchObject({localMatchCount: {count: 17, precision: 'at_least'}});
+  });
+
+  it.each(['reason', 'claim_zero', 'quote_fraction', 'part_negative', 'occurrence_unsafe', 'occurrence_undefined', 'count_overflow',
+    'count_nan', 'false_exact', 'false_lower_bound', 'extra_text', 'extra_nested_text', 'getter', 'proxy'] as const)
+    ('drops malformed or private fields without logging source material: %s', kind => {
+      let input: unknown = valid(), reads = 0;
+      if (kind === 'reason') input = {...valid(), reason: 'PRIVATE_REASON_CANARY'};
+      if (kind === 'claim_zero') input = {...valid(), claimOrdinal: 0};
+      if (kind === 'quote_fraction') input = {...valid(), quoteOrdinal: 1.5};
+      if (kind === 'part_negative') input = {...valid(), partIndex: -1};
+      if (kind === 'occurrence_unsafe') input = {...valid(), localOccurrence: Number.MAX_SAFE_INTEGER + 1};
+      if (kind === 'occurrence_undefined') input = {...valid(), localOccurrence: undefined};
+      if (kind === 'count_overflow') input = {...valid(), localMatchCount: {count: 18, precision: 'at_least'}};
+      if (kind === 'count_nan') input = {...valid(), localMatchCount: {count: NaN, precision: 'exact'}};
+      if (kind === 'false_exact') input = {...valid(), localMatchCount: {count: 17, precision: 'exact'}};
+      if (kind === 'false_lower_bound') input = {...valid(), localMatchCount: {count: 16, precision: 'at_least'}};
+      if (kind === 'extra_text') input = {...valid(), text: 'PRIVATE_QUOTE_CANARY'};
+      if (kind === 'extra_nested_text') input = {...valid(), localMatchCount: {...valid().localMatchCount, raw: 'PRIVATE_NESTED_CANARY'}};
+      if (kind === 'getter') Object.defineProperty(input, 'reason', {enumerable: true, get() {reads++; return 'local_no_match';}});
+      if (kind === 'proxy') input = new Proxy(valid(), {get() {reads++; throw new Error('PRIVATE_PROXY_CANARY');},
+        ownKeys() {reads++; throw new Error('PRIVATE_PROXY_CANARY');}});
+      expect(__testing.projectCompilerFailureLocation(input)).toBeUndefined(); expect(reads).toBe(0);
+    });
 });

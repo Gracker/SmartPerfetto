@@ -10,6 +10,7 @@ import {shouldCollectSelectedEvidenceFoundation} from '../../selectedEvidenceFou
 import {snapshotSceneCoverageRegistry} from '../../../agent/scene/sceneCoveragePlan';
 import {EventEmitter} from 'events';
 import {AsyncLocalStorage} from 'node:async_hooks';
+import {types} from 'node:util';
 import {Agent, MaxTurnsExceededError, OpenAIProvider, Runner, StreamedRunResult, setTracingDisabled, type AgentInputItem, type ModelSettings, type RunStreamEvent, type Tool} from '@openai/agents';
 import OpenAI from 'openai';
 import {commitEvaluationSdkHandoffIfActive, recordEvaluationTokenDeltaIfPresent} from '../../../services/selfEvolution/evaluationRuntimeHooks';
@@ -39,6 +40,8 @@ import {createRuntimeRunAuthorization, throwIfRunAuthorizationRevoked, type RunA
 import {ensureRuntimeAdmission, assertRuntimeTaskWorkRemaining, RuntimeTaskDeadlineExceededError} from '../../runtimeTaskDeadline';
 import {conclusionDeclarationAuthoring} from '../../../agent/core/conclusionContract';
 import {AUTHORED_CLAIM_DOCUMENT_VERSION} from '../../../agent/core/authoredClaimDocument';
+import {AUTHORED_QUOTE_FAILURE_REASONS, AUTHORED_QUOTE_MATCH_COUNT_LIMIT,
+  type AuthoredQuoteFailureLocation} from '../../../agent/core/authoredClaimObject';
 import type {AnalysisNote, AnalysisPlanV3, ClaudeAnalysisContext, Hypothesis, TracePairContext, TraceCompleteness, UncertaintyFlag} from '../../../agentv3/types';
 import {recordPlanOrPrePlanToolCall, resetPrePlanToolCallsForNewRun, readToolResultFacts} from '../../../agentv3/planToolCallRecorder';
 import {buildComplexityClassifierInput} from '../../../agentv3/queryComplexityContext';
@@ -539,6 +542,39 @@ function parseJsonObject(value: unknown): Record<string, unknown> | undefined {
   }
 }
 
+function quoteDiagnosticData(value: unknown, required: readonly string[], optional: readonly string[] = []): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || types.isProxy(value) || Object.getPrototypeOf(value) !== Object.prototype) return;
+  const keys = Reflect.ownKeys(value);
+  const allowed = [...required, ...optional];
+  if (required.some(key => !keys.includes(key)) || keys.some(key => typeof key !== 'string' || !allowed.includes(key))) return;
+  const data: Record<string, unknown> = {};
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !('value' in descriptor) || !descriptor.enumerable) return;
+    data[key as string] = descriptor.value;
+  }
+  return data;
+}
+
+/** Closed internal log projection. Never spread the model/compiler object into a log. */
+function projectCompilerFailureLocation(value: unknown): AuthoredQuoteFailureLocation | undefined {
+  const data = quoteDiagnosticData(value, ['reason', 'claimOrdinal', 'quoteOrdinal', 'partIndex', 'localMatchCount'], ['localOccurrence']);
+  if (!data) return;
+  const reason = AUTHORED_QUOTE_FAILURE_REASONS.find(candidate => candidate === data.reason);
+  const integer = (value: unknown, minimum: number): value is number =>
+    typeof value === 'number' && Number.isSafeInteger(value) && value >= minimum;
+  if (!reason || !integer(data.claimOrdinal, 1) || !integer(data.quoteOrdinal, 1) || !integer(data.partIndex, 0)) return;
+  const hasOccurrence = Object.prototype.hasOwnProperty.call(data, 'localOccurrence');
+  if (hasOccurrence && !integer(data.localOccurrence, 0)) return;
+  const matches = quoteDiagnosticData(data.localMatchCount, ['count', 'precision']);
+  if (!matches || !integer(matches.count, 0) || matches.count > AUTHORED_QUOTE_MATCH_COUNT_LIMIT) return;
+  const precision = matches.count === AUTHORED_QUOTE_MATCH_COUNT_LIMIT ? 'at_least' : 'exact';
+  if (matches.precision !== precision) return;
+  return {reason, claimOrdinal: data.claimOrdinal, quoteOrdinal: data.quoteOrdinal, partIndex: data.partIndex,
+    ...(hasOccurrence ? {localOccurrence: data.localOccurrence as number} : {}),
+    localMatchCount: {count: matches.count, precision}};
+}
+
 function summarizeToolOutput(value: unknown): string {
   return summarizeExternalToolResult(value);
 }
@@ -793,6 +829,7 @@ export const __testing = {
   createOpenAiReasoningFilterState,
   filterOpenAiVisibleAnswerDelta,
   compactProviderErrorMessage,
+  projectCompilerFailureLocation,
   commitAfterProviderClose,
   buildOpenAIModelSettings,
   outputOnlyProviderData,
@@ -1635,11 +1672,14 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
                 outcome: finish.status === 'completed' ? 'missing_submission' : 'transport_failure'};
               try {
                 const diagnostic = typedAttempt.diagnostic();
+                const compilerFailureLocation = diagnostic.compilerFailure === 'quote_unresolved'
+                  ? projectCompilerFailureLocation(diagnostic.compilerFailureLocation) : undefined;
                 console.warn('[OpenAIRuntime] typed final admission failed', {
                   wireStatus: diagnostic.status,
                   ...(diagnostic.reason ? {wireReason: diagnostic.reason} : {}),
                   ...(diagnostic.admissionFailure ? {admissionFailure: diagnostic.admissionFailure} : {}),
                   ...(diagnostic.compilerFailure ? {compilerFailure: diagnostic.compilerFailure} : {}),
+                  ...(compilerFailureLocation ? {compilerFailureLocation} : {}),
                   ...(diagnostic.wireFinishReason ? {wireFinishReason: diagnostic.wireFinishReason} : {}),
                   dispatchOrdinal: diagnostic.dispatchOrdinal,
                 });

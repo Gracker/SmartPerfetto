@@ -10,6 +10,18 @@ import {CONCLUSION_PROTOCOL_VALUES, parseConclusionDeclarationPayload,
 import {findQuoteOccurrence, quoteOccurrenceAtSpan} from './numericQuoteLocator';
 
 export const AUTHORED_CLAIM_OBJECT_VERSION = 'authored_claim_document@2';
+export const AUTHORED_QUOTE_FAILURE_REASONS = Object.freeze(['local_no_match', 'local_ambiguous',
+  'local_occurrence_out_of_range', 'global_span_unrepresentable'] as const);
+export const AUTHORED_QUOTE_MATCH_COUNT_LIMIT = 17;
+/** Private diagnostic coordinates only; never a quote repair or evidence binding. */
+export interface AuthoredQuoteFailureLocation {
+  readonly reason: typeof AUTHORED_QUOTE_FAILURE_REASONS[number];
+  readonly claimOrdinal: number;
+  readonly quoteOrdinal: number;
+  readonly partIndex: number;
+  readonly localOccurrence?: number;
+  readonly localMatchCount: Readonly<{count: number; precision: 'exact' | 'at_least'}>;
+}
 export interface AuthoredQuoteBinding {
   /** One-based positions in the original, unfiltered declaration arrays. */
   claimOrdinal: number;
@@ -32,7 +44,8 @@ export type AuthoredClaimObjectResult = {
   partSpans: AuthoredBodyPartSpan[];
   quoteBindings: AuthoredQuoteBinding[];
   material: {nativeDocument: AuthoringMaterial; expanded: AuthoringMaterial; bodyUtf8Bytes: number; bodyUtf16Length: number};
-} | {status: 'projection_failed'; code: AuthoredClaimObjectFailure; privateNativeDocument: unknown};
+} | {status: 'projection_failed'; code: AuthoredClaimObjectFailure; privateNativeDocument: unknown;
+  compilerFailureLocation?: AuthoredQuoteFailureLocation};
 
 type JsonRecord = Record<string, unknown>;
 const object = (value: unknown): value is JsonRecord => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -108,10 +121,35 @@ function artifactReference(value: unknown): JsonRecord {
 }
 interface PartQuote {claimOrdinal: number; quoteOrdinal: number; text: string; partIndex: number; localOccurrence?: number}
 
+/** Observation only: preserve the original matcher's UTF-16, non-overlapping stepping. */
+function quoteFailureLocation(quote: PartQuote, partText: string, globalFailure: boolean): AuthoredQuoteFailureLocation {
+  let count = 0;
+  for (let start = partText.indexOf(quote.text); start >= 0; start = partText.indexOf(quote.text, start + quote.text.length)) {
+    count++;
+    if (count === AUTHORED_QUOTE_MATCH_COUNT_LIMIT) break;
+  }
+  // This function is called only after the original matcher failed. Saturation
+  // never decides whether a requested occurrence exists or changes its result.
+  let reason: AuthoredQuoteFailureLocation['reason'];
+  if (globalFailure) {
+    reason = 'global_span_unrepresentable';
+  } else if (count === 0) {
+    reason = 'local_no_match';
+  } else if (quote.localOccurrence === undefined) {
+    reason = 'local_ambiguous';
+  } else {
+    reason = 'local_occurrence_out_of_range';
+  }
+  const precision: AuthoredQuoteFailureLocation['localMatchCount']['precision'] = count === AUTHORED_QUOTE_MATCH_COUNT_LIMIT ? 'at_least' : 'exact';
+  return Object.freeze({reason, claimOrdinal: quote.claimOrdinal, quoteOrdinal: quote.quoteOrdinal, partIndex: quote.partIndex,
+    ...(quote.localOccurrence === undefined ? {} : {localOccurrence: quote.localOccurrence}),
+    localMatchCount: Object.freeze({count, precision})});
+}
+
 /** Explicit native grammar only. No schema coercion, captures, SDK state or live authority. */
 export function compileAuthoredClaimObject(nativeDocument: unknown): AuthoredClaimObjectResult {
-  const failed = (code: AuthoredClaimObjectFailure): AuthoredClaimObjectResult =>
-    ({status: 'projection_failed', code, privateNativeDocument: nativeDocument});
+  const failed = (code: AuthoredClaimObjectFailure, compilerFailureLocation?: AuthoredQuoteFailureLocation): AuthoredClaimObjectResult =>
+    ({status: 'projection_failed', code, privateNativeDocument: nativeDocument, ...(compilerFailureLocation ? {compilerFailureLocation} : {})});
   try {
     const nativeMaterial = measured(nativeDocument, 'raw');
     // Descriptor preflight has bounded every value, including unused frames/dictionary entries.
@@ -233,11 +271,12 @@ export function compileAuthoredClaimObject(nativeDocument: unknown): AuthoredCla
     for (const quoteLocator of partQuotes) {
       const part = assembled.partSpans[quoteLocator.partIndex];
       if (!part) return failed('invalid_quote_locator');
-      const local = findQuoteOccurrence(assembled.body.slice(part.startUtf16, part.endUtf16), quoteLocator.text, quoteLocator.localOccurrence);
-      if (!local) return failed('quote_unresolved');
+      const partText = assembled.body.slice(part.startUtf16, part.endUtf16);
+      const local = findQuoteOccurrence(partText, quoteLocator.text, quoteLocator.localOccurrence);
+      if (!local) return failed('quote_unresolved', quoteFailureLocation(quoteLocator, partText, false));
       const span = {start: part.startUtf16 + local.start, end: part.startUtf16 + local.end};
       const occurrence = quoteOccurrenceAtSpan(assembled.body, quoteLocator.text, span);
-      if (occurrence === undefined) return failed('quote_unresolved');
+      if (occurrence === undefined) return failed('quote_unresolved', quoteFailureLocation(quoteLocator, partText, true));
       const canonicalQuote = {text: quoteLocator.text, occurrence};
       // The complete projected shape is known here; never index a parser-filtered claims array.
       const rawClaim = (payload.claims as JsonRecord[])[quoteLocator.claimOrdinal - 1];

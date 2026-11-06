@@ -474,3 +474,42 @@ describe('native authored object pure compiler', () => {
     }
   });
 });
+
+describe('R14 private quote failure locations', () => {
+  it.each([
+    {name: 'absent', parts: ['PRIVATE_BODY_CANARY'], text: '10 ms', occurrence: null, partIndex: 0, reason: 'local_no_match', count: 0, precision: 'exact'},
+    {name: 'explicit_zero_absent', parts: ['PRIVATE_BODY_CANARY'], text: '10 ms', occurrence: 0, partIndex: 0, reason: 'local_no_match', count: 0, precision: 'exact'},
+    {name: 'duplicate_unique', parts: ['10 ms / 10 ms'], text: '10 ms', occurrence: null, partIndex: 0, reason: 'local_ambiguous', count: 2, precision: 'exact'},
+    {name: 'ordinal_out_of_range', parts: ['10 ms'], text: '10 ms', occurrence: 1, partIndex: 0, reason: 'local_occurrence_out_of_range', count: 1, precision: 'exact'},
+    {name: 'unicode', parts: ['前😀', '值 10 ms'], text: '10 ms', occurrence: 1, partIndex: 1, reason: 'local_occurrence_out_of_range', count: 1, precision: 'exact'},
+    {name: 'global_nonoverlap', parts: ['1', '11'], text: '11', occurrence: null, partIndex: 1, reason: 'global_span_unrepresentable', count: 1, precision: 'exact'},
+    {name: 'sixteen', parts: [Array(16).fill('10 ms').join(' / ')], text: '10 ms', occurrence: null, partIndex: 0, reason: 'local_ambiguous', count: 16, precision: 'exact'},
+    {name: 'seventeen', parts: [Array(17).fill('10 ms').join(' / ')], text: '10 ms', occurrence: null, partIndex: 0, reason: 'local_ambiguous', count: 17, precision: 'at_least'},
+    {name: 'beyond_cap_ordinal', parts: [Array(20).fill('10 ms').join(' / ')], text: '10 ms', occurrence: 25, partIndex: 0, reason: 'local_occurrence_out_of_range', count: 17, precision: 'at_least'},
+  ])('records only original coordinates/counts for $name', item => {
+    const f = fixture(), claim = f.wire.contract.claims[0];
+    f.wire.contract.claims.unshift({...claim, id: 'PRIVATE_INVALID_FIRST', kind: 'invalid-kind', semantics: null});
+    claim.semantics.numeric.presentation.quotes = [{kind: 'global', text: '10 ms', occurrence: 0},
+      {kind: 'body_part', text: item.text, partIndex: item.partIndex, localOccurrence: item.occurrence}];
+    f.wire.bodyParts = item.parts;
+    const result = compileAuthoredClaimObject(f.wire);
+    expect(result).toMatchObject({status: 'projection_failed', code: 'quote_unresolved', compilerFailureLocation: {
+      reason: item.reason, claimOrdinal: 2, quoteOrdinal: 2, partIndex: item.partIndex,
+      ...(item.occurrence === null ? {} : {localOccurrence: item.occurrence}), localMatchCount: {count: item.count, precision: item.precision},
+    }});
+    expect(result.privateNativeDocument).toBe(f.wire);
+    const location = (result as unknown as {compilerFailureLocation: Record<string, unknown>}).compilerFailureLocation;
+    if (item.occurrence === null) expect(location).not.toHaveProperty('localOccurrence');
+    expect(JSON.stringify(location)).not.toMatch(/PRIVATE_|10 ms|reference|claimId|text/);
+  });
+
+  it('does not derive failure from saturated counts or alter successful/v1 material', () => {
+    const f = fixture(); f.wire.bodyParts = [Array(20).fill('10 ms').join(' / ')];
+    f.wire.contract.claims[0].semantics.numeric.presentation.quotes = [{kind: 'body_part', text: '10 ms', partIndex: 0, localOccurrence: 18}];
+    const result = compileAuthoredClaimObject(f.wire); expect(result.status).toBe('compiled'); expect(result).not.toHaveProperty('compilerFailureLocation');
+    if (result.status === 'compiled') expect(result.quoteBindings[0].canonicalQuote).toEqual({text: '10 ms', occurrence: 18});
+    const original = fixture(), legacy = compileAuthoredClaimDocument(JSON.stringify({representationVersion: AUTHORED_CLAIM_DOCUMENT_VERSION,
+      contract: original.full, bodyParts: original.wire.bodyParts}));
+    expect(legacy.status).toBe('compiled'); expect(legacy).not.toHaveProperty('compilerFailureLocation');
+  });
+});

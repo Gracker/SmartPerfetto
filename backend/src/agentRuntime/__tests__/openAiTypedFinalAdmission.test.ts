@@ -2095,3 +2095,31 @@ describe('R13 explicit dual carrier through the actual installed SDK', () => {
     expect(events.materialSnapshot!()!.retention.combinedRetainedUtf8Bytes).toBeLessThanOrEqual(OPENAI_TYPED_FINAL_RAW_BYTES);
   });
 });
+
+describe('R14 first private compiler quote location', () => {
+  let restoreClone: (() => void) | undefined;
+  beforeEach(() => {restoreClone = installCurrentRealmStructuredCloneForTest();});
+  afterEach(() => {restoreClone?.(); restoreClone = undefined;});
+  it.each(['function', 'assistant'] as const)('retains the original quote failure through real %s drain and cleanup', async lane => {
+    const document = nativeObjectFixture(); document.bodyParts = ['PRIVATE_QUOTE_BODY 10 ms and 10 ms'];
+    document.contract.claims[0].id = 'PRIVATE_CLAIM_ID';
+    document.contract.claims[0].semantics!.numeric!.presentation = {unit: 'ms', decimalPlaces: 0, rounding: 'half_away_from_zero',
+      quotes: [{kind: 'body_part', text: '10 ms', partIndex: 0, localOccurrence: null}]};
+    const text = JSON.stringify({document});
+    const response = () => lane === 'function' ? chatResponse(text) : new Response([
+      {id: 'diagnostic-response', choices: [{index: 0, delta: {role: 'assistant', content: text}, finish_reason: null}]},
+      {id: 'diagnostic-response', choices: [{index: 0, delta: {}, finish_reason: 'stop'}]},
+    ].map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n', {headers: {'content-type': 'text/event-stream'}});
+    const h = nativeObjectProbe({productionBridge: true, literalSubtree: true, contractVersion: 'openai_typed_final_admission@4',
+      argumentsText: text, response});
+    try {
+      await h.settle(); expect(h.submission()).toBeUndefined(); expect(h.observations.drained).toBe(true); expect(h.observations.consumerDrained).toBe(true);
+      const expected = {compilerFailure: 'quote_unresolved', compilerFailureLocation: {reason: 'local_ambiguous', claimOrdinal: 1,
+        quoteOrdinal: 1, partIndex: 0, localMatchCount: {count: 2, precision: 'exact'}}};
+      expect(h.admission()!.diagnostic()).toMatchObject(expected);
+      h.admission()!.revoke('sdk_incomplete'); expect(h.admission()!.diagnostic()).toMatchObject(expected);
+      expect(JSON.stringify(h.admission()!.diagnostic())).not.toMatch(/PRIVATE_|10 ms|rawArguments|nativeDocument/);
+      expect(h.fetcher).toHaveBeenCalledTimes(1);
+    } finally {await h.cleanup();}
+  });
+});

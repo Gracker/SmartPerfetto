@@ -5,7 +5,7 @@ import {isDeepStrictEqual, types} from 'node:util';
 import {AUTHORED_CLAIM_DOCUMENT_VERSION, compileAuthoredClaimDocument, measureAuthoredJson,
   type AuthoredClaimDocumentResult} from '../../../agent/core/authoredClaimDocument';
 import {AUTHORED_CLAIM_OBJECT_VERSION, compileAuthoredClaimObject,
-  type AuthoredClaimObjectFailure, type AuthoredClaimObjectResult} from '../../../agent/core/authoredClaimObject';
+  type AuthoredClaimObjectFailure, type AuthoredClaimObjectResult, type AuthoredQuoteFailureLocation} from '../../../agent/core/authoredClaimObject';
 import {AUTHORED_CLAIM_DOCUMENT_COMPILER_VERSION, AUTHORED_FINAL_SUBMISSION_PENDING_ACK,
   AUTHORED_CLAIM_OBJECT_COMPILER_VERSION,
   issueAuthoredFinalSubmission, readAuthoredFinalSubmission, revokeAuthoredFinalSubmissionIssuer,
@@ -362,6 +362,12 @@ export function createOpenAiTypedFinalAttempt(input: {
   let pending: PendingSubmission | undefined, decision: StopDecision | undefined;
   let revoked: OpenAiTypedFinalAdmissionFailure | undefined, settled = false;
   let firstCompilerFailure: AuthoredClaimObjectFailure | undefined;
+  let firstCompilerFailureLocation: AuthoredQuoteFailureLocation | undefined;
+  const rememberCompilerFailure = (failure: Extract<AuthoredClaimDocumentResult | AuthoredClaimObjectResult, {status: 'projection_failed'}>) => {
+    if (firstCompilerFailure !== undefined) return;
+    firstCompilerFailure = failure.code;
+    if ('compilerFailureLocation' in failure) firstCompilerFailureLocation = failure.compilerFailureLocation;
+  };
   let issued: IssuedAuthoredFinalSubmission | undefined;
   const revoke = (reason: OpenAiTypedFinalAdmissionFailure) => {
     revoked ??= reason;
@@ -577,7 +583,8 @@ export function createOpenAiTypedFinalAttempt(input: {
     get contractIdentity() {return contractIdentity;},
     wireObserver,
     diagnostic: () => ({...collector.diagnostic(), ...(revoked ? {admissionFailure: revoked} : {}),
-      ...(firstCompilerFailure ? {compilerFailure: firstCompilerFailure} : {})}),
+      ...(firstCompilerFailure ? {compilerFailure: firstCompilerFailure} : {}),
+      ...(firstCompilerFailureLocation ? {compilerFailureLocation: firstCompilerFailureLocation} : {})}),
     bindStream(value: unknown) {
       if (bound) return fail('contract_unavailable');
       bound = true;
@@ -628,12 +635,12 @@ export function createOpenAiTypedFinalAttempt(input: {
       if (representationVersion === AUTHORED_CLAIM_DOCUMENT_VERSION) {
         if (typeof outer.documentJson !== 'string') return fail('invalid_submission');
         const compiled = compileAuthoredClaimDocument(outer.documentJson);
-        if (compiled.status !== 'compiled') {firstCompilerFailure ??= compiled.code; return fail('invalid_submission');}
+        if (compiled.status !== 'compiled') {rememberCompilerFailure(compiled); return fail('invalid_submission');}
         pending = {...common, representationVersion, documentJson: outer.documentJson, compiled};
       } else {
         if (!Object.prototype.hasOwnProperty.call(outer, 'document')) return fail('invalid_submission');
         const compiled = compileAuthoredClaimObject(outer.document);
-        if (compiled.status !== 'compiled') {firstCompilerFailure ??= compiled.code; return fail('invalid_submission');}
+        if (compiled.status !== 'compiled') {rememberCompilerFailure(compiled); return fail('invalid_submission');}
         pending = {...common, representationVersion, nativeDocument: compiled.privateNativeDocument, compiled};
       }
       return invocation;
@@ -688,7 +695,7 @@ export function createOpenAiTypedFinalAttempt(input: {
           try {outer = JSON.parse(snapshot.text);} catch {return fail('invalid_submission');}
           if (!record(outer) || Object.keys(outer).length !== 1 || !Object.prototype.hasOwnProperty.call(outer, 'document')) return fail('invalid_submission');
           const compiled = compileAuthoredClaimObject(outer.document);
-          if (compiled.status !== 'compiled') {firstCompilerFailure ??= compiled.code; return fail('invalid_submission');}
+          if (compiled.status !== 'compiled') {rememberCompilerFailure(compiled); return fail('invalid_submission');}
           assertCurrent(false);
           const dispatch = {dispatchOrdinal: snapshot.receipt.dispatchOrdinal, responseId: snapshot.receipt.responseId,
             messageId: snapshot.messageId};
