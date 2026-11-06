@@ -14,6 +14,7 @@ import type {
 } from '../agentRuntime/runtimeToolResultAudit';
 import type {CapabilityManifestAttributionV1} from './capabilityManifest';
 import type {AdaptiveRoutingReceiptV1} from './adaptiveRouting';
+import type {FinalSubmissionMode} from '../agentRuntime/finalSubmissionConfig';
 import type {StrategyRegistryContribution} from '../agentv3/strategyLoader';
 import type {
   DisplayConfig,
@@ -250,6 +251,8 @@ export interface RunManifestV1 {
   model?: string;
   /** Captured by the run's prompt owner; absent in historical manifests. */
   conclusionDeclarationSyntax?: 'canonical_v1' | 'authoring_v1' | 'authoring_v2';
+  /** Captured configuration only; absent on historical manifests. */
+  finalSubmission?: FinalSubmissionMode;
   outputLanguage: string;
   toolAllowlistHash: string;
   featureFlagSnapshot: Record<string, string | number | boolean>;
@@ -1259,6 +1262,7 @@ export interface RunManifestRuntimeAttribution {
   providerSnapshotHash?: string;
   model?: string;
   conclusionDeclarationSyntax?: 'canonical_v1' | 'authoring_v1' | 'authoring_v2';
+  finalSubmission?: FinalSubmissionMode;
   outputLanguage?: string;
 }
 

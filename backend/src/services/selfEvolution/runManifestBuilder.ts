@@ -21,6 +21,7 @@ import type {
   RunSkillInvocationStart,
   RunSkillRegistryAttribution,
 } from '../../types/selfEvolution';
+import {isFinalSubmissionMode} from '../../agentRuntime/finalSubmissionConfig';
 import {
   canonicalContentHash,
   immutableCanonicalSnapshot,
@@ -173,11 +174,22 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
   recordRuntime(input: RunManifestRuntimeAttribution): void {
     this.assertCollecting('record_runtime');
     const syntax = input.conclusionDeclarationSyntax;
+    const finalSubmission = input.finalSubmission;
+    if (finalSubmission !== undefined && !isFinalSubmissionMode(finalSubmission)) {
+      throw new Error('run_manifest_final_submission_invalid');
+    }
+    if (this.runtime.finalSubmission !== undefined && finalSubmission !== undefined &&
+        this.runtime.finalSubmission !== finalSubmission) throw new Error('run_manifest_final_submission_changed');
     if (syntax !== undefined && syntax !== 'canonical_v1' && syntax !== 'authoring_v1' && syntax !== 'authoring_v2') {
       throw new Error('run_manifest_declaration_syntax_invalid');
     }
     if (this.runtime.conclusionDeclarationSyntax !== undefined && syntax !== undefined &&
         this.runtime.conclusionDeclarationSyntax !== syntax) throw new Error('run_manifest_declaration_syntax_changed');
+    const effectiveSyntax = syntax ?? this.runtime.conclusionDeclarationSyntax;
+    if ((finalSubmission ?? this.runtime.finalSubmission) === 'authored_claim_document_v1' &&
+        effectiveSyntax !== undefined && effectiveSyntax !== 'canonical_v1') {
+      throw new Error('run_manifest_output_config_conflict');
+    }
     if (input.runtime !== this.runtime.runtime) {
       throw new Error(
         `run_manifest_runtime_mismatch:${this.runtime.runtime}:${input.runtime}`,
@@ -189,6 +201,7 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
       providerId: input.providerId,
       ...(this.runtime.conclusionDeclarationSyntax !== undefined
         ? {conclusionDeclarationSyntax: this.runtime.conclusionDeclarationSyntax} : {}),
+      ...(this.runtime.finalSubmission !== undefined ? {finalSubmission: this.runtime.finalSubmission} : {}),
     };
   }
 
@@ -499,6 +512,7 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
         : {}),
       ...(this.runtime.model ? {model: this.runtime.model} : {}),
       ...(this.runtime.conclusionDeclarationSyntax ? {conclusionDeclarationSyntax: this.runtime.conclusionDeclarationSyntax} : {}),
+      ...(this.runtime.finalSubmission ? {finalSubmission: this.runtime.finalSubmission} : {}),
       outputLanguage: this.runtime.outputLanguage ?? 'zh-CN',
       toolAllowlistHash: this.toolAllowlistHash,
       featureFlagSnapshot: this.featureFlagSnapshot,

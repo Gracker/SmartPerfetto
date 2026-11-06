@@ -54,6 +54,24 @@ describe('runtime closeout budget', () => {
 });
 
 describe('runtime closeout returned-data tape', () => {
+  it('never treats final submission acknowledgement or failure as returned evidence', async () => {
+    const tape = createRuntimeTurnCloseoutTape();
+    const final = {...invocation, role: 'final_candidate_submission' as const};
+    await tape.observe({...final, phase: 'started'});
+    await tape.observe({...final, phase: 'completed', result: createRuntimeToolResult({
+      status: 'pending', kind: 'authored_final_submission', rows: [{secret: 'raw document'}],
+    }, {facts: {success: true, planPhaseId: 'p1'}})});
+    await tape.observe({...final, phase: 'failed', error: new Error('raw document')});
+    expect(tape.hasReturnedData()).toBe(false);
+    expect(readPromptData(tape.buildPrompt(question)).entries).toEqual([]);
+    expect(tape.buildEmptyBodyPrompt(question)).toBeUndefined();
+    await tape.observe({...invocation, phase: 'completed', result: createRuntimeToolResult({rows: [[7]]})});
+    expect(tape.hasReturnedData()).toBe(true);
+    const data = readPromptData(tape.buildPrompt(question));
+    expect(data.entries).toHaveLength(1);
+    expect(data.entries[0].returnedData).toEqual({rows: [[7]]});
+  });
+
   it.each(['en', 'zh-CN'] as const)('builds an output-limit completion from projected returned data in %s', async outputLanguage => {
     const tape = createRuntimeTurnCloseoutTape();
     const intent = {schemaVersion: 1, status: 'resolved', taskKind: 'fact', sceneId: 'general',

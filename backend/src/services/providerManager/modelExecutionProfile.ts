@@ -5,13 +5,16 @@
 import {createHash} from 'node:crypto';
 import type {AgentRuntimeKind} from '../../agentRuntime/runtimeKinds';
 import {isProductionAgentRuntimeKind} from '../../agentRuntime/runtimeKinds';
+import {isFinalSubmissionMode, type FinalSubmissionMode} from '../../agentRuntime/finalSubmissionConfig';
+import {resolveConclusionDeclarationSyntax} from '../../agent/core/conclusionAuthoring';
+import type {ConclusionDeclarationSyntax} from '../../agent/core/conclusionContract';
 
-export const MODEL_EXECUTION_PROFILE_RULESET = 'model_execution_profile_rules@2';
+export const MODEL_EXECUTION_PROFILE_RULESET = 'model_execution_profile_rules@3';
 export type ModelExecutionProtocol = 'chat_completions' | 'responses' | 'anthropic_messages' | 'native' | 'unknown';
 export type ReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type ReasoningSetting = Readonly<{mode: 'disabled'} | {mode: 'enabled'; effort?: ReasoningEffort}>;
 export type ModelControlSurface = 'openai_chat' | 'openai_responses' | 'pi_stream' | 'claude_effort' | 'opencode_agent_options' | 'none';
-export type ModelFactSource = 'official' | 'installed_sdk' | 'contract_test';
+export type ModelFactSource = 'official' | 'installed_sdk' | 'contract_test' | 'runtime_observation';
 export type ModelFactReason = 'unrecognized_endpoint_model_protocol' | 'native_model_unknown' | 'capability_unsupported';
 export type ModelCapabilityFact<T> =
   | Readonly<{status: 'supported'; value: T; source: ModelFactSource; evidenceId: string}>
@@ -30,6 +33,9 @@ export interface SdkModelCapabilities {
 
 /** Already resolved values from the same captured config the runtime will use. */
 export interface ModelEffectiveSettings {
+  /** Captured output configuration, not a claim of actual transport adoption. */
+  readonly finalSubmission?: FinalSubmissionMode;
+  readonly declarationSyntax?: ConclusionDeclarationSyntax;
   readonly authoredReasoning?: ReasoningSetting;
   readonly sdkEffectiveReasoning?: ReasoningSetting;
   readonly maxOutputTokens?: number;
@@ -86,6 +92,8 @@ export interface ResolvedModelExecutionProfile {
     effortAliases: ModelCapabilityFact<readonly Readonly<{accepted: ReasoningEffort; documented: ReasoningEffort}>[]>;
     defaultReasoning: ModelCapabilityFact<ReasoningSetting>;
     toolReasoning: ModelCapabilityFact<'verbatim_native_context'>;
+    /** Observed function-call primitive only; neither strict-final nor analysis quality. */
+    functionTools: ModelCapabilityFact<'function_call_arguments'>;
   }>;
   readonly adapter: SdkModelCapabilities;
   readonly effective: ModelEffectiveSettings;
@@ -139,6 +147,11 @@ function reasoning(value: ReasoningSetting | undefined): ReasoningSetting | unde
 }
 function effectiveSettings(input: ModelEffectiveSettings): ModelEffectiveSettings {
   if (!input || typeof input !== 'object') invalid();
+  if (input.finalSubmission !== undefined && !isFinalSubmissionMode(input.finalSubmission)) invalid();
+  let declarationSyntax: ConclusionDeclarationSyntax | undefined;
+  if (input.declarationSyntax !== undefined) {
+    try {declarationSyntax = resolveConclusionDeclarationSyntax(input.declarationSyntax);} catch {invalid();}
+  }
   const authoredReasoning = reasoning(input.authoredReasoning);
   const sdkEffectiveReasoning = reasoning(input.sdkEffectiveReasoning);
   const numbers: Partial<Record<typeof NUMERIC_SETTINGS[number], number>> = {};
@@ -148,7 +161,9 @@ function effectiveSettings(input: ModelEffectiveSettings): ModelEffectiveSetting
     if (!Number.isSafeInteger(value) || value <= 0) invalid();
     numbers[key] = value;
   }
-  return {...(authoredReasoning ? {authoredReasoning} : {}),
+  return {...(input.finalSubmission !== undefined ? {finalSubmission: input.finalSubmission} : {}),
+    ...(declarationSyntax !== undefined ? {declarationSyntax} : {}),
+    ...(authoredReasoning ? {authoredReasoning} : {}),
     ...(sdkEffectiveReasoning ? {sdkEffectiveReasoning} : {}), ...numbers};
 }
 function adapterFacts(input: SdkModelCapabilities): SdkModelCapabilities {
@@ -185,7 +200,32 @@ function endpointIdentity(baseUrl: string | undefined, protocol: ModelExecutionP
 function supported<T>(value: T, evidenceId: string): ModelCapabilityFact<T> {
   return {status: 'supported', value, source: 'official', evidenceId};
 }
-function serverFacts(modelId: string | undefined, endpoint: ResolvedModelExecutionProfile['endpoint'], protocol: ModelExecutionProtocol): {
+
+/** R5 scheduler-constructed reports: function tools ran, while both analyses failed.
+ * Exact report SHA-256 identifies primitive evidence, never typed-final adoption.
+ * No alias, protocol or endpoint-family extrapolation is admitted here.
+ */
+const OBSERVED_FUNCTION_TOOLS = [
+  {endpoint: 'https://open.bigmodel.cn/api/coding/paas/v4', model: 'glm-5.3-flash',
+    evidenceId: 'r5-glm-function-tools:sha256:2929107c4bba84eaa4281995c65bda9144c7f31a86bdbfe83840749577a26092'},
+  {endpoint: 'https://api.deepseek.com/v1', model: 'deepseek-flash',
+    evidenceId: 'r5-deepseek-function-tools:sha256:a0f3c52aea032fda638b74b05f287bec6b190fac2b794072e0ea80fb9e1ea0ed'},
+] as const;
+
+function observedFunctionTools(baseUrl: string | undefined, modelId: string | undefined,
+  protocol: ModelExecutionProtocol, unknown: ModelCapabilityFact<never>): ModelCapabilityFact<'function_call_arguments'> {
+  if (!baseUrl || protocol !== 'chat_completions') return unknown;
+  let url: URL;
+  try {url = new URL(baseUrl);} catch {return unknown;}
+  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) return unknown;
+  const endpoint = `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+  const observation = OBSERVED_FUNCTION_TOOLS.find(item => item.endpoint === endpoint && item.model === modelId);
+  return observation ? {status: 'supported', value: 'function_call_arguments', source: 'runtime_observation',
+    evidenceId: observation.evidenceId} : unknown;
+}
+
+function serverFacts(modelId: string | undefined, endpoint: ResolvedModelExecutionProfile['endpoint'], protocol: ModelExecutionProtocol,
+  baseUrl: string | undefined): {
   model: ResolvedModelExecutionProfile['model']; server: ResolvedModelExecutionProfile['server'];
 } {
   const model: ResolvedModelExecutionProfile['model'] = {identity: modelId === undefined ? 'native_default_unknown' : 'configured',
@@ -193,12 +233,12 @@ function serverFacts(modelId: string | undefined, endpoint: ResolvedModelExecuti
   const unknown: ModelCapabilityFact<never> = {status: 'unknown', reason: modelId === undefined
     ? 'native_model_unknown' : 'unrecognized_endpoint_model_protocol'};
   const server: ResolvedModelExecutionProfile['server'] = {thinking: unknown, efforts: unknown, effortAliases: unknown,
-    defaultReasoning: unknown, toolReasoning: unknown};
+    defaultReasoning: unknown, toolReasoning: unknown, functionTools: observedFunctionTools(baseUrl, modelId, protocol, unknown)};
   // Small protocol facts, not a provider model catalog. Preserve the exact requested ID.
   // https://docs.z.ai/api-reference/llm/chat-completion
   if (['glm_coding', 'glm_standard'].includes(endpoint.family) && protocol === 'chat_completions' &&
     (modelId === 'glm-5.3-flash' || modelId === 'glm-5.3')) {
-    return {model, server: {thinking: supported('required', GLM_EVIDENCE),
+    return {model, server: {...server, thinking: supported('required', GLM_EVIDENCE),
       efforts: supported(['low', 'high', 'max'], GLM_EVIDENCE), effortAliases: supported([], GLM_EVIDENCE),
       defaultReasoning: supported({mode: 'enabled', effort: 'max'}, GLM_EVIDENCE),
       toolReasoning: supported('verbatim_native_context', GLM_EVIDENCE)}};
@@ -210,7 +250,7 @@ function serverFacts(modelId: string | undefined, endpoint: ResolvedModelExecuti
     (flash || modelId === 'deepseek-v4-pro')) {
     return {model: {...model, documentedRevision: flash ? 'DeepSeek-V4.1-Flash-1017' : 'DeepSeek-V4-Pro-0813',
       revisionEvidence: 'documented_alias', revisionEvidenceId: DEEPSEEK_REVISION_EVIDENCE},
-    server: {thinking: supported('optional', DEEPSEEK_EVIDENCE),
+    server: {...server, thinking: supported('optional', DEEPSEEK_EVIDENCE),
       efforts: supported(['low', 'high', 'max'], DEEPSEEK_EVIDENCE),
       effortAliases: supported([{accepted: 'minimal', documented: 'low'}, {accepted: 'medium', documented: 'high'},
         {accepted: 'xhigh', documented: 'high'}], DEEPSEEK_EVIDENCE),
@@ -227,7 +267,7 @@ export function resolveModelExecutionProfile(input: ResolveModelExecutionProfile
   const sdk = {packageName: identifier(input.sdk?.packageName), version: identifier(input.sdk?.version),
     adapterContractVersion: identifier(input.sdk?.adapterContractVersion)};
   const endpoint = endpointIdentity(input.baseUrl, input.protocol);
-  const facts = serverFacts(modelId, endpoint, input.protocol);
+  const facts = serverFacts(modelId, endpoint, input.protocol, input.baseUrl);
   const body: Omit<ResolvedModelExecutionProfile, 'fingerprint'> = {schemaVersion: 'model_execution_profile@1',
     rulesetVersion: MODEL_EXECUTION_PROFILE_RULESET,
     runtimeKind: input.runtimeKind, protocol: input.protocol, model: facts.model, endpoint, sdk,

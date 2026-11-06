@@ -82,6 +82,7 @@ describe('private runtime finalization context', () => {
     expect(() => attachFinalizationContext({...result}, input)).toThrow('already_claimed');
     const context = takeFinalizationContext(result)!;
     const native = context.getNativeDeclaration(result, new AbortController().signal)!;
+    if (native.inputKind === 'model_tool_arguments') throw new Error('Expected assistant-text declaration');
     expect(native.raw).toContain('ORIGINAL_MACHINE_VALUE');
     expect(Object.isFrozen(native)).toBe(true);
     expect(JSON.stringify(context)).not.toContain('ORIGINAL_MACHINE_VALUE');

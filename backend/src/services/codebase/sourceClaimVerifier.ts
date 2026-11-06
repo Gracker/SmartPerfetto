@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {refreshQuickRunStopReason} from '../../agentRuntime/quickBudget';
+import {readAuthoredFinalSubmission} from '../../agentRuntime/authoredFinalSubmission';
 import {parseClaimSemanticsDeclaration, type ConclusionContract} from '../../agent/core/conclusionContract';
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
 import {
@@ -36,12 +37,14 @@ import {
   isIssuedCodeAwareTextProjectionReceipt,
   projectCodeAwareStructuredText,
   sanitizeCodeAwareStructuredText,
+  sanitizeCodeAwareStructuredTextWithReceipt,
   sanitizeCodeAwareTextWithReceipt,
   type CodeAwareTextProjectionReceipt,
 } from '../security/codeAwareOutputRegistry';
 import {analysisDeliveryFingerprint, type AnalysisDeliveryContext} from '../../types/analysisDelivery';
 import {projectConclusionProtocol, projectConclusionContractForDisplay, issueConclusionProtocolProjection,
-  type IssuedConclusionProtocolProjection} from '../security/conclusionProtocolProjection';
+  issueAuthoredConclusionProtocolProjection, readConclusionProtocolProjection, bindAuthoredFinalDelivery,
+  type AuthoredConclusionSubmission, type IssuedConclusionProtocolProjection} from '../security/conclusionProtocolProjection';
 
 /**
  * `failed`: a claim binds a reference this run never issued (or outside the
@@ -592,10 +595,19 @@ export interface SourceAwareAnalysisProjection {
 export function finalizeSourceAwareAnalysisResultWithProjection(
   result: AnalysisResult,
   sourceUse: SourceUseDecisionReader | undefined,
-  options: {priorProjection?: CodeAwareTextProjectionReceipt; context?: AnalysisDeliveryContext} = {},
+  options: {priorProjection?: CodeAwareTextProjectionReceipt; context?: AnalysisDeliveryContext;
+    authoredSubmission?: AuthoredConclusionSubmission} = {},
 ): SourceAwareAnalysisProjection {
+  const authoredSubmission = options.authoredSubmission;
+  if (authoredSubmission) {
+    const snapshot = readAuthoredFinalSubmission(authoredSubmission.submission, authoredSubmission.input);
+    if (options.priorProjection || result.conclusion !== snapshot.compiled.body) {
+      throw new Error('authored_source_projection_mismatch');
+    }
+    result.conclusionContract = structuredClone(snapshot.compiled.canonicalParse.contract) as ConclusionContract | undefined;
+  }
   const originalDeclaration = {raw: result.conclusion,
-    ...(result.conclusionContract ? {contract: structuredClone(result.conclusionContract)} : {})};
+    ...(!authoredSubmission && result.conclusionContract ? {contract: structuredClone(result.conclusionContract)} : {})};
   const nativeCandidate = options.context?.entry !== 'historical_restore' ? options.context?.acceptedCandidate : undefined;
   const structure = () => ({
     conclusionContract: result.conclusionContract, claimSupport: result.claimSupport,
@@ -619,7 +631,9 @@ export function finalizeSourceAwareAnalysisResultWithProjection(
   // Recompute against this run's accessor before privacy projection changes text.
   // An archived or provider-authored sidecar cannot establish current source failure.
   const currentSourceVerification = actualDecision ? verifySourceClaimBindingsForResult(result) : undefined;
-  const directProjection = shouldProject
+  const directProjection = authoredSubmission
+    ? sanitizeCodeAwareStructuredTextWithReceipt(result.sessionId, result.conclusion)
+    : shouldProject
     ? result.conclusion.length > 0 ? projectConclusionProtocol(result.sessionId, result.conclusion)
       : createCodeAwareStreamingTextProjection(result.sessionId, 'final-result-empty').projectCompleteWithReceipt('')
     : sanitizeCodeAwareTextWithReceipt(undefined, result.conclusion);
@@ -732,7 +746,15 @@ export function finalizeSourceAwareAnalysisResultWithProjection(
   const displayCandidate = deliveryContext?.entry !== 'historical_restore' ? deliveryContext?.acceptedCandidate : undefined;
   const protocolProjection = nativeCandidate && displayCandidate && !hasPriorProjection &&
     nativeCandidate.conclusionFingerprint === analysisDeliveryFingerprint(originalDeclaration.raw)
-    ? issueConclusionProtocolProjection({original: originalDeclaration, result, nativeCandidate, displayCandidate}) : undefined;
+    ? authoredSubmission
+      ? issueAuthoredConclusionProtocolProjection({submission: authoredSubmission, result, nativeCandidate, displayCandidate,
+        bodyProjection: conclusionProjection})
+      : issueConclusionProtocolProjection({original: originalDeclaration, result, nativeCandidate, displayCandidate}) : undefined;
+  if (authoredSubmission && !protocolProjection) throw new Error('authored_source_projection_missing');
+  if (protocolProjection && authoredSubmission && deliveryContext && nativeCandidate) {
+    bindAuthoredFinalDelivery({context: deliveryContext, result, nativeDeclaration: readConclusionProtocolProjection(protocolProjection,
+      {result, candidate: displayCandidate, runId: nativeCandidate.runId})});
+  }
   return {result, conclusionProjection, ...(deliveryContext ? {deliveryContext} : {}),
     ...(protocolProjection ? {protocolProjection} : {})};
 }

@@ -18,7 +18,7 @@ import {createAnswerDraftStream, createProjectedAnswerDraft} from '../../agentRu
 import type {AnalysisPlanV3, PlanPhase} from '../../agentv3/types';
 import type {SessionStateSnapshot} from '../../agentv3/sessionStateSnapshot';
 import type {TraceProcessorService} from '../../services/traceProcessorService';
-import {chatCompletionResponse, createOpenAiConfigForTest} from '../../../tests/helpers/openAiRuntimeFixture';
+import {chatCompletionResponse, chatCompletionToolCall, createOpenAiConfigForTest} from '../../../tests/helpers/openAiRuntimeFixture';
 import {McpToolRegistry} from '../../agentv3/mcpToolRegistry';
 import {createOpenAIToolsFromMcpDefinitions} from '../openAiToolAdapter';
 import {prepareAnalysisRunTraceProcessorLeases, type AnalysisRunTraceProcessorService} from '../../services/analysisRunTraceProcessorLease';
@@ -76,6 +76,8 @@ import {admitted} from '../../../tests/helpers/admittedAnalysisOptions';
 import type {AnalysisOptions} from '../../agent/core/orchestratorTypes';
 import {resetAnalysisHistoryStoreForTests} from '../../services/analysisHistoryStore';
 import {ENTERPRISE_DB_PATH_ENV} from '../../services/enterpriseDb';
+import type {NativeConclusionDeclaration} from '../../services/security/conclusionProtocolProjection';
+import {finalizeAnalysisResult} from '../../services/finalizeAnalysisResult';
 
 const runtimes: OpenAIRuntime[] = [];
 const privacySessions: string[] = [];
@@ -125,6 +127,10 @@ function attachedDeliveryContext(result: Parameters<typeof finalization.takeFina
   const context = finalization.takeFinalizationContext(result);
   if (context) finalizationContexts.push(context);
   return context?.deliveryContext;
+}
+function assistantNativeRaw(declaration: NativeConclusionDeclaration | undefined): string | undefined {
+  if (declaration?.inputKind === 'model_tool_arguments') throw new Error('Expected an assistant-text native declaration');
+  return declaration?.raw;
 }
 
 function createOpenAiRuntimeForTest(trace?: TraceProcessorService): any {
@@ -188,6 +194,240 @@ function streamContext(sessionId: string, quickMode: boolean, runtime?: {emitUpd
     answerDraft: createProjectedAnswerDraft(createAnswerDraftStream(`${sessionId}-run`, update => runtime?.emitUpdate(update)), undefined),
     toolInputsByTaskId: new Map<string, {toolName: string; args: Record<string, unknown>}>()};
 }
+
+describe('OpenAI actual typed final main integration', () => {
+  const typedConfig = (overrides: Partial<ReturnType<typeof createOpenAiConfigForTest>> = {}) => createOpenAiConfigForTest({
+    protocol: 'chat_completions', baseURL: 'https://api.deepseek.com/v1', model: 'deepseek-flash', lightModel: 'deepseek-flash',
+    outputConfig: Object.freeze({finalSubmission: 'authored_claim_document_v1', declarationSyntax: 'canonical_v1'}), ...overrides,
+  });
+  const options = {providerId: null, assistantSurface: 'conversation' as const, conversationTraceAttached: false,
+    analysisMode: 'fast' as const};
+  const body = 'Which interval should I inspect?';
+  const documentJson = JSON.stringify({representationVersion: 'authored_claim_document@1',
+    contract: {schemaVersion: 'conclusion_contract_v1', mode: 'need_input', conclusions: [], clusters: [],
+      evidenceChain: [], claims: [], uncertainties: [], nextSteps: []}, bodyParts: [body]});
+  const finalFromRequest = (init?: RequestInit) => {
+    const request = JSON.parse(String(init?.body));
+    const candidates = request.tools.filter((entry: any) => entry.function?.parameters?.properties?.documentJson);
+    expect(candidates).toHaveLength(1);
+    expect(Object.keys(candidates[0].function.parameters.properties)).toEqual(['documentJson']);
+    return candidates[0].function.name as string;
+  };
+
+  it('reads actual installed identity and admits only the captured possible-main profiles', () => {
+    expect(__testing.installedOpenAiSdkCompatibility()).toEqual({agentsCoreVersion: '0.13.0', agentsOpenAiVersion: '0.13.0',
+      contractVersion: 'openai_typed_final_admission@1'});
+    const admitted = __testing.admitFinalSubmissionConfiguration(typedConfig(), 'auto')!;
+    expect([...admitted.keys()]).toEqual(['deepseek-flash']);
+    expect(admitted.get('deepseek-flash')!.effective).toMatchObject({finalSubmission: 'authored_claim_document_v1', declarationSyntax: 'canonical_v1'});
+    expect(admitted.get('deepseek-flash')!.adapter.thinking).toBe('unknown');
+    expect(() => __testing.admitFinalSubmissionConfiguration(typedConfig({lightModel: 'unobserved-light'}), 'auto')).toThrow('unsupported_final_submission');
+    expect([...__testing.admitFinalSubmissionConfiguration(typedConfig({lightModel: 'unobserved-light'}), 'full')!.keys()]).toEqual(['deepseek-flash']);
+  });
+
+  it.each(['protocol', 'model', 'syntax'] as const)('rejects incompatible typed configuration before classifier or paid HTTP: %s', async reason => {
+    const config = typedConfig(reason === 'protocol' ? {protocol: 'responses'} : reason === 'model' ? {lightModel: 'unknown-model'}
+      : {outputConfig: {finalSubmission: 'authored_claim_document_v1', declarationSyntax: 'authoring_v2'}});
+    jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(config);
+    const runtime = createOpenAiRuntimeForTest();
+    const request = jest.spyOn(globalThis, 'fetch');
+    await expect(runtime.analyze('Question', `typed-invalid-${reason}`, 'trace', options)).rejects.toThrow(/final_submission/);
+    expect(intentTransport.runOpenAiIntentTransport).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('uses the actual shared registry handler, returned adapter tool and installed SDK to submit one private document', async () => {
+    jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(typedConfig());
+    const {runtime, updates} = createRuntimeWithUpdates();
+    const request = jest.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) =>
+      chatCompletionToolCall('typed-main', finalFromRequest(init), {documentJson}));
+    const result = await runtime.analyze('What is needed?', 'typed-main-complete', 'trace', options);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({conclusion: body, outputOrigin: 'model_tool_arguments', completion: {status: 'completed', sdkFinishReason: 'tool_calls'}});
+    const context = finalization.takeFinalizationContext(result)!; finalizationContexts.push(context);
+    expect(context.deliveryContext).toMatchObject({finalSubmission: {mode: 'authored_claim_document_v1', outcome: 'submitted'}});
+    const native = context.getNativeDeclaration(result, new AbortController().signal);
+    expect(native).toMatchObject({inputKind: 'model_tool_arguments', documentJson, body});
+    expect(native).not.toHaveProperty('raw');
+    expect(updates.some((update: any) => update.type === 'answer_token' && update.content?.delta)).toBe(false);
+    const toolEvents = updates.filter((update: any) => ['agent_task_dispatched', 'agent_response'].includes(update.type));
+    expect(toolEvents).not.toHaveLength(0);
+    expect(JSON.stringify(toolEvents)).not.toContain('documentJson');
+    expect(JSON.stringify(toolEvents)).not.toContain(body);
+    expect(JSON.stringify(toolEvents)).toContain('authored_final_submission');
+    expect(intentTransport.runOpenAiIntentTransport).toHaveBeenCalledTimes(1); // classifier only, no reserved repair.
+  });
+
+  it('retains an ordinary assistant native completion but records missing_submission without recovery', async () => {
+    jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(typedConfig({quickMaxTurns: 3}));
+    const runtime = createOpenAiRuntimeForTest();
+    const request = jest.spyOn(globalThis, 'fetch').mockResolvedValue(chatCompletionResponse('typed-missing',
+      {role: 'assistant', content: 'An ordinary assistant answer.'}, 'stop'));
+    const result = await runtime.analyze('Question', 'typed-missing-main', 'trace', options);
+    expect(result).toMatchObject({conclusion: 'An ordinary assistant answer.', outputOrigin: 'sdk_final', completion: {status: 'completed'}});
+    expect(attachedDeliveryContext(result)).toMatchObject({finalSubmission: {mode: 'authored_claim_document_v1', outcome: 'missing_submission'}});
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(intentTransport.runOpenAiIntentTransport).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])('preserves typed whitespace native completion while retaining the legacy empty-body rule: typed=%s', async typed => {
+    jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(typedConfig({quickMaxTurns: 1,
+      ...(!typed ? {outputConfig: {finalSubmission: 'assistant_text' as const, declarationSyntax: 'canonical_v1' as const}} : {})}));
+    const runtime = createOpenAiRuntimeForTest();
+    const request = jest.spyOn(globalThis, 'fetch').mockResolvedValue(chatCompletionResponse(`whitespace-${typed}`,
+      {role: 'assistant', content: '   '}, 'stop'));
+    const result = await runtime.analyze('Question', `typed-whitespace-${typed}`, 'trace', options);
+    expect(result.completion?.status).toBe(typed ? 'completed' : 'unknown');
+    expect(result.outputOrigin).toBe('sdk_final');
+    expect(result.success).toBe(false); // Empty delivery remains a product failure.
+    const context = attachedDeliveryContext(result);
+    if (typed) expect(context).toMatchObject({finalSubmission: {mode: 'authored_claim_document_v1', outcome: 'missing_submission'}});
+    else expect(context).not.toHaveProperty('finalSubmission');
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])('requires an actual bound submission before paid report review: submitted=%s', async submitted => {
+    classify({...decision, deliverable: 'report'}); // Report is an unconditional existing review trigger.
+    // This offline fixture needs the existing review's estimated budget as well as the SDK call.
+    jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(typedConfig({quickPathPerTurnMs: 300_000, maxRunTimeoutMs: 600_000}));
+    const reportBody = '## Findings\nNo conclusion is established yet.';
+    const contract: ConclusionContract = {schemaVersion: 'conclusion_contract_v1', mode: 'initial_report', conclusions: [], clusters: [],
+      evidenceChain: [], claims: [], uncertainties: [], nextSteps: []};
+    const legacyCandidate = `${reportBody}\n${renderConclusionContractSidecar(contract)}`;
+    expect(inspectCandidateProtocol(legacyCandidate).status).toBe('valid');
+    const runtime = createOpenAiRuntimeForTest();
+    jest.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => submitted
+      ? chatCompletionToolCall('typed-review-bound', finalFromRequest(init), {documentJson: JSON.stringify({
+          representationVersion: 'authored_claim_document@1', contract, bodyParts: [reportBody]})})
+      : chatCompletionResponse('typed-review-missing', {role: 'assistant', content: legacyCandidate}, 'stop'));
+    const result = await runtime.analyze('Write a report', `typed-semantic-${submitted}`, 'trace', options);
+    expect(result.completion?.status).toBe('completed');
+    const context = finalization.takeFinalizationContext(result)!; finalizationContexts.push(context);
+    expect(context.turnIntent.deliverable).toBe('report');
+    expect(context.hasSemanticTransport).toBe(submitted);
+    expect(context.deliveryContext).toMatchObject({finalSubmission: {mode: 'authored_claim_document_v1',
+      outcome: submitted ? 'submitted' : 'missing_submission'}});
+    const nativeCompletion = result.completion;
+    const progress: string[] = [];
+    jest.mocked(intentTransport.runOpenAiIntentTransport).mockResolvedValueOnce({status: 'unavailable', reason: 'provider_error'});
+    // The real finalizer supplies the pinned report/investigation requirements and canonical snapshot.
+    const final = await finalizeAnalysisResult({result, context, query: 'Write a report',
+      owner: {runId: context.runId, signal: new AbortController().signal, isCurrent: () => true, assertAuthorized() {}},
+      onProgress: event => {progress.push(event.stage);}});
+    expect(final.semanticAssessment).toMatchObject({status: 'unavailable', reason: submitted ? 'provider_error' : 'missing_transport'});
+    expect(progress.filter(stage => stage === 'final_review_started')).toHaveLength(submitted ? 1 : 0);
+    expect(intentTransport.runOpenAiIntentTransport).toHaveBeenCalledTimes(submitted ? 2 : 1); // classification + at most one review.
+    // Canonicalization may rebind the candidate, but it must retain the actual SDK completion facts.
+    expect(final.result.completion).toMatchObject({runId: nativeCompletion.runId, attemptId: nativeCompletion.attemptId,
+      status: 'completed', sdkFinishReason: submitted ? 'tool_calls' : 'stop'});
+    expect(final.result.completion?.reason).toBe(nativeCompletion.reason);
+    expect(final.result.conclusion.trim()).toBe(reportBody);
+    expect(final.result.outputOrigin).toBe(submitted ? 'model_tool_arguments' : 'sdk_final');
+    if (!submitted) expect(final.qualityIssue?.code).toBe('missing_submission');
+  });
+
+  it('keeps a rejected submission private and does not clone a continuation or declaration repair', async () => {
+    jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(typedConfig({quickMaxTurns: 3}));
+    const {runtime, updates} = createRuntimeWithUpdates();
+    const request = jest.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) =>
+      chatCompletionToolCall('typed-rejected', finalFromRequest(init), {documentJson: 'PRIVATE_INVALID_DOCUMENT_CANARY'}));
+    const result = await runtime.analyze('Question', 'typed-rejected-main', 'trace', options);
+    expect(result.outputOrigin).not.toBe('model_tool_arguments');
+    expect(result.completion?.status).not.toBe('completed');
+    expect(attachedDeliveryContext(result)).toMatchObject({finalSubmission: {mode: 'authored_claim_document_v1', outcome: 'transport_failure'}});
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(updates)).not.toContain('PRIVATE_INVALID_DOCUMENT_CANARY');
+    expect(intentTransport.runOpenAiIntentTransport).toHaveBeenCalledTimes(1);
+  });
+
+  it('settles a typed SDK startup throw without hanging its unbound submission gate or leaking the error', async () => {
+    jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(typedConfig());
+    const {runtime, updates} = createRuntimeWithUpdates();
+    jest.spyOn(Runner.prototype as any, 'run').mockImplementation(() => {throw new Error('PRIVATE_STARTUP_CANARY');});
+    const request = jest.spyOn(globalThis, 'fetch');
+    const result = await runtime.analyze('Question', 'typed-startup-failure', 'trace', options);
+    expect(result.completion?.status).toBe('failed');
+    expect(attachedDeliveryContext(result)).toMatchObject({finalSubmission: {mode: 'authored_claim_document_v1', outcome: 'transport_failure'}});
+    expect(request).not.toHaveBeenCalled();
+    expect(JSON.stringify(updates)).not.toContain('PRIVATE_STARTUP_CANARY');
+  });
+
+  it('drains an ignored-abort typed fetch before returning timeout and never dispatches a closeout', async () => {
+    jest.useFakeTimers({now: 10_000, doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask']});
+    jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(typedConfig({quickMaxTurns: 3,
+      quickPathPerTurnMs: 1_000, maxRunTimeoutMs: 1_000, streamIdleTimeoutMs: 60_000}));
+    const entered = createDeferred<void>(), release = createDeferred<void>();
+    const runtime = createOpenAiRuntimeForTest();
+    const request = jest.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      entered.resolve(); await release.promise;
+      return chatCompletionToolCall('typed-late', finalFromRequest(init), {documentJson});
+    });
+    let settled = false;
+    // maxRunTimeoutMs is floored to the three-turn base; the product task cap
+    // is the actual earlier one-second boundary exercised here.
+    const work = runtime.analyze('Question', 'typed-timeout-main', 'trace', {...options, taskTimeoutMs: 1_000})
+      .finally(() => {settled = true;});
+    void work.catch(() => undefined);
+    try {
+      await entered.promise;
+      await jest.advanceTimersByTimeAsync(1_001);
+      expect(settled).toBe(false);
+      release.resolve();
+      const result = await work;
+      expect(result.completion).toMatchObject({status: 'incomplete', reason: 'timeout'});
+      expect(attachedDeliveryContext(result)).toMatchObject({finalSubmission: {mode: 'authored_claim_document_v1', outcome: 'transport_failure'}});
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(intentTransport.runOpenAiIntentTransport).toHaveBeenCalledTimes(1);
+    } finally {release.resolve(); await work.catch(() => undefined); jest.useRealTimers();}
+  });
+
+  it.each((['zh-CN', 'en'] as const).flatMap(language => [false, true].flatMap(privateContext =>
+    [false, true].map(rejected => ({language, privateContext, rejected})))))
+  ('narrates final-role submission honestly and keeps raw private: $language private=$privateContext rejected=$rejected', ({language, privateContext, rejected}) => {
+    const {runtime, updates} = createRuntimeWithUpdates();
+    const sessionId = `typed-role-${language}-${privateContext}-${rejected}`;
+    const canary = 'PRIVATE_TYPED_DOCUMENT_CANARY';
+    if (privateContext) {privacySessions.push(sessionId); registerCodeAwareCanary(sessionId, canary);}
+    const progress = jest.fn();
+    const context = {...streamContext(sessionId, false, runtime),
+      toolRoles: new Map([['arbitrary_registered_name', 'final_candidate_submission' as const]]), onToolOutput: progress};
+    runtime.handleStreamEvent({type: 'run_item_stream_event', name: 'tool_called', item: {rawItem: {
+      type: 'function_call', callId: 'final-role-call', name: 'arbitrary_registered_name',
+      arguments: JSON.stringify({documentJson: canary})}}}, language, context);
+    runtime.handleStreamEvent({type: 'run_item_stream_event', name: 'tool_output', item: {
+      rawItem: {type: 'function_call_result', callId: 'final-role-call', name: 'arbitrary_registered_name'},
+      output: JSON.stringify(rejected ? {success: false, error: canary, documentJson: canary}
+        : {status: 'pending', kind: 'authored_final_submission'}),
+    }}, language, context);
+    const dispatched = updates.find((update: any) => update.type === 'agent_task_dispatched')!;
+    const received = updates.find((update: any) => update.type === 'agent_response')!;
+    expect(dispatched.content.args).toEqual({kind: 'authored_final_submission', status: 'pending'});
+    expect(dispatched.content.message).toBe(language === 'en' ? 'Submitting the answer for verification.' : '正在提交答复，等待核验');
+    expect(received.content.resultNarration).toBe(language === 'en'
+      ? rejected ? 'Answer submission was rejected; verification is incomplete.' : 'Answer received; verification is pending.'
+      : rejected ? '答复提交未被接受，核验尚未完成' : '已收到答复，等待核验');
+    expect(JSON.stringify(updates)).not.toContain(canary);
+    expect(JSON.stringify(updates)).not.toContain('documentJson');
+    expect(progress).not.toHaveBeenCalled();
+    expect(context.toolInputsByTaskId.size).toBe(0);
+  });
+
+  it('does not infer a final role from the tool name or model-supplied arguments', () => {
+    const {runtime, updates} = createRuntimeWithUpdates();
+    const progress = jest.fn();
+    const context = {...streamContext('nonrole-control', false, runtime), onToolOutput: progress};
+    const args = {role: 'final_candidate_submission', value: 'ordinary argument'};
+    runtime.handleStreamEvent({type: 'run_item_stream_event', name: 'tool_called', item: {rawItem: {
+      type: 'function_call', callId: 'ordinary', name: 'arbitrary_registered_name', arguments: JSON.stringify(args),
+    }}}, 'en', context);
+    runtime.handleStreamEvent({type: 'run_item_stream_event', name: 'tool_output', item: {
+      rawItem: {type: 'function_call_result', callId: 'ordinary', name: 'arbitrary_registered_name'}, output: 'ordinary result',
+    }}, 'en', context);
+    expect(updates.find((update: any) => update.type === 'agent_task_dispatched').content.args).toEqual(args);
+    expect(updates.find((update: any) => update.type === 'agent_task_dispatched').content.message).not.toContain('Submitting the answer');
+    expect(progress).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('OpenAI typed intent integration', () => {
   it.each([false, true])('scene runtime matrix: OpenAI shared proposal survives provider failure=%s', async providerFailed => {
@@ -1627,7 +1867,7 @@ describe('OpenAI cancellation and bounded recovery', () => {
       completion: {status: 'incomplete', reason: 'turn_limit', conclusionFingerprint: analysisDeliveryFingerprint(result.conclusion)}});
     const context = finalization.takeFinalizationContext(result)!;
     finalizationContexts.push(context);
-    expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(invalidSummary);
+    expect(assistantNativeRaw(context.getNativeDeclaration(result, new AbortController().signal))).toBe(invalidSummary);
     expect(inspectCandidateProtocol(result.conclusion).status).toBe('invalid');
     const delivery = context.deliveryContext;
     if (delivery.entry === 'historical_restore' || !delivery.acceptedCandidate) throw new Error('Missing current candidate');
@@ -1846,7 +2086,7 @@ describe('OpenAI bounded output-limit recovery', () => {
     expect(run).toHaveBeenCalledTimes(2);
     const context = finalization.takeFinalizationContext(result)!;
     finalizationContexts.push(context);
-    const retained = context.getNativeDeclaration(result, new AbortController().signal)!.raw;
+    const retained = assistantNativeRaw(context.getNativeDeclaration(result, new AbortController().signal))!;
     expect(inspectCandidateProtocol(retained).canonicalBody.trim()).toBe(body.trim());
     expect(inspectCandidateProtocol(retained).sidecar.contract?.claims?.length ?? 0).toBe(valid ? 1 : 0);
     const notices = updates.filter(update => update.content?.phase === 'candidate_protocol' &&
@@ -1894,7 +2134,7 @@ describe('OpenAI bounded output-limit recovery', () => {
     expect(diagnostic[1]).toMatchObject({status: 'valid', sourceBindingCount: 1});
     const context = finalization.takeFinalizationContext(result)!;
     finalizationContexts.push(context);
-    expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(complete);
+    expect(assistantNativeRaw(context.getNativeDeclaration(result, new AbortController().signal))).toBe(complete);
     expect(inspectCandidateProtocol(first).sidecar.rawPayload).toEqual(payload);
   });
 
@@ -1908,7 +2148,7 @@ describe('OpenAI bounded output-limit recovery', () => {
     expect(inspectCandidateProtocol(result.conclusion).status).toBe('invalid');
     const context = finalization.takeFinalizationContext(result)!;
     finalizationContexts.push(context);
-    expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(native);
+    expect(assistantNativeRaw(context.getNativeDeclaration(result, new AbortController().signal))).toBe(native);
   });
 
   it.each(['sidecar-only', 'invalid-schema'])('repairs a native completed %s candidate before finalization', async kind => {
@@ -1922,7 +2162,7 @@ describe('OpenAI bounded output-limit recovery', () => {
     expect(result.completion).toMatchObject({status: 'completed', conclusionFingerprint: analysisDeliveryFingerprint(result.conclusion)});
     const context = finalization.takeFinalizationContext(result)!;
     finalizationContexts.push(context);
-    expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(complete);
+    expect(assistantNativeRaw(context.getNativeDeclaration(result, new AbortController().signal))).toBe(complete);
     const diagnostic = updates.filter(update => update.content?.phase === 'candidate_protocol').map(update => update.content.candidateProtocolDiagnostic);
     expect(diagnostic.map(value => [value.stage, value.candidateIndex, value.status])).toEqual([
       ['native', 1, kind === 'sidecar-only' ? 'valid' : 'invalid'], ['native', 2, 'valid'], ['runtime_projected', 2, 'valid'],
@@ -1984,7 +2224,7 @@ describe('OpenAI bounded output-limit recovery', () => {
     expect(diagnosticLine).not.toContain('PRIVATE_RELATION_');
     const context = finalization.takeFinalizationContext(result)!;
     finalizationContexts.push(context);
-    expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(complete);
+    expect(assistantNativeRaw(context.getNativeDeclaration(result, new AbortController().signal))).toBe(complete);
   });
 
   it.each(['en', 'zh-CN'] as const)('provides value-free schema feedback to the one correction in %s', async outputLanguage => {
@@ -2018,7 +2258,7 @@ describe('OpenAI bounded output-limit recovery', () => {
     expect(run).toHaveBeenCalledTimes(2);
     const context = finalization.takeFinalizationContext(result)!;
     finalizationContexts.push(context);
-    expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw)
+    expect(assistantNativeRaw(context.getNativeDeclaration(result, new AbortController().signal)))
       .toBe(`The marker is present.\n\n${protocolSidecar}`);
     expect(inspectCandidateProtocol(result.conclusion)).toMatchObject({status: 'valid'});
     expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe('The marker is present.');
@@ -2034,7 +2274,7 @@ describe('OpenAI bounded output-limit recovery', () => {
     expect(run).toHaveBeenCalledTimes(2);
     const context = finalization.takeFinalizationContext(result)!;
     finalizationContexts.push(context);
-    expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(first);
+    expect(assistantNativeRaw(context.getNativeDeclaration(result, new AbortController().signal))).toBe(first);
     expect(inspectCandidateProtocol(result.conclusion).status).toBe('invalid');
     expect(result.completion.status).toBe('completed');
     expect(result.terminationMessage).toBeUndefined();
@@ -2314,7 +2554,7 @@ describe('OpenAI bounded output-limit recovery', () => {
     const nativeRaw = (result: any) => {
       const context = finalization.takeFinalizationContext(result)!;
       finalizationContexts.push(context);
-      return context.getNativeDeclaration(result, new AbortController().signal)?.raw;
+      return assistantNativeRaw(context.getNativeDeclaration(result, new AbortController().signal));
     };
 
     it('accepts a corrected declaration around the unchanged body', async () => {
@@ -3108,7 +3348,7 @@ describe('OpenAI source finalization parity', () => {
       expect(result.completion.conclusionFingerprint).toBe(analysisDeliveryFingerprint(result.conclusion));
       const context = finalization.takeFinalizationContext(result)!;
       finalizationContexts.push(context);
-      expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(SOURCE_FINALIZATION_RAW_SOURCE);
+      expect(assistantNativeRaw(context.getNativeDeclaration(result, new AbortController().signal))).toBe(SOURCE_FINALIZATION_RAW_SOURCE);
       expect(JSON.stringify(result)).not.toContain('conclusion_protocol_projection');
       prepare.mockRestore(); prepareStub(runtime); run.mockResolvedValue(sdkStream('public second answer'));
       const next = await runtime.analyze('another request', fixture.sessionId, 'trace', admitted({analysisMode: 'fast', providerId: null, codeAwareMode: 'off'}));

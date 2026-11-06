@@ -8,6 +8,7 @@ import { mergeIsolatedProviderEnv } from '../../../services/providerManager/envI
 import { hasConcreteEnvValue, redactUrlForDiagnostics } from '../../envCredentialSources';
 import { resolveAgentRuntimeBudgetConfig } from '../../../config';
 import {parseOpenAIAnalysisReasoningEffort, type OpenAIAnalysisReasoningEffort} from '../../../services/providerManager/modelExecutionProfile';
+import {captureAnalysisOutputConfig, type CapturedAnalysisOutputConfig} from '../../finalSubmissionConfig';
 import {
   DEFAULT_FULL_REQUEST_TIMEOUT_MS,
   DEFAULT_MAX_RUN_TIMEOUT_MS,
@@ -16,6 +17,8 @@ import {
 } from '../../runtimeLimits';
 
 export interface OpenAIAgentConfig {
+  /** Immutable output choices captured with this provider configuration before classification. */
+  outputConfig: CapturedAnalysisOutputConfig;
   model: string;
   lightModel: string;
   maxOutputTokens?: number;
@@ -93,6 +96,7 @@ export function loadOpenAIConfig(providerId?: string | null, providerScope?: Pro
   const env = createOpenAIEnv(providerId, providerScope);
   const budgetConfig = resolveAgentRuntimeBudgetConfig(env);
   return {
+    outputConfig: captureAnalysisOutputConfig(env),
     model: env.OPENAI_MODEL || DEFAULT_MODEL,
     lightModel: env.OPENAI_LIGHT_MODEL || DEFAULT_LIGHT_MODEL,
     maxOutputTokens: optionalOutputTokenLimit(env.OPENAI_MAX_OUTPUT_TOKENS),

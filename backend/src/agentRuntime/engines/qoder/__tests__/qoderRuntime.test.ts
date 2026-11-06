@@ -3,6 +3,8 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import { describe, expect, it, jest, beforeEach, afterEach } from '@jest/globals';
+import * as analysisRunSpecModule from '../../../analysisRunSpec';
+import * as outputConfigModule from '../../../finalSubmissionConfig';
 import type {CodeAwareTextProjectionReceipt} from '../../../../services/security/codeAwareOutputRegistry';
 import {expectRuntimeVendorHintParity} from '../../../__tests__/vendorHintParityFixture';
 
@@ -302,6 +304,56 @@ describe('QoderRuntime', () => {
       toolDefinitions: [],
     });
   });
+
+  it.each([
+    ['authored_claim_document_v1', 'canonical_v1', 'unsupported_final_submission', 'runtime'],
+    ['authored_claim_document_v1', 'authoring_v1', 'invalid_configuration', 'declaration_syntax_conflict'],
+    ['authored_claim_document_v1', 'authoring_v2', 'invalid_configuration', 'declaration_syntax_conflict'],
+    ['MODE_CANARY', 'canonical_v1', 'invalid_configuration', 'mode'],
+    ['assistant_text', 'SYNTAX_CANARY', 'invalid_configuration', 'declaration_syntax'],
+  ])('rejects output config %s / %s before Qoder classifier or SDK dispatch', async (mode, syntax, code, reason) => {
+    const runtime = createRuntime({SMARTPERFETTO_FINAL_SUBMISSION: mode, SMARTPERFETTO_CONCLUSION_AUTHORING: syntax});
+    await expect(runtime.analyze('Explain this trace', 'output-config-qoder', 'trace-1')).rejects.toMatchObject({
+      name: 'FinalSubmissionConfigurationError', code, message: `${code}:final_submission:${reason}`,
+    });
+    expect(mockIntentTransport).not.toHaveBeenCalled();
+    expect(mockLoadQoderSdkModule).not.toHaveBeenCalled();
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it.each(['canonical_v1', 'authoring_v1', 'authoring_v2'])(
+    'keeps the captured Qoder output config %s through classification and real RunSpec', async syntax => {
+      const capture = jest.spyOn(outputConfigModule, 'captureAnalysisOutputConfig');
+      const createSpec = analysisRunSpecModule.createAnalysisRunSpec;
+      let spec: ReturnType<typeof createSpec> | undefined;
+      const specSpy = jest.spyOn(analysisRunSpecModule, 'createAnalysisRunSpec').mockImplementation(input => {
+        spec = createSpec(input);
+        throw new Error('test stopped after real RunSpec');
+      });
+      const runtime = createRuntime({SMARTPERFETTO_CONCLUSION_AUTHORING: syntax});
+      mockIntentTransport.mockImplementationOnce(async () => {
+        (runtime as any).env.SMARTPERFETTO_FINAL_SUBMISSION = 'authored_claim_document_v1';
+        (runtime as any).env.SMARTPERFETTO_CONCLUSION_AUTHORING = 'LATE_SYNTAX_CANARY';
+        return {status: 'ok', text: JSON.stringify(defaultIntentDecision)};
+      });
+      try {
+        const result = await runtime.analyze('Explain this trace', 'output-config-qoder-frozen', 'trace-1');
+        expect(result.success).toBe(false); // The test stops after the real RunSpec boundary.
+        expect(mockIntentTransport).toHaveBeenCalledTimes(1);
+        expect(mockQuery).not.toHaveBeenCalled();
+        expect(specSpy).toHaveBeenCalledTimes(1);
+        expect(capture).toHaveBeenCalledTimes(1);
+        const captured = capture.mock.results[0].value;
+        expect(Object.isFrozen(captured)).toBe(true);
+        expect(specSpy.mock.calls[0][0].outputConfig).toBe(captured);
+        expect(spec).toMatchObject({finalSubmission: 'assistant_text', declarationSyntax: syntax});
+      } finally {
+        specSpy.mockRestore();
+        capture.mockRestore();
+        runtime.cleanupSession('output-config-qoder-frozen');
+      }
+    },
+  );
 
   it('scene runtime matrix: runs the pinned Qoder provider through shared proposal and private seal', async () => {
     const f = createSceneRuntimeMatrixFixture('qoder');
@@ -1961,7 +2013,7 @@ describe('QoderRuntime', () => {
       expect(result.completion).toMatchObject({status: 'completed'});
       expect(inspectCandidateProtocol(result.conclusion).status).toBe('invalid');
       const context = takeFinalizationContext(result)!;
-      try {expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(native);}
+      try {expect(context.getNativeDeclaration(result, new AbortController().signal)).toMatchObject({raw: native});}
       finally {context.dispose();}
     });
 
@@ -1990,7 +2042,7 @@ describe('QoderRuntime', () => {
       expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
       expect(result.completion).toMatchObject({status: 'completed', attemptId: 'declaration-completion:1'});
       const context = takeFinalizationContext(result)!;
-      try {expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(repaired);}
+      try {expect(context.getNativeDeclaration(result, new AbortController().signal)).toMatchObject({raw: repaired});}
       finally {context.dispose();}
     });
 
@@ -2136,7 +2188,7 @@ describe('QoderRuntime', () => {
         }));
         const context = takeFinalizationContext(terminal)!;
         try {
-          expect(context.getNativeDeclaration(terminal, new AbortController().signal)?.raw).toBe(SOURCE_FINALIZATION_RAW_SOURCE);
+          expect(context.getNativeDeclaration(terminal, new AbortController().signal)).toMatchObject({raw: SOURCE_FINALIZATION_RAW_SOURCE});
           expect(JSON.stringify(terminal)).not.toContain('conclusion_protocol_projection');
         } finally {context.dispose();}
         const next = await runtime.analyze('public run', 'session-1', 'trace-1', admitted({

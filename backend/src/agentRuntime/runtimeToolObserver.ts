@@ -4,12 +4,14 @@
 
 import {randomUUID} from 'crypto';
 import type {RuntimeToolExtra, RuntimeToolResult, SharedToolSpec} from './runtimeToolSpec';
+import {projectRuntimeToolEventPayload} from '../services/security/runtimeToolEventProjection';
 
 interface RuntimeToolInvocation {
   toolCallId: string;
   toolName: string;
   params: Record<string, unknown>;
   extra: RuntimeToolExtra;
+  role?: SharedToolSpec['role'];
 }
 
 export type RuntimeToolInvocationEvent = RuntimeToolInvocation & (
@@ -34,7 +36,7 @@ export function withRuntimeToolObserver(
   if (!observer) return spec;
   const notify = async (event: RuntimeToolInvocationEvent): Promise<void> => {
     try {
-      await observer(event);
+      await observer(projectRuntimeToolEventPayload(spec.role, event));
     } catch {
       // Observability must not change the actual tool outcome.
     }
@@ -44,6 +46,7 @@ export function withRuntimeToolObserver(
     const invocation = {
       toolCallId,
       toolName: spec.name,
+      ...(spec.role ? {role: spec.role} : {}),
       params,
       extra: {...extra, toolCallId},
     };

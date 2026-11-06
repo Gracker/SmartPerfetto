@@ -11,6 +11,7 @@ import {isUnusedSourceDecision} from './codebase/sourceUseDecision';
 import {isSemanticClaimIssueCode, SEMANTIC_UNDECLARED_CLAIM_ISSUE_CODE} from './finalSemanticIssueCodes';
 import {claimReferences} from './analysisInvestigationPresentation';
 import {claimReferenceIssueCode} from '../types/claimVerification';
+import {hasCurrentAuthoredFinalDelivery} from './security/conclusionProtocolProjection';
 import type {IdentityResolutionV1} from '../types/identityContract';
 import {
   analysisDeliveryFingerprint,
@@ -38,6 +39,8 @@ export type FinalResultQualityIssueCode =
   | 'sdk_incomplete'
   | 'runtime_fallback'
   | 'completion_not_checked'
+  | 'missing_submission'
+  | 'transport_failure'
   | 'report_assessment_not_checked';
 
 export interface FinalResultQualityIssue {
@@ -359,7 +362,8 @@ export function assessFinalResultQualityAssessment(
     issues.push({code: 'runtime_fallback', message: '运行时降级内容不是已完成的模型正文。'});
   } else if (receiptCurrent && completion) {
     if (completion.status === 'completed') {
-      if (context.outputOrigin === 'sdk_final' || context.outputOrigin === 'assistant_stream') {
+      if (context.outputOrigin === 'sdk_final' || context.outputOrigin === 'assistant_stream' ||
+          context.outputOrigin === 'model_tool_arguments' && hasCurrentAuthoredFinalDelivery(result, context)) {
         assurance.completion = 'passed';
       } else if (context.outputOrigin === 'evidence_rendered' && verifiedEvidenceRenderedOutput(result, context)) {
         assurance.completion = 'passed';
@@ -373,6 +377,15 @@ export function assessFinalResultQualityAssessment(
         ...(completion.status === 'incomplete' ? {recoveryKind: 'continue_output' as const} : {}),
       });
     }
+  }
+  const submissionFailure = context.finalSubmission?.mode === 'authored_claim_document_v1'
+    ? context.finalSubmission.outcome !== 'submitted' ? context.finalSubmission.outcome
+      : hasCurrentAuthoredFinalDelivery(result, context) ? undefined : 'transport_failure' : undefined;
+  if (submissionFailure) {
+    assurance.completion = 'failed';
+    issues.push({code: submissionFailure,
+      message: submissionFailure === 'missing_submission'
+        ? '模型未通过本次已启用的声明提交运输交付正文。' : '本次声明提交运输未完成。'});
   }
   if (!result.conclusion.trim()) assurance.completion = 'failed';
 
@@ -433,7 +446,8 @@ export function applyFinalResultQualityGate(input: FinalResultQualityInput): Fin
   // unavailable review must not discard the answer, alter native completion,
   // lower its finding confidence or present it as verified.
   const issue = assessment.issues.find(({code}) => code === 'empty_conclusion' ||
-    code === 'sdk_incomplete' || code === 'runtime_fallback' || code === 'completion_not_checked');
+    code === 'sdk_incomplete' || code === 'runtime_fallback' || code === 'completion_not_checked' ||
+    code === 'missing_submission' || code === 'transport_failure');
   if (!issue) return undefined;
   result.partial = true;
   result.confidence = Math.min(result.confidence || 0, 0.55);

@@ -5,7 +5,7 @@
 import {randomUUID} from 'node:crypto';
 import type {AnalysisResult} from '../agent/core/orchestratorTypes';
 import {deriveConclusionContract} from '../agent/core/conclusionGenerator';
-import {parseConclusionContractSidecar, parseTypedConclusionContractJson,
+import {parseConclusionContractSidecar, parseTypedConclusionContractJson, parseConclusionDeclarationPayload,
   declaredFields, declaredContractForResult, type ConclusionContract, type ConclusionBindingEligibility,
   type ConclusionContractDeclarationParseResult, type ConclusionContractSidecarParseResult,
   MAX_CONCLUSION_STRUCTURE_DETAILS, isConclusionContractStructureDetail,
@@ -20,7 +20,7 @@ import {parseConversationResponseWithProjection, type ConversationEvidenceRef,
   type ConversationResponseProjection, type ConversationRuntimeOutcome} from '../assistant/contracts/conversationContract';
 import {analysisDeliveryFingerprint, sameAnalysisCandidate,
   type AnalysisDeliveryContext} from '../types/analysisDelivery';
-import {isIssuedNativeConclusionDeclaration, projectConclusionContractForDisplay,
+import {isIssuedNativeConclusionDeclaration, projectConclusionContractForDisplay, bindAuthoredFinalDelivery,
   type NativeConclusionDeclaration} from './security/conclusionProtocolProjection';
 import {issueCanonicalAnalysisProjection, type CanonicalAnalysisProjection} from './canonicalAnalysisProjection';
 export {isIssuedCanonicalAnalysisProjection, type CanonicalAnalysisProjection} from './canonicalAnalysisProjection';
@@ -330,8 +330,14 @@ export function canonicalizeAnalysisResult(
   if (options.nativeDeclaration && !isIssuedNativeConclusionDeclaration(options.nativeDeclaration)) {
     throw new Error('unissued_native_conclusion_declaration');
   }
-  const display = inspectCandidateProtocol(raw, options.conversation);
-  const {sidecar, conversation, typedJson} = options.nativeDeclaration
+  const authored = options.nativeDeclaration?.inputKind === 'model_tool_arguments' ? options.nativeDeclaration : undefined;
+  // An authored document's body is literal prose, including any protocol-looking examples.
+  const display = authored ? {canonicalBody: raw,
+    sidecar: {status: 'absent' as const, raw: '', bindingEligibility: 'legacy_unchecked' as const,
+      narrative: raw, machineSegments: [], issues: []},
+    typedJson: parseConclusionDeclarationPayload(authored.rawCanonicalPayload, 'canonical_v1'), conversation: undefined}
+    : inspectCandidateProtocol(raw, options.conversation);
+  const {sidecar, conversation, typedJson} = options.nativeDeclaration && !authored && options.nativeDeclaration.inputKind !== 'model_tool_arguments'
     ? inspectCandidateProtocol(options.nativeDeclaration.raw, options.conversation) : display;
   const narrative = display.canonicalBody;
   const intent = options.context?.turnIntent;
@@ -340,7 +346,8 @@ export function canonicalizeAnalysisResult(
   // only the server's retrieval supplies them, and finalization adds those.
   const validationContract = withoutCaseRecommendations(sidecar.status !== 'absent'
     ? sidecar.contract
-    : typedJson && typedJson.status !== 'absent' ? typedJson.contract : options.nativeDeclaration?.contract ?? source.conclusionContract ?? deriveConclusionContract(narrative, {
+    : typedJson && typedJson.status !== 'absent' ? typedJson.contract : authored ? undefined
+    : options.nativeDeclaration?.contract ?? source.conclusionContract ?? deriveConclusionContract(narrative, {
       mode: intent?.status === 'resolved' && intent.deliverable === 'answer' ? 'focused_answer' : 'initial_report',
       ...(intent?.status === 'resolved' ? {sceneId: intent.sceneId} : {}),
     }) ?? undefined);
@@ -395,6 +402,7 @@ export function canonicalizeAnalysisResult(
       reportAssessment: undefined, investigationAssessment: undefined, evidenceRenderedProof: undefined,
     };
   }
+  if (authored && deliveryContext) bindAuthoredFinalDelivery({context: deliveryContext, result, nativeDeclaration: authored});
   return {result, projection, bindingEligibility, ...(validationContract ? {validationContract} : {}), ...(deliveryContext ? {deliveryContext} : {}),
     ...(conversation ? {conversationOutcome: {...conversation.outcome, message: narrative}} : {}),
     ...(sidecar.status !== 'absent' || (typedJson && typedJson.status !== 'absent') || (conversation && conversation.status !== 'absent')

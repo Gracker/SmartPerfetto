@@ -116,6 +116,11 @@ import type { RuntimeEngineDefinition, RuntimeFactoryInput } from '../../runtime
 import type { EngineCapabilities } from '../../runtimeDescriptorTypes';
 import { canonicalRuntimeKind, createAnalysisRunSpec, type AnalysisRunSpec } from '../../analysisRunSpec';
 import {
+  captureAnalysisOutputConfig,
+  assertFinalSubmissionRuntime,
+  type CapturedAnalysisOutputConfig,
+} from '../../finalSubmissionConfig';
+import {
   buildRuntimeTracePairComparisonContext,
   buildRuntimeTracePairIdentityContext,
   buildRuntimeMemoryContext,
@@ -1145,6 +1150,8 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     traceId: string,
     options: AnalysisOptions = {},
   ): Promise<AnalysisResult> {
+    const outputConfig = captureAnalysisOutputConfig(this.env);
+    assertFinalSubmissionRuntime(outputConfig, PI_AGENT_CORE_RUNTIME_KIND);
     options = {
       ...options,
       analysisMode: options.analysisMode ?? 'auto',
@@ -1247,6 +1254,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           sessionId,
           traceId,
           options,
+          outputConfig,
           executionLease,
           runtimePerformance,
           timeouts.streamIdleTimeoutMs,
@@ -1532,6 +1540,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     sessionId: string,
     traceId: string,
     options: AnalysisOptions,
+    outputConfig: CapturedAnalysisOutputConfig,
     executionLease: RuntimeExecutionLease,
     runtimePerformance: RuntimePerformanceRun,
     streamIdleTimeoutMs: number,
@@ -1628,7 +1637,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const closeoutTape = createRuntimeTurnCloseoutTape();
     let toolAdmissionsOpen = true;
     const prep = await this.prepareAnalysis(
-      query, sessionId, traceId, options, providerRuntime.model.id,
+      query, sessionId, traceId, options, outputConfig, providerRuntime.model.id,
       executionLease, turnIntent, policy, intentResolver.strategyRegistry, analysisHistoryReader, work, closeoutTape.observe,
       () => toolAdmissionsOpen && !work.signal.aborted && Date.now() < getRunDeadlineMs(), getRunDeadlineMs(), authorization,
     );
@@ -2042,6 +2051,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     sessionId: string,
     traceId: string,
     options: AnalysisOptions,
+    outputConfig: CapturedAnalysisOutputConfig,
     model: string | undefined,
     executionLease: RuntimeExecutionLease,
     turnIntent: AnalysisTurnIntent,
@@ -2062,6 +2072,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const previousTurns = sessionContext.getAllTurns?.() ?? [];
     const quickMode = policy.budgetMode === 'quick';
     const analysisRunSpec = createAnalysisRunSpec({
+      outputConfig,
       history: analysisHistoryReader.getTurns(),
       query,
       sessionId,

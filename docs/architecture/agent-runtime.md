@@ -82,6 +82,20 @@ Pi 的 model JSON 可显式设置 `thinkingLevel`（`off/minimal/low/medium/high
 
 `OPENAI_ANALYSIS_REASONING_EFFORT` 可显式配置 OpenAI runtime 的主分析与普通续写，省略时保留服务商默认。它不覆盖分类、声明修复、超时无工具收尾或语义审核各自的用途策略。合法性按实际选中的模型、端点、协议与当前 SDK 验证；通用 effort 通过 SDK 原生字段发送，不向未知网关注入 `thinking`。已识别 DeepSeek Chat 的 `none` 映射为关闭思考；强制思考的 GLM 拒绝 `none`。当前 adapter 仅在已识别且支持的 Chat 接口通过透传表达 `max`，未知网关与 Responses 的显式 `max` 暂不支持。配置进入同一隔离环境的 provider snapshot，非法值不进入公开快照。较低 effort 的准确性仍需真实验证。
 
+`SMARTPERFETTO_FINAL_SUBMISSION` 选择主分析输出运输，默认 `assistant_text`；
+`authored_claim_document_v1` 是显式实验配置。它与声明格式在分类调用前一起捕获，
+只允许 `canonical_v1`。实验准入分别检查实际 SDK 合同、Chat Completions 协议及
+所有可能用于主分析的模型的 function-tool 原语事实；未知或不兼容配置在付费调用前拒绝。
+已观察到工具调用不代表该模型的文档提交、准确度或性能已经通过验收。
+
+实验运输从实际 registry 的唯一 `final_candidate_submission` role 取得工具名。
+模型用 `documentJson` 提交正文片段和原始 canonical 声明；确定性 compiler 只拼接
+模型所写文字，不从证据补值。原始 wire 参数、SDK 调用、真实 handler 成功、原生 final
+和后台排空共同确认提交，随后仍由共享 finalizer 完成原有证据、语义、源码和报告校验。
+作者来源为 `model_tool_arguments`。实际 main 缺少提交或运输失败是独立产品问题，
+不改写 SDK 的真实完成状态，也不启动旧声明修复或续写。没有 main 调用的程序 ACK／
+直接证据路径保持原交付，其实际运输不适用。
+
 ## M10 独立反馈 triage
 
 Agent 辅助 GitHub 反馈不是主分析 session 的 resume。分析完成时，新 RunManifest 可保存
@@ -115,6 +129,8 @@ manifest、凭据不可用、snapshot 漂移或非法模型输出在 V1 中使�
 | `backend/src/services/providerManager/modelExecutionProfile.ts`, `backend/src/agentRuntime/modelExecutionPolicy.ts` | 实际模型与 SDK 能力、独立执行指纹、按用途选择合法模型参数 |
 | `backend/src/agentRuntime/runtimeTaskDeadline.ts` | 单轮内部 admission 身份与显式工作期限；不替代用户取消或授权 |
 | `backend/src/agent/core/conclusionAuthoring.ts` | 有界声明引用展开；保留原始 wire 与独立验证命题 |
+| `backend/src/agent/core/authoredClaimDocument.ts`, `backend/src/agentRuntime/authoredFinalSubmission.ts` | 字面正文编译、绑定当前运行的私有提交及撤销 |
+| `backend/src/agentRuntime/engines/openai/openAiTypedFinalAdmission.ts` | 实验运输的原始参数、SDK 状态和实际排空准入 |
 | `backend/src/agentRuntime/runtimeCandidateAdmission.ts` | 维护者控制的并发候选准入边界 |
 | `backend/src/agentRuntime/runtimePerformance.ts` | RunManifest 内部阶段、工具与 SQL 排队/执行耗时 receipt |
 | `backend/src/agentRuntime/runtimeActivity.ts`, `runtimePerformanceContext.ts` | 有界调用与采集活动、私有运行归属及迟到回调隔离 |

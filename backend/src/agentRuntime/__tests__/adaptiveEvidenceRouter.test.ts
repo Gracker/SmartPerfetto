@@ -9,6 +9,7 @@ import {
   routeAdaptiveEvidencePreflight,
 } from '../adaptiveEvidenceRouter';
 import {createAnalysisRunSpec} from '../analysisRunSpec';
+import {captureAnalysisOutputConfig} from '../finalSubmissionConfig';
 import type {RuntimeSelection} from '../runtimeSelection';
 import {RunManifestBuilder} from '../../services/selfEvolution/runManifestBuilder';
 import {buildAnalysisReceipt} from '../../services/analysisReceiptBuilder';
@@ -338,6 +339,7 @@ describe('adaptive routing persistence seams', () => {
       recordAdaptiveRouting,
     } as unknown as RunManifestAttributionSink;
     const without = createAnalysisRunSpec({
+      outputConfig: captureAnalysisOutputConfig({}),
       query: 'fact',
       sessionId: 'session-a',
       traceId: 'trace-a',
@@ -348,6 +350,7 @@ describe('adaptive routing persistence seams', () => {
     expect(without.mode).not.toHaveProperty('adaptiveRouting');
 
     const withRouting = createAnalysisRunSpec({
+      outputConfig: captureAnalysisOutputConfig({}),
       query: 'fact',
       sessionId: 'session-routing',
       traceId: 'trace-a',

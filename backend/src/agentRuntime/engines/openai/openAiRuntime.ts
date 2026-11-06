@@ -10,7 +10,10 @@ import {shouldCollectSelectedEvidenceFoundation} from '../../selectedEvidenceFou
 import {snapshotSceneCoverageRegistry} from '../../../agent/scene/sceneCoveragePlan';
 import {EventEmitter} from 'events';
 import {AsyncLocalStorage} from 'node:async_hooks';
-import {Agent, MaxTurnsExceededError, OpenAIProvider, Runner, StreamedRunResult, setTracingDisabled, type AgentInputItem, type ModelSettings, type RunStreamEvent} from '@openai/agents';
+import {readFileSync} from 'node:fs';
+import {dirname, join} from 'node:path';
+import {createRequire} from 'node:module';
+import {Agent, MaxTurnsExceededError, OpenAIProvider, Runner, StreamedRunResult, setTracingDisabled, type AgentInputItem, type ModelSettings, type RunStreamEvent, type Tool} from '@openai/agents';
 import OpenAI from 'openai';
 import {commitEvaluationSdkHandoffIfActive, recordEvaluationTokenDeltaIfPresent} from '../../../services/selfEvolution/evaluationRuntimeHooks';
 
@@ -66,7 +69,7 @@ import {
   type OpenAITextRequestPurposeOptions,
 } from '../../../services/providerManager/openAiChatCompletionsCompat';
 import {openAiTextRequestPurposeFor} from '../../intentTransport';
-import {resolveModelExecutionProfile} from '../../../services/providerManager/modelExecutionProfile';
+import {resolveModelExecutionProfile, type ResolvedModelExecutionProfile} from '../../../services/providerManager/modelExecutionProfile';
 import {resolveModelExecutionPolicy} from '../../modelExecutionPolicy';
 import {admitDeliveryCall, deliveryCallFailsOpen} from '../../../services/runtimeCallStats';
 import {createMimoReasoningContentFetch, shouldUseMimoReasoningContentCompat} from './mimoReasoningCompat';
@@ -118,6 +121,62 @@ import {analysisDeliveryFingerprint, type AnalysisCandidateIdentity, type Analys
 import {analysisHasPrivateContext} from '../../../services/security/analysisPrivateContext';
 import {resolveDurableLearningPermission} from '../../../services/security/durableLearning';
 import {runtimeSourceDepth} from '../../../services/codebase/sourceDepthPolicy';
+import {createOpenAiTypedFinalAttempt, OPENAI_TYPED_FINAL_ADMISSION_CONTRACT_VERSION,
+  type OpenAiTypedFinalWireEvents, type OpenAiTypedFinalWireObserver} from './openAiTypedFinalAdmission';
+import {assertFinalSubmissionPreDispatch, FinalSubmissionConfigurationError,
+  type FinalSubmissionSdkCompatibility} from '../../finalSubmissionConfig';
+import {createAuthoredFinalSubmissionIssuer, readAuthoredFinalSubmission} from '../../authoredFinalSubmission';
+import {hasCurrentAuthoredFinalDelivery, type AuthoredConclusionSubmission} from '../../../services/security/conclusionProtocolProjection';
+import {projectRuntimeToolEventPayload} from '../../../services/security/runtimeToolEventProjection';
+import type {RuntimeToolRole} from '../../runtimeToolSpec';
+import type {McpToolDefinition, ResolvedFinalTool} from '../../../agentv3/mcpToolRegistry';
+
+type TypedFinalAttempt = ReturnType<typeof createOpenAiTypedFinalAttempt>;
+type ActualFinalSubmission = NonNullable<Exclude<AnalysisDeliveryContext, {entry: 'historical_restore'}>['finalSubmission']>;
+
+/** Resolve the packages used by the already imported umbrella SDK, not a configured version label. */
+function installedOpenAiSdkCompatibility(): FinalSubmissionSdkCompatibility {
+  const unknown = {agentsCoreVersion: 'unknown', agentsOpenAiVersion: 'unknown', contractVersion: 'unknown'};
+  try {
+    const sdkRequire = createRequire(require.resolve('@openai/agents'));
+    const coreEntry = sdkRequire.resolve('@openai/agents-core'), openAiEntry = sdkRequire.resolve('@openai/agents-openai');
+    const core = require(coreEntry), openAi = require(openAiEntry);
+    if (core.Agent !== Agent || core.Runner !== Runner || core.StreamedRunResult !== StreamedRunResult ||
+      openAi.OpenAIProvider !== OpenAIProvider) return unknown;
+    const version = (entry: string, name: string): string => {
+      const value: unknown = JSON.parse(readFileSync(join(dirname(entry), '..', 'package.json'), 'utf8'));
+      return isPlainObject(value) && value.name === name && typeof value.version === 'string' ? value.version : 'unknown';
+    };
+    return {agentsCoreVersion: version(coreEntry, '@openai/agents-core'),
+      agentsOpenAiVersion: version(openAiEntry, '@openai/agents-openai'), contractVersion: OPENAI_TYPED_FINAL_ADMISSION_CONTRACT_VERSION};
+  } catch {return unknown;}
+}
+
+function admitFinalSubmissionConfiguration(config: OpenAIAgentConfig, requestedMode: 'auto' | 'fast' | 'full'): ReadonlyMap<string, ResolvedModelExecutionProfile> | undefined {
+  if (config.outputConfig.finalSubmission === 'assistant_text') {
+    assertFinalSubmissionPreDispatch({outputConfig: config.outputConfig, runtimeKind: OPENAI_AGENT_RUNTIME_KIND});
+    return undefined;
+  }
+  const sdk = installedOpenAiSdkCompatibility();
+  const models = [...new Set(requestedMode === 'full' ? [config.model] : [config.model, config.lightModel])];
+  const modelProfiles = models.map(modelId => resolveModelExecutionProfile({runtimeKind: OPENAI_AGENT_RUNTIME_KIND,
+    protocol: config.protocol, modelId, baseUrl: config.baseURL,
+    sdk: {packageName: '@openai/agents-openai', version: sdk.agentsOpenAiVersion,
+      adapterContractVersion: OPENAI_TYPED_FINAL_ADMISSION_CONTRACT_VERSION},
+    sdkCapabilities: {surface: 'none', thinking: 'unknown', reasoningRoundtrip: 'unknown', source: 'contract_test'},
+    effective: {...config.outputConfig,
+      ...(config.analysisReasoningEffort === undefined ? {} : {authoredReasoning: config.analysisReasoningEffort === 'none'
+        ? {mode: 'disabled' as const} : {mode: 'enabled' as const, effort: config.analysisReasoningEffort}}),
+      maxOutputTokens: config.maxOutputTokens, maxTurns: config.maxTurns,
+      quickMaxTurns: config.quickMaxTurns, quickTargetTurns: config.quickTargetTurns,
+      fullPerTurnMs: config.fullPathPerTurnMs, quickPerTurnMs: config.quickPathPerTurnMs,
+      fullRequestTimeoutMs: config.fullRequestTimeoutMs, streamIdleTimeoutMs: config.streamIdleTimeoutMs,
+      maxRunTimeoutMs: config.maxRunTimeoutMs, classifierTimeoutMs: config.classifierTimeoutMs,
+      maxHistoryBytes: config.maxHistoryBytes}}));
+  assertFinalSubmissionPreDispatch({outputConfig: config.outputConfig, runtimeKind: OPENAI_AGENT_RUNTIME_KIND,
+    protocol: config.protocol, sdk, modelSelection: {primaryModel: config.model, lightModel: config.lightModel, requestedMode}, modelProfiles});
+  return new Map(modelProfiles.map(profile => [profile.model.requestedId!, profile]));
+}
 
 // An old SDK chain retains its own revoked observer after timeout; it cannot borrow a newer attempt's span.
 const modelCallDispatchContext = new AsyncLocalStorage<() => void>();
@@ -166,12 +225,28 @@ interface OpenAiChatTerminal {
 function createOpenAiTerminalFetch(
   fetchImpl: typeof fetch,
   onRequest: (terminal: OpenAiChatTerminal) => void,
+  typedFinalObserver?: OpenAiTypedFinalWireObserver,
 ): typeof fetch {
   return async (input, init) => {
     const terminal: OpenAiChatTerminal = {};
     onRequest(terminal);
-    const response = await fetchImpl(input, init);
-    if (!response.body || !response.headers.get('content-type')?.includes('text/event-stream')) return response;
+    let typed: OpenAiTypedFinalWireEvents | undefined;
+    try { typed = typedFinalObserver?.startRequest(); } catch { /* Observation cannot alter legacy delivery. */ }
+    const observe = (callback: (events: OpenAiTypedFinalWireEvents) => void) => {
+      if (typed) {
+        try { callback(typed); } catch {
+          try { typed.fail('invalid_framing'); } catch { /* A failed observer grants no typed receipt. */ }
+          typed = undefined;
+        }
+      }
+    };
+    let response: Response;
+    try { response = await fetchImpl(input, init); }
+    catch (error) {observe(events => events.fail('transport_error')); throw error;}
+    if (!response.body || !response.headers.get('content-type')?.includes('text/event-stream')) {
+      observe(events => events.fail('not_sse'));
+      return response;
+    }
     const decoder = new TextDecoder();
     let buffer = '';
     let eventData: string[] = [];
@@ -180,10 +255,11 @@ function createOpenAiTerminalFetch(
       if (!eventData.length) return;
       const data = eventData.join('\n');
       eventData = [];
-      if (done) {terminal.invalid = true; return;}
-      if (data === '[DONE]') {done = true; return;}
+      if (done) {terminal.invalid = true; observe(events => events.fail('data_after_done')); return;}
+      if (data === '[DONE]') {done = true; observe(events => events.done()); return;}
       try {
         const value = JSON.parse(data);
+        observe(events => events.chunk(value));
         if (value.error != null) terminal.invalid = true;
         if (typeof value.model === 'string' && value.model) terminal.model ??= value.model;
         if (isPlainObject(value.usage)) terminal.usage = value.usage;
@@ -205,12 +281,13 @@ function createOpenAiTerminalFetch(
           }
           if (choice.delta?.refusal) terminal.refused = true;
         }
-      } catch {terminal.invalid = true;}
+      } catch {terminal.invalid = true; observe(events => events.fail('invalid_json'));}
     };
     const consume = (chunk: string) => {
       buffer += chunk;
       if (buffer.length > 1024 * 1024) {
         terminal.invalid = true;
+        observe(events => events.fail('invalid_framing'));
         buffer = '';
         eventData = [];
         return;
@@ -229,6 +306,7 @@ function createOpenAiTerminalFetch(
         consume(decoder.decode());
         // SSE dispatch requires the wire's blank line. EOF is not an event delimiter.
         if (buffer || eventData.length) terminal.invalid = true;
+        observe(events => events.end(!buffer && !eventData.length));
       },
     }));
     return new Response(body, {status: response.status, statusText: response.statusText, headers: response.headers});
@@ -303,6 +381,8 @@ function finalizeOpenAiCandidate(input: {
   finish: Pick<AnalysisCompletion, 'status' | 'reason' | 'sdkFinishReason'>;
   outputOrigin: AnalysisOutputOrigin;
   sourceUse?: ReturnType<typeof createClaudeMcpServer>['sourceUse'];
+  authoredSubmission?: AuthoredConclusionSubmission;
+  finalSubmission?: ActualFinalSubmission;
 }) {
   const {result, runId, attemptId} = input;
   const nativeEmpty = result.conclusion.trim().length === 0;
@@ -312,16 +392,17 @@ function finalizeOpenAiCandidate(input: {
   };
   result.outputOrigin = input.outputOrigin;
   result.completion = {schemaVersion: 1, runtimeKind: OPENAI_AGENT_RUNTIME_KIND, ...acceptedCandidate,
-    ...input.finish, ...(nativeEmpty && input.finish.status === 'completed' ? {status: 'unknown' as const} : {})};
+    ...input.finish, ...(nativeEmpty && input.finish.status === 'completed' && !input.finalSubmission ? {status: 'unknown' as const} : {})};
   if (nativeEmpty) {
     result.success = false;
     result.partial = true;
     result.confidence = 0;
   }
   const nativeContext: AnalysisDeliveryContext = {entry: 'runtime_draft', acceptedCandidate,
-    completion: result.completion, outputOrigin: input.outputOrigin, turnIntent: result.turnIntent};
+    completion: result.completion, outputOrigin: input.outputOrigin, turnIntent: result.turnIntent,
+    ...(input.finalSubmission ? {finalSubmission: input.finalSubmission} : {})};
   const finalized = finalizeOwnerSourceAwareAnalysisResultWithProjection(result, input.sourceUse, {
-    context: nativeContext,
+    context: nativeContext, ...(input.authoredSubmission ? {authoredSubmission: input.authoredSubmission} : {}),
   });
   if (!finalized.deliveryContext) throw new Error('OpenAI candidate projection omitted delivery context');
   return {...finalized, deliveryContext: finalized.deliveryContext};
@@ -650,6 +731,8 @@ export const __testing = {
   buildOpenAIModelSettings,
   outputOnlyProviderData,
   createOpenAiTerminalFetch,
+  installedOpenAiSdkCompatibility,
+  admitFinalSubmissionConfiguration,
   resolveOpenAiNativeCompletion,
   finalizeOpenAiCandidate,
   openAiStreamEventCarriesOutput,
@@ -715,6 +798,8 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     const runId = options.runId ?? randomUUID();
     const resolvedConfig = loadOpenAIConfig(options.providerId, providerScopeFromAnalysisOptions(options));
     const config = options.outputLanguage ? {...resolvedConfig, outputLanguage: options.outputLanguage} : resolvedConfig;
+    const admittedFinalModels = admitFinalSubmissionConfiguration(config, options.analysisMode ?? 'auto');
+    const usesTypedFinal = config.outputConfig.finalSubmission === 'authored_claim_document_v1';
     const executionLease = this.executionGuard.begin({
       runtime: OPENAI_AGENT_RUNTIME_KIND, sessionId,
       referenceTraceId: options.referenceTraceId, runId,
@@ -810,6 +895,9 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       // A failed light-model classifier does not authorize a provider switch.
       // The already configured primary remains usable under the same budget.
       const selectedModel = quickMode && turnIntent.status === 'resolved' ? config.lightModel : config.model;
+      if (admittedFinalModels && !admittedFinalModels.has(selectedModel)) {
+        throw new FinalSubmissionConfigurationError('unsupported_final_submission', 'model_set');
+      }
       const maxTurns = quickMode ? config.quickMaxTurns : config.maxTurns;
       const turnBudget = resolveRuntimeTurnBudget(maxTurns);
       const finalizationConfig = Object.freeze({baseURL: config.baseURL, apiKey: config.apiKey,
@@ -823,6 +911,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         authorization: analysisContextMemoryPartitionKey(options)});
       const analysisRunSpec = createAnalysisRunSpec({
         query, sessionId, traceId, options, runtimeSelection: this.runtimeSelection,
+        outputConfig: config.outputConfig,
         sceneType, outputLanguage: config.outputLanguage, previousTurns: [], history: historyReader.getTurns(), turnIntent,
         resolvedMode: policy.budgetMode, resolvedModel: selectedModel,
         budget: config,
@@ -839,6 +928,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       workDeadlineAt = runDeadline.hardDeadlineAt;
       assertWorkRemaining();
       const sceneRunDeadline = resolveSceneProductScope(options, {runId, sessionId, traceId}) ? runDeadline : undefined;
+      let currentTypedAttempt: TypedFinalAttempt | undefined;
       const context = await this.prepareAnalysisContext(query, sessionId, traceId, options, {
         config, runId, sceneType, policy, turnIntent, strategyRegistry: intentResolver.strategyRegistry,
         analysisRunSpec, sessionContext, previousTurns, executionLease, runtimePerformance,
@@ -847,6 +937,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         isActive: () => acceptsToolUpdates && !workSignal.aborted && Date.now() < workDeadlineAt &&
           (!sceneRunDeadline || Date.now() < sceneRunDeadline.current()),
         sceneDeadlineMs: workDeadlineAt, scenePacing: sceneRunDeadline,
+        ...(usesTypedFinal ? {currentFinalAttempt: () => currentTypedAttempt} : {}),
       });
       sourceUse = context.sourceUse;
       assertWorkRemaining();
@@ -859,7 +950,12 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       const nativeFetch = shouldUseMimoReasoningContentCompat(config)
         ? createMimoReasoningContentFetch(authorizedFetch) as typeof fetch : authorizedFetch;
       const observedFetch = config.protocol === 'chat_completions'
-        ? createOpenAiTerminalFetch(nativeFetch, terminal => {chatTerminal = terminal;}) : nativeFetch;
+        ? createOpenAiTerminalFetch(nativeFetch, terminal => {chatTerminal = terminal;}, usesTypedFinal ? {
+          startRequest: () => {
+            if (!currentTypedAttempt) throw new Error('final_submission_attempt_unavailable');
+            return currentTypedAttempt.wireObserver.startRequest();
+          },
+        } : undefined) : nativeFetch;
       setTracingDisabled(true);
       const sdkStartPhase = runtimePerformance.startPhase('sdk_start');
       let runner: Runner;
@@ -902,6 +998,8 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       let finish: Pick<AnalysisCompletion, 'status' | 'reason' | 'sdkFinishReason'> = {status: 'unknown'};
       let attemptId = '';
       let terminationMessage: string | undefined;
+      let authoredSubmission: AuthoredConclusionSubmission | undefined;
+      let actualFinalSubmission: ActualFinalSubmission | undefined;
       let observedToolCalls = 0;
       let emittedAnswer = '';
       let recoveryCandidate: {
@@ -928,7 +1026,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         const recoveringOutputLimit = Boolean(recoveryCandidate);
         // Acquisition and delivery share one absolute hard deadline and total budget.
         const remainingTurns = Math.max(1, maxTurns - rounds);
-        const reserveDeliveryTurn = !recoveringOutputLimit && turnBudget.deliveryTurns === 1 && remainingTurns > 1;
+        const reserveDeliveryTurn = !usesTypedFinal && !recoveringOutputLimit && turnBudget.deliveryTurns === 1 && remainingTurns > 1;
         const attemptMaxTurns = recoveringOutputLimit ? 1 : remainingTurns - (reserveDeliveryTurn ? 1 : 0);
         attemptId = randomUUID();
         chatTerminal = {};
@@ -954,6 +1052,24 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         let nativeDrain: Promise<void> | undefined;
         let consumeWork: Promise<void> | undefined;
         let attemptContractFault: OpenAiNativeDrainUnavailableError | undefined;
+        let typedAttempt: TypedFinalAttempt | undefined;
+        let typedAttemptCurrent = true;
+        if (usesTypedFinal) {
+          if (!context.finalTool || context.finalTool.tool.type !== 'function') throw new Error('final_submission_tool_unavailable');
+          const assertRunCurrent = () => {
+            executionLease.throwIfAborted(); analysisAbortScope.throwIfAborted(); authorization.assertCurrent();
+          };
+          const ownerBinding = {owner: executionLease, sessionId, runId, attemptId,
+            providerPin: analysisDeliveryFingerprint({baseURL: config.baseURL, model: selectedModel, protocol: config.protocol}),
+            authorizationFingerprint: options.analysisContextFingerprint ?? analysisContextMemoryPartitionKey(options)};
+          const issuer = createAuthoredFinalSubmissionIssuer({binding: ownerBinding, assertCurrent: assertRunCurrent,
+            assertAttemptCurrent: () => {assertRunCurrent(); if (!typedAttemptCurrent) throw new Error('final_submission_attempt_inactive');}});
+          typedAttempt = createOpenAiTypedFinalAttempt({finalTool: context.finalTool.tool, toolName: context.finalTool.nativeName,
+            issuer, ownerBinding, signal: analysisAbortScope.signal, assertCurrent: assertRunCurrent,
+            deadlineAt: () => runDeadline.current()});
+          currentTypedAttempt = typedAttempt;
+          agent = agent.clone({toolUseBehavior: typedAttempt.toolUseBehavior});
+        }
         // The first span starts at SDK handoff. Later spans start at the authorized fetch after a native terminal event.
         const attemptInputBucket = runtimeModelCallInputBytesBucket(serializedByteLength(runInput) +
           Buffer.byteLength(context.systemPrompt));
@@ -982,9 +1098,9 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         const answerTextProjection = analysisHasPrivateContext(options)
           ? createCodeAwareStreamingTextProjection(sessionId, `openai-answer-${attemptId}`, 'owner') : undefined;
         // A recovery candidate is delivered atomically by the final conclusion event.
-        const attemptDraft = recoveringOutputLimit
+        const attemptDraft = recoveringOutputLimit || usesTypedFinal
           ? SILENT_ANSWER_DRAFT : createProjectedAnswerDraft(answerDraft, answerTextProjection);
-        const toolInputsByTaskId = new Map<string, {toolName: string; args: Record<string, unknown>}>();
+        const toolInputsByTaskId = new Map<string, {toolName: string; args: Record<string, unknown>; role?: RuntimeToolRole}>();
         const processedToolResultIds = new Set<string>();
         const attemptDeliveryDeadlineAt = deliveryDeadlineAt ?? completedOutputDeliveryDeadlineAt;
         const requestTimeout = createDeadlineRuntimeTimeout({
@@ -1005,6 +1121,11 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           if (Date.now() >= (attemptDeliveryDeadlineAt ?? runDeadline.current())) {timedOut = true; throw new Error('OpenAI request deadline elapsed');}
           commitEvaluationSdkHandoffIfActive();
           attemptDispatched = true;
+          if (typedAttempt) {
+            actualFinalSubmission = {mode: 'authored_claim_document_v1', outcome: 'transport_failure'};
+            observePolicy(resolveModelExecutionPolicy({profile: admittedFinalModels!.get(selectedModel)!,
+              purpose: 'answer_turn', selection: 'preserve'}).receipt);
+          }
           modelCall = startAttemptModelCall();
           const started = modelCallDispatchContext.run(observeAttemptDispatch, () => runner.run(agent, runInput, {stream: true, maxTurns: attemptMaxTurns,
             context: {signal: controller.signal}, signal: controller.signal}));
@@ -1012,14 +1133,21 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           // Keep startup and its actual background lifetime even if the race loses
           // before a stream arrives. A known startup rejection started no loop.
           nativeDrain = started.then(stream => {
-            try { return requireOpenAiNativeDrain(stream); }
+            let drain: Promise<void>;
+            try { drain = requireOpenAiNativeDrain(stream); }
             catch {
               nativeDrainUnknown = true;
               attemptContractFault = this.nativeDrainContractFault = new OpenAiNativeDrainUnavailableError();
               controller.abort();
               throw attemptContractFault;
             }
-          }, () => undefined);
+            try {typedAttempt?.bindStream(stream);} catch (error) {
+              // Failed observation cannot release ownership before the already captured real loop.
+              controller.abort();
+              return drain.then(() => {throw error;});
+            }
+            return drain;
+          }, () => {typedAttempt?.failStartup();});
           void nativeDrain.catch(() => undefined);
           const stream = await Promise.race([
             started,
@@ -1059,6 +1187,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
                 sessionId, quickMode, answerStreamFilter, answerTextProjection, runtimePerformance,
                 answerDraft: attemptDraft,
                 toolInputsByTaskId, processedToolResultIds,
+                toolRoles: context.toolRoles,
                 tracePairContext: options.tracePairContext, onToolCalled: () => {observedToolCalls++;},
                 onToolOutput: () => runDeadline.recordProgress(),
               });
@@ -1073,6 +1202,9 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           consumeWork = modelCallDispatchContext.run(observeAttemptDispatch, consume);
           void consumeWork.catch(() => undefined);
           await Promise.race([consumeWork, requestTimeout.promise, providerIdleTimeout.promise, cancellation]);
+          // SDK abort can resolve public completed before the timeout race rejects.
+          // The observed deadline still owns this unfinished typed attempt's outcome.
+          if (typedAttempt && timedOut && !streamCompleted) throw new RuntimeTaskDeadlineExceededError();
           analysisAbortScope.throwIfAborted();
           if (recoveringOutputLimit) {
             authorization.assertCurrent();
@@ -1086,6 +1218,16 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           outputOrigin = streamCompleted && finalOutput !== undefined ? 'sdk_final' : 'assistant_stream';
           finish = resolveOpenAiNativeCompletion({protocol: config.protocol, response: lastResponse,
             chatTerminal, streamCompleted, conclusion});
+          if (typedAttempt) {
+            endModelCall({outcome: 'ok', output: {bodyChars: conclusion.length, sidecarChars: 0,
+              declarationAuthoringStatus: 'not_observed'}});
+            // The ordinary assistant terminal remains honest when no submission was made.
+            // A tool-derived body cannot acquire assistant authorship while its drain gate is pending.
+            actualFinalSubmission = {mode: 'authored_claim_document_v1',
+              outcome: finish.status === 'completed' ? 'missing_submission' : 'transport_failure'};
+            if (finish.status !== 'completed') {conclusion = runAnswer; outputOrigin = 'assistant_stream';}
+            break;
+          }
           const modelOutput = inspectCandidateProtocol(conclusion);
           const authoring = conclusionDeclarationAuthoring(modelOutput.sidecar) ?? conclusionDeclarationAuthoring(modelOutput.typedJson);
           endModelCall({outcome: 'ok',
@@ -1179,6 +1321,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           }
           break;
         } catch (error) {
+          if (typedAttempt && rawRun === undefined) typedAttempt.failStartup();
           providerOutcome = runtimeOutcomeFromError(error, executionLease.signal);
           endModelCall({outcome: timedOut ? 'cancelled' : runtimeOutcomeFromError(error, executionLease.signal)});
           analysisAbortScope.throwIfAborted();
@@ -1187,10 +1330,15 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           outputOrigin = 'assistant_stream';
           finish = timedOut ? {status: 'incomplete', reason: 'timeout'}
             : error instanceof MaxTurnsExceededError ? {status: 'incomplete', reason: 'turn_limit'}
-            : {status: 'failed', reason: 'provider_error'};
+            : typedAttempt ? {status: 'failed'} : {status: 'failed', reason: 'provider_error'};
           rounds += error instanceof MaxTurnsExceededError ? Math.max(attemptMaxTurns, attemptModelTurns)
             : Math.max(attemptModelTurns, attemptDispatched ? 1 : 0);
           runtimePerformanceOutcome = timedOut ? 'cancelled' : 'error';
+          if (typedAttempt) {
+            actualFinalSubmission = {mode: 'authored_claim_document_v1', outcome: 'transport_failure'};
+            terminationMessage = 'final_submission_transport_failure';
+            break;
+          }
           const declarationRecoveryBlocked = isNativeDeclarationRecoveryBlocked(conclusion);
           if (!timedOut && error instanceof MaxTurnsExceededError && reserveDeliveryTurn &&
               !declarationRecoveryBlocked &&
@@ -1269,6 +1417,25 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           // Rejection of one known operation must never skip draining the others.
           // In particular, a continue cannot overlap the old loop with recovery.
           await Promise.allSettled([rawRun, nativeDrain, consumeWork]);
+          if (typedAttempt && attemptContractFault) typedAttempt.revoke('contract_unavailable');
+          if (typedAttempt && !attemptContractFault) {
+            try {
+              authoredSubmission = await typedAttempt.settleAfterDrain(consumeWork ?? Promise.resolve());
+              const submitted = readAuthoredFinalSubmission(authoredSubmission.submission, authoredSubmission.input);
+              conclusion = submitted.compiled.body;
+              outputOrigin = 'model_tool_arguments';
+              finish = {status: 'completed', sdkFinishReason: 'tool_calls'};
+              terminationMessage = undefined;
+              actualFinalSubmission = {mode: 'authored_claim_document_v1', outcome: 'submitted'};
+            } catch {
+              // Keep the actual assistant terminal (if any); a failed transport is a separate product issue.
+              authoredSubmission = undefined;
+              actualFinalSubmission = {mode: 'authored_claim_document_v1',
+                outcome: finish.status === 'completed' ? 'missing_submission' : 'transport_failure'};
+            }
+          }
+          typedAttemptCurrent = false;
+          currentTypedAttempt = undefined;
           providerPhase.end(attemptContractFault ? 'error' : providerOutcome);
           if (attemptContractFault) throw attemptContractFault;
         }
@@ -1306,17 +1473,19 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       };
       const {result, deliveryContext, conclusionProjection, protocolProjection} = finalizeOpenAiCandidate({
         result: nativeResult, runId, attemptId, finish, outputOrigin,
-        sourceUse,
+        sourceUse, authoredSubmission, finalSubmission: actualFinalSubmission,
       });
       // Finalization gets the deadline this run reached plus the reserved time its
       // evidence reads need; it cannot extend it and never passes the hard deadline.
-      const semanticCall = result.completion?.reason !== 'turn_limit' && result.completion?.reason !== 'timeout';
+      const deliveredSubmission = deliveryContext.entry === 'historical_restore' ? undefined : deliveryContext.finalSubmission;
+      const semanticCall = result.completion?.reason !== 'turn_limit' && result.completion?.reason !== 'timeout' &&
+        (!deliveredSubmission || deliveredSubmission.outcome === 'submitted' && hasCurrentAuthoredFinalDelivery(result, deliveryContext));
       const finalizationDeadlineAt = runDeadline.finalizationDeadlineAt(Date.now(), deliveryDeadlineAt, {
         useRemainingBudget: reportReviewUsesRemainingBudget({semanticCall, turnIntent: resolvedTurnIntent, result})});
-      const retainedProtocol = inspectCandidateProtocol(result.conclusion);
+      const retainedProtocol = actualFinalSubmission ? undefined : inspectCandidateProtocol(result.conclusion);
       // Report the retained candidate, including rejected repairs and calls
       // skipped by budget/history admission. Native completion stays separate.
-      const declarationNotice = turnIntent.taskKind !== 'acknowledgement' && retainedProtocol.canonicalBody.trim() &&
+      const declarationNotice = retainedProtocol && turnIntent.taskKind !== 'acknowledgement' && retainedProtocol.canonicalBody.trim() &&
           retainedProtocol.status !== 'valid' ? localize(config.outputLanguage,
           retainedProtocol.status === 'absent'
             ? '结论正文已保留，但未能提交有效断言声明；本轮断言未完成独立核验。'
@@ -1324,7 +1493,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           retainedProtocol.status === 'absent'
             ? 'The answer was retained, but no valid claim declaration was submitted; independent claim verification is incomplete.'
             : 'The answer was retained, but its claim declaration did not fully pass validation; rejected entries remain unchecked.') : undefined;
-      this.emitUpdate({type: 'progress', content: {phase: 'candidate_protocol',
+      if (retainedProtocol) this.emitUpdate({type: 'progress', content: {phase: 'candidate_protocol',
         candidateProtocolDiagnostic: buildCandidateProtocolDiagnostic(retainedProtocol, 'runtime_projected',
           recoveryCandidate && attemptId !== recoveryCandidate.attemptId ? 2 : 1, conclusionProjection.disposition),
         ...(declarationNotice ? {message: declarationNotice} : {})}, timestamp: Date.now()});
@@ -1584,6 +1753,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       workSignal?: AbortSignal;
       sceneDeadlineMs?: number;
       scenePacing?: ScenePacingInputs;
+      currentFinalAttempt?: () => TypedFinalAttempt | undefined;
     },
   ) {
     const {config, sceneType, policy, analysisRunSpec, sessionContext, executionLease} = runtime;
@@ -1687,6 +1857,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       deadlineMs: runtime.sceneDeadlineMs ?? 0, traceProcessorService: this.traceProcessorService,
       artifactStore, sceneCoverageRegistry, signal: runtime.workSignal ?? executionLease?.signal, canInvokeTool, pacing: runtime.scenePacing});
     const mcp = createClaudeMcpServer({
+      finalSubmission: analysisRunSpec.finalSubmission,
       sceneRunContext,
       runId: runtime.runId,
       analysisHistoryReader: runtime.historyReader,
@@ -1732,9 +1903,24 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       outputLanguage: config.outputLanguage, codeAwareMode: options.codeAwareMode, codebaseIds: options.codebaseIds,
       sourceAuthorization: mcp.sourceAuthorization,
     };
+    const installedByDefinition = new Map<McpToolDefinition, Tool>();
+    const tools = createOpenAIToolsFromMcpDefinitions(mcp.toolDefinitions, {
+      currentFinalAttempt: runtime.currentFinalAttempt,
+      onAdapted: (definition, installed) => installedByDefinition.set(definition, installed),
+    });
+    const resolvedFinalTool: ResolvedFinalTool | undefined = mcp.resolvedFinalTool;
+    const installedFinalTool = resolvedFinalTool ? installedByDefinition.get(resolvedFinalTool.definition) : undefined;
+    if (analysisRunSpec.finalSubmission === 'authored_claim_document_v1' &&
+      (!resolvedFinalTool || !installedFinalTool || installedFinalTool.type !== 'function' || installedFinalTool.name !== resolvedFinalTool.nativeName)) {
+      throw new Error('final_submission_tool_unavailable');
+    }
+    const toolRoles = new Map(mcp.toolDefinitions.filter(definition => definition.role !== undefined)
+      .map(definition => [definition.name, definition.role!]));
     return {
-      systemPrompt: buildSystemPrompt({...promptContext, declarationSyntax: analysisRunSpec.declarationSyntax}),
-      tools: createOpenAIToolsFromMcpDefinitions(mcp.toolDefinitions), allowedTools: mcp.allowedTools,
+      systemPrompt: buildSystemPrompt({...promptContext, declarationSyntax: analysisRunSpec.declarationSyntax,
+        finalSubmission: analysisRunSpec.finalSubmission, ...(resolvedFinalTool ? {resolvedFinalTool} : {})}),
+      tools, toolRoles, allowedTools: mcp.allowedTools,
+      ...(resolvedFinalTool && installedFinalTool ? {finalTool: {nativeName: resolvedFinalTool.nativeName, tool: installedFinalTool}} : {}),
       sessionContext, previousTurns: runtime.previousTurns, architecture, hypotheses,
       effectivePackageName, sourceUse: mcp.sourceUse,
     };
@@ -1829,7 +2015,8 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       runtimePerformance?: RuntimePerformanceRun;
       /** The attempt's projected view of the run draft; tool calls revoke its segment. */
       answerDraft: ProjectedAnswerDraft;
-      toolInputsByTaskId: Map<string, { toolName: string; args: Record<string, unknown> }>;
+      toolInputsByTaskId: Map<string, { toolName: string; args: Record<string, unknown>; role?: RuntimeToolRole }>;
+      toolRoles?: ReadonlyMap<string, RuntimeToolRole>;
       processedToolResultIds?: Set<string>;
       tracePairContext?: TracePairContext;
       onToolCalled?: () => void;
@@ -1867,22 +2054,27 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
 
     const rawItem = (event.item as any)?.rawItem;
     if (event.name === 'tool_called') {
-      const args = parseJsonObject(rawItem?.arguments) || {};
       const toolName: string = rawItem?.name || 'unknown';
+      const role = streamContext.toolRoles?.get(toolName);
+      const args = role === 'final_candidate_submission'
+        ? projectRuntimeToolEventPayload(role, {params: {}}).params
+        : parseJsonObject(rawItem?.arguments) || {};
       const callKey = openAiToolCallKey(rawItem);
       if (callKey && (streamContext.toolInputsByTaskId.has(callKey) || streamContext.processedToolResultIds?.has(callKey))) return '';
       streamContext.onToolCalled?.();
       // Text this response already streamed preceded a tool call, so it was
       // not the answer: revoke the draft and whatever the projection withheld.
       streamContext.answerDraft.boundary(now);
-      if (callKey) streamContext.toolInputsByTaskId.set(callKey, {toolName, args});
+      if (callKey) streamContext.toolInputsByTaskId.set(callKey, {toolName, args, ...(role ? {role} : {})});
       this.emitUpdate({
         type: 'agent_task_dispatched',
         content: {
           taskId: callKey ?? 'unknown',
           toolName,
           args,
-          message: formatToolCallNarration(toolName, args, outputLanguage, {
+          message: role === 'final_candidate_submission'
+            ? localize(outputLanguage, '正在提交答复，等待核验', 'Submitting the answer for verification.')
+            : formatToolCallNarration(toolName, args, outputLanguage, {
             tracePairContext: streamContext.tracePairContext,
           }),
         },
@@ -1893,24 +2085,30 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       const callKey = openAiToolCallKey(rawItem);
       if (callKey && streamContext.processedToolResultIds?.has(callKey)) return '';
       if (callKey) streamContext.processedToolResultIds?.add(callKey);
-      streamContext.onToolOutput?.();
       const cached = callKey ? streamContext.toolInputsByTaskId.get(callKey) : undefined;
       const toolName = cached?.toolName || rawItem?.name || 'unknown';
+      const role = cached?.role ?? streamContext.toolRoles?.get(toolName);
+      if (role !== 'final_candidate_submission') streamContext.onToolOutput?.();
       // Read failure from the raw result: projection replaces a sensitive
       // tool's payload with a rejection envelope that has no success field.
       const resultIsFailure = toolResultIsFailure({toolName, result: rawOutput});
-      const projectedOutput = projectToolResultForExternalSurface(toolName, rawOutput);
+      const roleOutput = projectRuntimeToolEventPayload(role, {result: rawOutput}).result;
+      const projectedOutput = projectToolResultForExternalSurface(toolName, roleOutput);
       const privateToolResultReceipt = issuePrivateToolResultNarrationReceipt({
         toolName, result: projectedOutput, isError: resultIsFailure,
       });
       const resultText = summarizeToolOutput(projectedOutput);
       // Narrate from the projected object while it is still intact; resultText
       // is byte-truncated and can end mid-JSON.
-      const resultNarration = formatToolResultNarration({
+      const resultNarration = role === 'final_candidate_submission'
+        ? resultIsFailure
+          ? localize(outputLanguage, '答复提交未被接受，核验尚未完成', 'Answer submission was rejected; verification is incomplete.')
+          : localize(outputLanguage, '已收到答复，等待核验', 'Answer received; verification is pending.')
+        : formatToolResultNarration({
         toolName,
         args: cached?.args,
         result: projectedOutput,
-        ownerResult: rawOutput,
+        ownerResult: role === 'final_candidate_submission' ? projectedOutput : rawOutput,
         isError: resultIsFailure,
         language: outputLanguage,
       });
@@ -1918,6 +2116,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       if (toolName !== 'unknown') {
         recordPlanOrPrePlanToolCall(this.sessionPlans.get(streamContext.sessionId), {
           toolName,
+          ...(role ? {role} : {}),
           toolCallId: callKey,
           onPhaseAutoCompleted: phase => this.emitUpdate({
             type: 'plan_phase_updated',

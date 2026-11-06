@@ -15,7 +15,7 @@ import type {IntentTransportInput, IntentTransportResult} from '../../agentRunti
 import {ArtifactStore} from '../../agentv3/artifactStore';
 import {buildStrategyRegistrySnapshotFromDefinitions, type StrategyDefinition} from '../../agentv3/strategyLoader';
 import * as strategyTemplates from '../../agentv3/strategyLoader';
-import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
+import {analysisDeliveryFingerprint, type AnalysisDeliveryContext} from '../../types/analysisDelivery';
 import type {CaseKnowledgeReportRecommendation} from '../../types/caseKnowledge';
 import {createDataEnvelope} from '../../types/dataContract';
 import type {EvidenceScopeProvenanceV1, IdentityResolutionV1} from '../../types/identityContract';
@@ -148,6 +148,7 @@ describe('persisted location verdict regressions', () => {
 });
 
 function fixture(options: {body?: string; capture?: boolean; claim?: boolean; inconsistent?: boolean;
+  finalSubmission?: Exclude<AnalysisDeliveryContext, {entry: 'historical_restore'}>['finalSubmission'];
   omissions?: boolean; report?: boolean; providerQuery?: {text: string; analysisContextFingerprint?: string};
   /** Use a registered scene's real report policy; null represents an unknown scene. */
   reportStrategy?: StrategyDefinition | null;
@@ -282,6 +283,7 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
     recommendedComplexity: 'quick' as const, deliverable: options.report ? 'report' as const : 'answer' as const,
     evidenceAccess: 'existing_only' as const});
   const nativeDelivery = {entry: 'runtime_draft' as const, acceptedCandidate: candidate,
+    ...(options.finalSubmission ? {finalSubmission: options.finalSubmission} : {}),
     outputOrigin: options.evidenceRenderedAcknowledgement ? 'evidence_rendered' as const : 'sdk_final' as const,
     completion: {...candidate, schemaVersion: 1 as const, runtimeKind: 'openai-agents-sdk' as const,
       ...(options.nativeCompletion ?? {status: 'completed' as const})},
@@ -337,6 +339,37 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
 
 afterEach(() => {clearAllCodeAwareOutputGuards(); clearRunManifestLifecyclesForTests(); jest.useRealTimers();});
 
+describe('actual typed submission semantic transport admission', () => {
+  it.each(['missing_submission', 'transport_failure', 'submitted'] as const)
+  ('never dispatches paid review for %s without a live typed binding, even with a valid report carrier', async outcome => {
+    const target = fixture({report: true, nativeProjection: true,
+      finalSubmission: {mode: 'authored_claim_document_v1', outcome}});
+    expect(target.context.hasSemanticTransport).toBe(false);
+    const final = await target.run();
+    expect(target.dispatch).not.toHaveBeenCalled();
+    expect(final.semanticAssessment).toMatchObject({status: 'unavailable', reason: 'missing_transport', consistency: 'unknown'});
+    expect(final.result.conclusion).toBe('\nThe captured value is 49.\n');
+    expect(final.result.completion?.status).toBe('completed');
+    expect(final.result.outputOrigin).toBe('sdk_final');
+    expect(final.result.conclusionContract?.bindingEligibility).toBe('eligible');
+    expect(final.result.claimVerificationResult?.claimResults[0].deterministicProof?.status).toBe('proved');
+    expect(final.result.deliveryAssurance?.completion).toBe('failed');
+    expect(final.qualityIssue?.code).toBe(outcome === 'missing_submission' ? 'missing_submission' : 'transport_failure');
+  });
+
+  it('retains the same legacy report review when no actual typed-main marker exists', async () => {
+    const target = fixture({report: true, nativeProjection: true});
+    expect(target.context.hasSemanticTransport).toBe(true);
+    const final = await target.run();
+    expect(target.dispatch).toHaveBeenCalledTimes(1);
+    // This existing report fixture explicitly answers unknown section coverage.
+    expect(final.semanticAssessment?.status).toBe('coverage_incomplete');
+    expect(final.result.conclusion).toBe('\nThe captured value is 49.\n');
+    expect(final.result.completion?.status).toBe('completed');
+    expect(final.result.outputOrigin).toBe('sdk_final');
+  });
+});
+
 describe('native no-trace conclusion contract presence', () => {
   function nativeAnswer(options: {body?: string; contract?: ConclusionContract;
     review?: 'checked' | 'unavailable' | 'omitted'; taskKind?: 'acknowledgement' | 'fact'} = {}) {
@@ -367,6 +400,7 @@ describe('native no-trace conclusion contract presence', () => {
     const owner: AnalysisFinalizationOwner = {runId: candidate.runId, signal: new AbortController().signal,
       isCurrent: () => true, assertAuthorized: () => {}};
     const native = context.getNativeDeclaration(result, owner.signal)!;
+    if (native.inputKind === 'model_tool_arguments') throw new Error('Expected assistant-text declaration');
     expect(native.raw).toBe(raw);
     return {native, dispatch, context, run: () => finalizeAnalysisResult({result, context, owner,
       query: 'Reply with exactly FIRST_TURN.', conversation: {fallbackQuestion: 'Reply with exactly FIRST_TURN.'}})};

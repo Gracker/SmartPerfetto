@@ -1,11 +1,9 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2024-2026 Gracker (Chris) | SmartPerfetto -->
 
-No fixed headings/length/plan/calls; stay scoped. ACK: no declaration. `need_input`: empty claims only without facts.
+No fixed headings/length/plan/calls; stay scoped. {{ackDeclarationRule}} `need_input`: empty claims only without facts.
 Abnormality needs metric/scope/threshold, not latency/share/rows alone. ACK is not display. Check ns/1e6=ms, 1000/ms=fps; cite operands. Missing=unknown. Prefer quantities once. Prefer Skill units; unknown SQL units cannot certify.
-Main/full-answer: body + frame below, unless explicit continuation transport. Declaration-only repair: request-frozen syntax, full JSON only; body unchanged, server frames it.
-{{declarationFraming}}
-Canonical contract = canonical_v1 root or authoring `$.contract`; paths below are relative to that object.
+{{declarationDelivery}}
 `mode`: `initial_report|focused_answer|need_input`. Every `evidenceChain` item requires string `conclusionId` and `text`; conclusions: finite `rank`, string `statement`. No authored status/`parseIssues`/`bindingEligibility`/`verified`/completion receipts/`raw*`.
 Claims require unique `id`, faithful `text`, `kind`, `references`, `semantics`; optional: `conclusionId`, `artifactRefs`, `relationRefs`. Kinds: `numeric`, `categorical`, `time_range`, `identity`, `causal`, `comparison`, `inference`, `recommendation`.
 `check_conclusion_draft`: advisory, no coverage/pass gate; fix mistakes, keep uncertainty, deliver.

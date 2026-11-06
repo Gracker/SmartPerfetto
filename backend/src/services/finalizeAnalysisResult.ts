@@ -35,7 +35,7 @@ import {assessNumericPresentations} from './numericPresentationAssessment';
 import {appendTerminationMessage, applyFinalResultQualityGate, type FinalResultComparisonIdentity,
   type FinalResultQualityIssue} from './finalResultQualityGate';
 import {withOwnerCodeAwareProjection} from './security/codeAwareOutputRegistry';
-import {projectConclusionSemanticInput} from './security/conclusionProtocolProjection';
+import {projectConclusionSemanticInput, bindAuthoredFinalDelivery} from './security/conclusionProtocolProjection';
 import {projectStoredConclusionSourceMetadata} from './security/analysisDeliveryProjection';
 import {getCapturedAnchorFacts} from './evidence/evidenceCapture';
 import {compactSemanticEvidenceSnapshot} from './evidence/semanticEvidenceSnapshot';
@@ -610,7 +610,8 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
     }
     const sourceUse = context?.sourceUse;
     const sourceScope = context?.sourceScope;
-    const rawDeclaration = canonical.protocolDiagnostics?.sidecar.rawPayload ??
+    const rawDeclaration = nativeDeclaration?.inputKind === 'model_tool_arguments' ? nativeDeclaration.rawCanonicalPayload
+      : canonical.protocolDiagnostics?.sidecar.rawPayload ??
       canonical.protocolDiagnostics?.typedJson?.rawPayload ?? nativeDeclaration?.contract ?? original.conclusionContract;
     const sourceNotApplicable = Boolean(context && isIssuedFinalizationContext(context) &&
       canonical.bindingEligibility === 'eligible' && sourceScopeHasNoAccess(sourceScope, sourceUse) &&
@@ -824,6 +825,7 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
         candidate, result, context, evidenceFingerprint, requirements: investigationRequirements, semantic}) : undefined,
       reportAssessment: context && semantic ? semanticReportAssessment({candidate, result, context,
         evidenceFingerprint, requirements, semantic}) : undefined};
+    if (nativeDeclaration) bindAuthoredFinalDelivery({context: delivery, result, nativeDeclaration});
     assertOwner(owner);
     const qualityIssue = applyFinalResultQualityGate({result, query, context: delivery, comparisonIdentity});
     assertOwner(owner);

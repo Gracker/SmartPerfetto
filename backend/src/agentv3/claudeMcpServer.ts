@@ -349,6 +349,9 @@ import {
   type AnalysisContextRegistrations,
 } from '../services/resolvedAnalysisContext';
 import {preserveRuntimeLiteralStrings, type RuntimeToolExtra} from '../agentRuntime/runtimeToolSpec';
+import type {FinalSubmissionMode} from '../agentRuntime/finalSubmissionConfig';
+import {AUTHORED_FINAL_SUBMISSION_PENDING_ACK} from '../agentRuntime/authoredFinalSubmission';
+import {compileAuthoredClaimDocument, type AuthoredClaimDocumentFailure} from '../agent/core/authoredClaimDocument';
 import {isPlaceholderToolString} from '../agentRuntime/toolArgPlaceholders';
 import {
   rethrowIfTraceProcessorQueryCancelled,
@@ -1259,6 +1262,8 @@ function previewFromColumnarData(data: any): Record<string, any> | undefined {
 }
 
 export interface ClaudeMcpServerOptions {
+  /** Internal captured policy. Only an admitted native runtime opts in; never read request JSON or env here. */
+  finalSubmission?: FinalSubmissionMode;
   traceId: string;
   traceProcessorService: TraceProcessorService;
   skillExecutor: SkillExecutor;
@@ -7793,6 +7798,27 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   if (options.conversationTraceAttached !== false && executeSqlOn) registry.registerSdk(executeSqlOn, 'execute_sql_on', 'internal', {evidenceEffect: 'acquire'});
   if (getComparisonContext) registry.registerSdk(getComparisonContext, 'get_comparison_context', 'internal', {evidenceEffect: 'read_existing'});
 
+  if (options.finalSubmission === 'authored_claim_document_v1') {
+    registry.registerShared({
+      name: 'submit_final_document', role: 'final_candidate_submission', exposure: 'internal', evidenceEffect: 'none',
+      description: requireToolDescription('prompt-submit-final-document-tool-description'),
+      inputSchema: {documentJson: preserveRuntimeLiteralStrings(z.string().describe('The exact complete authored document JSON string.'))},
+      annotations: {readOnlyHint: true},
+      handler: async args => {
+        const rejected = (reason: AuthoredClaimDocumentFailure | 'invalid_arguments' | 'submission_rejected') =>
+          createRuntimeToolResult({kind: 'authored_final_submission', status: 'rejected', reason}, {isError: true});
+        try {
+          if (Object.keys(args).length !== 1 || !Object.prototype.hasOwnProperty.call(args, 'documentJson') ||
+              typeof args.documentJson !== 'string' || args.documentJson.length === 0) return rejected('invalid_arguments');
+          const compiled = compileAuthoredClaimDocument(args.documentJson);
+          if (compiled.status !== 'compiled') return rejected(compiled.code);
+          // No receipt or capability is issued here. Only the actual SDK execute bridge can stage success.
+          return {content: [{type: 'text' as const, text: AUTHORED_FINAL_SUBMISSION_PENDING_ACK}]};
+        } catch {return rejected('submission_rejected');}
+      },
+    });
+  }
+  const resolvedFinalTool = registry.resolveFinalTool(toolRequestScope);
   const allowedTools = registry.buildAllowedTools(toolRequestScope);
   const toolDefinitions = registry.listForRequest(toolRequestScope);
   const knowledgeAuthorization = describeSelectedKnowledgeBases(knowledgeSourceIds, selectedKnowledgeSources);
@@ -7830,6 +7856,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     server: registry.buildSdkServer({scope: toolRequestScope}),
     allowedTools,
     toolDefinitions,
+    ...(resolvedFinalTool ? {resolvedFinalTool} : {}),
     sourceUse,
     sourceAuthorization,
   };

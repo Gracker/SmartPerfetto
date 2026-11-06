@@ -32,8 +32,131 @@ import {resolveFocusAppTarget} from '../../agentRuntime/focusAppTarget';
 import {MAX_KNOWLEDGE_SOURCE_IDS_PER_ANALYSIS} from '../../services/codebase/codeAwareFeature';
 import {buildNativeOutputCompletionPrompt} from '../../agentRuntime/runtimeConclusionProtocol';
 import {buildCandidateProtocolDiagnostic, inspectCandidateProtocol} from '../../services/canonicalAnalysisResult';
+import {createHash} from 'crypto';
+import {compileAuthoredClaimDocument} from '../../agent/core/authoredClaimDocument';
 
 describe('typed prompt with real strategy assets', () => {
+  function expectNoAdditionalTransportDrops(context: ClaudeAnalysisContext, label: string,
+    legacy: ReturnType<typeof buildSystemPromptParts>) {
+    const typed = buildSystemPromptParts({...context, declarationSyntax: 'canonical_v1',
+      finalSubmission: 'authored_claim_document_v1',
+      resolvedFinalTool: {role: 'final_candidate_submission', nativeName: 'renamed__submit_final_7'}});
+    expect(typed.droppedLabels.every(item => legacy.droppedLabels.includes(item))).toBe(true);
+    expect(typed.truncatedLabels.every(item => legacy.truncatedLabels.includes(item))).toBe(true);
+    expect(estimatePromptTokens(typed.fullPrompt)).toBeLessThanOrEqual(MAX_PROMPT_TOKENS);
+    for (const segment of legacy.segments.filter(item => !item.droppable && !item.truncatable
+      && !item.truncated && item.label !== 'conclusion_declaration')) {
+      expect(typed.segments.find(item => item.label === segment.label)).toEqual(segment);
+    }
+    console.info('[AuthoredFinalPrompt:pressure]', JSON.stringify({label,
+      tokens: estimatePromptTokens(typed.fullPrompt), droppedLabels: typed.droppedLabels,
+      truncatedLabels: typed.truncatedLabels}));
+    return typed;
+  }
+
+  // Captured before this transport refactor by the real builders and these
+  // existing fixture functions: no reconstructed legacy assembly in the test.
+  const legacyPromptHashes = [
+    ['startup', 'canonical_v1', 'zh-CN', 'd9a5fad28b61f918cd6db760d445b1ccf9f34b634d6491542f20b5413629733e'],
+    ['startup', 'canonical_v1', 'en', 'c75e61f0ae32bd3830d891c2d5e4d6be4a146631b506b0fbbfd54dd012fc77d7'],
+    ['startup', 'authoring_v1', 'zh-CN', '633b7dc8aae636e91a8279e96b8f404b198df3e2b2f4ea0f56374fa639636e28'],
+    ['startup', 'authoring_v1', 'en', '2328735d4347e7abd2512e2e2979aa489ba14d66a3298c159e70d506239df99f'],
+    ['startup', 'authoring_v2', 'zh-CN', '23144715f18c430f63c8e573d523e36356bbebe93dad766808e4ee62362448e3'],
+    ['startup', 'authoring_v2', 'en', '49631146748fde34372c22aad4b20d3a2ecc49312f235281bc8e6d7e1c646269'],
+    ['scrolling', 'canonical_v1', 'zh-CN', 'd790796c9ddff4bab5c4aa2630b1c7881a8571e702090e599608b2bcd19c88e9'],
+    ['scrolling', 'canonical_v1', 'en', 'c686dd6622566c2d9dfc3f29a79a269615d67851f2691efb835a86a6e68f0d19'],
+    ['scrolling', 'authoring_v1', 'zh-CN', '08dba3437c60b46fd0d4726053fc5ef286c2acd167630647b8129fc75ac7a13d'],
+    ['scrolling', 'authoring_v1', 'en', 'c04cd92e63473152691653ac6cd1cca5558914aa4edc8a79605e5c26ae6e6bc3'],
+    ['scrolling', 'authoring_v2', 'zh-CN', 'ec3ae449680f240c2724c6f4f556886c0892816fdff7b4540182243897f6a52d'],
+    ['scrolling', 'authoring_v2', 'en', '6dbff5d0e9031557623bab55453a09f27154b02d9f18ac5a39b57b2e65e0066e'],
+  ] as const;
+
+  it.each(legacyPromptHashes)('preserves captured %s %s %s legacy prompt bytes', (sceneType, declarationSyntax, outputLanguage, sha256) => {
+    const context = {...makeWorstCaseContext(sceneType), declarationSyntax, outputLanguage};
+    const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+    expect(hash(buildSystemPromptParts(context).fullPrompt)).toBe(sha256);
+    expect(hash(buildQuickSystemPrompt(context))).toBe(sha256);
+    expect(hash(buildSystemPromptParts({...context, finalSubmission: 'assistant_text'}).fullPrompt)).toBe(sha256);
+  });
+
+  it.each((['startup', 'scrolling'] as const).flatMap(sceneType =>
+    (['zh-CN', 'en'] as const).map(outputLanguage => ({sceneType, outputLanguage}))))
+  ('replaces only transport for a real typed $sceneType $outputLanguage main without extra drops', ({sceneType, outputLanguage}) => {
+    const context = {...makeWorstCaseContext(sceneType), declarationSyntax: 'canonical_v1' as const, outputLanguage};
+    const legacy = buildSystemPromptParts(context);
+    const parts = buildSystemPromptParts({...context, finalSubmission: 'authored_claim_document_v1',
+      resolvedFinalTool: {role: 'final_candidate_submission', nativeName: 'renamed__submit_final_7'}});
+    const guide = parts.segments.find(segment => segment.label === 'conclusion_declaration')!;
+    expect(guide).toMatchObject({tier: 1, droppable: false, truncatable: false});
+    expect(guide.content).toContain('only through `renamed__submit_final_7`');
+    expect(guide.content).toContain('sole argument `documentJson`');
+    expect(guide.content).toContain("decoded `documentJson`'s `$.contract`");
+    expect(guide.content).toContain('compiled does not mean verified or completed');
+    expect(guide.content).toContain('including `need_input`');
+    expect(guide.content).toContain(JSON.stringify(SUPPORTED_DETERMINISTIC_CLAIM_RULES));
+    for (const oldTransport of [CONCLUSION_CONTRACT_SIDECAR_MARKER, CONCLUSION_AUTHORING_FENCE,
+      CONCLUSION_AUTHORING_FENCE_V2, 'Main/full-answer:', 'Declaration-only repair:', 'ACK: no declaration.']) {
+      expect(guide.content).not.toContain(oldTransport);
+    }
+    expect(guide.content).not.toMatch(/\{\{\w+\}\}/);
+    expect(parts.segments.filter(segment => segment.label !== 'conclusion_declaration'))
+      .toEqual(legacy.segments.filter(segment => segment.label !== 'conclusion_declaration'));
+    expect(MAX_PROMPT_TOKENS).toBe(16_000);
+    expect(estimatePromptTokens(parts.fullPrompt)).toBeLessThanOrEqual(MAX_PROMPT_TOKENS);
+    expect(parts.droppedLabels).toEqual(legacy.droppedLabels);
+    expect(parts.truncatedLabels).toEqual(legacy.truncatedLabels);
+    console.info('[AuthoredFinalPrompt:token]', JSON.stringify({sceneType, outputLanguage,
+      tokens: estimatePromptTokens(parts.fullPrompt), declarationTokens: guide.estimatedTokens,
+      droppedLabels: parts.droppedLabels, truncatedLabels: parts.truncatedLabels}));
+  });
+
+  it('compiles the actual typed document example without hydrating or verifying its claims', () => {
+    const framing = stripTemplateComments(loadPromptTemplate('prompt-authored-final-submission-framing')!);
+    const documentJson = framing.match(/```json\n([\s\S]*?)\n```/)![1];
+    const compiled = compileAuthoredClaimDocument(documentJson);
+    expect(compiled.status).toBe('compiled');
+    if (compiled.status !== 'compiled') throw new Error('actual prompt document did not compile');
+    expect(compiled.privateRawDocument).toBe(documentJson);
+    expect(compiled.body).toBe('## Findings\n\nElapsed 7.1 ms.');
+    expect(compiled.occurrences).toEqual([{partIndex: 1, claimOrdinal: 1, claimId: 'elapsed', startUtf16: 13, endUtf16: 28}]);
+    expect(compiled.canonicalParse.status).toBe('valid');
+    const claim = compiled.canonicalParse.contract!.claims![0];
+    expect(claim.semantics!.numeric).toMatchObject({operator: 'eq', value: 7.123456, unit: 'ms'});
+    const ref = claim.references[0];
+    expect(ref).toMatchObject({column: 'elapsed_ms', value: 7.123456});
+    const anchor: EvidenceAnchorV1 = {version: 'evidence_contract@1', anchorId: 'anchor:typed-prompt',
+      evidenceRefId: ref.evidenceRefId!, context: {traceId: 'typed-prompt', traceSide: 'current', producerKind: 'invoke_skill'},
+      cells: [{column: ref.column!, rowIndex: ref.rowIndex!, value: ref.value}]};
+    const proof = (semantics = claim.semantics) => runDeterministicClaimVerifier({claimSupport: [{claimId: claim.id!,
+      kind: claim.kind!, text: claim.text, semantics, anchors: [anchor], bindingEligibility: compiled.canonicalParse.bindingEligibility,
+      supportLevel: 'partial'}]}).claimResults[0].deterministicProof;
+    expect(proof().status).not.toBe('proved');
+    bindCapturedAnchorFacts(anchor, captureEvidenceTable({columns: ['elapsed_ms'], rows: [{elapsed_ms: 7.123456}]}, {
+      elapsed_ms: {unit: 'ms', origin: {kind: 'skill_literal', skillId: 'example', stepId: 'metric',
+        definitionFingerprint: 'typed-prompt-capture'}}}), 0);
+    expect(proof().status).toBe('proved');
+    expect(proof({...claim.semantics!, numeric: {...claim.semantics!.numeric!, value: 99}}).status).toBe('rejected');
+    const original = JSON.parse(documentJson);
+    const altered = structuredClone(original);
+    altered.contract.claims[0].semantics.numeric.value = 99;
+    const changed = compileAuthoredClaimDocument(JSON.stringify(altered));
+    expect(changed).toMatchObject({status: 'compiled', body: compiled.body,
+      rawCanonicalPayload: {claims: [{text: 'Elapsed 7.1 ms.', references: [ref], semantics: {numeric: {value: 99, unit: 'ms'}}}]}});
+    altered.contract.claims[0].kind = 'invalid-kind';
+    const invalid = compileAuthoredClaimDocument(JSON.stringify(altered));
+    expect(invalid.status).toBe('compiled');
+    if (invalid.status === 'compiled') {
+      expect(invalid.rawCanonicalPayload).toEqual(altered.contract);
+      expect(invalid.canonicalParse.status).not.toBe('valid');
+    }
+    const needInput = compileAuthoredClaimDocument(JSON.stringify({...original,
+      contract: {...original.contract, mode: 'need_input', claims: []}, bodyParts: ['Which trace should I inspect?']}));
+    expect(needInput).toMatchObject({status: 'compiled', body: 'Which trace should I inspect?',
+      rawCanonicalPayload: {mode: 'need_input', claims: []}});
+    expect(compileAuthoredClaimDocument(JSON.stringify({...original, bodyParts: [{claimText: 'missing'}]})))
+      .toMatchObject({status: 'projection_failed', code: 'unknown_claim_id'});
+  });
+
   it.each((['canonical_v1', 'authoring_v1', 'authoring_v2'] as const).flatMap(declarationSyntax =>
     (['zh-CN', 'en'] as const).map(outputLanguage => ({declarationSyntax, outputLanguage}))))
   ('R5 scopes real $declarationSyntax main and full-continuation grammar in $outputLanguage', ({declarationSyntax, outputLanguage}) => {
@@ -169,6 +292,10 @@ describe('typed prompt with real strategy assets', () => {
         expect(parts.segments.find(segment => segment.label === label)?.content).toContain('"truncated":true');
       }
     }
+    const typed = expectNoAdditionalTransportDrops(context, `knowledge:${sceneType}:${outputLanguage}:${sourceCount}`, parts);
+    const typedSelected = JSON.parse(typed.segments.find(segment => segment.label === 'knowledge_authorization')!.content);
+    expect(typedSelected.data.knowledgeBases.map(({id}: {id: string}) => id))
+      .toEqual(context.sourceAuthorization.knowledgeAuthorization!.knowledgeBases.map(({id}) => id));
   });
 
   it.each(['startup', 'scrolling'] as const)('fits a %s scene-wide investigation report with bound-sized scene evidence', sceneType => {
@@ -196,6 +323,7 @@ describe('typed prompt with real strategy assets', () => {
     expect(Buffer.byteLength(json, 'utf8')).toBeLessThanOrEqual(SCENE_EVIDENCE_MAX_BYTES);
     expect(JSON.parse(json).data.cells.key.length).toBeLessThanOrEqual(SCENE_EVIDENCE_MAX_CELLS);
     expect(segment.content).toContain('fetch_artifact');
+    expectNoAdditionalTransportDrops(context, `scene_evidence:${sceneType}`, parts);
   });
 
   it('fits selected dual states and uses only their template without evicting other context', () => {
@@ -225,6 +353,7 @@ describe('typed prompt with real strategy assets', () => {
     expect(segment.content).toContain('not proof');
     expect(segment.content).toContain('"status":"partial"');
     expect(Buffer.byteLength(JSON.stringify(context.sceneEvidence))).toBeLessThanOrEqual(SCENE_EVIDENCE_MAX_BYTES);
+    expectNoAdditionalTransportDrops(context, 'selected_foundation', parts);
   });
 
   it('renders the default detail body of a resolved investigation when the budget allows', () => {

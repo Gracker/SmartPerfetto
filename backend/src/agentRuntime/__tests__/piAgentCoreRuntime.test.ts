@@ -26,6 +26,8 @@ import {
   type PiAgentCoreEvent,
 } from '../piAgentCoreRuntime';
 import * as piAgentCoreRuntimeModule from '../piAgentCoreRuntime';
+import * as analysisRunSpecModule from '../analysisRunSpec';
+import * as outputConfigModule from '../finalSubmissionConfig';
 import type { RuntimeToolResult, SharedToolSpec } from '../runtimeToolSpec';
 import {createRuntimeToolResult, readRuntimeToolResultFacts} from '../runtimeToolResult';
 import {projectCodeAwareStreamingUpdate} from '../../services/security/codeAwareStreamingUpdateProjection';
@@ -508,6 +510,83 @@ function buildScrollingPiReport(includeRepresentativeFrameSection: boolean): str
 }
 
 describe('experimental Pi agent-core runtime contract', () => {
+  it.each([
+    ['authored_claim_document_v1', 'canonical_v1', 'unsupported_final_submission', 'runtime'],
+    ['authored_claim_document_v1', 'authoring_v1', 'invalid_configuration', 'declaration_syntax_conflict'],
+    ['authored_claim_document_v1', 'authoring_v2', 'invalid_configuration', 'declaration_syntax_conflict'],
+    ['MODE_CANARY', 'canonical_v1', 'invalid_configuration', 'mode'],
+    ['assistant_text', 'SYNTAX_CANARY', 'invalid_configuration', 'declaration_syntax'],
+  ])('rejects output config %s / %s before Pi classifier or SDK dispatch', async (mode, syntax, code, reason) => {
+    const moduleLoader = jest.fn(async () => ({Agent: FakePiAgent}));
+    const providerRuntimeLoader = jest.fn(loadFakePiProviderRuntime);
+    const runtime = new PiAgentCoreRuntime(createFakeTraceProcessorService(), {kind: 'pi-agent-core', source: 'env'}, {
+      env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON,
+        SMARTPERFETTO_FINAL_SUBMISSION: mode, SMARTPERFETTO_CONCLUSION_AUTHORING: syntax},
+      moduleLoader, providerRuntimeLoader,
+    });
+    await expect(runtime.analyze('Explain this trace', 'output-config-pi', 'trace-pi')).rejects.toMatchObject({
+      name: 'FinalSubmissionConfigurationError', code, message: `${code}:final_submission:${reason}`,
+    });
+    expect(moduleLoader).not.toHaveBeenCalled();
+    expect(providerRuntimeLoader).not.toHaveBeenCalled();
+    expect(piClassifierCalls).toHaveLength(0);
+    expect(FakePiAgent.instances).toHaveLength(0);
+  });
+
+  it.each(['canonical_v1', 'authoring_v1', 'authoring_v2'])(
+    'keeps the captured Pi output config %s through classification and real RunSpec', async syntax => {
+      const capture = jest.spyOn(outputConfigModule, 'captureAnalysisOutputConfig');
+      const createSpec = analysisRunSpecModule.createAnalysisRunSpec;
+      let spec: ReturnType<typeof createSpec> | undefined;
+      const stop = new Error('test stopped after real RunSpec');
+      const specSpy = jest.spyOn(analysisRunSpecModule, 'createAnalysisRunSpec').mockImplementation(input => {
+        spec = createSpec(input);
+        throw stop;
+      });
+      let runtime: PiAgentCoreRuntime;
+      runtime = new PiAgentCoreRuntime(createFakeTraceProcessorService(), {kind: 'pi-agent-core', source: 'env'}, {
+        env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON, SMARTPERFETTO_CONCLUSION_AUTHORING: syntax},
+        moduleLoader: async () => ({Agent: FakePiAgent}),
+        providerRuntimeLoader: async config => {
+          const provider = await loadFakePiProviderRuntime(config);
+          return {...provider, streamFn: ((...args: unknown[]) => {
+            (runtime as any).env.SMARTPERFETTO_FINAL_SUBMISSION = 'authored_claim_document_v1';
+            (runtime as any).env.SMARTPERFETTO_CONCLUSION_AUTHORING = 'LATE_SYNTAX_CANARY';
+            return provider.streamFn(...args);
+          }) as typeof provider.streamFn};
+        },
+      });
+      try {
+        await expect(runtime.analyze('Explain this trace', 'output-config-pi-frozen', 'trace-pi')).rejects.toBe(stop);
+        expect(piClassifierCalls).toHaveLength(1);
+        expect(specSpy).toHaveBeenCalledTimes(1);
+        expect(capture).toHaveBeenCalledTimes(1);
+        const captured = capture.mock.results[0].value;
+        expect(Object.isFrozen(captured)).toBe(true);
+        expect(specSpy.mock.calls[0][0].outputConfig).toBe(captured);
+        expect(spec).toMatchObject({finalSubmission: 'assistant_text', declarationSyntax: syntax});
+      } finally {
+        specSpy.mockRestore();
+        capture.mockRestore();
+        runtime.cleanupSession('output-config-pi-frozen');
+      }
+    },
+  );
+
+  it('rejects typed output before the Pi hidden fake-stream path loads its SDK', async () => {
+    const moduleLoader = jest.fn(async () => ({Agent: FakePiAgent}));
+    const runtime = new PiAgentCoreRuntime(createFakeTraceProcessorService(),
+      {kind: EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND, source: 'env'}, {
+        env: {[PI_AGENT_CORE_FAKE_STREAM_ENV]: '1', SMARTPERFETTO_FINAL_SUBMISSION: 'authored_claim_document_v1'},
+        moduleLoader, providerRuntimeLoader: loadFakePiProviderRuntime,
+      });
+    await expect(runtime.analyze('Smoke', 'output-config-pi-smoke', 'trace-pi')).rejects.toMatchObject({
+      code: 'unsupported_final_submission', reason: 'runtime',
+    });
+    expect(moduleLoader).not.toHaveBeenCalled();
+    expect(FakePiAgent.instances).toHaveLength(0);
+  });
+
   it('describes Pi agent-core as hidden, optional, sequential, and no shell/file tool runtime', () => {
     expect(getPiAgentCoreEngineCapabilities()).toEqual({
       kind: EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
@@ -1283,7 +1362,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       }));
       const context = takeFinalizationContext(terminal)!;
       try {
-        expect(context.getNativeDeclaration(terminal, new AbortController().signal)?.raw).toBe(SOURCE_FINALIZATION_RAW_SOURCE);
+        expect(context.getNativeDeclaration(terminal, new AbortController().signal)).toMatchObject({raw: SOURCE_FINALIZATION_RAW_SOURCE});
         expect(JSON.stringify(terminal)).not.toContain('conclusion_protocol_projection');
       } finally {context.dispose();}
       const next = await runtime.analyze('public second run', sessionId, 'trace-pi', admitted({
@@ -3810,7 +3889,13 @@ describe('experimental Pi agent-core runtime contract', () => {
         expect(inspectCandidateProtocol(result.conclusion)).toMatchObject({status: 'valid', sidecar: {bindingEligibility: 'eligible'}});
         expect(inspectCandidateProtocol(result.conclusion).sidecar.contract?.claims).toHaveLength(35);
         const context = takeFinalizationContext(result)!;
-        try {expect(inspectCandidateProtocol(context.getNativeDeclaration(result, new AbortController().signal)?.raw ?? '').status).toBe('valid');}
+        try {
+          const declaration = context.getNativeDeclaration(result, new AbortController().signal);
+          if (!declaration || declaration.inputKind === 'model_tool_arguments') {
+            throw new Error('Expected an assistant-text native declaration');
+          }
+          expect(inspectCandidateProtocol(declaration.raw).status).toBe('valid');
+        }
         finally {context.dispose();}
       } else {
         expect(result.completion?.attemptId).toBe('1');
@@ -3948,7 +4033,7 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(result.completion).toMatchObject({status: 'completed'});
     expect(inspectCandidateProtocol(result.conclusion).status).toBe('invalid');
     const context = takeFinalizationContext(result)!;
-    try {expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(native);}
+    try {expect(context.getNativeDeclaration(result, new AbortController().signal)).toMatchObject({raw: native});}
     finally {context.dispose();}
   });
 
@@ -4007,7 +4092,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe('The marker is present.');
       expect(result.completion).toMatchObject({status: 'completed', attemptId: '2', conclusionFingerprint: analysisDeliveryFingerprint(result.conclusion)});
       const context = takeFinalizationContext(result)!;
-      try {expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(complete);}
+      try {expect(context.getNativeDeclaration(result, new AbortController().signal)).toMatchObject({raw: complete});}
       finally {context.dispose();}
       expect(FakePiAgent.instances[0].state.systemPrompt).toBe(originalPrompt);
       const diagnostic = updates.filter(update => update.content?.phase === 'candidate_protocol').map(update => update.content.candidateProtocolDiagnostic);
@@ -4050,7 +4135,7 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(updates.find(update => update.content?.phase === 'candidate_protocol')?.content.candidateProtocolDiagnostic)
       .toMatchObject({relationProposalDiagnostics: [{scope: 'item', ordinal: 1, reason: 'unknown_field'}]});
     const context = takeFinalizationContext(result)!;
-    try {expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(complete);}
+    try {expect(context.getNativeDeclaration(result, new AbortController().signal)).toMatchObject({raw: complete});}
     finally {context.dispose();}
   });
 
@@ -4062,7 +4147,7 @@ describe('experimental Pi agent-core runtime contract', () => {
     const result = await typedRuntime().analyze('query', `pi-protocol-rejected-${kind}`, 'trace-pi');
     expect(FakePiAgent.instances[0].promptCount).toBe(2);
     const context = takeFinalizationContext(result)!;
-    try {expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(first);}
+    try {expect(context.getNativeDeclaration(result, new AbortController().signal)).toMatchObject({raw: first});}
     finally {context.dispose();}
     expect(result.completion?.attemptId).toBe('1');
     expect(inspectCandidateProtocol(result.conclusion).status).toBe('invalid');

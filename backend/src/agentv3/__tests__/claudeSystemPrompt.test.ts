@@ -39,7 +39,11 @@ jest.mock('../strategyLoader', () => ({
     if (name === 'knowledge-focus-app-context') return 'Focus-app context fixture: inferred focus is a hypothesis.';
     if (name === 'prompt-scene-evidence') return 'Scene entry evidence fixture: cite cells, fetch_artifact the rest.';
     if (name === 'prompt-turn-policy') return 'Typed turn protocol; scope, deliverable, and evidence access are server data.';
-    if (name === 'prompt-conclusion-contract-schema') return '<!-- authoring note -->\n{{declarationFraming}}\n{{supportedProofRules}}';
+    if (name === 'prompt-conclusion-contract-schema') return '<!-- authoring note -->\n{{declarationDelivery}}\n{{supportedProofRules}}';
+    if (name === 'prompt-conclusion-delivery') return '{{declarationFraming}}';
+    if (name === 'prompt-conclusion-ack-rule') return 'ACK: no declaration.';
+    if (name === 'prompt-authored-final-submission-delivery') return 'Submit only through {{finalSubmissionToolName}} with documentJson:string.\n{{declarationFraming}}';
+    if (name === 'prompt-authored-final-submission-framing') return 'authored_claim_document@1; contract at $.contract; bodyParts are literals/claimText; compiled is not verified.';
     if (name === 'prompt-conclusion-full-framing') return '{{sidecarOpeningMarker}}\n```json\n{"schemaVersion":"conclusion_contract_v1","mode":"focused_answer","conclusions":[],"clusters":[],"evidenceChain":[],"uncertainties":[],"nextSteps":[]}\n```\n-->';
     if (name === 'prompt-conclusion-authoring-framing') return '{{authoringOpeningFence}}\n{"authoringVersion":"conclusion_authoring@1","referenceDictionary":[],"contract":{"schemaVersion":"conclusion_contract_v1","mode":"focused_answer","conclusions":[],"clusters":[],"evidenceChain":[],"uncertainties":[],"nextSteps":[]}}\n```';
     if (name === 'prompt-conclusion-authoring-v2-framing') return '{{authoringOpeningFence}}\n{"authoringVersion":"conclusion_authoring@2","referenceDictionary":[],"contract":{"schemaVersion":"conclusion_contract_v1","mode":"focused_answer","conclusions":[],"clusters":[],"evidenceChain":[],"uncertainties":[],"nextSteps":[]}}\n```';
@@ -329,6 +333,49 @@ describe('typed turn prompt assembly', () => {
     expect(segment.content).not.toContain(CONCLUSION_CONTRACT_SIDECAR_MARKER);
     expect(parseConclusionContractSidecar(segment.content).status).toBe('valid');
     expect(segment.content).not.toMatch(/\{\{\w+\}\}/);
+  });
+
+  it.each(['runtime_final_v1', 'renamed__final_7'])('projects the actual resolved final tool %s without changing scope', nativeName => {
+    const context = {...fixture({evidenceAccess: 'existing_only'}), declarationSyntax: 'canonical_v1' as const,
+      finalSubmission: 'authored_claim_document_v1' as const,
+      resolvedFinalTool: {role: 'final_candidate_submission' as const, nativeName}};
+    const parts = buildSystemPromptParts(context);
+    const declaration = parts.segments.find(segment => segment.label === 'conclusion_declaration')!;
+    expect(declaration).toMatchObject({tier: 1, droppable: false, truncatable: false});
+    expect(declaration.content).toContain(`Submit only through ${nativeName}`);
+    expect(declaration.content).toContain('documentJson:string');
+    expect(declaration.content).toContain('authored_claim_document@1');
+    expect(declaration.content).not.toContain(CONCLUSION_CONTRACT_SIDECAR_MARKER);
+    expect(declaration.content).not.toContain('smartperfetto-conclusion-authoring');
+    expect(declaration.content).not.toMatch(/\{\{\w+\}\}/);
+    expect(segmentData(parts, 'turn_policy').evidenceAccess).toBe('existing_only');
+  });
+
+  it.each([
+    {declarationSyntax: undefined, resolvedFinalTool: {role: 'final_candidate_submission', nativeName: 'final'}},
+    {declarationSyntax: 'authoring_v1', resolvedFinalTool: {role: 'final_candidate_submission', nativeName: 'final'}},
+    {declarationSyntax: 'authoring_v2', resolvedFinalTool: {role: 'final_candidate_submission', nativeName: 'final'}},
+    {declarationSyntax: 'canonical_v1', resolvedFinalTool: undefined},
+    {declarationSyntax: 'canonical_v1', resolvedFinalTool: {role: 'evidence', nativeName: 'final'}},
+    {declarationSyntax: 'canonical_v1', resolvedFinalTool: {role: 'final_candidate_submission', nativeName: ' '}},
+  ])('refuses inconsistent typed prompt inputs %# without guessing a tool', overrides => {
+    expect(() => buildSystemPromptParts({...fixture(), finalSubmission: 'authored_claim_document_v1',
+      ...overrides} as Parameters<typeof buildSystemPromptParts>[0])).toThrow('requires canonical syntax and a resolved final tool');
+  });
+
+  it('selects transport only from captured context, not ambient final-submission configuration', () => {
+    const saved = process.env.SMARTPERFETTO_FINAL_SUBMISSION;
+    try {
+      const context = {...fixture(), declarationSyntax: 'canonical_v1' as const, finalSubmission: 'assistant_text' as const};
+      const before = buildSystemPromptParts(context).fullPrompt;
+      process.env.SMARTPERFETTO_FINAL_SUBMISSION = 'authored_claim_document_v1';
+      expect(buildSystemPromptParts(context).fullPrompt).toBe(before);
+      expect(buildSystemPromptParts({...context, resolvedFinalTool: {role: 'final_candidate_submission',
+        nativeName: 'unrelated_role_projection'}}).fullPrompt).toBe(before);
+    } finally {
+      if (saved === undefined) delete process.env.SMARTPERFETTO_FINAL_SUBMISSION;
+      else process.env.SMARTPERFETTO_FINAL_SUBMISSION = saved;
+    }
   });
 
   it.each(['Thanks.', 'Which trace should I attach?'])(

@@ -7,6 +7,7 @@ import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
 import {CONCLUSION_AUTHORING_ENV} from '../../agent/core/conclusionAuthoring';
+import {SMARTPERFETTO_FINAL_SUBMISSION_ENV} from '../../agentRuntime/finalSubmissionConfig';
 import {SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES_ENV} from '../../agentRuntime/runtimeCandidateAdmission';
 import {SMARTPERFETTO_SAFE_TOOL_CONCURRENCY_ENV} from '../../agentRuntime/runtimeToolConcurrency';
 
@@ -228,6 +229,7 @@ describe('LLM execution benchmark controller contracts', () => {
 
   it.each([
     [CONCLUSION_AUTHORING_ENV, 'canonical_v1', 'authoring_v1'],
+    [SMARTPERFETTO_FINAL_SUBMISSION_ENV, 'assistant_text', 'authored_claim_document_v1'],
     [SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES_ENV, 'task4', 'task4,task5'],
     [SMARTPERFETTO_SAFE_TOOL_CONCURRENCY_ENV, 'false', 'true'],
   ])('fingerprints the execution behavior switch %s without collecting unrelated environment', (key, before, after) => {

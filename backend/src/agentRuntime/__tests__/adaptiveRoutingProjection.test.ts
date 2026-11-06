@@ -8,6 +8,7 @@ import type {DataEnvelope} from '../../types/dataContract';
 import type {RunManifestAttributionSink} from '../../types/selfEvolution';
 import {RunManifestBuilder} from '../../services/selfEvolution/runManifestBuilder';
 import {createAnalysisRunSpec} from '../analysisRunSpec';
+import {captureAnalysisOutputConfig} from '../finalSubmissionConfig';
 import {
   buildAdaptiveRoutingPostEvidence,
   buildAdaptiveRoutingPreflight,
@@ -236,6 +237,7 @@ describe('adaptive routing runtime projection', () => {
         recordMode: jest.fn(),
       } as unknown as RunManifestAttributionSink;
       const spec = createAnalysisRunSpec({
+        outputConfig: captureAnalysisOutputConfig({}),
         query: 'Analyze.',
         sessionId: `session-${resolvedMode}`,
         traceId: 'trace-a',
@@ -286,6 +288,7 @@ describe('adaptive routing runtime projection', () => {
         resolvedMode,
       });
       createAnalysisRunSpec({
+        outputConfig: captureAnalysisOutputConfig({}),
         query: 'Why is it slow?',
         sessionId: 'session-a',
         traceId: 'trace-a',

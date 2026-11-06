@@ -15,7 +15,7 @@ import {dispatchWithModelCallRecord, type IntentTransportInput, type IntentTrans
 import {runtimeProviderOrigin} from './runtimePerformance';
 import {currentRuntimePerformanceRecorder} from '../services/selfEvolution/runManifestLifecycle';
 import {readConclusionProtocolProjection, releaseConclusionProtocolProjection,
-  claimConclusionProtocolProjection,
+  claimConclusionProtocolProjection, bindAuthoredFinalDelivery, hasCurrentAuthoredFinalDelivery,
   type IssuedConclusionProtocolProjection, type NativeConclusionDeclaration} from '../services/security/conclusionProtocolProjection';
 import {analysisDeliveryFingerprint} from '../types/analysisDelivery';
 import {sanitizeSourceUseDecision} from '../services/codebase/sourceUseDecision';
@@ -244,8 +244,9 @@ export function attachFinalizationContext(result: AnalysisResult, input: Runtime
     selection.sideResolution.traceId !== input.traceIdentity.currentTraceId) {
     throw new Error('finalization_context_selection_mismatch');
   }
+  let nativeDeclaration: NativeConclusionDeclaration | undefined;
   if (input.protocolProjection) {
-    readConclusionProtocolProjection(input.protocolProjection, {
+    nativeDeclaration = readConclusionProtocolProjection(input.protocolProjection, {
       result, candidate: input.deliveryContext.acceptedCandidate, runId: input.runId,
     });
     if (analysisDeliveryFingerprint(sanitizeSourceUseDecision(input.sourceUse)) !==
@@ -260,20 +261,33 @@ export function attachFinalizationContext(result: AnalysisResult, input: Runtime
   } catch {
     // Missing observability cannot replace the actual runtime result or grant coverage.
   }
-  contexts.set(result, {controller: new AbortController(), value: {
-    ...input,
-    investigationEvidence,
-    selection,
-    turnIntent: freezeSnapshot(input.turnIntent),
-    traceIdentity: freezeSnapshot(input.traceIdentity),
-    deliveryContext: freezeSnapshot(input.deliveryContext),
-    providerQuery: input.providerQuery ? freezeSnapshot(input.providerQuery) : undefined,
-    sourceUse: input.sourceUse ? freezeSnapshot(input.sourceUse) : undefined,
-    sourceScope: input.sourceScope ? freezeSnapshot(input.sourceScope) : undefined,
-    knowledgeUse: input.knowledgeUse ? freezeSnapshot(input.knowledgeUse) : undefined,
-    capabilityEvidence: input.capabilityEvidence ? freezeSnapshot(input.capabilityEvidence) : undefined,
-    deliveryCall: closedDeliveryCall(input.deliveryCall),
-  }});
+  try {
+    const deliveryContext = freezeSnapshot(input.deliveryContext);
+    if (nativeDeclaration) bindAuthoredFinalDelivery({context: deliveryContext, result, nativeDeclaration});
+    const typedSubmission = deliveryContext.finalSubmission?.mode === 'authored_claim_document_v1';
+    const mayReview = !typedSubmission || deliveryContext.finalSubmission?.outcome === 'submitted' &&
+      hasCurrentAuthoredFinalDelivery(result, deliveryContext);
+    contexts.set(result, {controller: new AbortController(), value: {
+      ...input,
+      dispatchText: mayReview ? input.dispatchText : undefined,
+      investigationEvidence,
+      selection,
+      turnIntent: freezeSnapshot(input.turnIntent),
+      traceIdentity: freezeSnapshot(input.traceIdentity),
+      deliveryContext,
+      providerQuery: input.providerQuery ? freezeSnapshot(input.providerQuery) : undefined,
+      sourceUse: input.sourceUse ? freezeSnapshot(input.sourceUse) : undefined,
+      sourceScope: input.sourceScope ? freezeSnapshot(input.sourceScope) : undefined,
+      knowledgeUse: input.knowledgeUse ? freezeSnapshot(input.knowledgeUse) : undefined,
+      capabilityEvidence: input.capabilityEvidence ? freezeSnapshot(input.capabilityEvidence) : undefined,
+      deliveryCall: closedDeliveryCall(input.deliveryCall),
+    }});
+  } catch (error) {
+    if (nativeDeclaration?.inputKind === 'model_tool_arguments' && input.protocolProjection) {
+      releaseConclusionProtocolProjection(input.protocolProjection);
+    }
+    throw error;
+  }
 }
 
 /** Call immediately after analyze(), before any result copy or display projection. */

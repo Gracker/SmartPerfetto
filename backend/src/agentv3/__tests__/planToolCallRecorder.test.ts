@@ -17,6 +17,26 @@ import {getAnalysisPlanCompletionStatus} from '../planCompletionStatus';
 import {verifyPlanAdherence} from '../../agentRuntime/engines/claude/claudeVerifier';
 
 describe('producer-owned tool facts', () => {
+  it('excludes the registered final role from pre-plan hashes and phase completion', () => {
+    const input = {toolName: 'arbitrary_final_native', role: 'final_candidate_submission' as const,
+      input: {documentJson: 'private document', planPhaseId: 'p1'},
+      resultFacts: {success: true, planPhaseId: 'p1'}};
+    const tracker: AnalysisPlanTracker = {current: null};
+    recordPlanOrPrePlanToolCall(tracker, input);
+    expect(tracker.prePlanToolCallLog).toBeUndefined();
+    const plan: AnalysisPlanV3 = {phases: [{id: 'p1', name: 'Inspect', goal: 'Inspect',
+      expectedTools: ['arbitrary_final_native'], status: 'pending'}], successCriteria: 'Answer', submittedAt: 1,
+      toolCallLog: []};
+    tracker.current = plan;
+    expect(recordPlanToolCall(plan, input)).toBeUndefined();
+    recordPlanOrPrePlanToolCall(tracker, input);
+    expect(plan.toolCallLog).toEqual([]);
+    expect(plan.phases[0].status).toBe('pending');
+    expect(JSON.stringify(tracker)).not.toContain('private document');
+    recordPlanOrPrePlanToolCall(tracker, {...input, role: undefined, input: {planPhaseId: 'p1'}});
+    expect(plan.toolCallLog).toHaveLength(1);
+  });
+
   it.each([true, false, undefined])('keeps typed success=%s independent of decorated content', success => {
     const result = {
       _meta: {'smartperfetto/tool-result': {schemaVersion: 'tool_result_v1', planPhaseId: 'p-typed',

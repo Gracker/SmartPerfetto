@@ -136,6 +136,17 @@ serialized results cannot recreate receipts. Protocol fields and enum values
 are projected structurally, then text values are serialized safely so source
 content or quoted paths cannot corrupt JSON.
 
+Experimental document submission preserves original tool arguments, `documentJson`,
+the compiled body and the whole original canonical payload, including invalid
+items. They remain in a current-run private submission and finalization context;
+public tool events, logs and progress contain only pending/rejected summaries.
+JSON, HTML and declaration examples in the body remain prose and are never scanned
+back into declarations. The three original strings and the display body are bound
+exactly; legitimate privacy replacements also require an issued exact-input
+projection chain. Hashes alone grant no authority. Normal SDK cleanup preserves a
+handed-off submission; product cancellation, revoked authorization or finalization
+disposal revokes it. Persisted authorship cannot restore this capability.
+
 Semantic review within the same run uses original text fields from the issued
 declaration. Input permission binds the native declaration, display candidate,
 and canonical projection; field path, owning declaration identity, and full

@@ -8,6 +8,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import {isPlaceholderToolString} from './toolArgPlaceholders';
+import {projectRuntimeToolEventPayload} from '../services/security/runtimeToolEventProjection';
 import type {RunAuthorizationCheck} from './runAuthorizationFence';
 import type { McpToolExposure } from '../types/sparkContracts';
 import type {RunManifestAttributionSink} from '../types/selfEvolution';
@@ -63,6 +64,8 @@ export type RuntimeToolHandler = (
  * acquisition.
  */
 export type RuntimeToolEvidenceEffect = 'none' | 'read_existing' | 'background' | 'acquire';
+/** Server registration metadata; never an authorization capability or a model argument. */
+export type RuntimeToolRole = 'final_candidate_submission';
 
 export interface SharedToolSpec {
   name: string;
@@ -75,6 +78,7 @@ export interface SharedToolSpec {
   annotations?: RuntimeToolAnnotations;
   concurrency?: RuntimeToolConcurrencyPolicy;
   evidenceEffect?: RuntimeToolEvidenceEffect;
+  role?: RuntimeToolRole;
 }
 
 const TIMED_SHARED_TOOL_HANDLER = Symbol('TIMED_SHARED_TOOL_HANDLER');
@@ -357,7 +361,12 @@ export function withRuntimeToolConcurrency(
     const suppressObservation = timingSinkResolution.kind === 'suppressed' || observation.kind === 'suppressed';
     const activityRecorder = !suppressObservation && observation.kind === 'available' ? observation.recorder : undefined;
     let activity: RuntimeActivitySpan | undefined;
-    try { activity = activityRecorder?.startToolActivity(timedSpec.name, args); } catch { /* Observability only. */ }
+    const observedArgs = projectRuntimeToolEventPayload(timedSpec.role, {params: args}).params;
+    try {
+      // The redacted documents cannot establish exact argument equality.
+      if (timedSpec.role === 'final_candidate_submission') activityRecorder?.markActivityPartial();
+      activity = activityRecorder?.startToolActivity(timedSpec.name, observedArgs);
+    } catch { /* Observability only. */ }
     const execute = async () => {
       try {
         const result = await coordinator.run({
@@ -483,7 +492,7 @@ export function sharedToolSpecFromClaudeSdkTool(
   name: string,
   sdkTool: unknown,
   exposure: McpToolExposure,
-  extras: Pick<SharedToolSpec, 'summary' | 'requires' | 'concurrency' | 'evidenceEffect'> = {},
+  extras: Pick<SharedToolSpec, 'summary' | 'requires' | 'concurrency' | 'evidenceEffect' | 'role'> = {},
 ): SharedToolSpec {
   if (!isClaudeSdkToolLike(sdkTool)) {
     throw new Error(`Cannot build shared tool spec for ${name}: unsupported SDK descriptor shape`);

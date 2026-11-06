@@ -15,12 +15,14 @@ import {
 import {resolvePlanPhaseForCall} from './planPhaseSemantics';
 import { summarizeToolCallInput } from './toolCallSummary';
 import {readRuntimeToolResultFacts, type RuntimeToolResultFacts} from '../agentRuntime/runtimeToolResult';
+import type {RuntimeToolRole} from '../agentRuntime/runtimeToolSpec';
 
 const MCP_NAME_PREFIX = 'mcp__smartperfetto__';
 const MAX_PLAN_TOOL_CALL_LOG = 100;
 
 export interface PlanToolCallRecorderInput {
   toolName: string;
+  role?: RuntimeToolRole;
   /** Actual SDK/handler invocation ID. Never substitute a parameter hash. */
   toolCallId?: string;
   /** Emitted only after recorded success completes an earlier pending phase. */
@@ -121,7 +123,7 @@ export function recordPlanToolCall(
   plan: AnalysisPlanV3 | null | undefined,
   input: PlanToolCallRecorderInput,
 ): ToolCallRecord | undefined {
-  if (!plan) return undefined;
+  if (!plan || input.role === 'final_candidate_submission') return undefined;
   if (!Array.isArray(plan.toolCallLog)) {
     plan.toolCallLog = [];
   }
@@ -150,7 +152,7 @@ export function recordPlanOrPrePlanToolCall(
   tracker: AnalysisPlanTracker | null | undefined,
   input: PlanToolCallRecorderInput,
 ): ToolCallRecord | undefined {
-  if (!tracker) return undefined;
+  if (!tracker || input.role === 'final_candidate_submission') return undefined;
   const toolCallId = realToolCallId(input.toolCallId);
   if (toolCallId) {
     const seen = recordedCallIds.get(tracker) ?? new Set<string>();

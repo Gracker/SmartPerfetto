@@ -2,6 +2,9 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 
 import {isDeepStrictEqual} from 'node:util';
+import {claimAuthoredFinalSubmission, readAuthoredFinalSubmission, revokeAuthoredFinalSubmission,
+  type AuthoredFinalSubmissionReadInput, type AuthoredFinalSubmissionHashes,
+  type IssuedAuthoredFinalSubmission} from '../../agentRuntime/authoredFinalSubmission';
 import {
   CONCLUSION_PROTOCOL_VALUES, CONCLUSION_CONTRACT_SIDECAR_MARKER, conclusionParseIssueTriageCodes, declaredContractForResult,
   parseConclusionContractSidecar,
@@ -10,12 +13,13 @@ import {
   type ConclusionContractClaimReference,
 } from '../../agent/core/conclusionContract';
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
-import {analysisDeliveryFingerprint, type AnalysisCandidateIdentity} from '../../types/analysisDelivery';
+import {analysisDeliveryFingerprint, type AnalysisCandidateIdentity, type AnalysisDeliveryContext} from '../../types/analysisDelivery';
 import {isSourceMechanismStatus} from '../codebase/sourceUseDecision';
 import {
   issueCodeAwareStructuredProjectionReceipt, projectCodeAwareProtocolLiteral, projectCodeAwareSemanticInputStructure,
   projectCodeAwareAuthorizedInputText,
   projectCodeAwareStructuredText, sanitizeCodeAwareStructuredTextWithReceipt,
+  hasExactCodeAwareTextProjectionInput,
   type CodeAwareTextProjectionReceipt,
 } from './codeAwareOutputRegistry';
 import {preparedReferenceResolution, type PreparedClaimEvidence} from '../evidence/claimEvidencePreparation';
@@ -28,9 +32,32 @@ import {isIssuedCanonicalAnalysisProjection, matchingCanonicalAnalysisProseField
 
 /** Identity-only token. Its original declarations live exclusively in the private map. */
 export interface IssuedConclusionProtocolProjection {readonly kind: 'conclusion_protocol_projection'}
-export interface NativeConclusionDeclaration {
+export interface AssistantNativeConclusionDeclaration {
+  readonly inputKind?: 'assistant_text';
   readonly raw: string;
   readonly contract?: ConclusionContract;
+}
+export interface AuthoredNativeConclusionDeclaration {
+  readonly inputKind: 'model_tool_arguments';
+  readonly rawArguments: string;
+  readonly documentJson: string;
+  readonly body: string;
+  readonly rawCanonicalPayload: unknown;
+  readonly contract?: ConclusionContract;
+  readonly hashes: Readonly<AuthoredFinalSubmissionHashes>;
+}
+export type NativeConclusionDeclaration = AssistantNativeConclusionDeclaration | AuthoredNativeConclusionDeclaration;
+/** Private adapter-to-projection handoff; never serialize this capability or its material. */
+export interface AuthoredConclusionSubmission {
+  readonly submission: IssuedAuthoredFinalSubmission;
+  readonly input: AuthoredFinalSubmissionReadInput;
+}
+interface AuthoredProjectionState {
+  readonly submission: AuthoredConclusionSubmission;
+  readonly displayBody: string;
+  readonly publicContract: unknown;
+  readonly publicClaims: unknown;
+  readonly sourceUse: unknown;
 }
 interface ProjectionState {
   readonly sessionId: string;
@@ -42,13 +69,39 @@ interface ProjectionState {
   readonly sourceUseFingerprint: string;
   readonly validationFingerprint: string;
   readonly original: NativeConclusionDeclaration;
+  readonly authored?: AuthoredProjectionState;
 }
 const issued = new WeakMap<IssuedConclusionProtocolProjection, ProjectionState>();
 const nativeDeclarations = new WeakMap<object, IssuedConclusionProtocolProjection>();
 const attached = new WeakSet<object>();
+type AuthoredDeliveryResult = Pick<AnalysisResult, 'sessionId' | 'conclusion' | 'conclusionContract' | 'sourceUseDecision'>;
+const authoredDeliveries = new WeakMap<AnalysisDeliveryContext, {
+  projection: IssuedConclusionProtocolProjection;
+  result: AuthoredDeliveryResult;
+  candidate: AnalysisCandidateIdentity;
+}>();
 
 export function isIssuedNativeConclusionDeclaration(value: NativeConclusionDeclaration): boolean {
-  return nativeDeclarations.has(value);
+  const token = nativeDeclarations.get(value);
+  const state = token && issued.get(token);
+  if (!state) return false;
+  try { assertAuthoredCurrent(state); return true; } catch { return false; }
+}
+
+function assertAuthoredCurrent(state: ProjectionState): void {
+  if (state.authored) readAuthoredFinalSubmission(state.authored.submission.submission, state.authored.submission.input);
+}
+
+/** Compare the complete projected value, including Infinity/-0, in the snapshot's clone realm. */
+function sameProjectedValue(value: unknown, snapshot: unknown): boolean {
+  try { return isDeepStrictEqual(structuredClone(value), snapshot); } catch { return false; }
+}
+
+function projectedResultSnapshot(result: AuthoredDeliveryResult): AuthoredDeliveryResult {
+  try {
+    return freeze({sessionId: result.sessionId, conclusion: result.conclusion,
+      conclusionContract: result.conclusionContract, sourceUseDecision: result.sourceUseDecision});
+  } catch { throw new Error('conclusion_protocol_projection_mismatch'); }
 }
 
 function freeze<T>(value: T): T {
@@ -183,7 +236,7 @@ export function projectConclusionProtocol(sessionId: string | undefined, raw: st
 }
 
 export function issueConclusionProtocolProjection(input: {
-  original: NativeConclusionDeclaration; result: AnalysisResult;
+  original: AssistantNativeConclusionDeclaration; result: AnalysisResult;
   nativeCandidate: AnalysisCandidateIdentity; displayCandidate: AnalysisCandidateIdentity;
 }): IssuedConclusionProtocolProjection {
   if (input.nativeCandidate.conclusionFingerprint !== analysisDeliveryFingerprint(input.original.raw) ||
@@ -204,10 +257,67 @@ export function issueConclusionProtocolProjection(input: {
   return token;
 }
 
+/** Only the actual native submission plus its exact privacy projection can issue this input role. */
+export function issueAuthoredConclusionProtocolProjection(input: {
+  submission: AuthoredConclusionSubmission; result: AnalysisResult;
+  nativeCandidate: AnalysisCandidateIdentity; displayCandidate: AnalysisCandidateIdentity;
+  bodyProjection: CodeAwareTextProjectionReceipt;
+}): IssuedConclusionProtocolProjection {
+  const {submission, bodyProjection} = input;
+  const result = projectedResultSnapshot(input.result);
+  const nativeCandidate = freeze(input.nativeCandidate), displayCandidate = freeze(input.displayCandidate);
+  const submittedToken = submission.submission, submittedInput = submission.input;
+  const expected = {...submittedInput, binding: Object.freeze({...submittedInput.binding})};
+  const snapshot = readAuthoredFinalSubmission(submittedToken, expected);
+  if (result.sessionId !== snapshot.binding.sessionId || nativeCandidate.runId !== snapshot.binding.runId ||
+      nativeCandidate.attemptId !== snapshot.binding.attemptId ||
+      nativeCandidate.conclusionFingerprint !== snapshot.hashes.bodyHash ||
+      displayCandidate.runId !== nativeCandidate.runId || displayCandidate.attemptId !== nativeCandidate.attemptId ||
+      displayCandidate.conclusionFingerprint !== analysisDeliveryFingerprint(result.conclusion) ||
+      !hasExactCodeAwareTextProjectionInput(bodyProjection, snapshot.compiled.body) ||
+      bodyProjection.text !== result.conclusion) {
+    throw new Error('authored_conclusion_projection_mismatch');
+  }
+  const original: AuthoredNativeConclusionDeclaration = {
+    inputKind: 'model_tool_arguments', rawArguments: snapshot.rawArguments, documentJson: snapshot.documentJson,
+    body: snapshot.compiled.body, rawCanonicalPayload: snapshot.compiled.rawCanonicalPayload,
+    contract: snapshot.compiled.canonicalParse.contract as ConclusionContract | undefined, hashes: snapshot.hashes,
+  };
+  const token: IssuedConclusionProtocolProjection = Object.freeze({kind: 'conclusion_protocol_projection'});
+  const values = freeze({sessionId: result.sessionId, nativeCandidate, displayCandidate,
+    displayFingerprint: analysisDeliveryFingerprint(result.conclusion),
+    publicClaimsFingerprint: analysisDeliveryFingerprint(result.conclusionContract?.claims),
+    publicContractFingerprint: analysisDeliveryFingerprint(result.conclusionContract),
+    sourceUseFingerprint: analysisDeliveryFingerprint(result.sourceUseDecision),
+    validationFingerprint: analysisDeliveryFingerprint(original), original});
+  const readInput = Object.freeze({...expected, rawArguments: snapshot.rawArguments, documentJson: snapshot.documentJson,
+    body: snapshot.compiled.body, rawCanonicalPayload: snapshot.compiled.rawCanonicalPayload, hashes: snapshot.hashes});
+  const authored: AuthoredProjectionState = Object.freeze({submission: Object.freeze({submission: submittedToken, input: readInput}),
+    ...freeze({displayBody: result.conclusion, publicContract: result.conclusionContract,
+      publicClaims: result.conclusionContract?.claims, sourceUse: result.sourceUseDecision})});
+  const state: ProjectionState = Object.freeze({...values, authored});
+  assertAuthoredCurrent(state);
+  nativeDeclarations.set(state.original, token);
+  issued.set(token, state);
+  return token;
+}
+
 export function readConclusionProtocolProjection(token: IssuedConclusionProtocolProjection, input: {
   result: AnalysisResult; candidate: AnalysisCandidateIdentity | undefined; runId: string;
 }): NativeConclusionDeclaration {
   const state = issued.get(token);
+  if (state?.authored) {
+    const result = projectedResultSnapshot(input.result);
+    assertAuthoredCurrent(state);
+    if (state.sessionId !== result.sessionId || state.nativeCandidate.runId !== input.runId ||
+        !sameCandidate(input.candidate, state.displayCandidate) || result.conclusion !== state.authored.displayBody ||
+        !isDeepStrictEqual(result.conclusionContract, state.authored.publicContract) ||
+        !isDeepStrictEqual(result.conclusionContract?.claims, state.authored.publicClaims) ||
+        !isDeepStrictEqual(result.sourceUseDecision, state.authored.sourceUse)) {
+      throw new Error('conclusion_protocol_projection_mismatch');
+    }
+    return state.original;
+  }
   if (!state || state.sessionId !== input.result.sessionId || state.nativeCandidate.runId !== input.runId ||
     !sameCandidate(input.candidate, state.displayCandidate) ||
     state.displayFingerprint !== analysisDeliveryFingerprint(input.result.conclusion) ||
@@ -221,15 +331,60 @@ export function readConclusionProtocolProjection(token: IssuedConclusionProtocol
 }
 
 export function claimConclusionProtocolProjection(token: IssuedConclusionProtocolProjection): void {
-  if (!issued.has(token) || attached.has(token)) throw new Error('conclusion_protocol_projection_already_claimed');
+  const state = issued.get(token);
+  if (!state || attached.has(token)) throw new Error('conclusion_protocol_projection_already_claimed');
+  if (state.authored) claimAuthoredFinalSubmission(state.authored.submission.submission);
   attached.add(token);
 }
 
 export function releaseConclusionProtocolProjection(token: IssuedConclusionProtocolProjection): void {
   const state = issued.get(token);
   if (state) nativeDeclarations.delete(state.original);
+  if (state?.authored) revokeAuthoredFinalSubmission(state.authored.submission.submission);
   issued.delete(token);
   attached.delete(token);
+}
+
+/** Called only after the owning source/canonical/finalization transform validated its result. */
+export function bindAuthoredFinalDelivery(input: {
+  context: AnalysisDeliveryContext; result: AuthoredDeliveryResult; nativeDeclaration: NativeConclusionDeclaration;
+}): void {
+  if (input.nativeDeclaration.inputKind !== 'model_tool_arguments') return;
+  const token = nativeDeclarations.get(input.nativeDeclaration);
+  const state = token && issued.get(token);
+  const context = input.context;
+  const result = projectedResultSnapshot(input.result);
+  if (!state?.authored || context.entry === 'historical_restore' || !context.acceptedCandidate ||
+      !sameCandidate(context.acceptedCandidate, state.displayCandidate) ||
+      context.acceptedCandidate.conclusionFingerprint !== analysisDeliveryFingerprint(result.conclusion) ||
+      result.sessionId !== state.sessionId || result.conclusion !== state.authored.displayBody ||
+      !isDeepStrictEqual(result.sourceUseDecision, state.authored.sourceUse)) {
+    throw new Error('authored_final_delivery_mismatch');
+  }
+  assertAuthoredCurrent(state);
+  authoredDeliveries.set(context, {projection: token!, result, candidate: freeze(context.acceptedCandidate)});
+}
+
+function currentAuthoredDelivery(context: AnalysisDeliveryContext) {
+  const binding = authoredDeliveries.get(context);
+  const state = binding && issued.get(binding.projection);
+  if (!binding || !state?.authored || context.entry === 'historical_restore' ||
+      context.outputOrigin !== 'model_tool_arguments' || context.finalSubmission?.mode !== 'authored_claim_document_v1' ||
+      context.finalSubmission.outcome !== 'submitted' || !sameCandidate(context.acceptedCandidate, binding.candidate)) return;
+  try { assertAuthoredCurrent(state); return binding; } catch { return undefined; }
+}
+
+/** Runtime state only; full quality separately compares actual contract/source fields. */
+export function hasCurrentAuthoredFinalBody(body: string, context: AnalysisDeliveryContext): boolean {
+  const binding = currentAuthoredDelivery(context);
+  return Boolean(binding && binding.result.conclusion === body);
+}
+
+export function hasCurrentAuthoredFinalDelivery(result: AuthoredDeliveryResult, context: AnalysisDeliveryContext): boolean {
+  const binding = currentAuthoredDelivery(context);
+  return Boolean(binding && result.sessionId === binding.result.sessionId && result.conclusion === binding.result.conclusion &&
+    sameProjectedValue(result.conclusionContract, binding.result.conclusionContract) &&
+    sameProjectedValue(result.sourceUseDecision, binding.result.sourceUseDecision));
 }
 
 /** Preserve captured machine inputs and exact native declaration prose on their issued input roles. */

@@ -32,6 +32,34 @@ function recordEmptyRegistry(builder: RunManifestBuilder): void {
 }
 
 describe('run-bound declaration syntax attribution', () => {
+  it.each(['assistant_text', 'authored_claim_document_v1'] as const)(
+    'records captured %s without fabricating adoption or migrating older manifests', finalSubmission => {
+      const legacy = createBuilder(); recordEmptyRegistry(legacy);
+      expect(legacy.seal()).not.toHaveProperty('finalSubmission');
+      const builder = createBuilder(); recordEmptyRegistry(builder);
+      const identity = {runtime: 'qoder-agent-sdk' as const, providerId: 'provider-a'};
+      builder.recordRuntime({...identity, finalSubmission, conclusionDeclarationSyntax: 'canonical_v1'});
+      builder.recordRuntime({...identity, model: 'resolved-model', finalSubmission: undefined});
+      expect(() => builder.recordRuntime({...identity,
+        finalSubmission: finalSubmission === 'assistant_text' ? 'authored_claim_document_v1' : 'assistant_text'}))
+        .toThrow('run_manifest_final_submission_changed');
+      expect(() => builder.recordRuntime({...identity, finalSubmission: 'PRIVATE_CANARY' as any}))
+        .toThrow('run_manifest_final_submission_invalid');
+      const manifest = builder.seal();
+      expect(manifest).toMatchObject({finalSubmission, conclusionDeclarationSyntax: 'canonical_v1', model: 'resolved-model'});
+      expect(manifest).not.toHaveProperty('actualFinalSubmission');
+      expect(JSON.stringify(manifest)).not.toContain('PRIVATE_CANARY');
+    });
+
+  it('rejects conflicting captured output settings without partially recording them', () => {
+    const builder = createBuilder(); recordEmptyRegistry(builder);
+    const identity = {runtime: 'qoder-agent-sdk' as const, providerId: 'provider-a'};
+    builder.recordRuntime({...identity, conclusionDeclarationSyntax: 'authoring_v2'});
+    expect(() => builder.recordRuntime({...identity, finalSubmission: 'authored_claim_document_v1'}))
+      .toThrow('run_manifest_output_config_conflict');
+    expect(builder.seal()).not.toHaveProperty('finalSubmission');
+  });
+
   it.each(['authoring_v1', 'authoring_v2'] as const)('records the prompt owner\'s %s once without guessing a value for old runs', syntax => {
     const legacy = createBuilder(); recordEmptyRegistry(legacy);
     expect(legacy.seal()).not.toHaveProperty('conclusionDeclarationSyntax');

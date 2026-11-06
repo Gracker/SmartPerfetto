@@ -81,6 +81,7 @@ export function createRuntimeTurnCloseoutTape(options: {maxBytes?: number} = {})
     }
   };
   const observe: RuntimeToolObserver = event => {
+    if (event.role === 'final_candidate_submission') return;
     const toolCallId = boundedText(event.toolCallId, 200);
     const toolName = boundedText(event.toolName, 200);
     if (event.phase === 'started') {

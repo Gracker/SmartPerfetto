@@ -1546,6 +1546,21 @@ strategies:
   backend/strategies/prompt-conclusion-contract-schema.template.md:
     disposition: product-only
     reason: SmartPerfetto conclusion declarations and captured evidence identifiers
+  backend/strategies/prompt-conclusion-delivery.template.md:
+    disposition: product-only
+    reason: SmartPerfetto canonical and authoring declaration delivery protocol
+  backend/strategies/prompt-conclusion-ack-rule.template.md:
+    disposition: product-only
+    reason: SmartPerfetto assistant-text acknowledgement declaration exemption
+  backend/strategies/prompt-authored-final-submission-delivery.template.md:
+    disposition: product-only
+    reason: SmartPerfetto private typed final submission tool transport
+  backend/strategies/prompt-authored-final-submission-framing.template.md:
+    disposition: product-only
+    reason: SmartPerfetto private authored document representation and captured evidence references
+  backend/strategies/prompt-submit-final-document-tool-description.template.md:
+    disposition: product-only
+    reason: SmartPerfetto experimental authored final submission tool transport and pending acknowledgement contract
   backend/strategies/prompt-conclusion-authoring-framing.template.md:
     disposition: product-only
     reason: SmartPerfetto private declaration authoring transport and captured evidence references

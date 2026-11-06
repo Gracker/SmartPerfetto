@@ -40,6 +40,8 @@ import {
   withEvaluationTelemetry,
 } from '../../services/selfEvolution/evaluationTelemetry';
 import { ClaudeRuntime, __testing } from '../claudeRuntime';
+import * as analysisRunSpecModule from '../../agentRuntime/analysisRunSpec';
+import * as outputConfigModule from '../../agentRuntime/finalSubmissionConfig';
 import {buildStrategyRegistrySnapshotFromDefinitions, getRegisteredScenes} from '../strategyLoader';
 import type {AnalysisTurnIntentDecision} from '../../agentRuntime/analysisTurnIntent';
 import {resolveRuntimeTurnPolicy} from '../../agentRuntime/runtimeTurnPolicy';
@@ -271,6 +273,72 @@ afterEach(async () => {
 });
 
 describe('ClaudeRuntime runtime state and snapshots', () => {
+  it.each([
+    ['authored_claim_document_v1', 'canonical_v1', 'unsupported_final_submission', 'runtime'],
+    ['authored_claim_document_v1', 'authoring_v1', 'invalid_configuration', 'declaration_syntax_conflict'],
+    ['authored_claim_document_v1', 'authoring_v2', 'invalid_configuration', 'declaration_syntax_conflict'],
+    ['MODE_CANARY', 'canonical_v1', 'invalid_configuration', 'mode'],
+    ['assistant_text', 'SYNTAX_CANARY', 'invalid_configuration', 'declaration_syntax'],
+  ])('rejects output config %s / %s before Claude classifier or SDK dispatch', async (mode, syntax, code, reason) => {
+    const previousMode = process.env.SMARTPERFETTO_FINAL_SUBMISSION;
+    const previousSyntax = process.env.SMARTPERFETTO_CONCLUSION_AUTHORING;
+    const runtime = new ClaudeRuntime({query: jest.fn()} as any, {enableSubAgents: false});
+    process.env.SMARTPERFETTO_FINAL_SUBMISSION = mode;
+    process.env.SMARTPERFETTO_CONCLUSION_AUTHORING = syntax;
+    try {
+      await expect(runtime.analyze('Explain this trace', 'output-config-claude', 'trace')).rejects.toMatchObject({
+        name: 'FinalSubmissionConfigurationError', code, message: `${code}:final_submission:${reason}`,
+      });
+      expect(rawClaudeSdkMock.__getQueryCalls()).toHaveLength(0);
+      expect(mockClaudeVerifierVerifyConclusion).not.toHaveBeenCalled();
+    } finally {
+      restoreEnvValue('SMARTPERFETTO_FINAL_SUBMISSION', previousMode);
+      restoreEnvValue('SMARTPERFETTO_CONCLUSION_AUTHORING', previousSyntax);
+      runtime.cleanupSession('output-config-claude');
+    }
+  });
+
+  it.each(['canonical_v1', 'authoring_v1', 'authoring_v2'])(
+    'keeps the captured Claude output config %s through classification and real RunSpec', async syntax => {
+      const previousMode = process.env.SMARTPERFETTO_FINAL_SUBMISSION;
+      const previousSyntax = process.env.SMARTPERFETTO_CONCLUSION_AUTHORING;
+      delete process.env.SMARTPERFETTO_FINAL_SUBMISSION;
+      process.env.SMARTPERFETTO_CONCLUSION_AUTHORING = syntax;
+      const capture = jest.spyOn(outputConfigModule, 'captureAnalysisOutputConfig');
+      const createSpec = analysisRunSpecModule.createAnalysisRunSpec;
+      let spec: ReturnType<typeof createSpec> | undefined;
+      const specSpy = jest.spyOn(analysisRunSpecModule, 'createAnalysisRunSpec').mockImplementation(input => {
+        spec = createSpec(input);
+        throw new Error('test stopped after real RunSpec');
+      });
+      const runtime = new ClaudeRuntime({query: jest.fn()} as any, {enableSubAgents: false});
+      rawClaudeSdkMock.__setQueryImplementation(async function* (params: any) {
+        expect(isClassifierCall(params)).toBe(true);
+        process.env.SMARTPERFETTO_FINAL_SUBMISSION = 'authored_claim_document_v1';
+        process.env.SMARTPERFETTO_CONCLUSION_AUTHORING = 'LATE_SYNTAX_CANARY';
+        yield {type: 'result', subtype: 'success', is_error: false, stop_reason: null,
+          result: JSON.stringify(defaultIntent)};
+      });
+      try {
+        const result = await runtime.analyze('Explain this trace', 'output-config-claude-frozen', 'trace');
+        expect(result.success).toBe(false); // The test stops after the real RunSpec boundary.
+        expect(rawClaudeSdkMock.__getQueryCalls()).toHaveLength(1);
+        expect(specSpy).toHaveBeenCalledTimes(1);
+        expect(capture).toHaveBeenCalledTimes(1);
+        const captured = capture.mock.results[0].value;
+        expect(Object.isFrozen(captured)).toBe(true);
+        expect(specSpy.mock.calls[0][0].outputConfig).toBe(captured);
+        expect(spec).toMatchObject({finalSubmission: 'assistant_text', declarationSyntax: syntax});
+      } finally {
+        specSpy.mockRestore();
+        capture.mockRestore();
+        restoreEnvValue('SMARTPERFETTO_FINAL_SUBMISSION', previousMode);
+        restoreEnvValue('SMARTPERFETTO_CONCLUSION_AUTHORING', previousSyntax);
+        runtime.cleanupSession('output-config-claude-frozen');
+      }
+    },
+  );
+
   it('scene runtime matrix: runs the pinned Claude provider through shared proposal and private seal', async () => {
     const f = createSceneRuntimeMatrixFixture('claude');
     const runtime = new ClaudeRuntime(f.traceProcessorService, {model: 'scene-pinned-claude', enableSubAgents: false});
@@ -2654,7 +2722,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       }));
       const context = takeFinalizationContext(terminal)!;
       try {
-        expect(context.getNativeDeclaration(terminal, new AbortController().signal)?.raw).toBe(SOURCE_FINALIZATION_RAW_SOURCE);
+        expect(context.getNativeDeclaration(terminal, new AbortController().signal)).toMatchObject({raw: SOURCE_FINALIZATION_RAW_SOURCE});
         expect(JSON.stringify(terminal)).not.toContain('conclusion_protocol_projection');
       } finally {context.dispose();}
       const next = await runtime.analyze('public second run', sessionId, traceId, admitted({
@@ -3146,7 +3214,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     expect(result.completion).toMatchObject({status: 'completed'});
     expect(inspectCandidateProtocol(result.conclusion).status).toBe('invalid');
     const context = takeFinalizationContext(result)!;
-    try {expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(native);}
+    try {expect(context.getNativeDeclaration(result, new AbortController().signal)).toMatchObject({raw: native});}
     finally {context.dispose();}
   });
 

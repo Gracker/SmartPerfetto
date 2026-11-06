@@ -329,6 +329,26 @@ describe('verifyConclusion runtime-only diagnostics', () => {
     expect(unconfirmed.heuristicIssues.every(issue => issue.recoveryKind === undefined)).toBe(true);
   });
 
+  it.each((['incomplete', 'completed'] as const).flatMap(status =>
+    (['sdk_final', 'assistant_stream'] as const).flatMap(origin =>
+      ([undefined, 'submitted', 'missing_submission', 'transport_failure'] as const).map(outcome => [status, origin, outcome] as const))))
+  ('gates recovery after actual typed main: status=%s origin=%s outcome=%s', async (status, origin, outcome) => {
+    const body = 'Measured duration in this window.';
+    const context = makeDeliveryContext(body, status);
+    context.outputOrigin = origin;
+    if (status === 'completed') addReportAssessment(context, 'missing');
+    if (outcome) context.finalSubmission = {mode: 'authored_claim_document_v1', outcome};
+    const completion = structuredClone(context.completion);
+    const result = await verifyConclusion([], body, {deliveryContext: context});
+    expect(result.heuristicIssues.some(issue => issue.type === 'missing_check')).toBe(false);
+    expect(result.heuristicIssues.some(issue => issue.type === (status === 'incomplete' ? 'truncation' : 'missing_reasoning'))).toBe(true);
+    expect(context.completion).toEqual(completion);
+    expect(context.outputOrigin).toBe(origin);
+    if (outcome) expect(result.heuristicIssues.every(issue => issue.recoveryKind === undefined)).toBe(true);
+    else expect(result.heuristicIssues.some(issue => issue.recoveryKind ===
+      (status === 'incomplete' ? 'continue_output' : 'complete_report_content'))).toBe(true);
+  });
+
   it('never calls an auxiliary model or writes learned keywords', async () => {
     const body = 'VSync [CRITICAL] because blocked; source_lookup';
     const plan = makePlan();

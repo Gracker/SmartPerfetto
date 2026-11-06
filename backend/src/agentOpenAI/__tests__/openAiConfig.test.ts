@@ -8,8 +8,12 @@ import os from 'os';
 import path from 'path';
 import { createOpenAIEnv, getOpenAIRuntimeDiagnostics, loadOpenAIConfig } from '../openAiConfig';
 import { getProviderService, resetProviderService } from '../../services/providerManager';
+import {SMARTPERFETTO_FINAL_SUBMISSION_ENV, FinalSubmissionConfigurationError} from '../../agentRuntime/finalSubmissionConfig';
+import {CONCLUSION_AUTHORING_ENV} from '../../agent/core/conclusionAuthoring';
 
 const ORIGINAL_ENV = {
+  [SMARTPERFETTO_FINAL_SUBMISSION_ENV]: process.env[SMARTPERFETTO_FINAL_SUBMISSION_ENV],
+  [CONCLUSION_AUTHORING_ENV]: process.env[CONCLUSION_AUTHORING_ENV],
   PROVIDER_DATA_DIR_OVERRIDE: process.env.PROVIDER_DATA_DIR_OVERRIDE,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
@@ -47,6 +51,8 @@ describe('createOpenAIEnv', () => {
     await fsp.mkdir(dir, { recursive: true });
     process.env.PROVIDER_DATA_DIR_OVERRIDE = dir;
     delete process.env.OPENAI_ANALYSIS_REASONING_EFFORT;
+    delete process.env[SMARTPERFETTO_FINAL_SUBMISSION_ENV];
+    delete process.env[CONCLUSION_AUTHORING_ENV];
     resetProviderService();
   });
 
@@ -65,6 +71,30 @@ describe('createOpenAIEnv', () => {
 
   it('keeps analysis effort absent by default', () => {
     expect(loadOpenAIConfig(null).analysisReasoningEffort).toBeUndefined();
+  });
+
+  it('captures immutable output configuration once with the selected provider config', () => {
+    const legacy = loadOpenAIConfig(null);
+    expect(legacy.outputConfig).toEqual({finalSubmission: 'assistant_text', declarationSyntax: 'canonical_v1'});
+    process.env[SMARTPERFETTO_FINAL_SUBMISSION_ENV] = 'authored_claim_document_v1';
+    const typed = loadOpenAIConfig(null);
+    process.env[SMARTPERFETTO_FINAL_SUBMISSION_ENV] = 'assistant_text';
+    process.env[CONCLUSION_AUTHORING_ENV] = 'authoring_v2';
+    expect(Object.isFrozen(typed.outputConfig)).toBe(true);
+    expect(typed.outputConfig).toEqual({finalSubmission: 'authored_claim_document_v1', declarationSyntax: 'canonical_v1'});
+    expect(legacy.outputConfig.declarationSyntax).toBe('canonical_v1');
+  });
+
+  it('rejects invalid or conflicting output configuration through a typed, value-free error', () => {
+    process.env[SMARTPERFETTO_FINAL_SUBMISSION_ENV] = 'PRIVATE_FINAL_MODE_CANARY';
+    expect(() => loadOpenAIConfig(null)).toThrow('invalid_configuration:final_submission:mode');
+    process.env[SMARTPERFETTO_FINAL_SUBMISSION_ENV] = 'authored_claim_document_v1';
+    process.env[CONCLUSION_AUTHORING_ENV] = 'authoring_v2';
+    expect(() => loadOpenAIConfig(null)).toThrow('declaration_syntax_conflict');
+    delete process.env[SMARTPERFETTO_FINAL_SUBMISSION_ENV];
+    process.env[CONCLUSION_AUTHORING_ENV] = 'PRIVATE_SYNTAX_CANARY';
+    expect(() => loadOpenAIConfig(null)).toThrow(FinalSubmissionConfigurationError);
+    expect(() => loadOpenAIConfig(null)).toThrow('invalid_configuration:final_submission:declaration_syntax');
   });
 
   it.each(['', ' low', 'low ', 'LOW', 'PRIVATE_EFFORT_CANARY', 'ultra'])(

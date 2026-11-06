@@ -81,6 +81,11 @@ import {
   type RuntimePerformanceRun,
 } from '../../runtimePerformance';
 import {createAnalysisRunSpec, type AnalysisRunSelection} from '../../analysisRunSpec';
+import {
+  captureAnalysisOutputConfig,
+  assertFinalSubmissionRuntime,
+  type CapturedAnalysisOutputConfig,
+} from '../../finalSubmissionConfig';
 import {createAnalysisTurnIntentResolver, type AnalysisTurnIntent} from '../../analysisTurnIntent';
 import {resolveRunTurnPolicy, usesLightweightToolCatalog} from '../../runtimeTurnPolicy';
 import {conversationTraceAttachedOption, runAllowedTraces, runTraceIdentity} from '../../runtimeTraceAttachment';
@@ -414,6 +419,8 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     traceId: string,
     options?: AnalysisOptions,
   ): Promise<AnalysisResult> {
+    const outputConfig = captureAnalysisOutputConfig(this.env);
+    assertFinalSubmissionRuntime(outputConfig, QODER_AGENT_RUNTIME_KIND);
     let normalizedOptions = options ?? {};
     const executionLease = this.executionGuard.begin({
       runtime: QODER_AGENT_RUNTIME_KIND,
@@ -512,7 +519,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       executionLease.signal.addEventListener('abort', onExecutionAbort, {once: true});
     });
     const analysis = this.analyzeGuarded(query, sessionId, traceId, normalizedOptions,
-      executionLease, runtimePerformance, sessionState);
+      outputConfig, executionLease, runtimePerformance, sessionState);
     void analysis.then(() => {analysisSettled = true; releaseIfDrained();},
       () => {analysisSettled = true; releaseIfDrained();});
     try {
@@ -624,6 +631,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     sessionId: string,
     traceId: string,
     options: AnalysisOptions,
+    outputConfig: CapturedAnalysisOutputConfig,
     executionLease: RuntimeExecutionLease,
     runtimePerformance: RuntimePerformanceRun,
     sessionState: QoderActiveSession,
@@ -758,6 +766,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       && !executionLease.signal.aborted;
     const canInvokeTool = () => acquisitionOpen && isRunDeliverable() && Date.now() < sessionState.deadlineMs!;
     const analysisRunSpec = createAnalysisRunSpec({
+      outputConfig,
       query,
       sessionId,
       traceId,

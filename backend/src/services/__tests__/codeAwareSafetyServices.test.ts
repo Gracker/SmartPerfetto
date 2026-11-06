@@ -26,6 +26,8 @@ import {
   composeCodeAwareTextProjectionReceipts,
   createCodeAwareStreamingTextProjection,
   isIssuedCodeAwareTextProjectionReceipt,
+  hasExactCodeAwareTextProjectionInput,
+  issueCodeAwareStructuredProjectionReceipt,
   projectCodeAwareStructuredText,
   projectCodeAwareSemanticInputStructure,
   registerCodeAwareCanary,
@@ -60,6 +62,53 @@ const CODEBASE_SCOPE = {
   workspaceId: 'workspace-test',
   userId: 'tester',
 };
+
+describe('typed exact privacy input lineage', () => {
+  it.each(['', 'plain', '\ud800'])('keeps exact input privately without changing legacy receipt shape: %p', input => {
+    const receipt = sanitizeCodeAwareTextWithReceipt(undefined, input);
+    expect(Object.keys(receipt).sort()).toEqual(['disposition', 'inputFingerprint', 'outputFingerprint', 'text']);
+    expect(receipt).toMatchObject({text: input, disposition: 'preserved'});
+    expect(hasExactCodeAwareTextProjectionInput(receipt, input)).toBe(true);
+    expect(hasExactCodeAwareTextProjectionInput({...receipt}, input)).toBe(false);
+    expect(hasExactCodeAwareTextProjectionInput(JSON.parse(JSON.stringify(receipt)), input)).toBe(false);
+  });
+
+  it('rejects a different original despite the same UTF-8 fingerprint', () => {
+    const first = sanitizeCodeAwareTextWithReceipt(undefined, '\ud800');
+    const second = sanitizeCodeAwareTextWithReceipt(undefined, '\ud801');
+    expect(first.inputFingerprint).toBe(second.inputFingerprint);
+    expect(hasExactCodeAwareTextProjectionInput(first, '\ud801')).toBe(false);
+    expect(hasExactCodeAwareTextProjectionInput(second, '\ud800')).toBe(false);
+  });
+
+  it('preserves old hash composition while never restoring exact lineage after a colliding gap', () => {
+    const first = issueCodeAwareStructuredProjectionReceipt('original', '\ud800');
+    const wrongNext = issueCodeAwareStructuredProjectionReceipt('\ud801', 'next');
+    const gap = composeCodeAwareTextProjectionReceipts(first, wrongNext);
+    expect(gap).toEqual({text: 'next', disposition: 'redacted', inputFingerprint: first.inputFingerprint,
+      outputFingerprint: wrongNext.outputFingerprint});
+    expect(isIssuedCodeAwareTextProjectionReceipt(gap)).toBe(true);
+    expect(hasExactCodeAwareTextProjectionInput(gap, 'original')).toBe(false);
+    const descendant = composeCodeAwareTextProjectionReceipts(gap, issueCodeAwareStructuredProjectionReceipt('next', 'last'));
+    expect(descendant.text).toBe('last');
+    expect(hasExactCodeAwareTextProjectionInput(descendant, 'original')).toBe(false);
+  });
+
+  it('carries exact input through real owner credential and echo redaction stages', () => {
+    const sessionId = 'typed-owner-exact';
+    registerCodeAwareCanary(sessionId, 'PRIVATE_AUTHORED_MARKER');
+    const input = 'PRIVATE_AUTHORED_MARKER and api_key="private-key-value-123"';
+    try {
+      const first = withOwnerCodeAwareProjection(() => sanitizeCodeAwareStructuredTextWithReceipt(sessionId, input));
+      expect(first.text).not.toContain('PRIVATE_AUTHORED_MARKER');
+      expect(first.text).not.toContain('private-key-value-123');
+      expect(hasExactCodeAwareTextProjectionInput(first, input)).toBe(true);
+      const composed = composeCodeAwareTextProjectionReceipts(first, sanitizeCodeAwareTextWithReceipt(undefined, first.text));
+      expect(hasExactCodeAwareTextProjectionInput(composed, input)).toBe(true);
+      expect(hasExactCodeAwareTextProjectionInput(composed, first.text)).toBe(false);
+    } finally { clearCodeAwareOutputGuards(sessionId); }
+  });
+});
 
 describe('conclusion protocol privacy roles', () => {
   const sessionId = 'protocol-safety';

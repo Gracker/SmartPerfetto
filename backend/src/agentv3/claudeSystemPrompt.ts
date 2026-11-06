@@ -15,6 +15,7 @@ import {CONCLUSION_CONTRACT_SIDECAR_MARKER, CONCLUSION_AUTHORING_FENCE, CONCLUSI
 import {CONCLUSION_AUTHORING_LIMITS} from '../agent/core/conclusionAuthoring';
 import {SUPPORTED_DETERMINISTIC_CLAIM_RULES} from '../services/verifier/deterministicClaimVerifier';
 import {buildFocusAppPromptData, packageProvenance} from '../agentRuntime/focusAppTarget';
+import type {FinalSubmissionMode} from '../agentRuntime/finalSubmissionConfig';
 
 /**
  * Rough token estimate for mixed Chinese/English text.
@@ -106,6 +107,9 @@ export function stripTemplateComments(content: string): string {
 
 type TypedTurnPromptContext = Partial<ClaudeAnalysisContext> & {
   declarationSyntax?: ConclusionDeclarationSyntax;
+  /** Captured run choice and actual registered-tool projection, never authorization. */
+  finalSubmission?: FinalSubmissionMode;
+  resolvedFinalTool?: Readonly<{role: 'final_candidate_submission'; nativeName: string}>;
   runtimeEvidenceContext?: string;
   quickMemoryContext?: string;
 };
@@ -192,7 +196,19 @@ function buildTypedTurnSystemPromptParts(
   // Inject protocol syntax after authoring comments are removed. Applying the
   // comment stripper to the rendered asset would delete its sidecar example.
   const declarationSchema = requiredAsset('prompt-conclusion-contract-schema');
-  const declarationFraming = renderTemplate(requiredAsset(context.declarationSyntax === 'authoring_v2'
+  const finalSubmission = context.finalSubmission ?? 'assistant_text';
+  if (finalSubmission !== 'assistant_text' && finalSubmission !== 'authored_claim_document_v1') {
+    throw new Error('[SystemPrompt] Invalid final submission mode');
+  }
+  const typedSubmission = finalSubmission === 'authored_claim_document_v1';
+  if (typedSubmission && (context.declarationSyntax !== 'canonical_v1'
+    || context.resolvedFinalTool?.role !== 'final_candidate_submission'
+    || typeof context.resolvedFinalTool.nativeName !== 'string'
+    || !context.resolvedFinalTool.nativeName.trim())) {
+    throw new Error('[SystemPrompt] Typed final submission requires canonical syntax and a resolved final tool');
+  }
+  const declarationFraming = renderTemplate(requiredAsset(typedSubmission
+    ? 'prompt-authored-final-submission-framing' : context.declarationSyntax === 'authoring_v2'
     ? 'prompt-conclusion-authoring-v2-framing' : context.declarationSyntax === 'authoring_v1'
       ? 'prompt-conclusion-authoring-framing' : 'prompt-conclusion-full-framing'), {
     sidecarOpeningMarker: CONCLUSION_CONTRACT_SIDECAR_MARKER,
@@ -201,8 +217,14 @@ function buildTypedTurnSystemPromptParts(
     authoringMaxNodes: String(CONCLUSION_AUTHORING_LIMITS.nodes),
     authoringMaxDepth: String(CONCLUSION_AUTHORING_LIMITS.depth),
   });
-  push(1, 'conclusion_declaration', renderTemplate(declarationSchema, {
+  const declarationDelivery = renderTemplate(requiredAsset(typedSubmission
+    ? 'prompt-authored-final-submission-delivery' : 'prompt-conclusion-delivery'), {
     declarationFraming,
+    finalSubmissionToolName: context.resolvedFinalTool?.nativeName,
+  });
+  push(1, 'conclusion_declaration', renderTemplate(declarationSchema, {
+    declarationDelivery,
+    ackDeclarationRule: typedSubmission ? '' : requiredAsset('prompt-conclusion-ack-rule'),
     supportedProofRules: JSON.stringify(SUPPORTED_DETERMINISTIC_CLAIM_RULES),
   }));
   push(1, 'output_language', requiredAsset(language === 'en' ? 'prompt-language-en' : 'prompt-language-zh'));

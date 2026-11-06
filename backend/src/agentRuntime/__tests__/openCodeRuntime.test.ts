@@ -3,6 +3,8 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
+import * as analysisRunSpecModule from '../analysisRunSpec';
+import * as outputConfigModule from '../finalSubmissionConfig';
 import {EventEmitter} from 'events';
 import {spawn as spawnChildProcess} from 'child_process';
 import fs from 'fs';
@@ -493,6 +495,76 @@ function createNativeIntentHarness(input: {
   return {runtime, traceProcessor, configs, prompts, directories, serverCloses, aborts,
     moduleLoader, bridgeClose, messageReadLimits, getTools: () => tools, getBridge: () => realBridge};
 }
+
+describe('OpenCode output configuration admission', () => {
+  it('rejects typed output before the OpenCode hidden smoke path loads its SDK', async () => {
+    const h = createNativeIntentHarness({
+      selection: {kind: EXPERIMENTAL_OPENCODE_RUNTIME_KIND, source: 'env'},
+      env: {SMARTPERFETTO_OPENCODE_REAL_ANALYSIS: '0', SMARTPERFETTO_FINAL_SUBMISSION: 'authored_claim_document_v1'},
+    });
+    await expect(h.runtime.analyze('Smoke', 'output-config-opencode-smoke', 'trace-opencode')).rejects.toMatchObject({
+      code: 'unsupported_final_submission', reason: 'runtime',
+    });
+    expect(mockOpenCodeIntentTransport).not.toHaveBeenCalled();
+    expect(h.moduleLoader).not.toHaveBeenCalled();
+    expect(h.prompts).toHaveLength(0);
+  });
+
+  it.each([
+    ['authored_claim_document_v1', 'canonical_v1', 'unsupported_final_submission', 'runtime'],
+    ['authored_claim_document_v1', 'authoring_v1', 'invalid_configuration', 'declaration_syntax_conflict'],
+    ['authored_claim_document_v1', 'authoring_v2', 'invalid_configuration', 'declaration_syntax_conflict'],
+    ['MODE_CANARY', 'canonical_v1', 'invalid_configuration', 'mode'],
+    ['assistant_text', 'SYNTAX_CANARY', 'invalid_configuration', 'declaration_syntax'],
+  ])('rejects %s / %s before OpenCode classifier or SDK dispatch', async (mode, syntax, code, reason) => {
+    const h = createNativeIntentHarness({env: {
+      SMARTPERFETTO_FINAL_SUBMISSION: mode, SMARTPERFETTO_CONCLUSION_AUTHORING: syntax,
+    }});
+    await expect(h.runtime.analyze('Explain this trace', 'output-config-opencode', 'trace-opencode')).rejects.toMatchObject({
+      name: 'FinalSubmissionConfigurationError', code, message: `${code}:final_submission:${reason}`,
+    });
+    expect(mockOpenCodeIntentTransport).not.toHaveBeenCalled();
+    expect(h.moduleLoader).not.toHaveBeenCalled();
+    expect(h.prompts).toHaveLength(0);
+  });
+
+  it.each(['canonical_v1', 'authoring_v1', 'authoring_v2'])(
+    'keeps the captured OpenCode output config %s through classification and real RunSpec', async syntax => {
+      const capture = jest.spyOn(outputConfigModule, 'captureAnalysisOutputConfig');
+      const createSpec = analysisRunSpecModule.createAnalysisRunSpec;
+      let spec: ReturnType<typeof createSpec> | undefined;
+      const stop = new Error('test stopped after real RunSpec');
+      const specSpy = jest.spyOn(analysisRunSpecModule, 'createAnalysisRunSpec').mockImplementation(input => {
+        spec = createSpec(input);
+        throw stop;
+      });
+      let runtime: OpenCodeRuntime;
+      const h = createNativeIntentHarness({
+        env: {SMARTPERFETTO_CONCLUSION_AUTHORING: syntax},
+        beforeClassifierReply: async () => {
+          (runtime as any).env.SMARTPERFETTO_FINAL_SUBMISSION = 'authored_claim_document_v1';
+          (runtime as any).env.SMARTPERFETTO_CONCLUSION_AUTHORING = 'LATE_SYNTAX_CANARY';
+        },
+      });
+      runtime = h.runtime;
+      try {
+        await expect(runtime.analyze('Explain this trace', 'output-config-opencode-frozen', 'trace-opencode')).rejects.toBe(stop);
+        expect(mockOpenCodeIntentTransport).toHaveBeenCalledTimes(1);
+        expect(h.prompts).toHaveLength(1);
+        expect(specSpy).toHaveBeenCalledTimes(1);
+        expect(capture).toHaveBeenCalledTimes(1);
+        const captured = capture.mock.results[0].value;
+        expect(Object.isFrozen(captured)).toBe(true);
+        expect(specSpy.mock.calls[0][0].outputConfig).toBe(captured);
+        expect(spec).toMatchObject({finalSubmission: 'assistant_text', declarationSyntax: syntax});
+      } finally {
+        specSpy.mockRestore();
+        capture.mockRestore();
+        await runtime.cleanupSession('output-config-opencode-frozen');
+      }
+    },
+  );
+});
 
 describe('OpenCode authorization at every dispatch and observation', () => {
   const revokeWhen = (revoked: () => boolean) => {
@@ -1031,7 +1103,7 @@ describe('OpenCode native turn intent and delivery', () => {
       expect(result.rounds).toBe(2);
       const context = finalizationContext.takeFinalizationContext(result)!;
       try {
-        expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(complete);
+        expect(context.getNativeDeclaration(result, new AbortController().signal)).toMatchObject({raw: complete});
         const call = mockOpenCodeIntentTransport.mock.calls.find(([input]) => input.purpose === 'continuation')!;
         expect(call[0].deadlineMs).toBe(context.deadlineMs);
       } finally {context.dispose();}
@@ -1114,7 +1186,7 @@ describe('OpenCode native turn intent and delivery', () => {
     expect(result.completion).toMatchObject({status: 'completed'});
     expect(inspectCandidateProtocol(result.conclusion).status).toBe('invalid');
     const context = finalizationContext.takeFinalizationContext(result)!;
-    try {expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(native);}
+    try {expect(context.getNativeDeclaration(result, new AbortController().signal)).toMatchObject({raw: native});}
     finally {context.dispose();}
   }));
 
@@ -1137,7 +1209,7 @@ describe('OpenCode native turn intent and delivery', () => {
     expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
     expect(result.completion).toMatchObject({status: 'completed'});
     const context = finalizationContext.takeFinalizationContext(result)!;
-    try { expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(repaired); }
+    try { expect(context.getNativeDeclaration(result, new AbortController().signal)).toMatchObject({raw: repaired}); }
     finally { context.dispose(); }
   }));
 
@@ -4015,7 +4087,7 @@ describe('experimental OpenCode runtime contract', () => {
       }));
       const context = finalizationContext.takeFinalizationContext(terminal)!;
       try {
-        expect(context.getNativeDeclaration(terminal, new AbortController().signal)?.raw).toBe(`## Final Report\n${SOURCE_FINALIZATION_RAW_SOURCE}`);
+        expect(context.getNativeDeclaration(terminal, new AbortController().signal)).toMatchObject({raw: `## Final Report\n${SOURCE_FINALIZATION_RAW_SOURCE}`});
         expect(JSON.stringify(terminal)).not.toContain('conclusion_protocol_projection');
       } finally {context.dispose();}
       mockOpenCodePreparation(runtime, null, 'startup', 'public second run', [], undefined, true);

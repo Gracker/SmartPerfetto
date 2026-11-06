@@ -7,6 +7,7 @@ import type { IOrchestrator } from '../../agent/core/orchestratorTypes';
 import type { AgentRuntimeKind } from '../../services/providerManager/types';
 import { isAgentRuntimeKind } from '../../services/providerManager';
 import { createAnalysisRunSpec } from '../analysisRunSpec';
+import {captureAnalysisOutputConfig} from '../finalSubmissionConfig';
 import type { RuntimeSelection } from '../runtimeSelection';
 import { resolveAgentRuntimeSelection } from '../runtimeSelection';
 import { createRuntimeRegistry } from '../runtimeRegistry';
@@ -93,6 +94,7 @@ describe('fake third-party runtime contract', () => {
     };
 
     expect(() => createAnalysisRunSpec({
+      outputConfig: captureAnalysisOutputConfig({}),
       query: 'analyze startup',
       sessionId: 'session-fake',
       traceId: 'trace-fake',

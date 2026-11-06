@@ -5,7 +5,7 @@
 import {compactSemanticEvidenceSnapshot, expandSemanticEvidenceSnapshot} from '../evidence/semanticEvidenceSnapshot';
 import {compactSemanticSourceSnapshot, expandSemanticSourceSnapshot} from '../evidence/semanticSourceSnapshot';
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
-import {renderConclusionContractSidecar, wrapConclusionContractSidecarPayload, parseConclusionContractDeclaration, type ConclusionContract,
+import {renderConclusionContractSidecar, wrapConclusionContractSidecarPayload, parseConclusionContractDeclaration, CONCLUSION_PROTOCOL_VALUES, type ConclusionContract,
   type ConclusionContractClaimItem, wrapConclusionAuthoringPayload, conclusionDeclarationValidationPayload} from '../../agent/core/conclusionContract';
 import {analysisDeliveryFingerprint, type AnalysisCompletion, type AnalysisDeliveryContext} from '../../types/analysisDelivery';
 import {canonicalizeAnalysisResult, isIssuedCanonicalAnalysisProjection, inspectCandidateProtocol,
@@ -22,6 +22,20 @@ import {claimConclusionProtocolProjection, readConclusionProtocolProjection, rel
 import {registerOnDemandSourceLookupForEcho, registerCodeAwareCanary, registerPrivateAnalysisQueryForEcho,
   revokeCodeAwareOutputGuards, clearCodeAwareOutputGuards, withOwnerCodeAwareProjection} from '../security/codeAwareOutputRegistry';
 import {prepareClaimEvidence, preparedClaimEvidenceSnapshot} from '../evidence/claimEvidencePreparation';
+import {AUTHORED_CLAIM_DOCUMENT_VERSION, compileAuthoredClaimDocument} from '../../agent/core/authoredClaimDocument';
+import {AUTHORED_CLAIM_DOCUMENT_COMPILER_VERSION, createAuthoredFinalSubmissionIssuer,
+  issueAuthoredFinalSubmission, readAuthoredFinalSubmission} from '../../agentRuntime/authoredFinalSubmission';
+import {issueAuthoredConclusionProtocolProjection, hasCurrentAuthoredFinalDelivery, hasCurrentAuthoredFinalBody,
+  type AuthoredConclusionSubmission} from '../security/conclusionProtocolProjection';
+import {sanitizeCodeAwareStructuredTextWithReceipt, issueCodeAwareStructuredProjectionReceipt,
+  composeCodeAwareTextProjectionReceipts} from '../security/codeAwareOutputRegistry';
+import {buildStrategyRegistrySnapshotFromDefinitions} from '../../agentv3/strategyLoader';
+import {attachFinalizationContext, takeFinalizationContext} from '../../agentRuntime/analysisFinalizationContext';
+import {finalizeAnalysisResult} from '../finalizeAnalysisResult';
+import {verifyConclusion} from '../../agentRuntime/engines/claude/claudeVerifier';
+import {buildTraceProcessorQueryProvenance} from '../traceProcessorConnectionModel';
+import {assessNumericPresentations} from '../numericPresentationAssessment';
+import {copyAnalysisDeliveryFields} from '../security/analysisDeliveryProjection';
 
 function declaration(value = 999): ConclusionContract {
   return {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [],
@@ -45,6 +59,370 @@ function contextFor(source: AnalysisResult, status: AnalysisCompletion['status']
       taskKind: 'fact', sceneId: 'general', scope: 'bounded_question', recommendedComplexity: 'quick',
       deliverable, evidenceAccess: 'read_new'}};
 }
+
+function authoredNumeric() {
+  const ref = {evidenceRefId: 'data:duration', rowIndex: 0, column: 'dur_ms', value: 10};
+  return {id: 'duration', text: '10 ms', kind: 'numeric', references: [ref],
+    semantics: {schemaVersion: 'claim_semantics@1', predicate: 'numeric.cell', polarity: 'affirmed',
+      discourse: 'asserted', quantifier: 'one', modality: 'certain', scope: {population: 'cited_rows', subjectRefs: [ref]},
+      numeric: {operator: 'eq', value: 10, unit: 'ms', presentation: {schemaVersion: 'numeric_presentation@1',
+        unit: 'ms', decimalPlaces: 0, rounding: 'half_away_from_zero',
+        quotes: [{text: '10 ms', occurrence: 0}, {text: '10 ms', occurrence: 1}]}}}};
+}
+
+function authoredFixture(options: {payload?: Record<string, unknown>; parts?: unknown[]; raw?: string; project?: boolean} = {}) {
+  const payload = options.payload ?? {...declaration(), claims: [authoredNumeric()]};
+  const documentJson = options.raw ?? JSON.stringify({representationVersion: AUTHORED_CLAIM_DOCUMENT_VERSION,
+    contract: payload, bodyParts: options.parts ?? ['Observation: ', {claimText: 'duration'}, '\n\n|Metric|\n|---|\n|', {claimText: 'duration'}, '|']});
+  const compiled = compileAuthoredClaimDocument(documentJson);
+  if (compiled.status !== 'compiled') throw new Error(`Invalid authored fixture: ${compiled.code}`);
+  const source = result(compiled.body);
+  const live = {active: true, attempt: true};
+  const binding = {owner: live, sessionId: source.sessionId, runId: 'run-a', attemptId: 'attempt-a',
+    providerPin: 'test-pin', authorizationFingerprint: 'test-scope'};
+  const issuer = createAuthoredFinalSubmissionIssuer({binding,
+    assertAttemptCurrent: () => {if (!live.attempt) throw new Error('retired attempt');},
+    assertCurrent: () => {if (!live.active) throw new Error('revoked owner');}});
+  const rawArguments = JSON.stringify({documentJson});
+  const submission = issueAuthoredFinalSubmission(issuer, {dispatchOrdinal: 1, responseId: 'r', callId: 'c', rawArguments, documentJson, compiled});
+  const handoff: AuthoredConclusionSubmission = {submission, input: {binding: {...binding, dispatchOrdinal: 1, responseId: 'r', callId: 'c',
+    representationVersion: AUTHORED_CLAIM_DOCUMENT_VERSION, compilerContractVersion: AUTHORED_CLAIM_DOCUMENT_COMPILER_VERSION},
+    rawArguments, documentJson, body: compiled.body, rawCanonicalPayload: structuredClone(compiled.rawCanonicalPayload)}};
+  const delivery = contextFor(source);
+  delivery.outputOrigin = 'model_tool_arguments';
+  delivery.finalSubmission = {mode: 'authored_claim_document_v1', outcome: 'submitted'};
+  source.outputOrigin = delivery.outputOrigin;
+  source.completion = delivery.completion;
+  const projected = options.project === false ? undefined : finalizeSourceAwareAnalysisResultWithProjection(source, undefined,
+    {context: delivery, authoredSubmission: handoff});
+  const context = projected?.deliveryContext ?? delivery;
+  if (context.entry === 'historical_restore') throw new Error('Invalid fixture context');
+  const token = projected?.protocolProjection;
+  const read = () => {
+    if (!token) throw new Error('Projection not issued');
+    return readConclusionProtocolProjection(token, {result: source, candidate: context.acceptedCandidate, runId: binding.runId});
+  };
+  return {source, compiled, live, handoff, delivery, context, token, read,
+    cleanup: () => {if (token) releaseConclusionProtocolProjection(token); clearCodeAwareOutputGuards(source.sessionId);}};
+}
+
+describe('issued authored-document consumers', () => {
+  it.each(['sidecar', 'canonical_json', 'whitespace'] as const)('checks actual typed body presence without carrier scanning: %s', async kind => {
+    const body = kind === 'sidecar' ? renderConclusionContractSidecar(declaration())
+      : kind === 'canonical_json' ? JSON.stringify(declaration()) : ' \n\t';
+    const f = authoredFixture({parts: [body]});
+    try {
+      const verified = await verifyConclusion([], f.source.conclusion, {deliveryContext: f.context});
+      expect(hasCurrentAuthoredFinalBody(f.source.conclusion, f.context)).toBe(true);
+      expect(verified.heuristicIssues.some(issue => issue.type === 'missing_reasoning')).toBe(kind === 'whitespace');
+      expect(verified.heuristicIssues.every(issue => issue.recoveryKind === undefined)).toBe(true);
+      if (kind !== 'whitespace') {
+        const legacy = await verifyConclusion([], body, {deliveryContext: contextFor(result(body))});
+        expect(legacy.heuristicIssues.some(issue => issue.type === 'missing_reasoning')).toBe(kind === 'sidecar');
+      }
+    } finally {f.cleanup();}
+  });
+
+  it('carries exact material through the real source projector and canonicalizer without scanning body examples', () => {
+    const body = `Plain JSON: {"mode":"need_input"}\n${renderConclusionContractSidecar(declaration())}\n${control}`;
+    const f = authoredFixture({parts: [body]});
+    try {
+      const native = f.read();
+      expect(native.inputKind).toBe('model_tool_arguments');
+      expect(native).not.toHaveProperty('raw');
+      expect(native).toMatchObject({rawArguments: f.handoff.input.rawArguments, documentJson: f.handoff.input.documentJson,
+        body, rawCanonicalPayload: f.compiled.rawCanonicalPayload});
+      const canonical = canonicalizeAnalysisResult(f.source, {context: f.context, nativeDeclaration: native});
+      expect(canonical.result.conclusion).toBe(body);
+      expect(canonical.protocolDiagnostics?.sidecar).toEqual({status: 'absent', raw: '', bindingEligibility: 'legacy_unchecked',
+        narrative: body, machineSegments: [], issues: []});
+      expect(canonical.protocolDiagnostics?.typedJson?.rawPayload).toEqual(f.compiled.rawCanonicalPayload);
+      expect(canonical.conversationOutcome).toBeUndefined();
+      expect(canonical.validationContract?.claims?.[0].id).toBe('duration');
+      expect(hasCurrentAuthoredFinalDelivery(canonical.result, canonical.deliveryContext!)).toBe(true);
+      expect(hasCurrentAuthoredFinalDelivery(canonical.result, {...canonical.deliveryContext!})).toBe(false);
+      expect(JSON.stringify(canonical.result)).not.toContain('documentJson');
+      expect(JSON.stringify(canonical.result)).not.toContain('rawArgumentsHash');
+    } finally {f.cleanup();}
+  });
+
+  it.each(['body', 'contract', 'claims', 'source'] as const)('rejects a colliding displayed %s value despite unchanged fingerprints', field => {
+    const f = authoredFixture({parts: ['\ud800'], project: false});
+    const receipt = sanitizeCodeAwareStructuredTextWithReceipt(f.source.sessionId, f.source.conclusion);
+    f.source.conclusionContract = {...declaration(), probe: Infinity} as ConclusionContract;
+    if (field === 'claims') (f.source.conclusionContract.claims![0] as any).probe = -0;
+    if (field === 'source') f.source.sourceUseDecision = {probe: Infinity} as any;
+    const token = issueAuthoredConclusionProtocolProjection({submission: f.handoff, result: f.source,
+      nativeCandidate: f.delivery.acceptedCandidate, displayCandidate: f.delivery.acceptedCandidate, bodyProjection: receipt});
+    const before = analysisDeliveryFingerprint(field === 'body' ? f.source.conclusion : field === 'source'
+      ? f.source.sourceUseDecision : f.source.conclusionContract);
+    if (field === 'body') f.source.conclusion = '\ud801';
+    if (field === 'contract') (f.source.conclusionContract as any).probe = null;
+    if (field === 'claims') (f.source.conclusionContract.claims![0] as any).probe = 0;
+    if (field === 'source') (f.source.sourceUseDecision as any).probe = null;
+    expect(analysisDeliveryFingerprint(field === 'body' ? f.source.conclusion : field === 'source'
+      ? f.source.sourceUseDecision : f.source.conclusionContract)).toBe(before);
+    expect(() => readConclusionProtocolProjection(token, {result: f.source,
+      candidate: f.delivery.acceptedCandidate, runId: 'run-a'})).toThrow('conclusion_protocol_projection_mismatch');
+    releaseConclusionProtocolProjection(token);
+  });
+
+  it.each(['collision', 'compose_gap', 'forged'] as const)('rejects %s privacy lineage instead of trusting a matching body hash', kind => {
+    const f = authoredFixture({parts: ['\ud800'], project: false});
+    const receipt = kind === 'compose_gap'
+      ? composeCodeAwareTextProjectionReceipts(issueCodeAwareStructuredProjectionReceipt('\ud800', '\ud800'),
+        issueCodeAwareStructuredProjectionReceipt('\ud801', 'display'))
+      : issueCodeAwareStructuredProjectionReceipt('\ud801', 'display');
+    f.source.conclusion = receipt.text;
+    const displayCandidate = {...f.delivery.acceptedCandidate, conclusionFingerprint: analysisDeliveryFingerprint(receipt.text)};
+    expect(() => issueAuthoredConclusionProtocolProjection({submission: f.handoff, result: f.source,
+      nativeCandidate: f.delivery.acceptedCandidate, displayCandidate, bodyProjection: kind === 'forged' ? {...receipt} : receipt}))
+      .toThrow('authored_conclusion_projection_mismatch');
+  });
+
+  it('accepts an actual issued privacy redaction and rejects later arbitrary display rewrites', () => {
+    const f = authoredFixture({parts: ['Visible PRIVATE_AUTHORED_CANDIDATE.'], project: false});
+    registerCodeAwareCanary(f.source.sessionId, 'PRIVATE_AUTHORED_CANDIDATE');
+    try {
+      const projected = finalizeSourceAwareAnalysisResultWithProjection(f.source, undefined,
+        {context: f.delivery, authoredSubmission: f.handoff});
+      const token = projected.protocolProjection!;
+      expect(f.source.conclusion).not.toContain('PRIVATE_AUTHORED_CANDIDATE');
+      expect(hasCurrentAuthoredFinalDelivery(f.source, projected.deliveryContext!)).toBe(true);
+      f.source.conclusion += 'unauthorized rewrite';
+      expect(hasCurrentAuthoredFinalDelivery(f.source, projected.deliveryContext!)).toBe(false);
+      releaseConclusionProtocolProjection(token);
+    } finally {f.cleanup();}
+  });
+
+  it.each(['normal_cleanup', 'cancel', 'dispose', 'forged_declaration'] as const)('preserves current-run authority at %s', action => {
+    const f = authoredFixture();
+    try {
+      const native = f.read();
+      if (action === 'normal_cleanup') f.live.attempt = false;
+      if (action === 'cancel') f.live.active = false;
+      if (action === 'dispose') releaseConclusionProtocolProjection(f.token!);
+      if (action === 'normal_cleanup') {
+        expect(f.read()).toBe(native);
+        expect(hasCurrentAuthoredFinalBody(f.source.conclusion, f.context)).toBe(true);
+      } else if (action === 'forged_declaration') {
+        expect(() => canonicalizeAnalysisResult(f.source, {context: f.context, nativeDeclaration: {...native}}))
+          .toThrow('unissued_native_conclusion_declaration');
+      } else {
+        expect(() => f.read()).toThrow();
+        expect(hasCurrentAuthoredFinalDelivery(f.source, f.context)).toBe(false);
+      }
+    } finally {f.cleanup();}
+  });
+
+  it('retains invalid original entries and never derives a replacement contract from the literal body', () => {
+    const payload = {...declaration(), claims: [authoredNumeric(), {id: 'bad', text: 'Keep invalid.', kind: 'numeric', semantics: false}]};
+    const f = authoredFixture({payload, parts: [{claimText: 'bad'}]});
+    try {
+      const native = f.read();
+      const canonical = canonicalizeAnalysisResult(f.source, {context: f.context, nativeDeclaration: native});
+      expect(canonical.protocolDiagnostics?.typedJson?.rawPayload).toEqual(payload);
+      expect(canonical.validationContract?.claims).toHaveLength(2);
+      expect(canonical.validationContract?.claims?.[1].valid).toBe(false);
+      expect(canonical.result.conclusion).toBe('Keep invalid.');
+    } finally {f.cleanup();}
+  });
+
+  it('keeps all eight valid kinds, relations, dual-trace references, source bindings and authored stance', () => {
+    const claims: any[] = CONCLUSION_PROTOCOL_VALUES.claimKind.map(kind => ({id: kind, kind, text: `${kind}: original.`, references: [],
+      semantics: {schemaVersion: 'claim_semantics@1', predicate: `unconfigured.${kind}`, polarity: 'affirmed', discourse: 'asserted',
+        quantifier: 'one', modality: 'certain', scope: {population: 'cited_rows', subjectRefs: []}}}));
+    claims[claims.findIndex(claim => claim.kind === 'numeric')] = {...authoredNumeric(), id: 'numeric'};
+    const comparison = claims.find(claim => claim.kind === 'comparison');
+    const subject = authoredNumeric().references[0];
+    const object = {...subject, evidenceRefId: 'data:reference', value: 8};
+    comparison.references = [subject, object];
+    comparison.semantics = {...authoredNumeric().semantics, predicate: 'comparison.delta',
+      scope: {population: 'cited_rows', subjectRefs: [subject], objectRefs: [object]}, numeric: {operator: 'eq', value: 2, unit: 'ms'}};
+    comparison.relationRefs = ['proposal:delta'];
+    const cause = claims.find(claim => claim.kind === 'causal');
+    cause.semantics = {...cause.semantics, modality: 'possible', quantifier: 'some',
+      conditions: ['Only this stated population; causality not established.']};
+    const payload = {...declaration(), claims,
+      sourceClaimBindings: [{claimId: 'causal', sourceReferenceIds: ['source:issued'], traceEvidenceRefIds: []}],
+      relationProposals: [{schemaVersion: 'evidence_relation_candidate@1', id: 'proposal:delta', kind: 'comparison_delta',
+        direction: 'subject_to_object', subject, object, value: 2, unit: 'ms', deltaDirection: 'current_minus_reference'}]};
+    const f = authoredFixture({payload, parts: claims.flatMap(claim => [{claimText: claim.id}, '\n'])});
+    try {
+      expect(f.compiled.canonicalParse.issues).toEqual([]);
+      const canonical = canonicalizeAnalysisResult(f.source, {context: f.context, nativeDeclaration: f.read()});
+      expect(canonical.protocolDiagnostics?.typedJson?.rawPayload).toEqual(payload);
+      expect(canonical.validationContract?.claims?.map(claim => claim.kind)).toEqual(CONCLUSION_PROTOCOL_VALUES.claimKind);
+      expect(canonical.validationContract?.relationProposals).toEqual(f.compiled.canonicalParse.contract?.relationProposals);
+      expect(canonical.validationContract?.sourceClaimBindings).toEqual(f.compiled.canonicalParse.contract?.sourceClaimBindings);
+      expect(canonical.result.conclusion).toBe(claims.map(claim => `${claim.text}\n`).join(''));
+    } finally {f.cleanup();}
+  });
+
+  it('does not infer a replacement for a root-invalid original, even when body contains a valid sidecar', () => {
+    const f = authoredFixture({payload: {...declaration(), mode: 'invented'}, parts: [renderConclusionContractSidecar(declaration())]});
+    try {
+      const canonical = canonicalizeAnalysisResult(f.source, {context: f.context, nativeDeclaration: f.read()});
+      expect(canonical.bindingEligibility).toBe('ineligible');
+      expect(canonical.validationContract).toBeUndefined();
+      expect(canonical.result.conclusionContract).toBeUndefined();
+      expect(canonical.result.conclusion).toBe(f.compiled.body);
+    } finally {f.cleanup();}
+  });
+
+  it('preserves Infinity, negative zero and invalid originals through both private consumer snapshots', () => {
+    const payload = {...declaration(), claims: [authoredNumeric(), {id: 'bad', text: 'Invalid original.', kind: 'numeric', semantics: false}],
+      overflow: 0, negativeZero: 0};
+    const raw = JSON.stringify({representationVersion: AUTHORED_CLAIM_DOCUMENT_VERSION, contract: payload,
+      bodyParts: [{claimText: 'bad'}]}).replace('"overflow":0', '"overflow":1e999').replace('"negativeZero":0', '"negativeZero":-0');
+    const f = authoredFixture({raw});
+    try {
+      const native = f.read();
+      if (native.inputKind !== 'model_tool_arguments') throw new Error('Unexpected legacy declaration');
+      expect((native.rawCanonicalPayload as any).overflow).toBe(Infinity);
+      expect(Object.is((native.rawCanonicalPayload as any).negativeZero, -0)).toBe(true);
+      const canonical = canonicalizeAnalysisResult(f.source, {context: f.context, nativeDeclaration: native});
+      const selected = canonical.protocolDiagnostics?.typedJson?.rawPayload as any;
+      expect(selected.overflow).toBe(Infinity);
+      expect(Object.is(selected.negativeZero, -0)).toBe(true);
+      expect(selected.claims[1].semantics).toBe(false);
+    } finally {f.cleanup();}
+  });
+
+  it.each(['asserted_value', 'reference_value', 'unit', 'unauthorized', 'unknown_unit', 'empty', 'partial'] as const)
+  ('never turns %s into a proof through the authored consumer path', async failure => {
+    const claim = authoredNumeric();
+    if (failure === 'asserted_value') claim.semantics.numeric.value = 11;
+    if (failure === 'reference_value') claim.references[0].value = 11;
+    if (failure === 'unit') claim.semantics.numeric.unit = 'count';
+    const f = authoredFixture({payload: {...declaration(), claims: [claim]}});
+    try {
+      const canonical = canonicalizeAnalysisResult(f.source, {context: f.context, nativeDeclaration: f.read()});
+      const store = new ArtifactStore();
+      const data = {columns: ['dur_ms'], rows: failure === 'empty' ? [] : [[10]]};
+      const origin = {kind: 'skill_literal' as const, skillId: 'fixture', stepId: 'root',
+        definitionFingerprint: 'a'.repeat(64), selectedSqlHash: 'b'.repeat(64)};
+      const witness = captureEvidenceTable(data, failure === 'unknown_unit' ? {} : {dur_ms: {unit: 'ms', origin}});
+      const artifact = store.store({skillId: 'fixture', data, sourceToolCallId: 'invoke:duration',
+        traceProvenance: buildTraceProcessorQueryProvenance({traceId: 'current', traceSide: 'current'})});
+      expect(store.registerEvidenceCapture(artifact, witness, {evidenceRefId: 'data:duration'})).toBe(true);
+      const prepared = await prepareClaimEvidence({conclusionContract: canonical.validationContract,
+        bindingEligibility: canonical.bindingEligibility,
+        evidenceReadView: failure === 'partial'
+          ? {resolveReferences: async requests => requests.map(request => ({key: request.key,
+            status: 'incomplete' as const, reason: 'deadline_exceeded' as const}))}
+          : store.createEvidenceReadView({ownerKey: 'run-a', allowedTraces: failure === 'unauthorized' ? []
+            : [{traceId: 'current', traceSide: 'current'}]})});
+      const verified = runClaimVerification({conclusionContract: canonical.validationContract, preparedEvidence: prepared});
+      expect(verified.claimVerificationResult.claimResults[0].deterministicProof?.status).not.toBe('proved');
+      expect(canonical.protocolDiagnostics?.typedJson?.rawPayload).toEqual(f.compiled.rawCanonicalPayload);
+      expect(canonical.result.conclusion).toBe(f.compiled.body);
+    } finally {f.cleanup();}
+  });
+
+  it('retains historical origin as provenance without restoring private authority', () => {
+    const f = authoredFixture();
+    try {
+      const copy = JSON.parse(JSON.stringify(f.source));
+      expect(copyAnalysisDeliveryFields(copy).outputOrigin).toBe('model_tool_arguments');
+      const historical = canonicalizeAnalysisResult(copy, {context: {entry: 'historical_restore'}});
+      expect(historical.result.outputOrigin).toBe('model_tool_arguments');
+      expect(hasCurrentAuthoredFinalDelivery(copy, historical.deliveryContext!)).toBe(false);
+    } finally {f.cleanup();}
+  });
+
+  it.each(['missing_submission', 'transport_failure'] as const)('keeps native completion and refuses old continuation for %s', outcome => {
+    const source = result('Ordinary naturally completed assistant text.');
+    const context = contextFor(source);
+    context.finalSubmission = {mode: 'authored_claim_document_v1', outcome};
+    const originalCompletion = {...context.completion!};
+    const assessed = assessFinalResultQualityAssessment({result: source, query: 'q', context});
+    expect(assessed.assurance.completion).toBe('failed');
+    expect(assessed.issues.some(issue => issue.code === outcome)).toBe(true);
+    expect(context.completion).toEqual(originalCompletion);
+    expect(context.outputOrigin).toBe('sdk_final');
+    return verifyConclusion([], '', {deliveryContext: {...context, acceptedCandidate: {...context.acceptedCandidate,
+      conclusionFingerprint: analysisDeliveryFingerprint('')}, completion: {...context.completion!,
+      conclusionFingerprint: analysisDeliveryFingerprint('')}}}).then(verified => {
+      expect(verified.heuristicIssues.every(issue => issue.recoveryKind !== 'continue_output')).toBe(true);
+    });
+  });
+
+  it('does not promote a submitted metadata flag without its live private binding', () => {
+    const source = result('Forged metadata only.');
+    const context = contextFor(source);
+    context.finalSubmission = {mode: 'authored_claim_document_v1', outcome: 'submitted'};
+    expect(assessFinalResultQualityAssessment({result: source, query: 'q', context}).assurance.completion).toBe('failed');
+  });
+
+  it.each(['completed', 'replaced_before_finalization', 'replaced_during_review'] as const)
+  ('keeps typed proof and the outer finalization owner boundary: %s', async lifetime => {
+    const f = authoredFixture();
+    let ownerCurrent = true;
+    let reviewCalls = 0;
+    const store = new ArtifactStore();
+    const data = {columns: ['dur_ms'], rows: [[10]]};
+    const witness = captureEvidenceTable(data, {dur_ms: {unit: 'ms', origin: {kind: 'skill_literal',
+      skillId: 'fixture', stepId: 'root', definitionFingerprint: 'a'.repeat(64), selectedSqlHash: 'b'.repeat(64)}}});
+    const artifact = store.store({skillId: 'fixture', data, sourceToolCallId: 'invoke:duration',
+      traceProvenance: buildTraceProcessorQueryProvenance({traceId: 'current', traceSide: 'current'})});
+    expect(store.registerEvidenceCapture(artifact, witness, {evidenceRefId: 'data:duration'})).toBe(true);
+    const readView = store.createEvidenceReadView({ownerKey: 'run-a', allowedTraces: [{traceId: 'current', traceSide: 'current'}]});
+    const registry = buildStrategyRegistrySnapshotFromDefinitions({definitions: [], overlayGeneration: 'authored-finalization'});
+    const intent = {...f.context.turnIntent!, registryFingerprint: registry.registryFingerprint};
+    f.context.turnIntent = intent;
+    attachFinalizationContext(f.source, {sessionId: f.source.sessionId, runId: 'run-a', deadlineMs: Date.now() + 600_000,
+      turnIntent: intent, strategyRegistry: registry, traceIdentity: {currentTraceId: 'current'}, deliveryContext: f.context,
+      protocolProjection: f.token, evidenceReadView: readView,
+      dispatchText: async () => {
+        reviewCalls++;
+        await Promise.resolve();
+        if (lifetime === 'replaced_during_review') ownerCurrent = false;
+        return {status: 'ok', text: JSON.stringify({schemaVersion: 'final_semantic_response@4',
+        bodyCoverage: {status: 'complete', reviewedSpans: [{start: 0, end: f.source.conclusion.length}]},
+        claims: [{claimId: 'duration', consistency: 'consistent', contentLocations: [{text: '10 ms', occurrence: 1},
+          {text: '10 ms', occurrence: 2}], issues: []}], omissions: [], requirements: [], investigation: []})};
+      }});
+    const context = takeFinalizationContext(f.source)!;
+    f.live.attempt = false;
+    const native = context.getNativeDeclaration(f.source, new AbortController().signal)!;
+    const canonical = canonicalizeAnalysisResult(f.source, {context: context.deliveryContext, nativeDeclaration: native});
+    const prepared = await prepareClaimEvidence({conclusionContract: canonical.validationContract,
+      bindingEligibility: canonical.bindingEligibility, evidenceReadView: readView});
+    const verified = runClaimVerification({conclusionContract: canonical.validationContract, preparedEvidence: prepared});
+    expect(verified.claimVerificationResult.claimResults[0].deterministicProof?.status).toBe('proved');
+    const presentation = assessNumericPresentations({contract: canonical.validationContract,
+      claims: verified.claimVerificationResult.claimResults, support: verified.claimSupport,
+      body: canonical.result.conclusion, candidate: canonical.projection.candidate!}).get('duration');
+    expect(presentation).toMatchObject({status: 'matched', locations: [
+      {start: f.compiled.occurrences[0].startUtf16, end: f.compiled.occurrences[0].endUtf16},
+      {start: f.compiled.occurrences[1].startUtf16, end: f.compiled.occurrences[1].endUtf16}]});
+    if (lifetime === 'replaced_before_finalization') ownerCurrent = false;
+    // A settled runtime lease does not detect successors; the actual product owner does.
+    expect(readAuthoredFinalSubmission(f.handoff.submission, f.handoff.input).compiled.body).toBe(f.compiled.body);
+    const finalizing = finalizeAnalysisResult({result: f.source, context, query: 'Measured duration',
+      owner: {runId: 'run-a', signal: new AbortController().signal, isCurrent: () => ownerCurrent, assertAuthorized: () => {}}});
+    if (lifetime !== 'completed') {
+      await expect(finalizing).rejects.toThrow('Analysis run is no longer current');
+      expect(reviewCalls).toBe(lifetime === 'replaced_before_finalization' ? 0 : 1);
+      expect(() => readAuthoredFinalSubmission(f.handoff.submission, f.handoff.input)).toThrow('authored_final_submission_invalid');
+      expect(() => context.getNativeDeclaration(f.source, new AbortController().signal)).toThrow();
+      f.cleanup();
+      return;
+    }
+    const final = await finalizing;
+    expect(reviewCalls).toBe(1);
+    expect(final.result.conclusion).toBe(f.compiled.body);
+    expect(final.result.outputOrigin).toBe('model_tool_arguments');
+    expect(final.result.deliveryAssurance?.completion).toBe('passed');
+    expect(final.result.claimVerificationResult?.claimResults[0].deterministicProof?.status).toBe('proved');
+    expect({status: final.result.claimVerificationResult?.claimResults[0].status,
+      reason: final.semanticAssessment?.reason, detail: final.semanticAssessment?.notCheckedDetail})
+      .toEqual({status: 'verified', reason: undefined, detail: undefined});
+    expect(() => readAuthoredFinalSubmission(f.handoff.submission, f.handoff.input)).toThrow('authored_final_submission_invalid');
+    f.cleanup();
+  });
+});
 
 describe('authoring wire and canonical privacy boundaries', () => {
   const authoring = (invalidReference = false) => {

@@ -12,7 +12,7 @@ import type {InvestigationEvidenceSnapshot} from '../services/evidence/investiga
 export type AnalysisDeliveryEntry = 'runtime_draft' | 'new_finalization' | 'historical_restore';
 export type AnalysisAssuranceStatus =
   | 'not_applicable' | 'not_checked' | 'unavailable' | 'coverage_incomplete' | 'passed' | 'failed';
-export type AnalysisOutputOrigin = 'sdk_final' | 'assistant_stream' | 'evidence_rendered' | 'runtime_fallback';
+export type AnalysisOutputOrigin = 'sdk_final' | 'assistant_stream' | 'model_tool_arguments' | 'evidence_rendered' | 'runtime_fallback';
 export type AnalysisRecoveryKind = 'continue_output' | 'complete_report_content' | 'correct_evidence';
 
 /** The server binds a terminal receipt to the exact candidate it accepted. */
@@ -120,6 +120,11 @@ interface CurrentAnalysisDeliveryContext {
   acceptedCandidate?: AnalysisCandidateIdentity;
   completion?: AnalysisCompletion;
   outputOrigin?: AnalysisOutputOrigin;
+  /** Actual final-role main dispatch only; requested configuration alone never sets this. */
+  finalSubmission?: {
+    mode: 'authored_claim_document_v1';
+    outcome: 'submitted' | 'missing_submission' | 'transport_failure';
+  };
   turnIntent?: AnalysisTurnIntent;
   evidenceRenderedProof?: EvidenceRenderedProof;
   evidenceFingerprint?: string;

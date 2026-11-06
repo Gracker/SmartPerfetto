@@ -90,6 +90,14 @@ export interface McpToolDefinition {
   /** Required env vars or capability flags. */
   requires?: string[];
   evidenceEffect?: SharedToolSpec['evidenceEffect'];
+  role?: SharedToolSpec['role'];
+}
+
+/** Registry metadata only. The adapter separately binds its actual installed SDK tool identity. */
+export interface ResolvedFinalTool {
+  readonly role: 'final_candidate_submission';
+  readonly nativeName: string;
+  readonly definition: McpToolDefinition;
 }
 
 export type McpToolRegistration = Omit<McpToolDefinition, 'shared'> & {
@@ -249,10 +257,10 @@ export class McpToolRegistry {
       def.name,
       def.tool,
       def.exposure,
-      {summary: def.summary, requires: def.requires, evidenceEffect: def.evidenceEffect},
+      {summary: def.summary, requires: def.requires, evidenceEffect: def.evidenceEffect, role: def.role},
     );
     const planCapability = getPlanToolCapability(base.name);
-    const shared = planCapability === 'evidence' && !base.inputSchema.planPhaseId
+    const shared = base.role !== 'final_candidate_submission' && planCapability === 'evidence' && !base.inputSchema.planPhaseId
       ? {...base, inputSchema: {...base.inputSchema,
           planPhaseId: z.string().optional().describe('Optional explicit plan phase ID for this invocation.'),
         }}
@@ -274,8 +282,9 @@ export class McpToolRegistry {
     const guarded = withRuntimeToolGuard(scopeGuarded, () => {
       try { return this.canInvokeTool?.() !== false; } catch { return false; }
     }, async () => acquisitionClosedRefusal());
-    const acquisitionObserver = shared.evidenceEffect === 'acquire' ? this.acquisitionObserver : undefined;
-    const pacing = this.acquisitionPolicy;
+    const acquisitionObserver = shared.role !== 'final_candidate_submission' && shared.evidenceEffect === 'acquire'
+      ? this.acquisitionObserver : undefined;
+    const pacing = shared.role === 'final_candidate_submission' ? undefined : this.acquisitionPolicy;
     const observer: RuntimeToolObserver | undefined = acquisitionObserver || pacing?.observe ? async event => {
       try { pacing?.observe?.(event); } catch { /* Pacing clocks never change a tool outcome. */ }
       if (acquisitionObserver) {
@@ -297,6 +306,7 @@ export class McpToolRegistry {
       summary: runtimeShared.summary,
       requires: runtimeShared.requires,
       evidenceEffect: runtimeShared.evidenceEffect,
+      ...(runtimeShared.role ? {role: runtimeShared.role} : {}),
     }));
   }
 
@@ -307,7 +317,7 @@ export class McpToolRegistry {
     tool: unknown,
     name: string,
     exposure: McpToolExposure,
-    extras?: Pick<McpToolDefinition, 'summary' | 'requires' | 'evidenceEffect'> & Pick<SharedToolSpec, 'concurrency'>,
+    extras?: Pick<McpToolDefinition, 'summary' | 'requires' | 'evidenceEffect' | 'role'> & Pick<SharedToolSpec, 'concurrency'>,
   ): void {
     this.register({
       tool,
@@ -329,6 +339,7 @@ export class McpToolRegistry {
       summary: spec.summary,
       requires: spec.requires,
       evidenceEffect: spec.evidenceEffect,
+      ...(spec.role ? {role: spec.role} : {}),
     });
   }
 
@@ -341,6 +352,17 @@ export class McpToolRegistry {
     return this.entries.filter(entry =>
       isToolAllowedForScope(entry, this.requestScope) && isToolAllowedForScope(entry, scope),
     );
+  }
+
+  resolveFinalTool(scope?: ToolRequestScope): ResolvedFinalTool | undefined {
+    const entries = this.listForRequest(scope);
+    const candidates = entries.filter(entry => entry.role === 'final_candidate_submission');
+    if (candidates.length === 0) return undefined;
+    const definition = candidates[0];
+    if (candidates.length !== 1 || entries.filter(entry => entry.name === definition.name).length !== 1) {
+      throw new Error('final_submission_role_not_unique');
+    }
+    return Object.freeze({role: 'final_candidate_submission', nativeName: definition.name, definition});
   }
 
   /** Build the SDK's in-process MCP server. The SDK names the server

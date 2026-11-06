@@ -21,6 +21,7 @@ import {sameAnalysisCandidate, type AnalysisDeliveryContext} from '../../../type
 import {renderRequiredLocalizedStrategyTemplate} from '../../../agentv3/localizedStrategyTemplate';
 import {isProductionAgentRuntimeKind} from '../../runtimeKinds';
 import {candidateHasAnswerBody, projectRuntimeCorrectionContext} from '../../runtimeConclusionProtocol';
+import {hasCurrentAuthoredFinalBody} from '../../../services/security/conclusionProtocolProjection';
 
 function nonemptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
@@ -141,14 +142,15 @@ function assessDeliveryIssues(
   const current = context && context.entry !== 'historical_restore' ? context : undefined;
   const completion = current?.completion;
   const origin = current?.outputOrigin;
+  const authoredBody = origin === 'model_tool_arguments' && Boolean(current && hasCurrentAuthoredFinalBody(conclusion, current));
   const supportedOrigin = origin === 'sdk_final' || origin === 'assistant_stream' ||
-    origin === 'evidence_rendered' || origin === 'runtime_fallback';
+    origin === 'evidence_rendered' || origin === 'runtime_fallback' || authoredBody;
   const nativeKnown = completion?.schemaVersion === 1 &&
     isProductionAgentRuntimeKind(completion.runtimeKind) &&
     sameAnalysisCandidate(completion, current?.acceptedCandidate, conclusion) && supportedOrigin &&
     ['completed', 'incomplete', 'failed', 'cancelled'].includes(completion.status);
   const modelBody = origin === 'sdk_final' || origin === 'assistant_stream';
-  const canContinue = nativeKnown && modelBody &&
+  const canContinue = nativeKnown && modelBody && !current?.finalSubmission &&
     (completion?.status === 'completed' || completion?.status === 'incomplete');
 
   if (!nativeKnown) issues.push({
@@ -158,7 +160,7 @@ function assessDeliveryIssues(
       'The current candidate lacks a matching terminal record or output origin; completion is unconfirmed.'),
   });
   // A declaration alone is not a body: a reply that carries only one gets the same continuation.
-  if (!candidateHasAnswerBody(conclusion)) issues.push({
+  if (!(authoredBody ? conclusion.trim().length > 0 : candidateHasAnswerBody(conclusion))) issues.push({
     type: 'missing_reasoning', severity: 'error',
     message: localize(outputLanguage, '当前候选没有可交付的正文。', 'The current candidate has no deliverable body.'),
     ...(canContinue ? {recoveryKind: 'continue_output' as const} : {}),
@@ -177,7 +179,7 @@ function assessDeliveryIssues(
         message: localize(outputLanguage,
           `当前候选的运行结束状态为 ${completion.reason ?? completion.status}。`,
           `The current candidate ended with ${completion.reason ?? completion.status}.`),
-        ...(completion.status === 'incomplete' && modelBody ? {recoveryKind: 'continue_output' as const} : {}),
+        ...(completion.status === 'incomplete' && canContinue ? {recoveryKind: 'continue_output' as const} : {}),
       });
     }
   }
@@ -185,7 +187,7 @@ function assessDeliveryIssues(
   const report = assessFinalReportContract({conclusion, conclusionContract, context});
   if (report.missingSections.length > 0) issues.push({
     type: 'missing_reasoning', severity: 'error',
-    ...(nativeKnown && modelBody && completion?.status === 'completed'
+    ...(canContinue && completion?.status === 'completed'
       ? {recoveryKind: 'complete_report_content' as const} : {}),
     missingSections: report.missingSections.map(({id, label, description}) => ({id, label, description})),
     message: localize(outputLanguage,

@@ -20,7 +20,7 @@ const FLAGS = new Set(['--baseline-root', '--candidate-root', '--provider', '--r
 
 // Cross-runtime execution switches outside the adapter-specific prefixes below.
 // Keep this closed: unrelated SMARTPERFETTO environment values are not measurement inputs.
-const EXECUTION_BEHAVIOR_ENV_KEYS = new Set(['SMARTPERFETTO_CONCLUSION_AUTHORING',
+const EXECUTION_BEHAVIOR_ENV_KEYS = new Set(['SMARTPERFETTO_CONCLUSION_AUTHORING', 'SMARTPERFETTO_FINAL_SUBMISSION',
   'SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES', 'SMARTPERFETTO_SAFE_TOOL_CONCURRENCY']);
 
 function parseArgs(argv) {

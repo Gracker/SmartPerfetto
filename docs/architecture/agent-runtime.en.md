@@ -84,6 +84,27 @@ Pi model JSON may explicitly set `thinkingLevel` (`off/minimal/low/medium/high/x
 
 `OPENAI_ANALYSIS_REASONING_EFFORT` explicitly configures OpenAI runtime main analysis and ordinary continuation; omitting it preserves provider defaults. It does not override classification, declaration repair, timeout output-only closeout or semantic review purpose policies. Validation uses the actual selected model, endpoint, protocol and installed SDK. Generic effort uses native SDK fields and never injects vendor `thinking` into unknown gateways. Recognized DeepSeek Chat maps `none` to disabled thinking; forced-thinking GLM rejects it. This adapter currently expresses `max` through passthrough only on recognized supported Chat interfaces; explicit `max` on unknown gateways or Responses is not yet supported by this adapter. The same isolated provider environment binds the setting into its snapshot; invalid values cannot enter public snapshots. Lower effort still needs real accuracy validation.
 
+`SMARTPERFETTO_FINAL_SUBMISSION` selects the main analysis output transport and
+defaults to `assistant_text`; `authored_claim_document_v1` is an explicit experiment.
+The mode and declaration syntax are captured together before classification; the
+experiment requires `canonical_v1`. Eligibility separately checks the actual SDK
+contract, Chat Completions protocol and function-tool primitive facts for every
+possible main model. Unknown or incompatible configurations fail before paid
+dispatch. Observed tool calls do not establish document adoption, accuracy or
+performance acceptance.
+
+The experiment discovers the tool name from the registry's unique
+`final_candidate_submission` role. The model submits body parts and its original
+canonical declarations in `documentJson`; the deterministic compiler concatenates
+authored text without filling values from evidence. Original wire arguments, SDK
+calls, actual handler success, native final state and background drain jointly
+admit a submission. The shared finalizer still performs evidence, semantic,
+source and report checks. Authorship is `model_tool_arguments`. A missing submission
+or transport failure is a separate product issue: it does not rewrite actual SDK
+completion or start legacy declaration repair or continuation. Program ACK and
+direct-evidence paths without a main call retain their delivery; their actual
+transport is not applicable.
+
 ## M10 Independent Feedback Triage
 
 Agent-assisted GitHub feedback does not resume the main analysis session. New
@@ -122,6 +143,8 @@ for the user-visible contract.
 | `backend/src/services/providerManager/modelExecutionProfile.ts`, `backend/src/agentRuntime/modelExecutionPolicy.ts` | Actual model/SDK capabilities, independent execution fingerprint and legal purpose controls |
 | `backend/src/agentRuntime/runtimeTaskDeadline.ts` | Private per-turn admission identity and explicit work deadline; separate from cancellation and authorization |
 | `backend/src/agent/core/conclusionAuthoring.ts` | Bounded declaration-reference expansion preserving raw input and independent proposition verification |
+| `backend/src/agent/core/authoredClaimDocument.ts`, `backend/src/agentRuntime/authoredFinalSubmission.ts` | Literal body compilation, current-run private submissions and revocation |
+| `backend/src/agentRuntime/engines/openai/openAiTypedFinalAdmission.ts` | Experimental raw-argument, SDK-state and actual-drain admission |
 | `backend/src/agentRuntime/runtimeCandidateAdmission.ts` | Maintainer-owned concurrency-candidate admission boundary |
 | `backend/src/agentRuntime/runtimePerformance.ts` | Internal RunManifest phase, tool, and SQL queue/execution timing receipt |
 | `backend/src/agentRuntime/runtimeActivity.ts`, `runtimePerformanceContext.ts` | Bounded invocation and capture activity, private run ownership, and late-callback isolation |

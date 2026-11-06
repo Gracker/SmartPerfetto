@@ -106,6 +106,11 @@ import {
 } from '../../runtimePerformance';
 import { createAnalysisRunSpec, type AnalysisRunSpec } from '../../analysisRunSpec';
 import {
+  captureAnalysisOutputConfig,
+  assertFinalSubmissionRuntime,
+  type CapturedAnalysisOutputConfig,
+} from '../../finalSubmissionConfig';
+import {
   buildRuntimeTracePairComparisonContext,
   buildRuntimeTracePairIdentityContext,
   buildRuntimeMemoryContext,
@@ -2548,6 +2553,8 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     traceId: string,
     options?: AnalysisOptions,
   ): Promise<AnalysisResult> {
+    const outputConfig = captureAnalysisOutputConfig(this.env);
+    assertFinalSubmissionRuntime(outputConfig, OPENCODE_RUNTIME_KIND);
     const admittedAt = Date.now();
     options = {
       ...(options ?? {}),
@@ -2586,6 +2593,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
           sessionId,
           traceId,
           options ?? {},
+          outputConfig,
           executionLease,
           runtimePerformance,
           admission.admission,
@@ -2756,6 +2764,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     sessionId: string,
     traceId: string,
     options: AnalysisOptions,
+    outputConfig: CapturedAnalysisOutputConfig,
     executionLease: RuntimeExecutionLease,
     runtimePerformance: RuntimePerformanceRun,
     admission: RuntimeAdmission,
@@ -2854,7 +2863,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     // The MCP server stamps tool captures with the run id finalization reads.
     const runId = options.runId!;
     const prep = await this.prepareAnalysis(
-      query, sessionId, traceId, options,
+      query, sessionId, traceId, options, outputConfig,
       `${modelConfig.model.providerID}/${modelConfig.model.modelID}`,
       turnIntent, turnPolicy, resolver.strategyRegistry, analysisHistoryReader, closeoutTape.observe,
       () => toolAdmissionsOpen && !workSignal.aborted && Date.now() < workDeadlineAt, sceneDeadlineMs, workSignal, runId,
@@ -3297,6 +3306,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     sessionId: string,
     traceId: string,
     options: AnalysisOptions,
+    outputConfig: CapturedAnalysisOutputConfig,
     model: string,
     turnIntent: AnalysisTurnIntent,
     turnPolicy: RuntimeTurnPolicy,
@@ -3319,6 +3329,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     const previousTurns = sessionContext.getAllTurns?.() || [];
     const quickMode = turnPolicy.budgetMode === 'quick';
     const analysisRunSpec = createAnalysisRunSpec({
+      outputConfig,
       history: analysisHistoryReader.getTurns(),
       query, sessionId, traceId, options, turnIntent,
       runtimeSelection: this.selection,

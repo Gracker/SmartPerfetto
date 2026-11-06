@@ -200,6 +200,11 @@ import {
   createAnalysisRunSpec,
   type AnalysisRunSpec,
 } from '../../analysisRunSpec';
+import {
+  captureAnalysisOutputConfig,
+  assertFinalSubmissionRuntime,
+  FinalSubmissionConfigurationError,
+} from '../../finalSubmissionConfig';
 import type { RuntimeSelection } from '../../runtimeSelection';
 import {
   createRuntimePerformanceRun,
@@ -767,6 +772,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       const resolvedConfig = options.outputLanguage ? {...configured, outputLanguage: options.outputLanguage} : configured;
       outputLanguage = resolvedConfig.outputLanguage;
       const sdkEnv = createSdkEnv(options.providerId, providerScope);
+      const outputConfig = captureAnalysisOutputConfig(sdkEnv);
+      assertFinalSubmissionRuntime(outputConfig, CLAUDE_AGENT_RUNTIME_KIND);
       const quickBudgetConfig = createQuickConfig(resolvedConfig, sdkEnv);
       const sceneProduct = resolveSceneProductScope(options, {runId, sessionId, traceId});
       workDeadlineAt = Math.min(workDeadlineAt, budgetStartedAt + Math.max(
@@ -814,6 +821,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       const sceneType = turnIntent.sceneId;
       runSnapshots.capture(sessionId, sceneType, intentResolver.strategyRegistry);
       const analysisRunSpec = createAnalysisRunSpec({
+        outputConfig,
         query, sessionId, traceId, options, runtimeSelection: this.runtimeSelection,
         sceneType, outputLanguage, previousTurns: [], history: analysisHistoryReader.getTurns(),
         resolvedMode: turnPolicy.budgetMode,
@@ -2013,6 +2021,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         error,
         executionLease.signal,
       );
+      if (error instanceof FinalSubmissionConfigurationError) throw error;
       throwIfRunAuthorizationRevoked(executionLease.signal);
       const deadlineExceeded = error instanceof RuntimeTaskDeadlineExceededError ||
         admission?.admission.task?.deadlineSignal.aborted === true;

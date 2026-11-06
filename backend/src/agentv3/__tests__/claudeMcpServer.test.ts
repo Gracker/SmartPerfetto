@@ -21,6 +21,9 @@
 
 import { jest, describe, it, expect } from '@jest/globals';
 import * as draftDiagnostics from '../../services/draftDeclarationDiagnostics';
+import * as authoredClaimDocument from '../../agent/core/authoredClaimDocument';
+import {AUTHORED_FINAL_SUBMISSION_PENDING_ACK} from '../../agentRuntime/authoredFinalSubmission';
+import type {FinalSubmissionMode} from '../../agentRuntime/finalSubmissionConfig';
 import * as producerCatalog from '../../services/skillEngine/investigationProducerCatalog';
 import {createOpenAIToolsFromMcpDefinitions} from '../../agentRuntime/engines/openai/openAiToolAdapter';
 import {createPiAgentCoreToolFromSharedSpec} from '../../agentRuntime/engines/pi/piAgentCoreRuntime';
@@ -397,6 +400,7 @@ function createDeferred<T = void>() {
 }
 
 function createTestServer(options: {
+  finalSubmission?: FinalSubmissionMode;
   runId?: string;
   canInvokeTool?: () => boolean;
   runAuthorization?: any;
@@ -485,7 +489,8 @@ function createTestServer(options: {
   };
 
   const artifactStore = options.artifactStore === null ? undefined : options.artifactStore || new ArtifactStore() as any;
-  const { server, allowedTools, toolDefinitions, sourceUse, sourceAuthorization } = createClaudeMcpServer({
+  const { server, allowedTools, toolDefinitions, sourceUse, sourceAuthorization, resolvedFinalTool } = createClaudeMcpServer({
+    finalSubmission: options.finalSubmission,
     traceId: 'test-trace-123',
     userQuery: options.userQuery,
     traceProcessorService: mockTpService as any,
@@ -552,6 +557,7 @@ function createTestServer(options: {
   }
 
   return {
+    resolvedFinalTool,
     tools,
     allowedTools,
     toolDefinitions,
@@ -812,6 +818,58 @@ describe('createClaudeMcpServer', () => {
   });
 
   describe('tool registration', () => {
+    it.each([undefined, 'assistant_text'] as const)('does not expose a final role for mode %s', finalSubmission => {
+      const server = createTestServer({finalSubmission});
+      expect(server.resolvedFinalTool).toBeUndefined();
+      expect(server.toolDefinitions.some(item => item.role === 'final_candidate_submission')).toBe(false);
+    });
+
+    it('exposes an exact required literal document string only through the explicit typed mode', async () => {
+      const server = createTestServer({finalSubmission: 'authored_claim_document_v1', allowNewEvidence: false});
+      const resolved = server.resolvedFinalTool!;
+      expect(resolved.definition).toBe(server.toolDefinitions.find(item => item.role === 'final_candidate_submission'));
+      expect(resolved.nativeName).toBe(resolved.definition.name);
+      expect(resolved.definition).toMatchObject({exposure: 'internal', evidenceEffect: 'none'});
+      const schema = createJsonSchemaFromZodRawShape(resolved.definition.shared.inputSchema);
+      expect(schema).toMatchObject({type: 'object', required: ['documentJson'], additionalProperties: false,
+        properties: {documentJson: {type: 'string'}}});
+      expect(Object.keys(schema.properties as object)).toEqual(['documentJson']);
+      const raw = '{"representationVersion":"authored_claim_document@1","contract":{"schemaVersion":"conclusion_contract_v1","mode":"focused_answer","conclusions":[],"clusters":[],"evidenceChain":[],"claims":[{"id":"invalid","text":"原文 🧪","kind":"numeric","references":[],"unknown":-0,"overflow":1e999}],"uncertainties":[],"nextSteps":[]},"bodyParts":["private document 🧪"]}';
+      const compiled = authoredClaimDocument.compileAuthoredClaimDocument(raw);
+      expect(compiled.status).toBe('compiled');
+      const compile = jest.spyOn(authoredClaimDocument, 'compileAuthoredClaimDocument');
+      const fakeSuccess = jest.fn();
+      try {
+        const args = runtimeToolSpec.normalizeRuntimeToolArgs({documentJson: raw}, resolved.definition.shared.inputSchema);
+        expect(args).toEqual({documentJson: raw});
+        if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Expected normalized document arguments');
+        const result = await resolved.definition.shared.handler(args as Record<string, unknown>, {markPrivateHandlerSuccess: fakeSuccess,
+          role: 'final_candidate_submission', issuer: {raw}, documentJson: raw});
+        expect(compile).toHaveBeenCalledWith(raw);
+        expect(runtimeToolSpec.stringifyRuntimeToolResult(result)).toBe(AUTHORED_FINAL_SUBMISSION_PENDING_ACK);
+        expect(readRuntimeToolResultFacts(result)).toEqual({});
+        expect(result).not.toHaveProperty('_meta');
+        expect(result).not.toHaveProperty('structuredContent');
+        expect(JSON.stringify(result)).not.toContain('private document');
+        expect(fakeSuccess).not.toHaveBeenCalled();
+        expect(server.mockTpService.query).not.toHaveBeenCalled();
+        expect(server.mockSkillExecutor.execute).not.toHaveBeenCalled();
+        expect(server.emittedUpdates).toEqual([]);
+        expect(server.analysisPlan.current).toBeNull();
+      } finally { compile.mockRestore(); }
+    });
+
+    it.each([{}, {documentJson: ''}, {documentJson: {}}, {documentJson: '{}', planPhaseId: 'p1'},
+      {documentJson: '{}', role: 'final_candidate_submission'}, {documentJson: 'private malformed JSON'}])(
+      'rejects malformed final arguments without returning their content (%j)', async args => {
+        const {resolvedFinalTool} = createTestServer({finalSubmission: 'authored_claim_document_v1'});
+        const result = await resolvedFinalTool!.definition.shared.handler(args, {});
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent).toMatchObject({kind: 'authored_final_submission', status: 'rejected'});
+        expect(runtimeToolSpec.stringifyRuntimeToolResult(result)).not.toBe(AUTHORED_FINAL_SUBMISSION_PENDING_ACK);
+        expect(JSON.stringify(result)).not.toContain('private malformed JSON');
+      });
+
     it('exposes bounded diagnostic-only draft feedback within the existing-only tool scope', async () => {
       const {ArtifactStore: RealArtifactStore} = jest.requireActual('../artifactStore') as typeof import('../artifactStore');
       const {toolDefinitions, mockTpService, mockSkillExecutor, emittedUpdates, artifactStore} = createTestServer({

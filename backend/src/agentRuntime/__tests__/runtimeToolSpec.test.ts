@@ -7,6 +7,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { z } from 'zod';
 import * as runtimeToolSpec from '../runtimeToolSpec';
+import {projectRuntimeToolEventPayload} from '../../services/security/runtimeToolEventProjection';
+import {withRuntimeToolObserver, type RuntimeToolInvocationEvent} from '../runtimeToolObserver';
 import {
   RUNTIME_TOOL_DESCRIPTION_MAX_CHARS,
   compactRuntimeToolDescription,
@@ -128,6 +130,74 @@ function createDeferred<T = void>() {
 }
 
 describe('SharedToolSpec', () => {
+  it('projects only the final role before observers without changing private arguments or outcomes', async () => {
+    const params = {documentJson: 'SQL source body private-hash canary'};
+    const extra = {privateHash: 'private-extra-canary', toolCallId: 'actual-call'};
+    const result = createRuntimeToolResult({body: 'private-result-canary', success: false},
+      {facts: {success: true, planPhaseId: 'private-phase-canary'}});
+    const failure = new Error('private-error-canary');
+    const body = jest.fn(async (_args: Record<string, unknown>, _extra: unknown) => result)
+      .mockResolvedValueOnce(result).mockRejectedValueOnce(failure);
+    const events: RuntimeToolInvocationEvent[] = [];
+    const spec = withRuntimeToolObserver({name: 'native-final', role: 'final_candidate_submission',
+      exposure: 'internal', evidenceEffect: 'none', description: 'Final', inputSchema: {}, handler: body},
+    event => { events.push(event); });
+    await expect(spec.handler(params, extra)).resolves.toBe(result);
+    await expect(spec.handler(params, extra)).rejects.toBe(failure);
+    expect(body.mock.calls[0][0]).toBe(params);
+    expect(body.mock.calls[0][1]).toEqual(extra);
+    expect(params.documentJson).toContain('SQL source body');
+    expect(events.map(event => event.phase)).toEqual(['started', 'completed', 'started', 'failed']);
+    expect(events[0]).toMatchObject({toolCallId: 'actual-call', toolName: 'native-final',
+      role: 'final_candidate_submission', params: {kind: 'authored_final_submission', status: 'pending'}, extra: {}});
+    const completed = events[1];
+    expect(completed.phase).toBe('completed');
+    if (completed.phase === 'completed') {
+      expect(readRuntimeToolResultFacts(completed.result)).toEqual({success: true});
+      expect(completed.result.structuredContent).toEqual({kind: 'authored_final_submission', status: 'pending'});
+    }
+    expect(events[3]).toMatchObject({error: {kind: 'authored_final_submission', status: 'rejected',
+      reason: 'submission_rejected'}});
+    expect(JSON.stringify(events)).not.toMatch(/canary|SQL source body|documentJson|planPhaseId/);
+    expect(result.structuredContent).toMatchObject({body: 'private-result-canary'});
+    const ordinary = {params, extra, result, error: failure};
+    expect(projectRuntimeToolEventPayload(undefined, ordinary)).toBe(ordinary);
+    expect(readRuntimeToolResultFacts(ordinary.result)).toEqual({success: true, planPhaseId: 'private-phase-canary'});
+    const pending = projectRuntimeToolEventPayload('final_candidate_submission', {
+      result: createRuntimeToolResult({status: 'pending'}, {facts: {planPhaseId: 'private-phase-canary'}}),
+    });
+    expect(readRuntimeToolResultFacts(pending.result)).toEqual({});
+    expect(JSON.stringify(pending)).not.toMatch(/canary|planPhaseId/);
+    const rejected = projectRuntimeToolEventPayload('final_candidate_submission', {
+      result: createRuntimeToolResult({privateDocument: 'private-result-canary'}, {facts: {success: false}}),
+    });
+    expect(rejected.result.structuredContent).toEqual({kind: 'authored_final_submission', status: 'rejected',
+      reason: 'submission_rejected'});
+    expect(readRuntimeToolResultFacts(rejected.result)).toEqual({success: false});
+  });
+
+  it('records bounded final-tool activity without using the private document as repeat-key input', async () => {
+    const lifecycle = createLifecycle('final-tool-activity');
+    const recorder = lifecycle.builder.runtimePerformanceRecorder;
+    const activity = jest.spyOn(recorder, 'startToolActivity');
+    const args = {documentJson: 'private-repeat-key-canary'};
+    const body = jest.fn(async () => createRuntimeToolResult({kind: 'authored_final_submission', status: 'pending'}));
+    const shared = withRuntimeToolConcurrency({name: 'native-final', role: 'final_candidate_submission',
+      description: 'Final', exposure: 'internal', evidenceEffect: 'none', inputSchema: {}, handler: body},
+    createRuntimeToolConcurrencyCoordinator(), {runManifestAttributionSink: lifecycle.builder});
+    try {
+      await shared.handler(args, {});
+      await shared.handler({documentJson: 'different-private-document'}, {});
+      expect(activity).toHaveBeenCalledWith('native-final', {kind: 'authored_final_submission', status: 'pending'});
+      const receipt = recorder.seal();
+      expect(JSON.stringify(receipt)).not.toMatch(/private-repeat-key-canary|different-private-document/);
+      expect(receipt.activity).toMatchObject({observation: 'partial', attempted: 2, dispatched: 2, returned: 2});
+      expect(receipt.activity).not.toHaveProperty('repeatedExactCalls');
+      expect(body).toHaveBeenCalledTimes(2);
+      expect(args.documentJson).toBe('private-repeat-key-canary');
+    } finally { activity.mockRestore(); lifecycle.dispose(); }
+  });
+
   it('keeps producer facts through SDK adaptation and string transport before shortening', async () => {
     const spec = sharedToolSpecFromClaudeSdkTool('execute_sql', {
       name: 'execute_sql', description: 'Read trace data', inputSchema: {},

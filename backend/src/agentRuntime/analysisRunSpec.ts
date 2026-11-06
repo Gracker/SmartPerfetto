@@ -41,8 +41,9 @@ import type {AdaptiveRoutingReceiptV1} from '../types/adaptiveRouting';
 import {buildAdaptiveRoutingForTurnIntent} from './adaptiveRoutingProjection';
 import type {AnalysisTurnIntent} from './analysisTurnIntent';
 import type {AnalysisHistoryTurn} from './analysisHistory';
-import {CONCLUSION_AUTHORING_ENV, resolveConclusionDeclarationSyntax} from '../agent/core/conclusionAuthoring';
 import type {ConclusionDeclarationSyntax} from '../agent/core/conclusionContract';
+import {assertCapturedAnalysisOutputConfig, assertFinalSubmissionRuntime,
+  type CapturedAnalysisOutputConfig, type FinalSubmissionMode} from './finalSubmissionConfig';
 
 export interface RuntimeBudgetInputs {
   model?: string;
@@ -71,6 +72,8 @@ export type AnalysisRunSelection =
 export interface AnalysisRunSpec {
   /** Internal configuration captured once for prompt and missing-declaration delivery in this run. */
   readonly declarationSyntax: ConclusionDeclarationSyntax;
+  /** Requested/captured output mode; actual adoption belongs to the native attempt receipt. */
+  readonly finalSubmission: FinalSubmissionMode;
   /** Resolved by this run, not accepted from client options or prior snapshots. */
   turnIntent?: AnalysisTurnIntent;
   identity: {
@@ -296,6 +299,8 @@ export function validateAnalysisRunSelection(selection: AnalysisRunSelection): A
 }
 
 export interface CreateAnalysisRunSpecInput {
+  /** Captured at the runtime's configuration boundary, before any paid dispatch. */
+  outputConfig: CapturedAnalysisOutputConfig;
   turnIntent?: AnalysisTurnIntent;
   query: string;
   sessionId: string;
@@ -344,6 +349,7 @@ export function canonicalRuntimeKind(value: string): AgentRuntimeKind {
 }
 
 export function createAnalysisRunSpec(input: CreateAnalysisRunSpecInput): AnalysisRunSpec {
+  assertCapturedAnalysisOutputConfig(input.outputConfig);
   const options = input.options ?? {};
   const engineCapabilities = resolveEngineCapabilities(input);
   // The effective selection, then the backend's feature switch on its own.
@@ -375,7 +381,8 @@ export function createAnalysisRunSpec(input: CreateAnalysisRunSpecInput): Analys
   const actualModel = input.resolvedModel ?? (input.resolvedMode === 'quick'
     ? input.budget?.lightModel ?? input.budget?.model
     : input.budget?.model);
-  const declarationSyntax = resolveConclusionDeclarationSyntax(process.env[CONCLUSION_AUTHORING_ENV]);
+  const {declarationSyntax, finalSubmission} = input.outputConfig;
+  assertFinalSubmissionRuntime(input.outputConfig, runtimeKind);
   const sink = resolveRunManifestAttributionSink(
     options.runManifestAttributionSink,
     currentRunManifestAttributionSink(),
@@ -387,6 +394,7 @@ export function createAnalysisRunSpec(input: CreateAnalysisRunSpecInput): Analys
     ...(actualModel ? {model: actualModel} : {}),
     outputLanguage: input.outputLanguage,
     conclusionDeclarationSyntax: declarationSyntax,
+    finalSubmission,
   });
   sink?.recordMode({
     requested: options.analysisMode ?? 'auto',
@@ -416,6 +424,7 @@ export function createAnalysisRunSpec(input: CreateAnalysisRunSpecInput): Analys
 
   return {
     declarationSyntax,
+    finalSubmission,
     ...(input.turnIntent ? {turnIntent: input.turnIntent} : {}),
     identity: {
       sessionId: input.sessionId,

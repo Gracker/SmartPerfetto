@@ -203187,8 +203187,8 @@ WHERE
 	}
 	//#endregion
 	//#region \0perfetto:version:ui/src/virtual/version
-	var VERSION$2 = "v59.1-8fa7554b1";
-	var SCM_REVISION = "8fa7554b162aaa3db2ce9df3e54128b90fa8e8f4";
+	var VERSION$2 = "v59.1-ad99855dc";
+	var SCM_REVISION = "ad99855dcc05a46e3c192a8082fa0e585fd77924";
 	//#endregion
 	//#region ../../ui/src/base/logging.ts
 	var errorHandlers = [];
@@ -358189,7 +358189,7 @@ Trace processor RPC API: ${tpStatus.apiVersion}
 		function forceWasm() {
 			AppImpl.instance.httpRpc.newEngineMode = "FORCE_BUILTIN_WASM";
 		}
-		if (tpStatus.versionCode !== "" && tpStatus.versionCode !== "v59.1-8fa7554b1") {
+		if (tpStatus.versionCode !== "" && tpStatus.versionCode !== "v59.1-ad99855dc") {
 			const url = await isVersionAvailable(tpStatus.versionCode);
 			if (url !== void 0) {
 				const result = await showDialogVersionMismatch(tpStatus, url);

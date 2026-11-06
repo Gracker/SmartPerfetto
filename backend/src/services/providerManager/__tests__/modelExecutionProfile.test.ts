@@ -14,6 +14,33 @@ function config(overrides: Partial<ResolveModelExecutionProfileInput> = {}): Res
 }
 
 describe('model execution profile facts', () => {
+  it.each([
+    ['glm-5.3-flash', 'https://open.bigmodel.cn/api/coding/paas/v4', 'r5-glm-function-tools'],
+    ['deepseek-flash', 'https://api.deepseek.com/v1', 'r5-deepseek-function-tools'],
+  ])('records only the observed function primitive for %s, not typed final quality', (modelId, baseUrl, evidencePrefix) => {
+    const profile = resolveModelExecutionProfile(config({modelId, baseUrl}));
+    expect(profile.server.functionTools).toEqual({status: 'supported', value: 'function_call_arguments',
+      source: 'runtime_observation', evidenceId: expect.stringMatching(new RegExp(`^${evidencePrefix}:sha256:[a-f0-9]{64}$`))});
+    expect(profile.server).not.toHaveProperty('strictFinal');
+    expect(profile.server).not.toHaveProperty('typedFinalQuality');
+    expect(profile).not.toHaveProperty('actualFinalSubmission');
+  });
+
+  it.each([
+    {baseUrl: 'https://api.z.ai/api/coding/paas/v4'},
+    {baseUrl: 'https://open.bigmodel.cn/api/paas/v4'},
+    {baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4/chat/completions'},
+    {baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4?credential=PRIVATE_CANARY'},
+    {baseUrl: 'http://open.bigmodel.cn/api/coding/paas/v4'},
+    {modelId: 'glm-5.3'},
+    {modelId: 'deepseek-v4-flash', baseUrl: 'https://api.deepseek.com/v1'},
+    {modelId: 'deepseek-flash', baseUrl: 'https://api.deepseek.com'},
+    {modelId: 'deepseek-flash', baseUrl: 'https://api.deepseek.com/v1', protocol: 'responses' as const},
+    {modelId: 'deepseek-flash', baseUrl: 'https://api.deepseek.com/anthropic', protocol: 'anthropic_messages' as const},
+  ])('does not extrapolate observed tool support to %p', overrides => {
+    expect(resolveModelExecutionProfile(config(overrides)).server.functionTools.status).toBe('unknown');
+  });
+
   it('separates required GLM server thinking from what the SDK can encode', () => {
     const profile = resolveModelExecutionProfile(config());
     expect(profile.server).toMatchObject({thinking: {status: 'supported', value: 'required', source: 'official'},
@@ -101,6 +128,19 @@ describe('model execution profile facts', () => {
 });
 
 describe('independent model execution fingerprint', () => {
+  it('fingerprints captured output choices separately from provider snapshots and adoption', () => {
+    const assistant = resolveModelExecutionProfile(config({effective: {finalSubmission: 'assistant_text', declarationSyntax: 'canonical_v1'}}));
+    const typed = resolveModelExecutionProfile(config({effective: {finalSubmission: 'authored_claim_document_v1', declarationSyntax: 'canonical_v1'}}));
+    const authoring = resolveModelExecutionProfile(config({effective: {finalSubmission: 'assistant_text', declarationSyntax: 'authoring_v2'}}));
+    expect(new Set([assistant, typed, authoring].map(profile => profile.fingerprint.value)).size).toBe(3);
+    expect(typed.effective).toEqual({finalSubmission: 'authored_claim_document_v1', declarationSyntax: 'canonical_v1'});
+    expect(typed).not.toHaveProperty('providerSnapshotHash');
+    for (const effective of [{finalSubmission: 'PRIVATE_CANARY'}, {declarationSyntax: 'PRIVATE_CANARY'}]) {
+      expect(() => resolveModelExecutionProfile(config({effective: effective as ModelEffectiveSettings})))
+        .toThrow('model_execution_invalid_configuration');
+    }
+  });
+
   it.each(['maxOutputTokens', 'maxTurns', 'quickMaxTurns', 'quickTargetTurns', 'fullPerTurnMs', 'quickPerTurnMs',
     'fullRequestTimeoutMs', 'streamIdleTimeoutMs', 'maxRunTimeoutMs', 'classifierTimeoutMs', 'maxHistoryBytes'] as const)(
     'includes captured effective %s without changing a provider snapshot contract', key => {

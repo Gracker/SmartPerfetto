@@ -201,7 +201,7 @@ export function copyAnalysisDeliveryFields(input: AnalysisDeliveryFields): Analy
       ...(typeof completion.sdkFinishReason === 'string' ? {sdkFinishReason: completion.sdkFinishReason} : {}),
     };
   }
-  if (member(input.outputOrigin, ['sdk_final', 'assistant_stream', 'evidence_rendered', 'runtime_fallback'])) {
+  if (member(input.outputOrigin, ['sdk_final', 'assistant_stream', 'model_tool_arguments', 'evidence_rendered', 'runtime_fallback'])) {
     output.outputOrigin = input.outputOrigin;
   }
   const appendix = input.runtimeAppendix;
