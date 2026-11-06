@@ -4,7 +4,7 @@
 import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 import {installCurrentRealmStructuredCloneForTest} from '../../../tests/helpers/openAiRuntimeFixture';
 import {Agent, OpenAIProvider, Runner, shellTool, tool,
-  type FunctionToolResult, type RunContext} from '@openai/agents';
+  type AgentInputItem, type FunctionToolResult, type RunContext} from '@openai/agents';
 import OpenAI from 'openai';
 import {z} from 'zod';
 import {compileAuthoredClaimDocument, measureAuthoredJson} from '../../agent/core/authoredClaimDocument';
@@ -22,6 +22,7 @@ import {createOpenAiTypedFinalAttempt, createOpenAiTypedFinalWireCollector, OPEN
   OPENAI_TYPED_FINAL_RAW_BYTES, type OpenAiTypedFinalWireObserver} from '../engines/openai/openAiTypedFinalAdmission';
 import {createAuthoredFinalSubmissionIssuer, readAuthoredFinalSubmission,
   AUTHORED_CLAIM_DOCUMENT_COMPILER_VERSION, revokeAuthoredFinalSubmissionIssuer} from '../authoredFinalSubmission';
+import * as submissionAuthority from '../authoredFinalSubmission';
 import type {AuthoredConclusionSubmission} from '../../services/security/conclusionProtocolProjection';
 
 /**
@@ -42,8 +43,8 @@ const compiled = compileAuthoredClaimDocument(documentJson);
 if (compiled.status !== 'compiled') throw new Error('Invalid test document');
 const body = compiled.body;
 const rawCanonicalPayload = compiled.rawCanonicalPayload;
-function startNativeRun(runner: Runner, agent: Agent, signal: AbortSignal) {
-  return runner.run(agent, 'fixture', {stream: true, maxTurns: 1, signal});
+function startNativeRun(runner: Runner, agent: Agent, signal: AbortSignal, input: string | AgentInputItem[] = 'fixture', maxTurns = 1) {
+  return runner.run(agent, input, {stream: true, maxTurns, signal});
 }
 type NativeStream = Awaited<ReturnType<typeof startNativeRun>>;
 type Callback = (stream: NativeStream, context: RunContext, results: FunctionToolResult[]) => string | Promise<string>;
@@ -685,6 +686,8 @@ function nativeObjectFixture(): AuthoredClaimObjectInput {
 
 function nativeObjectProbe(options: {
   contractVersion?: 'openai_typed_final_admission@3';
+  input?: string | AgentInputItem[];
+  maxTurns?: number;
   response?: () => Response;
   beforeCallback?: (stream: NativeStream) => void;
   productionBridge?: boolean;
@@ -709,9 +712,10 @@ function nativeObjectProbe(options: {
   const controller = new AbortController(), productController = new AbortController(), ready = deferred<NativeStream>();
   void ready.promise.catch(() => undefined);
   const collector = createOpenAiTypedFinalWireCollector();
+  const assistantTextEntered = deferred<void>();
   const fetchEntered = deferred<void>(), stageEntered = deferred<void>(), handlerEntered = deferred<void>(), callbackEntered = deferred<void>(), otherEntered = deferred<void>();
   const observations = {sdkArgs: undefined as unknown, handlerArgs: undefined as unknown, sdkRawArguments: '',
-    requestSchema: undefined as unknown, handlerCalls: 0, callbackCalls: 0, drained: false, consumerDrained: false,
+    requestSchema: undefined as unknown, rawEvents: [] as unknown[], handlerCalls: 0, callbackCalls: 0, drained: false, consumerDrained: false,
     compiled: undefined as AuthoredClaimObjectResult | undefined, admissionFailure: undefined as unknown};
   const handler = async (args: unknown) => {
     observations.handlerArgs = args; observations.handlerCalls++; handlerEntered.resolve();
@@ -806,7 +810,7 @@ function nativeObjectProbe(options: {
   const runner = new Runner({modelProvider: new OpenAIProvider({useResponses: false,
     openAIClient: new OpenAI({apiKey: 'test-only', baseURL: 'https://fixture.invalid/v1', maxRetries: 0, fetch: actualFetch})}),
     tracingDisabled: true, traceIncludeSensitiveData: false, toolExecution: {maxFunctionToolConcurrency: 1}});
-  const started = startNativeRun(runner, agent, controller.signal);
+  const started = startNativeRun(runner, agent, controller.signal, options.input, options.maxTurns);
   let native: NativeStream | undefined;
   let admissionBound = false;
   const bind = (stream: NativeStream) => {
@@ -820,7 +824,15 @@ function nativeObjectProbe(options: {
     if (typeof getter !== 'function') throw new Error('Missing actual SDK drain getter');
     const drain = Promise.resolve(getter.call(stream)).then(() => {observations.drained = true;});
     const consumer = (async () => {
-      try {for await (const _event of stream) { /* Consume the real stream, including its rejection. */ } await stream.completed;}
+      try {
+        for await (const event of stream) {
+          if (event.type === 'raw_model_stream_event') {
+            observations.rawEvents.push(event.data);
+            if (event.data.type === 'output_text_delta') assistantTextEntered.resolve();
+          }
+        }
+        await stream.completed;
+      }
       finally {await options.consumerGate; observations.consumerDrained = true;}
     })();
     void consumer.catch(() => undefined); void stream.completed.catch(() => undefined);
@@ -837,7 +849,7 @@ function nativeObjectProbe(options: {
     readSubmission: () => readAuthoredFinalSubmission(submission!.submission, submission!.input),
     cancel: () => {productController.abort(); controller.abort();},
     revokeOwner: () => {ownerCurrent = false;}, clearAttempt: () => {attemptCurrent = false;},
-    fetchEntered, stageEntered, handlerEntered, callbackEntered, otherEntered, fetcher,
+    fetchEntered, stageEntered, handlerEntered, callbackEntered, otherEntered, assistantTextEntered, fetcher,
     settle: async () => {const state = await tracked;
       await Promise.allSettled([state.drain, state.consumer, state.stream.completed]); await admissionOutcome; return state.stream;},
     cleanup: async () => {controller.abort(); if (native) bind(native);
@@ -1618,4 +1630,213 @@ describe('R11 Stage B bounded mixed retention', () => {
       events.end(true); expect(collector.current()).toBeUndefined();
       if (failure === 'refusal') expect(collector.diagnostic()).toMatchObject({reason: 'assistant_refusal'});
     });
+});
+
+/** Characterization only: no assistant-JSON acceptor, new carrier or issuer is added. */
+describe('R12 whole-assistant-JSON installed-SDK characterization', () => {
+  let restoreClone: (() => void) | undefined;
+  let issue: jest.SpiedFunction<typeof submissionAuthority.issueAuthoredFinalSubmission>;
+  beforeEach(() => {
+    restoreClone = installCurrentRealmStructuredCloneForTest();
+    issue = jest.spyOn(submissionAuthority, 'issueAuthoredFinalSubmission');
+  });
+  afterEach(() => {issue.mockRestore(); restoreClone?.(); restoreClone = undefined;});
+
+  const wholeJson = JSON.stringify({document: nativeObjectFixture()}, null, 2);
+  const sdkTextProbe = (options: Parameters<typeof nativeObjectProbe>[0]) => nativeObjectProbe({
+    productionBridge: true, literalSubtree: true, contractVersion: 'openai_typed_final_admission@3', ...options});
+  function assistantWire(parts: string[], options: {
+    finish?: 'stop' | 'length' | 'tool_calls' | null; done?: boolean; ids?: Array<string | undefined>; extra?: Record<string, unknown>;
+  } = {}): string {
+    const chunks = [...parts.map((content, index) => ({delta: {role: 'assistant', content,
+      ...(index === 0 ? options.extra : {})}, finish_reason: null})),
+      {delta: {}, finish_reason: options.finish === undefined ? 'stop' : options.finish}];
+    return chunks.map((choice, index) => `data: ${JSON.stringify({
+      ...(options.ids ? options.ids[index] === undefined ? {} : {id: options.ids[index]} : {id: 'provider-assistant-id'}),
+      object: 'chat.completion.chunk', created: 1, model: 'fixture-model', choices: [{index: 0, ...choice}],
+    })}\n\n`).join('') + (options.done === false ? '' : 'data: [DONE]\n\n');
+  }
+  const response = (wire: string) => new Response(wire, {headers: {'content-type': 'text/event-stream'}});
+  function rawChunks(h: ReturnType<typeof nativeObjectProbe>): Array<Record<string, unknown>> {
+    return h.observations.rawEvents.flatMap(value => {
+      const event = value as {type?: unknown; event?: unknown};
+      return event?.type === 'model' && event.event && typeof event.event === 'object' && !Array.isArray(event.event)
+        ? [event.event as Record<string, unknown>] : [];
+    });
+  }
+  function rawText(h: ReturnType<typeof nativeObjectProbe>): string {
+    return rawChunks(h).flatMap(chunk => Array.isArray(chunk.choices) ? chunk.choices.flatMap(choice =>
+      typeof choice?.delta?.content === 'string' ? [choice.delta.content] : []) : []).join('');
+  }
+  function actualMessage(stream: NativeStream) {
+    const messages = stream.state._lastTurnResponse?.output.filter(item => item.type === 'message') ?? [];
+    expect(messages).toHaveLength(1);
+    const message = messages[0];
+    if (message?.type !== 'message') throw new Error('Expected one actual SDK message');
+    return message;
+  }
+  function exactTextViews(h: ReturnType<typeof nativeObjectProbe>, stream: NativeStream, text: string): void {
+    expect(stream.error).toBeNull(); expect(rawText(h)).toBe(text); expect(stream.finalOutput).toBe(text);
+    const message = actualMessage(stream);
+    expect(message).toMatchObject({role: 'assistant', status: 'completed'});
+    const content = message.content;
+    if (!Array.isArray(content)) throw new Error('Expected an actual SDK output content array');
+    expect(content.flatMap(part => part.type === 'output_text' ? [part.text] : []).join('')).toBe(text);
+    const counterparts = stream.state._lastProcessedResponse?.newItems.filter(item => item.type === 'message_output_item') ?? [];
+    expect(counterparts).toHaveLength(1); expect(counterparts[0].rawItem).toBe(message);
+    // Message id is the converter's response id projection, not another provider witness.
+    expect(message.id).toBe(stream.state._lastTurnResponse?.responseId);
+  }
+  function noSubmission(h: ReturnType<typeof nativeObjectProbe>): void {
+    expect(h.submission()).toBeUndefined(); expect(issue).not.toHaveBeenCalled();
+    expect(h.observations.handlerCalls).toBe(0); expect(h.observations.compiled).toBeUndefined();
+  }
+
+  it.each([
+    {name: 'complete JSON with Unicode and escapes', text: wholeJson},
+    {name: 'ordinary prose', text: 'This is ordinary assistant prose, not JSON.'},
+    {name: 'fenced JSON', text: `\`\`\`json\n${wholeJson}\n\`\`\``},
+    {name: 'whitespace-only text', text: ' \n\t '},
+    {name: 'JSON retaining outer whitespace', text: ` \n${wholeJson}\t `},
+  ])('preserves $name in SDK text mode while current typed admission refuses it', async ({text}) => {
+    // Split an actual surrogate pair when present; JSON escapes and literal whitespace remain verbatim.
+    const emoji = text.indexOf('😀'), split = emoji >= 0 ? emoji + 1 : Math.floor(text.length / 2);
+    const parts = [text.slice(0, split), text.slice(split)];
+    const h = sdkTextProbe({response: () => response(assistantWire(parts))});
+    try {
+      const stream = await h.settle(); exactTextViews(h, stream, text); noSubmission(h);
+      expect(h.observations.drained).toBe(true); expect(h.observations.consumerDrained).toBe(true);
+      expect(h.fetcher).toHaveBeenCalledTimes(1);
+      expect(h.observations.requestSchema).toEqual(createJsonSchemaFromZodRawShape({document: authoredClaimObjectSchema.describe('Native object fixture')}));
+      expect(h.admission()?.diagnostic()).toMatchObject({status: 'rejected', reason: 'non_tool_terminal', wireFinishReason: 'stop'});
+    } finally {await h.cleanup();}
+  });
+
+  it.each(['v1', 'historical_v2'] as const)('does not promote assistant JSON through the existing %s function contract', async version => {
+    const assistantText = version === 'v1' ? documentJson : wholeJson;
+    const wire = assistantWire([assistantText]);
+    const h = version === 'v1' ? probe({useAdmission: true, response: () => response(wire)})
+      : nativeObjectProbe({productionBridge: true, literalSubtree: true, response: () => response(wire)});
+    try {
+      const stream = await h.settle();
+      expect(stream.error).toBeNull(); expect(stream.finalOutput).toBe(assistantText);
+      expect(h.submission()).toBeUndefined(); expect(issue).not.toHaveBeenCalled(); expect(h.observations.handlerCalls).toBe(0);
+      expect(h.admission()?.diagnostic()).toMatchObject({status: 'rejected', reason: 'assistant_content'});
+      expect(h.fetcher).toHaveBeenCalledTimes(1);
+    } finally {await h.cleanup();}
+  });
+
+  it.each(['length', 'missing_done', 'missing_finish'] as const)('exposes text despite %s without treating SDK completion as a wire proof', async ending => {
+    const h = sdkTextProbe({response: () => response(assistantWire([wholeJson], {
+      finish: ending === 'length' ? 'length' : ending === 'missing_finish' ? null : 'stop', done: ending !== 'missing_done'}))});
+    try {
+      const stream = await h.settle(); exactTextViews(h, stream, wholeJson); noSubmission(h);
+      expect(h.admission()?.diagnostic()).toMatchObject({status: 'rejected',
+        reason: ending === 'missing_done' ? 'missing_done' : 'non_tool_terminal'});
+      expect(h.observations.drained).toBe(true); expect(h.fetcher).toHaveBeenCalledTimes(1);
+    } finally {await h.cleanup();}
+  });
+
+  it.each([
+    {name: 'missing provider IDs', ids: [undefined, undefined, undefined], projected: 'FAKE_ID', reason: 'invalid_chunk'},
+    {name: 'first ID arriving later', ids: [undefined, 'late-provider-id', 'late-provider-id'], projected: 'late-provider-id', reason: 'invalid_chunk'},
+    {name: 'later ID drift', ids: ['first-provider-id', 'different-provider-id', 'different-provider-id'], projected: 'first-provider-id', reason: 'conflicting_identity'},
+  ])('distinguishes $name from the SDK response/message identity', async ({ids, projected, reason}) => {
+    const split = Math.floor(wholeJson.length / 2), h = sdkTextProbe({response: () => response(assistantWire(
+      [wholeJson.slice(0, split), wholeJson.slice(split)], {ids}))});
+    try {
+      const stream = await h.settle(); exactTextViews(h, stream, wholeJson); noSubmission(h);
+      expect(rawChunks(h).map(chunk => chunk.id)).toEqual(ids);
+      expect(stream.state._lastTurnResponse?.responseId).toBe(projected);
+      expect(actualMessage(stream).id).toBe(projected);
+      expect(h.admission()?.diagnostic()).toMatchObject({status: 'rejected', reason});
+      // FAKE_ID is the installed converter's synthetic initializer, never provider data.
+      if (projected === 'FAKE_ID') expect(rawChunks(h).every(chunk => !Object.prototype.hasOwnProperty.call(chunk, 'id'))).toBe(true);
+    } finally {await h.cleanup();}
+  });
+
+  it('coalesces repeated content frames into one message without deduplicating text or providing independent message IDs', async () => {
+    const h = sdkTextProbe({response: () => response(assistantWire([wholeJson, wholeJson]))});
+    try {
+      const stream = await h.settle(); exactTextViews(h, stream, wholeJson + wholeJson); noSubmission(h);
+      expect(() => JSON.parse(String(stream.finalOutput))).toThrow();
+      const message = actualMessage(stream), copiedMessage = {...message};
+      expect(copiedMessage.id).toBe(message.id); expect(copiedMessage).toEqual(message); expect(copiedMessage).not.toBe(message);
+      // Current-response counterpart identity is exposed; equality of IDs/content alone does not prove it.
+      expect(stream.state._lastProcessedResponse?.newItems.filter(item => item.type === 'message_output_item')[0].rawItem).toBe(message);
+    } finally {await h.cleanup();}
+  });
+
+  it.each(['refusal', 'legacy_action', 'custom_action'] as const)('records raw %s that SDK text output alone cannot exclude', async action => {
+    const extra = action === 'refusal' ? {refusal: 'fixture refusal'} : action === 'legacy_action'
+      ? {function_call: {name: 'legacy_fixture', arguments: '{}'}}
+      : {tool_calls: [{index: 0, id: 'custom-id', type: 'custom', custom: {name: 'custom_fixture', input: 'fixture'}}]};
+    const h = sdkTextProbe({response: () => response(assistantWire([wholeJson], {extra}))});
+    try {
+      const stream = await h.settle(); exactTextViews(h, stream, wholeJson); noSubmission(h);
+      expect(rawChunks(h)[0]).toMatchObject({choices: [{delta: extra}]});
+      expect(stream.state._lastTurnResponse?.output.filter(item => item.type === 'function_call')).toHaveLength(0);
+      if (action === 'refusal') expect(actualMessage(stream).content).toEqual(expect.arrayContaining([{type: 'refusal', refusal: 'fixture refusal'}]));
+      expect(h.admission()?.diagnostic().status).toBe('rejected'); expect(h.fetcher).toHaveBeenCalledTimes(1);
+    } finally {await h.cleanup();}
+  });
+
+  it('does not equate DONE with EOF or native drain while the real response remains open', async () => {
+    const release = deferred<void>(); let pulled = false;
+    const h = sdkTextProbe({response: () => new Response(new ReadableStream<Uint8Array>({async pull(controller) {
+      if (!pulled) {pulled = true; controller.enqueue(new TextEncoder().encode(assistantWire([wholeJson]))); return;}
+      await release.promise; controller.close();
+    }}), {headers: {'content-type': 'text/event-stream'}})});
+    try {
+      const state = await h.tracked; await h.assistantTextEntered.promise; await boundary();
+      expect(h.observations.drained).toBe(false); expect(h.observations.consumerDrained).toBe(false);
+      expect(state.stream.finalOutput).toBeUndefined(); expect(issue).not.toHaveBeenCalled();
+      release.resolve(); const stream = await h.settle(); exactTextViews(h, stream, wholeJson); noSubmission(h);
+    } finally {release.resolve(); await h.cleanup();}
+  });
+
+  it('exposes SDK finalOutput before a delayed real consumer finishes, with current issuance still absent', async () => {
+    const release = deferred<void>(), h = sdkTextProbe({consumerGate: release.promise, response: () => response(assistantWire([wholeJson]))});
+    try {
+      const state = await h.tracked; await state.stream.completed; await state.drain;
+      expect(state.stream.finalOutput).toBe(wholeJson); expect(h.observations.consumerDrained).toBe(false);
+      expect(h.submission()).toBeUndefined(); expect(issue).not.toHaveBeenCalled();
+      release.resolve(); const stream = await h.settle(); exactTextViews(h, stream, wholeJson); noSubmission(h);
+    } finally {release.resolve(); await h.cleanup();}
+  });
+
+  it('serializes an unresolved prior function call without making its absence from the current response a completion proof', async () => {
+    const pending: AgentInputItem = {type: 'function_call', callId: 'prior-unresolved', name: 'other_fixture', arguments: '{}'};
+    const h = sdkTextProbe({otherGate: Promise.resolve(), input: [{role: 'user', content: 'fixture'}, pending], response: () => response(assistantWire([wholeJson]))});
+    try {
+      const stream = await h.settle(); exactTextViews(h, stream, wholeJson); noSubmission(h);
+      expect(h.fetcher).toHaveBeenCalledTimes(1);
+      const request = JSON.parse(String(h.fetcher.mock.calls[0][1]?.body));
+      expect(request.messages).toEqual(expect.arrayContaining([expect.objectContaining({role: 'assistant', tool_calls: [
+        {id: 'prior-unresolved', type: 'function', function: {name: 'other_fixture', arguments: '{}'}}]})]));
+      expect(request.messages.some((item: {role?: string}) => item.role === 'tool')).toBe(false);
+      expect(stream.state._lastTurnResponse?.output.every(item => item.type === 'message')).toBe(true);
+      // The fake HTTP peer accepts this request; this says nothing about a real provider's history validation.
+    } finally {await h.cleanup();}
+  });
+
+  it('waits for actual prior tool work before requesting the no-tool JSON turn', async () => {
+    const release = deferred<void>(); let requests = 0;
+    const h = sdkTextProbe({maxTurns: 2, otherGate: release.promise, response: () => ++requests === 1
+      ? response(assistantWire([wholeJson], {finish: 'tool_calls', ids: ['prior-provider-id', 'prior-provider-id'],
+        extra: {tool_calls: [{index: 0, id: 'prior-active', type: 'function', function: {name: 'other_fixture', arguments: '{}'}}]}}))
+      : response(assistantWire([wholeJson]))});
+    try {
+      const state = await h.tracked; await h.otherEntered.promise; await boundary();
+      expect(h.fetcher).toHaveBeenCalledTimes(1); expect(h.observations.drained).toBe(false);
+      expect(state.stream.finalOutput).toBeUndefined(); expect(issue).not.toHaveBeenCalled();
+      release.resolve(); const stream = await h.settle();
+      expect(stream.error).toBeNull(); expect(stream.finalOutput).toBe(wholeJson);
+      expect(actualMessage(stream).content).toEqual(expect.arrayContaining([expect.objectContaining({type: 'output_text', text: wholeJson})]));
+      expect(rawText(h)).toBe(wholeJson + wholeJson); // One text per response; never concatenate them into a new final document.
+      expect(h.fetcher).toHaveBeenCalledTimes(2); noSubmission(h);
+      const second = JSON.parse(String(h.fetcher.mock.calls[1][1]?.body));
+      expect(second.messages).toEqual(expect.arrayContaining([expect.objectContaining({role: 'tool', tool_call_id: 'prior-active'})]));
+    } finally {release.resolve(); await h.cleanup();}
+  });
 });
