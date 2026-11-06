@@ -91,28 +91,48 @@ SDK 路径发送；实际请求、原生终态和使用量须分别观测，不�
 事实来源见 [DeepSeek Chat API](https://api-docs.deepseek.com/api/create-chat-completion/)。
 
 `SMARTPERFETTO_FINAL_SUBMISSION` 选择主分析输出运输，默认 `assistant_text`；
-`authored_claim_document_v1` 是显式实验配置。它与声明格式在分类调用前一起捕获，
-只允许 `canonical_v1`。实验准入分别检查实际 SDK 合同、Chat Completions 协议及
+`authored_claim_document_v1` 和 `authored_claim_document_v2` 是显式实验配置，分别要求
+`canonical_v1` 和 `authoring_v2`。运输与声明格式在分类调用前一起捕获。
+实验准入分别检查实际 SDK 合同、Chat Completions 协议及
 所有可能用于主分析的模型的 function-tool 原语事实；未知或不兼容配置在付费调用前拒绝。
 已观察到工具调用不代表该模型的文档提交、准确度或性能已经通过验收。
 
 实验运输从实际 registry 的唯一 `final_candidate_submission` role 取得工具名。
-模型用 `documentJson` 提交正文片段和原始 canonical 声明；工具 strict schema 只约束外层
-字符串字段，字符串内的 JSON 仍须独立解析和校验。确定性 compiler 只拼接模型所写文字，
-不从证据补值。原始 wire 参数、SDK 调用、真实 handler 成功、原生 final
+V1 用 `documentJson` 提交正文片段和原始 canonical 声明。工具 strict schema 只约束外层
+字符串字段，字符串内的 JSON 仍须独立解析和校验。V2 用 `document` 原生对象提交文字片段、
+引用字典、声明和显式 semantic frame，schema 覆盖完整对象。服务端 strict 保证取决于实际
+端点。引用索引只展开模型已提交的值。确定性 compiler 拼接模型所写文字，保留原始声明及
+非法条目，随后独立执行 canonical 校验。原始 wire 参数、SDK 实际解析值、真实 handler
+参数必须严格一致，正文中的 JSON 样式文字按字面保留。真实 handler 成功、原生 final
 和后台排空共同确认提交，随后仍由共享 finalizer 完成原有证据、语义、源码和报告校验。
 作者来源为 `model_tool_arguments`。实际 main 缺少提交或运输失败是独立产品问题，
 不改写 SDK 的真实完成状态，也不启动旧声明修复或续写。没有 main 调用的程序 ACK／
-直接证据路径保持原交付，其实际运输不适用。
+直接证据路径保持原交付，运输观察记为 `not_exercised`。
+
+Conversation 的 typed envelope 当前交付 `answered` 正文，附带既有 evidence。正文里的
+控制协议样式文字保持字面。显式 `needs_user_input` 和 `recommend_full` 会话动作仍使用
+`assistant_text` 的控制协议，typed envelope 尚无对应控制字段。
+
+V2 的片段引文在编译时绑定原始 claim 序号和正文 UTF-16 位置，由当前 run 的私有签发材料
+供共享 finalizer 读取。缺少绑定、声明变化或隐私处理导致正文变化时，该引文保留为未检查并
+返回空位置。已签发的全局引文继续使用既有匹配。原始对象和私有绑定留在本轮内存，报告、
+历史与公开事件继续消费 canonical 产品结果。
 
 实际签发并完成排空的 typed 提交通过既有 `candidate_protocol` 诊断保留原 canonical
 校验状态、闭集 issue 与可确认的原始条目计数；编译成功不等于声明有效。可选 `authoredMaterial`
-分别记录原参数、原 document、正文与编译器已有 normalized 材料的规模，不输出内容、ID
+分别记录原参数、正文与编译器已有 normalized 材料的规模。V1 另计原 documentJson。V2
+另计原生对象及展开后材料，保留各自版本和计量边界。不输出内容、ID
 或动态字段名，也不能把嵌套计量相加或换算成 token。失败日志中的 `wireFinishReason`
 仅投影实际观察到的闭集原生终态，缺失保持缺失。诊断失败不改变接纳、授权、完成状态、
 修复或预算；历史没有记录的失败不能用新诊断回填原因。
 请求指标中的 `toolArguments` 统计该次请求携带的历史参数，不包含它随后生成的响应；
 没有后续派发时，最终提交不会进入这项输入计数。缺少材料诊断也不代表输出大小为零。
+
+内部性能观察区分实际 main、分类和语义审核派发，记录原生结束、工具排空、候选选择与
+finalizer 的对应关系。配置承诺、实际发送参数和服务端明确返回的模型身份分别保存，缺失
+事实保持 unknown。请求的 normalized JSON 字节数与原始 wire body 大小分别计量。运输
+对照须使用同源观察器、固定配置和逐样本质量门，并计入完整工具 schema 与提示词成本。
+不完整或不可比的样本给出 inconclusive。
 
 ## M10 独立反馈 triage
 

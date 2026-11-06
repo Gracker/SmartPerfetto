@@ -18,6 +18,7 @@ import {
   isClaudeSdkToolLike,
   normalizeRuntimeToolArgs,
   preserveRuntimeLiteralStrings,
+  preserveRuntimeLiteralJson,
   sharedToolSpecFromClaudeSdkTool,
   stringifyRuntimeToolResult,
   withRuntimeToolConcurrency,
@@ -1050,5 +1051,38 @@ describe('run authorization wrappers', () => {
     const again = timedExtra();
     await outer.handler({}, again.extra);
     expect(again.recorder.seal().tools).toHaveLength(1);
+  });
+});
+
+
+describe('schema-owned literal JSON subtree', () => {
+  it('preserves nested literal data and number identity without cloning the marked subtree', () => {
+    const document = {parts: ['{"literal":true}', '[1,2]', 'null', 'None'],
+      values: JSON.parse('[null,1e999,-0]'), nested: {selector: '{"a":1}'}};
+    const field = preserveRuntimeLiteralJson(z.object({parts: z.array(z.string())}));
+    const normalized = normalizeRuntimeToolArgs({document, ordinary: '{"n":1}'}, {document: field}) as Record<string, unknown>;
+    expect(normalized.document).toBe(document);
+    expect(normalized.ordinary).toEqual({n: 1});
+    expect(document.parts).toEqual(['{"literal":true}', '[1,2]', 'null', 'None']);
+    expect(Object.is(document.values[1], Infinity)).toBe(true);
+    expect(Object.is(document.values[2], -0)).toBe(true);
+  });
+
+  it.each([null, 'null', 'None', '{"parts":[]}', '[1,2]'])('leaves wrong-type or placeholder %p for the owning compiler to reject', value => {
+    const field = preserveRuntimeLiteralJson(z.object({parts: z.array(z.string())}));
+    expect(normalizeRuntimeToolArgs({document: value}, {document: field})).toEqual({document: value});
+  });
+
+  it('does not serialize the private marker or change an unmarked schema instance', () => {
+    const schema = z.object({parts: z.array(z.string())});
+    const before = createJsonSchemaFromZodRawShape({document: schema});
+    const marked = preserveRuntimeLiteralJson(schema);
+    expect(marked).toBe(schema);
+    expect(createJsonSchemaFromZodRawShape({document: marked})).toEqual(before);
+    const plain = z.object({parts: z.array(z.string())});
+    expect(normalizeRuntimeToolArgs({document: {parts: ['{"literal":true}']}}, {document: plain}))
+      .toEqual({document: {parts: [{literal: true}]}});
+    expect(normalizeRuntimeToolArgs({document: {parts: ['{"literal":true}']}}, {document: marked}))
+      .toEqual({document: {parts: ['{"literal":true}']}});
   });
 });

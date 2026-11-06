@@ -30,3 +30,29 @@ export function chatCompletionToolCall(id: string, name: string, args: Record<st
   return chatCompletionResponse(id, {role: 'assistant',
     tool_calls: [{index: 0, id: `${id}-call`, type: 'function', function: {name, arguments: JSON.stringify(args)}}]}, 'tool_calls');
 }
+
+
+/** Jest's native structuredClone creates host-realm containers. Keep production
+ * plain-JSON checks strict by rehoming only those copied containers in this fixture.
+ * The original input and non-plain prototypes are untouched; callers must restore. */
+export function installCurrentRealmStructuredCloneForTest(): () => void {
+  const original = globalThis.structuredClone;
+  const nativeObjectPrototype = Object.getPrototypeOf(original({}));
+  const nativeArrayPrototype = Object.getPrototypeOf(original([]));
+  globalThis.structuredClone = <T>(value: T, options?: Parameters<typeof structuredClone>[1]): T => {
+    const copied = original(value, options);
+    const seen = new WeakSet<object>();
+    const visit = (item: unknown): void => {
+      if (item === null || typeof item !== 'object' || seen.has(item)) return;
+      seen.add(item);
+      const prototype = Object.getPrototypeOf(item);
+      if (prototype === nativeObjectPrototype) Object.setPrototypeOf(item, Object.prototype);
+      else if (prototype === nativeArrayPrototype) Object.setPrototypeOf(item, Array.prototype);
+      else return;
+      Object.values(item).forEach(visit);
+    };
+    visit(copied);
+    return copied;
+  };
+  return () => {globalThis.structuredClone = original;};
+}

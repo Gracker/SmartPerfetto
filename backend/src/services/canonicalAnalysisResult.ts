@@ -112,7 +112,7 @@ export interface CandidateProtocolDiagnostic {
   authoredMaterial?: CandidateAuthoredMaterialDiagnostic;
 }
 
-interface CandidateAuthoredMaterialDiagnostic {
+interface CandidateAuthoredMaterialV1Diagnostic {
   rawArgumentsUtf8Bytes: number;
   documentInputUtf8Bytes: number;
   bodyUtf8Bytes: number;
@@ -120,6 +120,17 @@ interface CandidateAuthoredMaterialDiagnostic {
   normalizedDocument: {utf8Bytes: number; nodes: number; depth: number};
   normalizedExpanded: {utf8Bytes: number; nodes: number; depth: number};
 }
+
+interface CandidateAuthoredMaterialV2Diagnostic {
+  representationVersion: 'authored_claim_document@2';
+  rawArgumentsUtf8Bytes: number;
+  bodyUtf8Bytes: number;
+  bodyUtf16Length: number;
+  normalizedNativeDocument: {utf8Bytes: number; nodes: number; depth: number};
+  normalizedExpanded: {utf8Bytes: number; nodes: number; depth: number};
+}
+
+type CandidateAuthoredMaterialDiagnostic = CandidateAuthoredMaterialV1Diagnostic | CandidateAuthoredMaterialV2Diagnostic;
 
 const FRAMING_REASONS = {
   marker: ['not_exact'], opening_fence: ['not_exact'], closing_fence: ['not_exact'],
@@ -171,12 +182,16 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 
 function sanitizeAuthoredMaterial(value: unknown): CandidateAuthoredMaterialDiagnostic | undefined {
-  const keys = ['rawArgumentsUtf8Bytes', 'documentInputUtf8Bytes', 'bodyUtf8Bytes', 'bodyUtf16Length',
-    'normalizedDocument', 'normalizedExpanded'];
+  if (!record(value)) return undefined;
+  const native = value.representationVersion === 'authored_claim_document@2';
+  const keys = native
+    ? ['representationVersion', 'rawArgumentsUtf8Bytes', 'bodyUtf8Bytes', 'bodyUtf16Length', 'normalizedNativeDocument', 'normalizedExpanded']
+    : ['rawArgumentsUtf8Bytes', 'documentInputUtf8Bytes', 'bodyUtf8Bytes', 'bodyUtf16Length', 'normalizedDocument', 'normalizedExpanded'];
   const count = (value: unknown, limit: number): value is number =>
     Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= limit;
-  if (!record(value) || Object.keys(value).length !== keys.length || Object.keys(value).some(key => !keys.includes(key)) ||
-      !keys.slice(0, 4).every(key => count(value[key], CONCLUSION_AUTHORING_LIMITS.utf8Bytes))) return undefined;
+  const byteKeys = native ? ['rawArgumentsUtf8Bytes', 'bodyUtf8Bytes', 'bodyUtf16Length'] : keys.slice(0, 4);
+  if (Object.keys(value).length !== keys.length || Object.keys(value).some(key => !keys.includes(key)) ||
+      !byteKeys.every(key => count(value[key], CONCLUSION_AUTHORING_LIMITS.utf8Bytes))) return undefined;
   const material = (item: unknown) => {
     if (!record(item) || Object.keys(item).length !== 3 ||
         Object.keys(item).some(key => !['utf8Bytes', 'nodes', 'depth'].includes(key)) ||
@@ -184,11 +199,15 @@ function sanitizeAuthoredMaterial(value: unknown): CandidateAuthoredMaterialDiag
         !count(item.nodes, CONCLUSION_AUTHORING_LIMITS.nodes) || !count(item.depth, CONCLUSION_AUTHORING_LIMITS.depth)) return undefined;
     return {utf8Bytes: item.utf8Bytes, nodes: item.nodes, depth: item.depth};
   };
-  const normalizedDocument = material(value.normalizedDocument), normalizedExpanded = material(value.normalizedExpanded);
-  if (!normalizedDocument || !normalizedExpanded) return undefined;
-  return {rawArgumentsUtf8Bytes: value.rawArgumentsUtf8Bytes as number,
-    documentInputUtf8Bytes: value.documentInputUtf8Bytes as number, bodyUtf8Bytes: value.bodyUtf8Bytes as number,
-    bodyUtf16Length: value.bodyUtf16Length as number, normalizedDocument, normalizedExpanded};
+  const normalized = material(native ? value.normalizedNativeDocument : value.normalizedDocument);
+  const normalizedExpanded = material(value.normalizedExpanded);
+  if (!normalized || !normalizedExpanded) return undefined;
+  const common = {rawArgumentsUtf8Bytes: value.rawArgumentsUtf8Bytes as number,
+    bodyUtf8Bytes: value.bodyUtf8Bytes as number, bodyUtf16Length: value.bodyUtf16Length as number, normalizedExpanded};
+  return native ? {representationVersion: 'authored_claim_document@2', ...common, normalizedNativeDocument: normalized}
+    : {rawArgumentsUtf8Bytes: common.rawArgumentsUtf8Bytes, documentInputUtf8Bytes: value.documentInputUtf8Bytes as number,
+      bodyUtf8Bytes: common.bodyUtf8Bytes, bodyUtf16Length: common.bodyUtf16Length,
+      normalizedDocument: normalized, normalizedExpanded};
 }
 
 /** Diagnostics carry only fixed schema locations, never source paths, model text or admission authority. */
@@ -279,7 +298,7 @@ export function buildAuthoredCandidateProtocolDiagnostic(snapshot: AuthoredFinal
   const diagnostic = projectCandidateProtocolDiagnostic({
     base: {stage: 'native', candidateIndex: 1, status: compiled.canonicalParse.status,
       sidecarStatus: 'absent', typedJsonStatus: compiled.canonicalParse.status,
-      rawChars: snapshot.documentJson.length, canonicalChars: compiled.body.trim().length, projectionKind: 'preserved'},
+      rawChars: 'documentJson' in snapshot ? snapshot.documentJson.length : snapshot.rawArguments.length, canonicalChars: compiled.body.trim().length, projectionKind: 'preserved'},
     issues: compiled.canonicalParse.issues, payload,
     // Keep the existing linked-count contract. Missing/malformed containers
     // are unknown, never a fabricated empty collection or a parsed valid subset.
@@ -287,11 +306,16 @@ export function buildAuthoredCandidateProtocolDiagnostic(snapshot: AuthoredFinal
       semanticClaimCount: claims.filter(claim => record(claim) && Object.prototype.hasOwnProperty.call(claim, 'semantics')).length,
       sourceBindingCount: sourceBindings.length}} : {}),
   });
-  return {...diagnostic, authoredMaterial: {
+  return {...diagnostic, authoredMaterial: 'documentJson' in snapshot ? {
     rawArgumentsUtf8Bytes: Buffer.byteLength(snapshot.rawArguments, 'utf8'),
-    documentInputUtf8Bytes: compiled.material.rawInputUtf8Bytes,
+    documentInputUtf8Bytes: snapshot.compiled.material.rawInputUtf8Bytes,
     bodyUtf8Bytes: compiled.material.bodyUtf8Bytes, bodyUtf16Length: compiled.material.bodyUtf16Length,
-    normalizedDocument: {...compiled.material.raw}, normalizedExpanded: {...compiled.material.expanded},
+    normalizedDocument: {...snapshot.compiled.material.raw}, normalizedExpanded: {...compiled.material.expanded},
+  } : {
+    representationVersion: 'authored_claim_document@2',
+    rawArgumentsUtf8Bytes: Buffer.byteLength(snapshot.rawArguments, 'utf8'),
+    bodyUtf8Bytes: compiled.material.bodyUtf8Bytes, bodyUtf16Length: compiled.material.bodyUtf16Length,
+    normalizedNativeDocument: {...snapshot.compiled.material.nativeDocument}, normalizedExpanded: {...compiled.material.expanded},
   }};
 }
 
@@ -415,7 +439,9 @@ export function canonicalizeAnalysisResult(
   const display = authored ? {canonicalBody: raw,
     sidecar: {status: 'absent' as const, raw: '', bindingEligibility: 'legacy_unchecked' as const,
       narrative: raw, machineSegments: [], issues: []},
-    typedJson: parseConclusionDeclarationPayload(authored.rawCanonicalPayload, 'canonical_v1'), conversation: undefined}
+    typedJson: parseConclusionDeclarationPayload(authored.rawCanonicalPayload, 'canonical_v1'),
+    conversation: options.conversation ? {status: 'absent' as const, narrative: raw, machineSegments: [], issues: [],
+      outcome: {kind: 'answered' as const, message: raw, evidence: options.conversation.evidence ?? []}} : undefined}
     : inspectCandidateProtocol(raw, options.conversation);
   const {sidecar, conversation, typedJson} = options.nativeDeclaration && !authored && options.nativeDeclaration.inputKind !== 'model_tool_arguments'
     ? inspectCandidateProtocol(options.nativeDeclaration.raw, options.conversation) : display;

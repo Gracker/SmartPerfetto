@@ -35,7 +35,7 @@ import {assessNumericPresentations} from './numericPresentationAssessment';
 import {appendTerminationMessage, applyFinalResultQualityGate, type FinalResultComparisonIdentity,
   type FinalResultQualityIssue} from './finalResultQualityGate';
 import {withOwnerCodeAwareProjection} from './security/codeAwareOutputRegistry';
-import {projectConclusionSemanticInput, bindAuthoredFinalDelivery} from './security/conclusionProtocolProjection';
+import {projectConclusionSemanticInput, bindAuthoredFinalDelivery, readConclusionTransportObservation} from './security/conclusionProtocolProjection';
 import {projectStoredConclusionSourceMetadata} from './security/analysisDeliveryProjection';
 import {getCapturedAnchorFacts} from './evidence/evidenceCapture';
 import {compactSemanticEvidenceSnapshot} from './evidence/semanticEvidenceSnapshot';
@@ -57,7 +57,8 @@ import {issueSceneTimelinePublication, type SceneTimelinePublication} from '../a
 import {localize, type OutputLanguage} from '../agentv3/outputLanguage';
 import type {FinalizationProgressEvent, FinalizationProgressObserver} from './finalizationProgress';
 import {currentRuntimePerformanceRecorder} from './selfEvolution/runManifestLifecycle';
-import {recordRuntimeFinalDeclaration, recordRuntimeFinalReview, type RuntimeFinalReviewTrigger} from '../agentRuntime/runtimePerformance';
+import {recordRuntimeFinalDeclaration, recordRuntimeFinalReview, findRuntimeRetainedTransportEvent,
+  recordRuntimeFinalTransportEvent, type RuntimeFinalReviewTrigger} from '../agentRuntime/runtimePerformance';
 
 export interface AnalysisFinalizationOwner {
   runId: string;
@@ -597,6 +598,10 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
         referenceTraceId: expectedPair.referenceTraceId} : suppliedIdentity;
     const caseRecommendations = frozenSnapshot(input.caseRecommendations);
     const nativeDeclaration = context?.getNativeDeclaration(original, owner.signal);
+    let transportObservation: ReturnType<typeof readConclusionTransportObservation>;
+    try {
+      if (nativeDeclaration) transportObservation = readConclusionTransportObservation(nativeDeclaration);
+    } catch { /* Observation cannot alter the selected declaration or capability lifetime. */ }
     const canonical = canonicalizeAnalysisResult(original, {context: context?.deliveryContext, nativeDeclaration, conversation});
     if (!isIssuedCanonicalAnalysisProjection(canonical.projection)) throw new Error('unissued_canonical_projection');
     const result = canonical.result;
@@ -635,8 +640,11 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
       comparisonReportSection, relationCandidates: relations.relationCandidates,
       relationActivationClaimIds: relations.relationActivationClaimIds, preparedEvidence: prepared,
       bindingEligibility: canonical.bindingEligibility, policy: 'record_only'});
+    const actualDelivery = context?.deliveryContext;
     const numericPresentations = assessNumericPresentations({contract: validationContract,
-      claims: draft.claimVerificationResult.claimResults, support: draft.claimSupport, body: result.conclusion, candidate});
+      claims: draft.claimVerificationResult.claimResults, support: draft.claimSupport, body: result.conclusion, candidate,
+      ...(actualDelivery && actualDelivery.entry !== 'historical_restore' && actualDelivery.finalSubmission?.mode === 'authored_claim_document_v2'
+        ? {authoredQuoteContext: {expectedVersion: 'authored_claim_document@2' as const, nativeDeclaration}} : {})});
     draft.claimVerificationResult.claimResults = draft.claimVerificationResult.claimResults.map(claim => {
       const numericPresentation = numericPresentations.get(claim.claimId);
       return numericPresentation ? {...claim, numericPresentation} : claim;
@@ -841,6 +849,21 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
       providerId: input.scene.providerId, runtimeKind: result.completion?.runtimeKind,
       registryFingerprint: context?.strategyRegistry.registryFingerprint,
     }) : undefined;
+    try {
+      if (transportObservation && canonical.projection.sourceCandidate && canonical.projection.candidate) {
+        const recorder = currentRuntimePerformanceRecorder();
+        const source = recorder ? {runtimePerformanceRecorder: recorder} : undefined;
+        const retained = findRuntimeRetainedTransportEvent(source, transportObservation.nativeCandidateKey);
+        if (retained) recordRuntimeFinalTransportEvent(source, {
+          kind: 'finalizer_selected', retainedEventKey: retained.eventKey,
+          nativeCandidateKey: transportObservation.nativeCandidateKey,
+          displayCandidateKey: transportObservation.displayCandidateKey,
+          canonicalSourceCandidateKey: analysisDeliveryFingerprint(canonical.projection.sourceCandidate),
+          canonicalCandidateKey: analysisDeliveryFingerprint(canonical.projection.candidate),
+          productStatus: result.completion?.status ?? 'unknown',
+        });
+      }
+    } catch { /* Metrics never change finalization, selection or its original disposal boundary. */ }
     return {result, qualityIssue, semanticAssessment: semantic,
       ...(scenePublication ? {scenePublication} : {}),
       ...(canonical.conversationOutcome ? {conversationOutcome: {...canonical.conversationOutcome, message: result.conclusion}} : {})};

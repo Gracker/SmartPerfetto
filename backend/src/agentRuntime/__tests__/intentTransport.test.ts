@@ -4,13 +4,16 @@
 
 import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 import {
+  dispatchWithModelCallRecord,
   intentTransportErrorReason,
   intentTransportTextResult,
   openAiTextRequestPurposeFor,
   runIntentTransport,
   sdkResultFailureReason,
   type IntentTransportInput,
+  type IntentTransportResult,
 } from '../intentTransport';
+import {createRuntimePerformanceRecorder} from '../runtimePerformance';
 
 function input(): IntentTransportInput {
   return {prompt: 'classify', systemPrompt: 'system', deadlineMs: Date.now() + 50, outputByteLimit: 100};
@@ -134,5 +137,29 @@ describe('intent transport purpose mapping and failure reasons', () => {
     expect(sdkResultFailureReason({subtype: 'success', is_error: false, stop_reason: 'refusal'})).toBe('invalid_response');
     expect(sdkResultFailureReason({subtype: 'error_max_turns', is_error: true})).toBe('invalid_response');
     expect(sdkResultFailureReason({})).toBe('invalid_response');
+  });
+});
+
+
+describe('explicit provider model provenance', () => {
+  it.each([
+    {name: 'reported', actualModel: 'reported-model', modelSource: 'provider_reported' as const, expected: 'provider_reported'},
+    {name: 'Pi-style fallback', actualModel: 'configured-fallback', modelSource: undefined, expected: undefined},
+    {name: 'absent provider model', actualModel: undefined, modelSource: undefined, expected: 'configured'},
+    {name: 'tag without model', actualModel: undefined, modelSource: 'provider_reported' as const, expected: 'configured'},
+  ])('preserves model values and source facts for $name', async ({actualModel, modelSource, expected}) => {
+    const recorder = createRuntimePerformanceRecorder();
+    const native: IntentTransportResult = {status: 'ok', text: 'Provider text.',
+      ...(actualModel === undefined ? {} : {actualModel}), ...(modelSource ? {modelSource} : {})};
+    const dispatch = jest.fn<() => Promise<IntentTransportResult>>().mockResolvedValue(native);
+    const result = await dispatchWithModelCallRecord(recorder, {purpose: 'classification', model: 'configured-model'},
+      input(), dispatch);
+    expect(result).toBe(native);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    const calls = recorder.seal().modelCalls;
+    expect(calls).toHaveLength(1);
+    expect(calls?.[0].model).toBe(actualModel ?? 'configured-model');
+    if (expected === undefined) expect(calls?.[0]).not.toHaveProperty('modelSource');
+    else expect(calls?.[0].modelSource).toBe(expected);
   });
 });

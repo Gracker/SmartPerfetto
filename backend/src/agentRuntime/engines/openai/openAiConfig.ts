@@ -42,6 +42,18 @@ export interface OpenAIAgentConfig {
   outputLanguage: OutputLanguage;
 }
 
+/** The classifier uses the original configured cap, bounded by its existing stage limit. */
+export function resolveOpenAiClassifierOutputLimit(config: Pick<OpenAIAgentConfig, 'maxOutputTokens'>): number {
+  return Math.min(config.maxOutputTokens ?? 2048, 2048);
+}
+
+/** Capture exactly the existing no-tool finalization inputs, retaining their field presence and output identity. */
+export function createOpenAiFinalizationConfig(config: OpenAIAgentConfig) {
+  return Object.freeze({baseURL: config.baseURL, apiKey: config.apiKey,
+    protocol: config.protocol, lightModel: config.model, outputConfig: config.outputConfig,
+    ...(config.maxOutputTokens !== undefined ? {maxOutputTokens: config.maxOutputTokens} : {})});
+}
+
 const DEFAULT_MODEL = 'gpt-5.4-mini';
 const DEFAULT_LIGHT_MODEL = 'gpt-5.4-mini';
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';

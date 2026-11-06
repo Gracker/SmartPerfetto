@@ -2,7 +2,13 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {afterEach, describe, expect, it, jest} from '@jest/globals';
+import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
+import {installCurrentRealmStructuredCloneForTest} from '../../../tests/helpers/openAiRuntimeFixture';
+import {AUTHORED_CLAIM_OBJECT_VERSION, compileAuthoredClaimObject} from '../../agent/core/authoredClaimObject';
+import type {AuthoredClaimObjectInput} from '../../agent/core/authoredClaimObjectSchema';
+import {AUTHORED_CLAIM_OBJECT_COMPILER_VERSION, createAuthoredFinalSubmissionIssuer, issueAuthoredFinalSubmission,
+  readAuthoredFinalSubmission, revokeAuthoredFinalSubmission} from '../../agentRuntime/authoredFinalSubmission';
+import type {AuthoredConclusionSubmission} from '../security/conclusionProtocolProjection';
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
 import {parseConclusionContractDeclaration, renderConclusionContractSidecar, type ClaimSemanticsV1,
   type ConclusionContract} from '../../agent/core/conclusionContract';
@@ -41,6 +47,9 @@ import {investigationRequirementNeedsReview} from '../finalInvestigationContract
 import {createRunManifestLifecycle, withRunManifestLifecycle, clearRunManifestLifecyclesForTests} from '../selfEvolution/runManifestLifecycle';
 import {copyAnalysisResultForSnapshot, projectOwnerAnalysisResult, projectPrivateAnalysisResult} from '../security/privateAnalysisProjection';
 import {buildAnalysisReceipt} from '../analysisReceiptBuilder';
+import {readConclusionTransportObservation} from '../security/conclusionProtocolProjection';
+import * as protocolProjection from '../security/conclusionProtocolProjection';
+import {recordRuntimeFinalTransportEvent} from '../../agentRuntime/runtimePerformance';
 import locationFault from '../../../tests/fixtures/location-verdict/fault.json';
 import locationNormal from '../../../tests/fixtures/location-verdict/normal.json';
 
@@ -148,6 +157,7 @@ describe('persisted location verdict regressions', () => {
 });
 
 function fixture(options: {body?: string; capture?: boolean; claim?: boolean; inconsistent?: boolean;
+  authoredSubmission?: AuthoredConclusionSubmission;
   finalSubmission?: Exclude<AnalysisDeliveryContext, {entry: 'historical_restore'}>['finalSubmission'];
   omissions?: boolean; report?: boolean; providerQuery?: {text: string; analysisContextFingerprint?: string};
   /** Use a registered scene's real report policy; null represents an unknown scene. */
@@ -284,13 +294,15 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
     evidenceAccess: 'existing_only' as const});
   const nativeDelivery = {entry: 'runtime_draft' as const, acceptedCandidate: candidate,
     ...(options.finalSubmission ? {finalSubmission: options.finalSubmission} : {}),
-    outputOrigin: options.evidenceRenderedAcknowledgement ? 'evidence_rendered' as const : 'sdk_final' as const,
+    outputOrigin: options.authoredSubmission ? 'model_tool_arguments' as const
+      : options.evidenceRenderedAcknowledgement ? 'evidence_rendered' as const : 'sdk_final' as const,
     completion: {...candidate, schemaVersion: 1 as const, runtimeKind: 'openai-agents-sdk' as const,
       ...(options.nativeCompletion ?? {status: 'completed' as const})},
     ...(options.evidenceRenderedAcknowledgement ? {evidenceRenderedProof: {kind: 'acknowledgement' as const, candidate,
       intentFingerprint: analysisDeliveryFingerprint(intentFor(registry.registryFingerprint)), evidence: 'not_applicable' as const}} : {})};
-  const projection = sourceUse || options.nativeProjection ? finalizeOwnerSourceAwareAnalysisResultWithProjection(result,
-    sourceUse ? {getSourceUseDecision: () => sourceUse!} : undefined, {context: nativeDelivery}) : undefined;
+  const projection = sourceUse || options.nativeProjection || options.authoredSubmission ? finalizeOwnerSourceAwareAnalysisResultWithProjection(result,
+    sourceUse ? {getSourceUseDecision: () => sourceUse!} : undefined,
+    {context: nativeDelivery, ...(options.authoredSubmission ? {authoredSubmission: options.authoredSubmission} : {})}) : undefined;
   const semanticBody = canonicalizeAnalysisResult(result).result.conclusion;
   const controller = new AbortController();
   const owner: AnalysisFinalizationOwner = {runId, signal: controller.signal,
@@ -338,6 +350,54 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
 }
 
 afterEach(() => {clearAllCodeAwareOutputGuards(); clearRunManifestLifecyclesForTests(); jest.useRealTimers();});
+
+describe('finalizer transport selection observation', () => {
+  it.each(['retained', 'missing', 'sealed'] as const)('keeps finalization intact with %s observation', async mode => {
+    const target = fixture({nativeProjection: true});
+    const native = target.context.getNativeDeclaration(target.result, target.owner.signal);
+    if (!native) throw new Error('Missing issued native declaration in fixture');
+    const identity = readConclusionTransportObservation(native);
+    if (!identity) throw new Error('Missing issued transport identities in fixture');
+    const lifecycle = createRunManifestLifecycle({runId: 'run', sessionId: target.result.sessionId,
+      scope: {tenantId: 'tenant', workspaceId: 'workspace'}, runtime: 'openai-agents-sdk', outputLanguage: 'en',
+      analysisMode: 'fast', skillRegistry: {registryFingerprint: 'registry', evolutionOverlayGeneration: 'builtin', skills: []}});
+    const recorder = lifecycle.builder.runtimePerformanceRecorder;
+    // This synthetic retained event isolates finalizer mapping. Native-author admission has separate graph tests.
+    const retainedKey = mode === 'missing' ? undefined : recordRuntimeFinalTransportEvent({identity: lifecycle.identity, runtimePerformanceRecorder: recorder}, {
+      kind: 'candidate_retained', nativeCandidateKey: identity.nativeCandidateKey, carrier: 'assistant_text',
+      transform: 'native', authors: [], declaredBody: 'present', declaredClaims: 'present', productStatus: 'completed',
+    });
+    if (mode !== 'missing') expect(retainedKey).toMatch(/^[a-f0-9]{64}$/);
+    if (mode === 'sealed') recorder.seal();
+    const final = await withRunManifestLifecycle(lifecycle, () => target.run());
+    expect(final.result.conclusion).toBe('\nThe captured value is 49.\n');
+    expect(final.result.completion?.status).toBe('completed');
+    expect(final.result.claimVerificationResult?.claimResults[0].deterministicProof?.status).toBe('proved');
+    expect(target.dispatch).toHaveBeenCalledTimes(1);
+    const selected = recorder.seal().finalTransportObservation?.events.filter(event => event.kind === 'finalizer_selected') ?? [];
+    if (mode === 'retained') {
+      expect(selected).toHaveLength(1);
+      expect(selected[0]).toMatchObject({kind: 'finalizer_selected', retainedEventKey: retainedKey,
+        nativeCandidateKey: identity.nativeCandidateKey, displayCandidateKey: identity.displayCandidateKey,
+        canonicalSourceCandidateKey: identity.displayCandidateKey, productStatus: 'completed'});
+      expect(selected[0].kind === 'finalizer_selected' && selected[0].canonicalCandidateKey).toMatch(/^[a-f0-9]{64}$/);
+    } else expect(selected).toEqual([]);
+  });
+
+  it('keeps verification and delivery intact when the identity observer throws', async () => {
+    const target = fixture({nativeProjection: true});
+    const observe = jest.spyOn(protocolProjection, 'readConclusionTransportObservation')
+      .mockImplementation(() => {throw new Error('PRIVATE_OBSERVATION_FAILURE');});
+    try {
+      const final = await target.run();
+      expect(observe).toHaveBeenCalledTimes(1);
+      expect(target.dispatch).toHaveBeenCalledTimes(1);
+      expect(final.result.conclusion).toBe('\nThe captured value is 49.\n');
+      expect(final.result.completion?.status).toBe('completed');
+      expect(final.result.claimVerificationResult?.claimResults[0].deterministicProof?.status).toBe('proved');
+    } finally {observe.mockRestore();}
+  });
+});
 
 describe('actual typed submission semantic transport admission', () => {
   it.each(['missing_submission', 'transport_failure', 'submitted'] as const)
@@ -2306,5 +2366,94 @@ describe('case recommendations come only from the server retrieval', () => {
     expect(final.result.reportAssessment?.binding.conclusionContractFingerprint)
       .toBe(analysisDeliveryFingerprint(final.result.conclusionContract));
     expect(final.result.deliveryAssurance).toEqual(without.result.deliveryAssurance);
+  });
+});
+
+
+/** The model document is an independent literal; the capture fixture never fills its assertions or quotes. */
+function nativePresentationSubmission(privatePrefix = false) {
+  const document: AuthoredClaimObjectInput = {representationVersion: AUTHORED_CLAIM_OBJECT_VERSION,
+    referenceDictionary: [{evidenceRefId: 'data:count', sourceRef: null, sourceToolCallId: null, artifactId: null,
+      sourceArtifactId: null, column: 'count', rowIndex: 0, rowSelector: null,
+      value: {kind: 'present', value: 32.57614380379747}}],
+    semanticFrames: [{predicate: 'numeric.cell', polarity: 'affirmed', discourse: 'asserted', quantifier: 'one',
+      modality: 'certain', conditions: null, population: 'cited_rows'}],
+    contract: {mode: 'focused_answer', conclusions: null, clusters: null, evidenceChain: null, uncertainties: null,
+      nextSteps: null, relationProposals: null, sourceClaimBindings: [], metadata: null,
+      claims: [{id: 'count', conclusionId: null, text: '32.6 ms', kind: 'numeric', references: [0], artifactRefs: null,
+        relationRefs: null, supportLevel: null, semantics: {frameIndex: 0, subjectRefs: [0], objectRefs: null, timeRangeNs: null,
+          numeric: {operator: 'eq', value: 32.57614380379747, unit: 'ms', presentation: {unit: 'ms', decimalPlaces: 1,
+            rounding: 'half_away_from_zero', quotes: [{kind: 'body_part', text: '32.6 ms', partIndex: 1, localOccurrence: null}]}}}}]},
+    bodyParts: [privatePrefix ? 'PRIVATE_PREFIX The captured value is ' : 'The captured value is ', {claimText: 'count'}, '.']};
+  const rawArguments = JSON.stringify({document});
+  const nativeDocument = JSON.parse(rawArguments).document;
+  const compiled = compileAuthoredClaimObject(nativeDocument);
+  if (compiled.status !== 'compiled') throw new Error('Native finalization fixture must compile');
+  const binding = {owner: {}, sessionId: 'final-result-test', runId: 'run', attemptId: 'attempt',
+    providerPin: 'fixture-provider', authorizationFingerprint: 'fixture-auth'};
+  const issuer = createAuthoredFinalSubmissionIssuer({binding, representationVersion: AUTHORED_CLAIM_OBJECT_VERSION,
+    assertAttemptCurrent: () => undefined, assertCurrent: () => undefined});
+  const dispatch = {dispatchOrdinal: 1, responseId: 'response', callId: 'call'};
+  const submission = issueAuthoredFinalSubmission(issuer, {...dispatch, rawArguments, nativeDocument, compiled});
+  const handoff: AuthoredConclusionSubmission = {submission, input: {binding: {...binding, ...dispatch,
+    representationVersion: AUTHORED_CLAIM_OBJECT_VERSION, compilerContractVersion: AUTHORED_CLAIM_OBJECT_COMPILER_VERSION},
+    rawArguments, nativeDocument: structuredClone(nativeDocument), body: compiled.body,
+    rawCanonicalPayload: structuredClone(compiled.rawCanonicalPayload)}};
+  return {compiled, handoff, cleanup: () => revokeAuthoredFinalSubmission(submission)};
+}
+
+describe('shared finalization of actual v2 numeric presentations', () => {
+  let restoreClone: (() => void) | undefined;
+  beforeEach(() => {restoreClone = installCurrentRealmStructuredCloneForTest();});
+  afterEach(() => {restoreClone?.(); restoreClone = undefined;});
+  const capturedNumericCell = {value: 32.57614380379747, unit: 'ms', displayed: '32.6 ms'};
+
+  it('keeps a proved proposition and matches the actual issued body_part through the shared finalizer', async () => {
+    const authored = nativePresentationSubmission();
+    try {
+      const target = fixture({body: authored.compiled.body, numericCell: capturedNumericCell, authoredSubmission: authored.handoff,
+        finalSubmission: {mode: 'authored_claim_document_v2', outcome: 'submitted'}});
+      expect(target.context.getNativeDeclaration(target.result, target.owner.signal)?.inputKind).toBe('model_tool_arguments');
+      const final = await target.run();
+      expect(final.result.claimVerificationResult?.claimResults[0]).toMatchObject({
+        deterministicProof: {status: 'proved'}, numericPresentation: {status: 'matched', reason: 'display_matches',
+          locations: [{start: 22, end: 29}]}});
+      expect(final.result.conclusion).toBe(authored.compiled.body);
+      expect(final.result.conclusionContract?.claims?.[0].semantics?.numeric?.value).toBe(32.57614380379747);
+      expect(final.result.completion?.status).toBe('completed');
+      expect(() => readAuthoredFinalSubmission(authored.handoff.submission, authored.handoff.input)).toThrow('invalid');
+    } finally {authored.cleanup();}
+  });
+
+  it('retains the actual-v2 guard when the shared finalizer has no native handle', async () => {
+    const target = fixture({numericCell: {...capturedNumericCell, numeric: {operator: 'eq', value: 32.57614380379747,
+      unit: 'ms', presentation: {schemaVersion: 'numeric_presentation@1', unit: 'ms', decimalPlaces: 1,
+        rounding: 'half_away_from_zero', quotes: [{text: '32.6 ms'}]}}},
+      finalSubmission: {mode: 'authored_claim_document_v2', outcome: 'submitted'}});
+    expect(target.context.getNativeDeclaration(target.result, target.owner.signal)).toBeUndefined();
+    const final = await target.run();
+    expect(final.result.claimVerificationResult?.claimResults[0]).toMatchObject({
+      deterministicProof: {status: 'proved'}, numericPresentation: {status: 'not_checked',
+        reason: 'quote_binding_unavailable', locations: []}});
+    expect(final.result.conclusionContract?.claims?.[0].semantics?.numeric?.value).toBe(32.57614380379747);
+    expect(final.result.completion?.status).toBe('completed');
+    expect(target.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('keeps the original finite proof but withdraws shifted body_part positions after real privacy projection', async () => {
+    const authored = nativePresentationSubmission(true);
+    try {
+      registerCodeAwareCanary('final-result-test', 'PRIVATE_PREFIX');
+      const target = fixture({body: authored.compiled.body, numericCell: capturedNumericCell, authoredSubmission: authored.handoff,
+        finalSubmission: {mode: 'authored_claim_document_v2', outcome: 'submitted'},
+        dispatch: async () => ({status: 'unavailable', reason: 'provider_error'})});
+      expect(target.result.conclusion).not.toContain('PRIVATE_PREFIX');
+      expect(target.result.conclusion).not.toBe(authored.compiled.body);
+      const final = await target.run();
+      expect(final.result.claimVerificationResult?.claimResults[0]).toMatchObject({
+        deterministicProof: {status: 'proved'}, numericPresentation: {status: 'not_checked', reason: 'quote_body_changed', locations: []}});
+      expect(final.result.conclusion).not.toContain('PRIVATE_PREFIX');
+      expect(final.result.conclusionContract?.claims?.[0].semantics?.numeric?.value).toBe(32.57614380379747);
+    } finally {authored.cleanup();}
   });
 });

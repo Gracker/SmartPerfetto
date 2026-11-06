@@ -3,6 +3,8 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import { EventEmitter } from 'events';
+import {attachIssuedNativeObjectEntryFixture} from '../../../../tests/helpers/authoredFinalEntryFixture';
+import {installCurrentRealmStructuredCloneForTest} from '../../../../tests/helpers/openAiRuntimeFixture';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -145,9 +147,12 @@ jest.mock('../../../services/selfEvolution/effectiveRuntimeRegistryProvider', ()
   jest.requireActual<CliRunTurnMocks>('../../../../tests/helpers/cliRunTurnMocks').effectiveRuntimeRegistryProviderModule());
 jest.mock('../../../services/selfEvolution/skillFingerprint', () =>
   jest.requireActual<CliRunTurnMocks>('../../../../tests/helpers/cliRunTurnMocks').skillFingerprintModule());
-jest.mock('../../../services/selfEvolution/runManifestLifecycle', () =>
-  jest.requireActual<CliRunTurnMocks>('../../../../tests/helpers/cliRunTurnMocks')
-    .runManifestLifecycleModule(lifecycle => mockRunManifestLifecycles.push(lifecycle)));
+jest.mock('../../../services/selfEvolution/runManifestLifecycle', () => ({
+  ...jest.requireActual<CliRunTurnMocks>('../../../../tests/helpers/cliRunTurnMocks')
+    .runManifestLifecycleModule(lifecycle => mockRunManifestLifecycles.push(lifecycle)),
+  currentRuntimePerformanceRecorder: jest.requireActual<typeof import('../../../services/selfEvolution/runManifestLifecycle')>(
+    '../../../services/selfEvolution/runManifestLifecycle').currentRuntimePerformanceRecorder,
+}));
 
 const cliTurnBinding = {
   turn: 1,
@@ -1208,6 +1213,72 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
       expect(mockPersistAgentTurn).not.toHaveBeenCalled();
       expect(() => context!.runId).toThrow('finalization_context_disposed');
     } finally {spy.mockRestore();}
+  });
+
+  describe('issued native-object CLI handoff', () => {
+    let restoreClone: (() => void) | undefined;
+    let sessionSequence = 0;
+    beforeEach(() => {
+      restoreClone = installCurrentRealmStructuredCloneForTest();
+      // Earlier security-cleanup cases intentionally revoke their fixed session.
+      // These real-projector cases need new session identities, not a cleared guard.
+      const sessionId = `cli-native-object-${++sessionSequence}`;
+      mockPreparedSession.sessionId = sessionId;
+      mockPrepareSession.mockImplementation(() => ({sessionId, session: mockPreparedSession, isNewSession: true}));
+    });
+    afterEach(() => {restoreClone?.(); restoreClone = undefined;});
+
+    it('takes the exact v2 candidate into the real shared finalizer and disposes it before persistence', async () => {
+      let issued!: ReturnType<typeof attachIssuedNativeObjectEntryFixture>;
+      mockAnalyze.mockImplementationOnce(async (_query, sessionId, _traceId, options) => {
+        const value: AnalysisResult = {sessionId, success: true, findings: [], hypotheses: [], conclusion: 'Which interval should I inspect?',
+          confidence: 0.8, rounds: 1, totalDurationMs: 1};
+        issued = attachIssuedNativeObjectEntryFixture({result: value, runId: options!.runId!, registry: finalizationRegistry, traceId: 'trace-cli'});
+        return value;
+      });
+      const actual = jest.requireActual<typeof import('../../../services/finalizeAnalysisResult')>('../../../services/finalizeAnalysisResult').finalizeAnalysisResult;
+      mockFinalizeAnalysisResult.mockImplementationOnce(async input => {
+        expect(input.result).toBe(issued.result);
+        expect(finalizationContexts.takeFinalizationContext(input.result)).toBeUndefined();
+        expect(input.context?.deliveryContext).toMatchObject({finalSubmission: {mode: 'authored_claim_document_v2', outcome: 'submitted'}});
+        expect(issued.read().binding.representationVersion).toBe('authored_claim_document@2');
+        return actual(input);
+      });
+      try {
+        const output = await new CliAnalyzeService().runTurn({...cliTurnBinding, traceId: 'trace-cli', query: 'Inspect an interval', onEvent: jest.fn()});
+        expect(mockAnalyze).toHaveBeenCalledTimes(1); expect(mockFinalizeAnalysisResult).toHaveBeenCalledTimes(1);
+        expect(output.result).toMatchObject({conclusion: 'Which interval should I inspect?', outputOrigin: 'model_tool_arguments', completion: {status: 'completed'}});
+        expect(mockPersistAgentTurn).toHaveBeenCalledTimes(1);
+        expect(mockPersistAgentTurn.mock.calls[0][0]).toMatchObject({result: {conclusion: output.result.conclusion, outputOrigin: 'model_tool_arguments'}});
+        expect(() => issued.read()).toThrow('invalid');
+        expect(() => mockFinalizeAnalysisResult.mock.calls[0][0].context!.runId).toThrow('disposed');
+        expect(JSON.stringify(output.result)).not.toMatch(/rawArguments|nativeDocument|privateNativeDocument|referenceDictionary|semanticFrames|partSpans|quoteBindings|documentJson/);
+        const persisted = mockPersistAgentTurn.mock.calls[0][0] as {result: AnalysisResult};
+        expect(JSON.stringify(persisted.result)).not.toMatch(/rawArguments|nativeDocument|privateNativeDocument|referenceDictionary|semanticFrames|partSpans|quoteBindings|documentJson/);
+      } finally {issued?.cleanup();}
+    });
+
+    it('disposes a late v2 runtime context after caller cancellation without finalizing or committing it', async () => {
+      const started = deferred<void>(), finish = deferred<void>();
+      let issued!: ReturnType<typeof attachIssuedNativeObjectEntryFixture>;
+      mockAnalyze.mockImplementationOnce(async (_query, sessionId, _traceId, options) => {
+        const value: AnalysisResult = {sessionId, success: true, findings: [], hypotheses: [], conclusion: 'Late clarification?', confidence: 0.8, rounds: 1, totalDurationMs: 1};
+        issued = attachIssuedNativeObjectEntryFixture({result: value, runId: options!.runId!, registry: finalizationRegistry, traceId: 'trace-cli'});
+        started.resolve(undefined); await finish.promise; return value;
+      });
+      const controller = new AbortController();
+      const pending = new CliAnalyzeService().runTurn({...cliTurnBinding, traceId: 'trace-cli', query: 'Inspect', signal: controller.signal, onEvent: jest.fn()});
+      void pending.catch(() => undefined);
+      try {
+        await started.promise; controller.abort(new DOMException('cancelled', 'AbortError')); finish.resolve(undefined);
+        await expect(pending).rejects.toThrow();
+        expect(mockFinalizeAnalysisResult).not.toHaveBeenCalled(); expect(mockPersistAgentTurn).not.toHaveBeenCalled();
+        expect(mockPreparedSession.result).toBeUndefined();
+        expect(finalizationContexts.takeFinalizationContext(issued.result)).toBeUndefined();
+        expect(() => issued.read()).toThrow('invalid');
+        expect(mockAnalyze).toHaveBeenCalledTimes(1);
+      } finally {finish.resolve(undefined); await pending.catch(() => undefined); issued?.cleanup();}
+    });
   });
 
 });

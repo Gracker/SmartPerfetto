@@ -32,6 +32,28 @@ function recordEmptyRegistry(builder: RunManifestBuilder): void {
 }
 
 describe('run-bound declaration syntax attribution', () => {
+  it('captures native v2 with authoring v2 once and preserves unknown historical fields', () => {
+    const legacy = createBuilder(); recordEmptyRegistry(legacy);
+    expect(legacy.seal()).not.toHaveProperty('finalSubmission');
+    const builder = createBuilder(); recordEmptyRegistry(builder);
+    const identity = {runtime: 'qoder-agent-sdk' as const, providerId: 'provider-a'};
+    builder.recordRuntime({...identity, finalSubmission: 'authored_claim_document_v2', conclusionDeclarationSyntax: 'authoring_v2'});
+    builder.recordRuntime({...identity, model: 'resolved-model'});
+    expect(() => builder.recordRuntime({...identity, finalSubmission: 'authored_claim_document_v1'}))
+      .toThrow('run_manifest_final_submission_changed');
+    expect(builder.seal()).toMatchObject({finalSubmission: 'authored_claim_document_v2',
+      conclusionDeclarationSyntax: 'authoring_v2', model: 'resolved-model'});
+  });
+
+  it.each(['canonical_v1', 'authoring_v1'] as const)('rejects native v2 paired with %s without recording it', syntax => {
+    const builder = createBuilder(); recordEmptyRegistry(builder);
+    const identity = {runtime: 'qoder-agent-sdk' as const, providerId: 'provider-a'};
+    expect(() => builder.recordRuntime({...identity, finalSubmission: 'authored_claim_document_v2', conclusionDeclarationSyntax: syntax}))
+      .toThrow('run_manifest_output_config_conflict');
+    expect(builder.seal()).not.toHaveProperty('finalSubmission');
+  });
+
+
   it.each(['assistant_text', 'authored_claim_document_v1'] as const)(
     'records captured %s without fabricating adoption or migrating older manifests', finalSubmission => {
       const legacy = createBuilder(); recordEmptyRegistry(legacy);

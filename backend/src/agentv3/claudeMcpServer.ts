@@ -349,10 +349,12 @@ import {
   readAnalysisContextRegistrations,
   type AnalysisContextRegistrations,
 } from '../services/resolvedAnalysisContext';
-import {preserveRuntimeLiteralStrings, type RuntimeToolExtra} from '../agentRuntime/runtimeToolSpec';
+import {preserveRuntimeLiteralJson, preserveRuntimeLiteralStrings, type RuntimeToolExtra} from '../agentRuntime/runtimeToolSpec';
 import type {FinalSubmissionMode} from '../agentRuntime/finalSubmissionConfig';
 import {AUTHORED_FINAL_SUBMISSION_PENDING_ACK} from '../agentRuntime/authoredFinalSubmission';
 import {compileAuthoredClaimDocument, type AuthoredClaimDocumentFailure} from '../agent/core/authoredClaimDocument';
+import {compileAuthoredClaimObject, type AuthoredClaimObjectFailure} from '../agent/core/authoredClaimObject';
+import {authoredClaimObjectSchema} from '../agent/core/authoredClaimObjectSchema';
 import {isPlaceholderToolString} from '../agentRuntime/toolArgPlaceholders';
 import {
   rethrowIfTraceProcessorQueryCancelled,
@@ -7870,6 +7872,24 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           const compiled = compileAuthoredClaimDocument(args.documentJson);
           if (compiled.status !== 'compiled') return rejected(compiled.code);
           // No receipt or capability is issued here. Only the actual SDK execute bridge can stage success.
+          return {content: [{type: 'text' as const, text: AUTHORED_FINAL_SUBMISSION_PENDING_ACK}]};
+        } catch {return rejected('submission_rejected');}
+      },
+    });
+  } else if (options.finalSubmission === 'authored_claim_document_v2') {
+    registry.registerShared({
+      name: 'submit_final_document', role: 'final_candidate_submission', exposure: 'internal', evidenceEffect: 'none',
+      description: requireToolDescription('prompt-submit-final-document-v2-tool-description'),
+      inputSchema: {document: preserveRuntimeLiteralJson(authoredClaimObjectSchema)},
+      annotations: {readOnlyHint: true},
+      handler: async args => {
+        const rejected = (reason: AuthoredClaimObjectFailure | 'invalid_arguments' | 'submission_rejected') =>
+          createRuntimeToolResult({kind: 'authored_final_submission', status: 'rejected', reason}, {isError: true});
+        try {
+          if (Object.keys(args).length !== 1 || !Object.prototype.hasOwnProperty.call(args, 'document')) return rejected('invalid_arguments');
+          const compiled = compileAuthoredClaimObject(args.document);
+          if (compiled.status !== 'compiled') return rejected(compiled.code);
+          // Compilation does not issue a receipt, certify claims or complete the native turn.
           return {content: [{type: 'text' as const, text: AUTHORED_FINAL_SUBMISSION_PENDING_ACK}]};
         } catch {return rejected('submission_rejected');}
       },

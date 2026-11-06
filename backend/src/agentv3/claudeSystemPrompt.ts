@@ -195,38 +195,54 @@ function buildTypedTurnSystemPromptParts(
   push(1, 'turn_protocol', requiredAsset('prompt-turn-policy'));
   // Inject protocol syntax after authoring comments are removed. Applying the
   // comment stripper to the rendered asset would delete its sidecar example.
-  const declarationSchema = requiredAsset('prompt-conclusion-contract-schema');
   const finalSubmission = context.finalSubmission ?? 'assistant_text';
-  if (finalSubmission !== 'assistant_text' && finalSubmission !== 'authored_claim_document_v1') {
+  if (finalSubmission !== 'assistant_text' && finalSubmission !== 'authored_claim_document_v1'
+    && finalSubmission !== 'authored_claim_document_v2') {
     throw new Error('[SystemPrompt] Invalid final submission mode');
   }
-  const typedSubmission = finalSubmission === 'authored_claim_document_v1';
-  if (typedSubmission && (context.declarationSyntax !== 'canonical_v1'
+  const nativeObjectSubmission = finalSubmission === 'authored_claim_document_v2';
+  const typedSubmission = finalSubmission === 'authored_claim_document_v1' || nativeObjectSubmission;
+  if (typedSubmission && (context.declarationSyntax !== (nativeObjectSubmission ? 'authoring_v2' : 'canonical_v1')
     || context.resolvedFinalTool?.role !== 'final_candidate_submission'
     || typeof context.resolvedFinalTool.nativeName !== 'string'
     || !context.resolvedFinalTool.nativeName.trim())) {
-    throw new Error('[SystemPrompt] Typed final submission requires canonical syntax and a resolved final tool');
+    throw new Error(nativeObjectSubmission
+      ? '[SystemPrompt] Typed object submission requires authoring_v2 syntax and a resolved final tool'
+      : '[SystemPrompt] Typed final submission requires canonical syntax and a resolved final tool');
   }
-  const declarationFraming = renderTemplate(requiredAsset(typedSubmission
-    ? 'prompt-authored-final-submission-framing' : context.declarationSyntax === 'authoring_v2'
-    ? 'prompt-conclusion-authoring-v2-framing' : context.declarationSyntax === 'authoring_v1'
-      ? 'prompt-conclusion-authoring-framing' : 'prompt-conclusion-full-framing'), {
-    sidecarOpeningMarker: CONCLUSION_CONTRACT_SIDECAR_MARKER,
-    authoringOpeningFence: context.declarationSyntax === 'authoring_v2' ? CONCLUSION_AUTHORING_FENCE_V2 : CONCLUSION_AUTHORING_FENCE,
-    authoringMaxBytes: String(CONCLUSION_AUTHORING_LIMITS.utf8Bytes),
-    authoringMaxNodes: String(CONCLUSION_AUTHORING_LIMITS.nodes),
-    authoringMaxDepth: String(CONCLUSION_AUTHORING_LIMITS.depth),
-  });
-  const declarationDelivery = renderTemplate(requiredAsset(typedSubmission
-    ? 'prompt-authored-final-submission-delivery' : 'prompt-conclusion-delivery'), {
-    declarationFraming,
-    finalSubmissionToolName: context.resolvedFinalTool?.nativeName,
-  });
-  push(1, 'conclusion_declaration', renderTemplate(declarationSchema, {
-    declarationDelivery,
-    ackDeclarationRule: typedSubmission ? '' : requiredAsset('prompt-conclusion-ack-rule'),
-    supportedProofRules: JSON.stringify(SUPPORTED_DETERMINISTIC_CLAIM_RULES),
-  }));
+  if (nativeObjectSubmission) {
+    const declarationFraming = renderTemplate(requiredAsset('prompt-authored-final-submission-v2-framing'), {
+      authoringMaxBytes: String(CONCLUSION_AUTHORING_LIMITS.utf8Bytes),
+      authoringMaxNodes: String(CONCLUSION_AUTHORING_LIMITS.nodes),
+      authoringMaxDepth: String(CONCLUSION_AUTHORING_LIMITS.depth),
+      supportedProofRules: JSON.stringify(SUPPORTED_DETERMINISTIC_CLAIM_RULES),
+    });
+    push(1, 'conclusion_declaration', renderTemplate(requiredAsset('prompt-authored-final-submission-v2-delivery'), {
+      declarationFraming, finalSubmissionToolName: context.resolvedFinalTool?.nativeName,
+    }));
+  } else {
+    const declarationSchema = requiredAsset('prompt-conclusion-contract-schema');
+    const declarationFraming = renderTemplate(requiredAsset(typedSubmission
+      ? 'prompt-authored-final-submission-framing' : context.declarationSyntax === 'authoring_v2'
+      ? 'prompt-conclusion-authoring-v2-framing' : context.declarationSyntax === 'authoring_v1'
+        ? 'prompt-conclusion-authoring-framing' : 'prompt-conclusion-full-framing'), {
+      sidecarOpeningMarker: CONCLUSION_CONTRACT_SIDECAR_MARKER,
+      authoringOpeningFence: context.declarationSyntax === 'authoring_v2' ? CONCLUSION_AUTHORING_FENCE_V2 : CONCLUSION_AUTHORING_FENCE,
+      authoringMaxBytes: String(CONCLUSION_AUTHORING_LIMITS.utf8Bytes),
+      authoringMaxNodes: String(CONCLUSION_AUTHORING_LIMITS.nodes),
+      authoringMaxDepth: String(CONCLUSION_AUTHORING_LIMITS.depth),
+    });
+    const declarationDelivery = renderTemplate(requiredAsset(typedSubmission
+      ? 'prompt-authored-final-submission-delivery' : 'prompt-conclusion-delivery'), {
+      declarationFraming,
+      finalSubmissionToolName: context.resolvedFinalTool?.nativeName,
+    });
+    push(1, 'conclusion_declaration', renderTemplate(declarationSchema, {
+      declarationDelivery,
+      ackDeclarationRule: typedSubmission ? '' : requiredAsset('prompt-conclusion-ack-rule'),
+      supportedProofRules: JSON.stringify(SUPPORTED_DETERMINISTIC_CLAIM_RULES),
+    }));
+  }
   push(1, 'output_language', requiredAsset(language === 'en' ? 'prompt-language-en' : 'prompt-language-zh'));
   push(1, 'retrieved_context_safety', requiredAsset('retrieved-context-safety'));
   if (policy.allowNewEvidence) push(3, 'sql_discovery_guidance', requiredAsset('knowledge-perfetto-sql'));

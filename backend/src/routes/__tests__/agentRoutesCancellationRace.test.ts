@@ -4,6 +4,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import express from 'express';
+import {attachIssuedNativeObjectEntryFixture} from '../../../tests/helpers/authoredFinalEntryFixture';
+import {installCurrentRealmStructuredCloneForTest} from '../../../tests/helpers/openAiRuntimeFixture';
 import {EventEmitter} from 'events';
 import {attachFinalizationContext, takeFinalizationContext, type RuntimeFinalizationContext} from '../../agentRuntime/analysisFinalizationContext';
 import {buildStrategyRegistrySnapshotFromDefinitions} from '../../agentv3/strategyLoader';
@@ -1806,4 +1808,63 @@ describe('HTTP shared finalization ownership', () => {
       expect(f.session.conclusionHistory).toEqual([]);
     } finally {agentRoutesCancellationTestSeam.deleteSession(id);}
   });
+  describe('issued native-object HTTP handoff', () => {
+    let restoreClone: (() => void) | undefined;
+    beforeEach(() => {restoreClone = installCurrentRealmStructuredCloneForTest();});
+    afterEach(() => {restoreClone?.(); restoreClone = undefined;});
+
+    it('takes v2 once through the real HTTP runner and shared finalizer, then persists only public output', async () => {
+      const id = 'http-native-object', f = fixture(id);
+      f.session.runtimeKind = 'openai-agents-sdk'; f.native.success = true; f.native.conclusion = 'Which interval should I inspect?';
+      let issued!: ReturnType<typeof attachIssuedNativeObjectEntryFixture>;
+      const registry = buildStrategyRegistrySnapshotFromDefinitions({definitions: [], overlayGeneration: 'http-native-object'});
+      f.analyze.mockImplementation(async () => {
+        issued = attachIssuedNativeObjectEntryFixture({result: f.native, runId: f.runId, registry, traceId: 'trace-a', authorizationFingerprint: 'fixed-auth'});
+        return f.native;
+      });
+      const actual = finalization.finalizeAnalysisResult;
+      const finalize = jest.spyOn(finalization, 'finalizeAnalysisResult').mockImplementation(async input => {
+        expect(input.result).toBe(f.native); expect(takeFinalizationContext(f.native)).toBeUndefined();
+        expect(input.context?.deliveryContext).toMatchObject({finalSubmission: {mode: 'authored_claim_document_v2', outcome: 'submitted'}});
+        expect(issued.read().binding.representationVersion).toBe('authored_claim_document@2');
+        return actual(input);
+      });
+      try {
+        await agentRoutesCancellationTestSeam.runAgentDrivenAnalysis(id, 'Inspect', 'trace-a', {runContext: f.session.activeRun, generateTracks: false});
+        expect(f.analyze).toHaveBeenCalledTimes(1); expect(finalize).toHaveBeenCalledTimes(1);
+        expect(f.session.result).toMatchObject({conclusion: 'Which interval should I inspect?', outputOrigin: 'model_tool_arguments', completion: {status: 'completed'}});
+        expect(persistence.persistAgentTurn).toHaveBeenCalledTimes(1);
+        expect(persistence.persistAgentTurn).toHaveBeenCalledWith(expect.objectContaining({result: expect.objectContaining({outputOrigin: 'model_tool_arguments'})}));
+        expect(() => issued.read()).toThrow('invalid');
+        expect(() => finalize.mock.calls[0][0].context!.runId).toThrow('disposed');
+        expect(JSON.stringify(f.session.result)).not.toMatch(/rawArguments|nativeDocument|privateNativeDocument|referenceDictionary|semanticFrames|partSpans|quoteBindings|documentJson/);
+        const persisted = jest.mocked(persistence.persistAgentTurn).mock.calls[0][0];
+        expect(JSON.stringify(persisted.result)).not.toMatch(/rawArguments|nativeDocument|privateNativeDocument|referenceDictionary|semanticFrames|partSpans|quoteBindings|documentJson/);
+      } finally {issued?.cleanup(); agentRoutesCancellationTestSeam.deleteSession(id);}
+    });
+
+    it('disposes a late v2 native result after HTTP cancellation without invoking finalization or overwriting output', async () => {
+      const id = 'http-native-object-late', f = fixture(id);
+      f.session.runtimeKind = 'openai-agents-sdk'; f.native.success = true; f.native.conclusion = 'Late clarification?';
+      let issued!: ReturnType<typeof attachIssuedNativeObjectEntryFixture>;
+      let entered!: () => void, release!: () => void;
+      const started = new Promise<void>(resolve => {entered = resolve;}), finish = new Promise<void>(resolve => {release = resolve;});
+      const registry = buildStrategyRegistrySnapshotFromDefinitions({definitions: [], overlayGeneration: 'http-native-object-late'});
+      f.analyze.mockImplementation(async () => {
+        issued = attachIssuedNativeObjectEntryFixture({result: f.native, runId: f.runId, registry, traceId: 'trace-a', authorizationFingerprint: 'fixed-auth'});
+        entered(); await finish; return f.native;
+      });
+      const finalize = jest.spyOn(finalization, 'finalizeAnalysisResult');
+      const pending = agentRoutesCancellationTestSeam.runAgentDrivenAnalysis(id, 'Inspect', 'trace-a', {runContext: f.session.activeRun, generateTracks: false});
+      try {
+        await started; await agentRoutesCancellationTestSeam.cancelSessionRun(id, f.runId, 'cancel native');
+        release(); await pending;
+        expect(finalize).not.toHaveBeenCalled(); expect(persistence.persistAgentTurn).not.toHaveBeenCalled();
+        expect(f.session.result).toBeUndefined(); expect(f.session.conclusionHistory).toEqual([]);
+        expect(takeFinalizationContext(f.native)).toBeUndefined(); expect(() => issued.read()).toThrow('invalid');
+        expect(f.analyze).toHaveBeenCalledTimes(1);
+      } finally {release(); await pending.catch(() => undefined); issued?.cleanup(); agentRoutesCancellationTestSeam.deleteSession(id);}
+    });
+  });
+
 });

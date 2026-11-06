@@ -7,12 +7,22 @@ import {createHash} from 'node:crypto';
 import {parseStoredJson} from '../utils/storedData';
 import {stableStringify} from '../utils/stableJson';
 import {PRODUCTION_RUNTIME_KINDS} from '../agentRuntime/runtimeKinds';
-import {RUNTIME_MODEL_CALL_PURPOSES} from '../agentRuntime/runtimePerformance';
+import {RUNTIME_MODEL_CALL_PURPOSES, projectRuntimeFinalTransportObservation, parseRuntimeBenchmarkConfigCommitments,
+  buildRuntimeConfigCommitments, runtimeConfigCommitmentsFingerprint, type RuntimeConfigFieldCommitment,
+  type RuntimeFinalTransportEvent, type RuntimeExecutionProfileObservation} from '../agentRuntime/runtimePerformance';
+import {canonicalContentHash} from '../services/selfEvolution/canonicalJson';
+import {resolveModelExecutionProfile} from '../services/providerManager/modelExecutionProfile';
+import {resolveOpenAITextRequestPurpose} from '../services/providerManager/openAiChatCompletionsCompat';
+import type {LlmPurposeContractsV1} from './preflightLlmExecutionTarget';
 import {adjudicateLlmSourceFacet, buildLlmExecutionQuality, compareLlmExecutionQuality, elapsedIntervalUnion, scoreLlmExecutionLatency,
   type LlmExecutionQuality, type LlmExecutionLatencyPair, type LlmMaterialChangeReview} from './llmExecutionBenchmark';
 
-const {CELLS, SOURCE_FACET, sourceFacetContext, validateSourceFacetCollection, assertExecutionTarget} = require('../../scripts/llm-execution-lifecycle.cjs') as {
+const {CELLS, SOURCE_FACET, TREATMENT_ID, TREATMENT_OUTPUTS, makeRepresentationTreatment, parsePurposeContracts, sourceFacetContext, validateSourceFacetCollection, assertExecutionTarget} = require('../../scripts/llm-execution-lifecycle.cjs') as {
   CELLS: readonly string[];
+  TREATMENT_ID: string;
+  TREATMENT_OUTPUTS: Record<'base' | 'candidate', {finalSubmission: string; declarationSyntax: string}>;
+  makeRepresentationTreatment(base: unknown, candidate: unknown): Record<string, unknown>;
+  parsePurposeContracts(value: unknown): LlmPurposeContractsV1;
   SOURCE_FACET: {receiptFile: string; reviewSchema: string};
   sourceFacetContext(root: string): {contract: Record<string, unknown>; inputs: {sourceRoot: string};
     groundTruth: {relativeSourcePath: string; callChain: string[]}};
@@ -205,6 +215,7 @@ interface InspectedSample {
   side: 'base' | 'candidate';
   sourceFingerprint?: string;
   comparisonFingerprint?: string;
+  purposeControls?: Record<string, string[]>;
   observerCore?: string;
   observerReviewHash?: string;
   origin?: string;
@@ -220,13 +231,265 @@ interface InspectedSample {
   costs?: ReturnType<typeof costObservations>;
 }
 
+type Fields = readonly RuntimeConfigFieldCommitment[];
+const scalarCommitment = (value: string | number | boolean) => canonicalContentHash([
+  typeof value, typeof value === 'number' ? String(value) : value]);
+const fieldAt = (rows: Fields, path: string) => rows.find(row => row.field === path && row.presence === 'present');
+function equalFields(left: Fields, right: Fields): boolean {return stableStringify(left) === stableStringify(right);}
+function stripRootFields(rows: Fields, removed: readonly string[]): Fields {
+  const selected = rows.filter(row => !removed.some(key => row.field === `/${key}` || row.field.startsWith(`/${key}/`)));
+  const keys = selected.filter(row => row.presence === 'present' && /^\/[^/]+$/.test(row.field))
+    .map(row => row.field.slice(1).replace(/~1/g, '/').replace(/~0/g, '~')).sort();
+  return selected.map(row => row.field === '' ? {...row, valueCommitment: canonicalContentHash(['object', keys])} : row);
+}
+function knownConfigString(rows: Fields, field: string, allowed: readonly string[]): string | undefined {
+  const row = fieldAt(rows, field);
+  if (!row || row.type === 'undefined') return undefined;
+  const value = allowed.find(value => row.type === 'string' && row.valueCommitment === scalarCommitment(value));
+  if (value === undefined) fail('llm_score_control_value_unproven');
+  return value;
+}
+function inspectPreflight(proofValue: unknown, sample: RecordValue, benchmark: RecordValue, root: string,
+  configuration: NonNullable<ReturnType<typeof parseRuntimeBenchmarkConfigCommitments>>, sampleProbe: boolean) {
+  const proof = object(proofValue), lifecycle = object(proof?.lifecycle);
+  if (!proof || typeof proof.request !== 'string' || typeof proof.receipt !== 'string' || !validHash(proof.requestHash) ||
+      !validHash(proof.receiptHash) || proof.side !== sample.side || proof.cellId !== sample.cellId ||
+      !['auto', 'fast', 'full'].includes(String(proof.requestedMode)) || lifecycle?.outcome !== 'exited' || lifecycle.exitCode !== 0 ||
+      lifecycle.signal !== null || lifecycle.censored !== false || lifecycle.cleanup !== 'confirmed' || !positiveInteger(lifecycle.processId) ||
+      !finite(lifecycle.preparedAt) || !finite(lifecycle.settledAt) || lifecycle.settledAt < lifecycle.preparedAt ||
+      !finite(object(sample.lifecycle)?.preparedAt) || lifecycle.settledAt > Number(object(sample.lifecycle)?.preparedAt)) fail('llm_score_preflight_lifecycle_unproven');
+  const prefix = sampleProbe ? `${sample.pairId}/${sample.side}/preflight-` : `preflight/${sample.cellId}/${sample.side}/`;
+  if (!proof.request.startsWith(prefix) || !proof.receipt.startsWith(prefix)) fail('llm_score_preflight_path_invalid');
+  const requestRead = readJsonFile(scopedPath(root, proof.request), 1024 * 1024), resultRead = readJsonFile(scopedPath(root, proof.receipt), 1024 * 1024);
+  const request = object(requestRead.value), result = object(resultRead.value), sdk = object(result?.sdk);
+  if (requestRead.sha256 !== proof.requestHash || resultRead.sha256 !== proof.receiptHash ||
+      request?.schemaVersion !== 'llm_target_preflight_request@1' || result?.schemaVersion !== 'llm_target_preflight@2' ||
+      request.nonce !== benchmark.nonce || result.nonce !== benchmark.nonce || request.side !== sample.side || result.side !== sample.side ||
+      request.cellId !== sample.cellId || result.cellId !== sample.cellId || request.requestedMode !== proof.requestedMode || result.requestedMode !== proof.requestedMode ||
+      request.expectedSourceFingerprint !== sample.sourceFingerprint || result.observedSourceFingerprint !== sample.sourceFingerprint ||
+      stableStringify(request.declaredConfig) !== stableStringify(configuration) || result.declaredConfigFingerprint !== configuration.fullFingerprint ||
+      result.declaredControlsFingerprint !== configuration.controlsFingerprint || request.treatmentHash !== sample.treatmentHash ||
+      result.declaredTreatmentHash !== sample.treatmentHash || result.status !== 'ready' ||
+      stableStringify(result.capturedOutput) !== stableStringify(TREATMENT_OUTPUTS[sample.side as 'base' | 'candidate']) ||
+      sdk?.identity !== 'matched' || sdk.nodeVersion !== benchmark.nodeVersion || typeof sdk.agentsCoreVersion !== 'string' || typeof sdk.agentsOpenAiVersion !== 'string' ||
+      !/^\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?$/.test(sdk.agentsCoreVersion) || !/^\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?$/.test(sdk.agentsOpenAiVersion) ||
+      !runtimeConfigCommitmentsFingerprint(result.actualResolvedConfig as Fields)) fail('llm_score_preflight_binding_unproven');
+  return {mode: proof.requestedMode as string, sdk, resolved: result.actualResolvedConfig as Fields,
+    purposeContracts: parsePurposeContracts(result.purposeContracts)};
+}
+function stageContract(dispatch: Extract<RuntimeFinalTransportEvent, {kind: 'main_dispatch' | 'stage_dispatch'}>,
+  probe: ReturnType<typeof inspectPreflight>) {
+  return dispatch.kind === 'stage_dispatch' && (dispatch.purpose === 'classification' || dispatch.purpose === 'review')
+    ? probe.purposeContracts[dispatch.purpose] : undefined;
+}
+const EFFECTIVE_CONFIG_FIELDS: Record<string, string> = {maxOutputTokens: 'maxOutputTokens', maxTurns: 'maxTurns',
+  quickMaxTurns: 'quickMaxTurns', quickTargetTurns: 'quickTargetTurns', fullPerTurnMs: 'fullPathPerTurnMs', quickPerTurnMs: 'quickPathPerTurnMs',
+  fullRequestTimeoutMs: 'fullRequestTimeoutMs', streamIdleTimeoutMs: 'streamIdleTimeoutMs', maxRunTimeoutMs: 'maxRunTimeoutMs',
+  classifierTimeoutMs: 'classifierTimeoutMs', maxHistoryBytes: 'maxHistoryBytes'};
+/** Rebuild the public profile facts; numeric leaves stay commitments to the actual captured settings. */
+function profileContractMatches(profile: RuntimeExecutionProfileObservation, dispatch: Extract<RuntimeFinalTransportEvent,
+  {kind: 'main_dispatch' | 'stage_dispatch'}>, benchmark: RecordValue, probe: ReturnType<typeof inspectPreflight>): boolean {
+  try {
+    const controls = dispatch.controls, purpose = stageContract(dispatch, probe);
+    const common = purpose?.commonConfig ?? stripRootFields(probe.resolved, ['outputConfig']);
+    const model = dispatch.purpose === 'classification' ? String(benchmark.lightModel) : String(benchmark.model);
+    if (profile.purpose !== dispatch.purpose || profile.modelHash !== hash(model)) return false;
+    if (profile.role === 'typed_admission' && controls.requestedOutput.finalSubmission !== 'authored_claim_document_v2') return false;
+    const baseUrl = knownConfigString(probe.resolved, '/baseURL', ['https://api.deepseek.com', 'https://api.deepseek.com/',
+      'https://api.deepseek.com/v1', 'https://api.deepseek.com/v1/', 'https://open.bigmodel.cn/api/coding/paas/v4', 'https://open.bigmodel.cn/api/coding/paas/v4/']);
+    if (!baseUrl) return false;
+    const stage = profile.role === 'stage_policy', direct = dispatch.kind === 'stage_dispatch';
+    const sdk = profile.role === 'typed_admission' ? {packageName: '@openai/agents-openai',
+      version: String(probe.sdk.agentsOpenAiVersion), adapterContractVersion: 'openai_typed_final_admission@2'}
+      : stage && direct ? {packageName: 'node:fetch', version: String(probe.sdk.nodeVersion), adapterContractVersion: 'openai-text-http@1'}
+        : {packageName: '@openai/agents-openai', version: 'unknown', adapterContractVersion: stage ? 'provider-data@1' : 'analysis-controls@1'};
+    const effective: Record<string, unknown> = {};
+    const replacements = new Map<string, string>();
+    const numericFields = profile.role === 'main_controls' || stage && !direct ? ['maxOutputTokens'] : Object.keys(EFFECTIVE_CONFIG_FIELDS);
+    for (const field of numericFields) {
+      const actual = fieldAt(profile.fields, `/effective/${field}`), configured = fieldAt(common, `/${EFFECTIVE_CONFIG_FIELDS[field]}`);
+      const limit = field === 'maxOutputTokens' ? purpose?.tokenLimit : undefined;
+      const required = limit ? limit.status === 'explicit' : configured?.type === 'number';
+      if (!required) {if (actual) return false; continue;}
+      const expectedValue = limit?.status === 'explicit' ? limit.valueCommitment : configured?.valueCommitment;
+      if (actual?.type !== 'number' || actual.valueCommitment !== expectedValue) return false;
+      effective[field] = 1; replacements.set(`/effective/${field}`, expectedValue!);
+    }
+    if (profile.role === 'typed_admission') Object.assign(effective, controls.requestedOutput);
+    if (!stage) {
+      const effort = knownConfigString(common, '/analysisReasoningEffort', ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+      if (profile.role === 'main_controls' && !effort) return false;
+      if (effort) effective.authoredReasoning = effort === 'none' ? {mode: 'disabled'} : {mode: 'enabled', effort};
+    }
+    const expected = resolveModelExecutionProfile({runtimeKind: 'openai-agents-sdk', protocol: 'chat_completions', modelId: model,
+      baseUrl: direct ? new URL('chat/completions', baseUrl.replace(/\/?$/, '/')).href : baseUrl, sdk,
+      sdkCapabilities: profile.role === 'typed_admission' ? {surface: 'none', thinking: 'unknown', reasoningRoundtrip: 'unknown', source: 'contract_test'}
+        : {surface: 'openai_chat', thinking: 'optional', efforts: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+          reasoningRoundtrip: 'unknown', source: 'contract_test'}, effective: {}});
+    // Public facts use the existing resolver; effective commitments are checked independently above.
+    // This verifier does not activate candidate v2 eligibility on the default-only baseline.
+    const {fingerprint: _fingerprint, ...publicFacts} = expected;
+    const body = {...publicFacts, effective};
+    const fields = buildRuntimeConfigCommitments(body)!.map(row => replacements.has(row.field) ? {...row, valueCommitment: replacements.get(row.field)!} : row);
+    return equalFields(fields, profile.fields);
+  } catch {return false;}
+}
+function purposeSettingsMatch(dispatch: Extract<RuntimeFinalTransportEvent, {kind: 'main_dispatch' | 'stage_dispatch'}>,
+  benchmark: RecordValue, probe: ReturnType<typeof inspectPreflight>): boolean {
+  if (dispatch.kind === 'main_dispatch' && dispatch.purpose === 'answer_turn') return true; // Paired exact comparison below.
+  try {
+    const policy = dispatch.controls.profiles.find(profile => profile.role === 'stage_policy');
+    if (!policy) return dispatch.kind === 'main_dispatch' && dispatch.purpose === 'continuation';
+    const baseUrl = knownConfigString(probe.resolved, '/baseURL', ['https://api.deepseek.com', 'https://api.deepseek.com/',
+      'https://api.deepseek.com/v1', 'https://api.deepseek.com/v1/', 'https://open.bigmodel.cn/api/coding/paas/v4', 'https://open.bigmodel.cn/api/coding/paas/v4/']);
+    if (!baseUrl) return false;
+    const purpose = stageContract(dispatch, probe);
+    const limit = purpose?.tokenLimit;
+    const mainLimit = fieldAt(stripRootFields(probe.resolved, ['outputConfig']), '/maxOutputTokens');
+    const cap = limit ? limit.status === 'explicit' ? {valueCommitment: limit.valueCommitment} : undefined
+      : mainLimit?.type === 'number' ? mainLimit : undefined;
+    const model = dispatch.purpose === 'classification' ? String(benchmark.lightModel) : String(benchmark.model);
+    const direct = dispatch.kind === 'stage_dispatch';
+    const execution = resolveOpenAITextRequestPurpose({requestUrl: new URL(direct ? 'chat/completions' : '', baseUrl.replace(/\/?$/, '/')),
+      runtimeKind: 'openai-agents-sdk', protocol: 'chat_completions', model,
+      purpose: dispatch.purpose === 'review' ? 'final_semantic' : dispatch.purpose === 'answer_turn' ? undefined : dispatch.purpose,
+      outputOnly: true, effective: cap ? {maxOutputTokens: 1} : {},
+      sdkIdentity: {packageName: direct ? 'node:fetch' : '@openai/agents-openai', version: direct ? String(probe.sdk.nodeVersion) : 'unknown',
+        adapterContractVersion: direct ? 'openai-text-http@1' : 'provider-data@1'},
+      sdkCapabilities: {surface: 'openai_chat', thinking: 'optional', efforts: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+        reasoningRoundtrip: 'unknown', source: 'contract_test'}});
+    const tokenField = limit?.status === 'explicit' ? limit.field : 'max_tokens';
+    const expected = direct ? {model, temperature: 0, stream: true, ...execution.options, ...(cap ? {[tokenField]: 1} : {})}
+      : {...(cap ? {maxTokens: 1} : {}), parallelToolCalls: false, store: false, toolChoice: 'none',
+        ...(Object.keys(execution.options).length ? {providerData: execution.options} : {})};
+    const fields = buildRuntimeConfigCommitments(expected)!.map(row => cap && [`/${tokenField}`, '/maxTokens'].includes(row.field)
+      ? {...row, valueCommitment: cap.valueCommitment} : row);
+    return equalFields(fields, dispatch.controls.appliedSettings);
+  } catch {return false;}
+}
+function inspectActualTransport(raw: RecordValue, benchmark: RecordValue, report: RecordValue,
+  probe: ReturnType<typeof inspectPreflight>, require: (value: unknown, code: string) => void): Record<string, string[]> {
+  const metrics = object(report.executionMetrics), performance = object(metrics?.performance);
+  const observed = projectRuntimeFinalTransportObservation(performance?.finalTransportObservation);
+  const side = raw.side as 'base' | 'candidate';
+  require(observed && observed.truncated === 0, 'actual_transport_observation_unproven');
+  require(stableStringify(metrics?.requestedOutputConfig) === stableStringify(TREATMENT_OUTPUTS[side]), 'requested_treatment_mismatch');
+  if (!observed) return {};
+  const events = observed.events, byKey = new Map(events.map(event => [event.eventKey, event]));
+  const dispatches = events.filter((event): event is Extract<RuntimeFinalTransportEvent, {kind: 'main_dispatch' | 'stage_dispatch'}> =>
+    event.kind === 'main_dispatch' || event.kind === 'stage_dispatch');
+  const main = dispatches.filter((event): event is Extract<RuntimeFinalTransportEvent, {kind: 'main_dispatch'}> => event.kind === 'main_dispatch');
+  require(main.length > 0 && !events.some(event => event.kind === 'not_exercised'), 'treatment_not_exercised');
+  const common = stripRootFields(probe.resolved, ['outputConfig']);
+  const signatures: Record<string, Set<string>> = {};
+  const logical = new Map<string, Extract<RuntimeFinalTransportEvent, {kind: 'main_dispatch'}>>();
+  const stageCalls = new Map<string, Extract<RuntimeFinalTransportEvent, {kind: 'stage_dispatch'}>>();
+  for (const dispatch of dispatches) {
+    const controls = dispatch.controls;
+    if (dispatch.kind === 'stage_dispatch') {
+      const previous = stageCalls.get(dispatch.stageCallKey);
+      require(!previous || previous.purpose === dispatch.purpose && previous.configuredModelHash === dispatch.configuredModelHash &&
+        previous.providerOriginHash === dispatch.providerOriginHash && previous.controls.fullFingerprint === controls.fullFingerprint, 'stage_dispatch_identity_conflict');
+      stageCalls.set(dispatch.stageCallKey, dispatch);
+    }
+    require(stableStringify(controls.requestedOutput) === stableStringify(TREATMENT_OUTPUTS[side]), 'dispatch_requested_treatment_mismatch');
+    require(dispatch.configuredModelHash === hash(String(dispatch.purpose === 'classification' ? benchmark.lightModel : benchmark.model)), 'dispatch_model_pin_mismatch');
+    require(dispatch.providerOriginHash === hash(benchmark.provider === 'glm' ? 'https://open.bigmodel.cn' : 'https://api.deepseek.com'), 'dispatch_provider_mismatch');
+    const purpose = stageContract(dispatch, probe);
+    require(dispatch.kind === 'main_dispatch' ? equalFields(controls.commonConfig, common)
+      : purpose && equalFields(controls.commonConfig, purpose.commonConfig), 'actual_common_controls_mismatch');
+    const roles = new Set<string>();
+    if (dispatch.kind === 'stage_dispatch') require(controls.profiles.some(profile => profile.role === 'stage_policy'), 'stage_profile_missing');
+    for (const profile of controls.profiles) {
+      const key = `${profile.role}:${profile.purpose}:${profile.modelHash}`;
+      require(!roles.has(key) && profileContractMatches(profile, dispatch, benchmark, probe), 'actual_profile_contract_unproven'); roles.add(key);
+      if (dispatch.kind === 'stage_dispatch' && profile.role === 'stage_policy') require(equalFields(
+        controls.commonConfig.filter(row => row.field === '/sdk' || row.field.startsWith('/sdk/')),
+        profile.fields.filter(row => row.field === '/sdk' || row.field.startsWith('/sdk/'))), 'stage_sdk_context_mismatch');
+    }
+    require(purposeSettingsMatch(dispatch, benchmark, probe), 'actual_stage_settings_unproven');
+    if (dispatch.kind === 'main_dispatch' && dispatch.purpose === 'continuation' &&
+        !controls.profiles.some(profile => profile.role === 'stage_policy')) {
+      const original = main.find(event => event.purpose === 'answer_turn');
+      const toolChoice = fieldAt(controls.appliedSettings, '/toolChoice');
+      // The existing recovery clone adds exactly toolChoice:none. All other actual settings must survive.
+      require(original && toolChoice?.type === 'string' && toolChoice.valueCommitment === scalarCommitment('none') &&
+        equalFields(stripRootFields(original.controls.appliedSettings, ['toolChoice']),
+          stripRootFields(controls.appliedSettings, ['toolChoice'])), 'continuation_controls_unproven');
+    }
+    if (dispatch.kind === 'main_dispatch') {
+      const previous = logical.get(dispatch.logicalCallKey);
+      require(!previous || previous.attemptKey === dispatch.attemptKey && previous.purpose === dispatch.purpose &&
+        previous.controls.fullFingerprint === controls.fullFingerprint, 'logical_dispatch_identity_conflict');
+      logical.set(dispatch.logicalCallKey, dispatch);
+      if (side === 'candidate') require(controls.profiles.some(profile => profile.role === 'typed_admission'), 'typed_admission_profile_missing');
+    }
+    const signature = hash(stableStringify({common: controls.commonConfig, settings: controls.appliedSettings,
+      profiles: controls.profiles.filter(profile => profile.role !== 'typed_admission').map(profile => ({role: profile.role, purpose: profile.purpose,
+        modelHash: profile.modelHash, fields: profile.fields})).sort((a, b) => stableStringify(a).localeCompare(stableStringify(b)))}));
+    const key = `${dispatch.kind}:${dispatch.purpose}`;
+    (signatures[key] ??= new Set()).add(signature);
+  }
+  const terminalCalls = new Set<string>();
+  for (const event of events) {
+    // Monotonic offsets are rounded, while the manifest uses millisecond wall-clock ticks.
+    require(event.offsetMs <= Number(metrics?.wallclockMs) + 1, 'transport_time_outside_run');
+    if (event.kind !== 'native_terminal' && event.kind !== 'typed_issued_after_drain') continue;
+    const key = `${event.kind}:${event.kind === 'native_terminal' ? event.fact.logicalCallKey : event.logicalCallKey}`;
+    require(!terminalCalls.has(key), 'duplicate_logical_terminal'); terminalCalls.add(key);
+  }
+  const retained = events.filter((event): event is Extract<RuntimeFinalTransportEvent, {kind: 'candidate_retained'}> => event.kind === 'candidate_retained');
+  const selected = events.filter((event): event is Extract<RuntimeFinalTransportEvent, {kind: 'finalizer_selected'}> => event.kind === 'finalizer_selected');
+  require(retained.length === 1 && selected.length === 1, 'retained_selected_lineage_missing');
+  if (retained.length !== 1 || selected.length !== 1) return Object.fromEntries(Object.entries(signatures).map(([key, values]) => [key, [...values].sort()]));
+  const kept = retained[0], final = selected[0];
+  require(kept.carrier === (side === 'base' ? 'assistant_text' : 'model_tool_arguments') && kept.productStatus === 'completed' &&
+    kept.declaredBody === 'present' && final.productStatus === 'completed' && final.sequence > kept.sequence && final.retainedEventKey === kept.eventKey &&
+    final.nativeCandidateKey === kept.nativeCandidateKey && final.canonicalSourceCandidateKey === final.displayCandidateKey, 'retained_selected_lineage_mismatch');
+  const roles = kept.authors.map(author => author.role).sort();
+  require(stableStringify(roles) === stableStringify(kept.transform === 'native' ? ['body_and_declaration'] : ['body', 'declaration']), 'author_roles_incomplete');
+  const terminals = new Set<string>();
+  for (const author of kept.authors) {
+    const event = byKey.get(author.terminalEventKey);
+    require(event && event.sequence < kept.sequence && !terminals.has(author.terminalEventKey), 'author_reference_invalid'); terminals.add(author.terminalEventKey);
+    if (event?.kind === 'native_terminal') {
+      const fact = event.fact, dispatched = logical.get(fact.logicalCallKey);
+      require(side === 'base' && dispatched && dispatched.sequence < event.sequence && dispatched.attemptKey === fact.attemptKey &&
+        fact.nativeStatus === 'completed' && fact.sdkStreamCompleted && fact.response.status === 'observed' && fact.rawMaterial.status === 'observed' &&
+        fact.actualModel.status === 'observed' && fact.actualModel.hash === hash(String(benchmark.model)) && event.drainStatus === 'fulfilled', 'assistant_native_author_unproven');
+    } else if (event?.kind === 'typed_issued_after_drain') {
+      const dispatched = logical.get(event.logicalCallKey);
+      require(side === 'candidate' && dispatched && dispatched.sequence < event.sequence && dispatched.attemptKey === event.attemptKey &&
+        event.actualModel.status === 'observed' && event.actualModel.hash === hash(String(benchmark.model)) &&
+        event.representationVersion === 'authored_claim_document@2' && event.compilerVersion === 'authored_claim_document_compiler@2' &&
+        event.admissionVersion === 'openai_typed_final_admission@2', 'typed_native_author_unproven');
+    } else require(false, 'native_author_missing');
+  }
+  const completion = object(object(object(report.summary)?.terminalAnalysis)?.completion);
+  require(completion?.schemaVersion === 1 && completion.runId === metrics?.runId && completion.runtimeKind === metrics?.runtime &&
+    completion.status === 'completed' && completion.reason === undefined && textId(completion.attemptId) && textId(completion.candidateRef) && validHash(completion.conclusionFingerprint), 'actual_completion_identity_unproven');
+  if (completion) require(final.canonicalCandidateKey === hash(JSON.stringify({runId: completion.runId, attemptId: completion.attemptId,
+    candidateRef: completion.candidateRef, conclusionFingerprint: completion.conclusionFingerprint})), 'selected_candidate_identity_mismatch');
+  const calls = array(performance?.modelCalls).map(object);
+  // One dispatchWithModelCallRecord span owns one no-tool transport invocation.
+  // Its internal HTTP retries reuse stageCallKey; fetch ordinals are unrelated.
+  for (const purpose of ['classification', 'review'] as const) {
+    const observedCalls = new Set(dispatches.filter((event): event is Extract<RuntimeFinalTransportEvent, {kind: 'stage_dispatch'}> =>
+      event.kind === 'stage_dispatch' && event.purpose === purpose).map(event => event.stageCallKey));
+    require(observedCalls.size === calls.filter(call => call?.purpose === purpose).length, 'stage_controls_coverage_incomplete');
+  }
+  require(calls.filter(call => call?.purpose === 'classification' || call?.purpose === 'review').every(call => call?.modelSource === 'provider_reported'), 'stage_actual_model_source_unproven');
+  return Object.fromEntries(Object.entries(signatures).map(([key, values]) => [key, [...values].sort()]));
+}
+
 function inspectSample(raw: RecordValue, benchmark: RecordValue, root: string, reviews: SavedReviews): InspectedSample {
   const sample: InspectedSample = {pairId: raw.pairId as string, cellId: raw.cellId as string,
     repetition: raw.repetition as number, side: raw.side as 'base' | 'candidate',
     issues: [], quality: buildLlmExecutionQuality(undefined), outcome: 'censored'};
   const require = (condition: unknown, code: string) => {if (!condition) sample.issues.push(code);};
   try {
-    require(raw.schemaVersion === 'llm_execution_sample@1' && raw.nonce === benchmark.nonce &&
+    const version2 = benchmark.schemaVersion === 'llm_execution_benchmark@2';
+    require(raw.schemaVersion === (version2 ? 'llm_execution_sample@2' : 'llm_execution_sample@1') && raw.nonce === benchmark.nonce &&
       raw.measurementOrigin === 'real_provider' && benchmark.measurementOrigin === 'real_provider' &&
       raw.sampleKind === 'local-cold', 'sample_identity_unproven');
     const receiptFile = scopedPath(root, `${sample.pairId}/${sample.side}/receipt.json`);
@@ -262,12 +525,14 @@ function inspectSample(raw: RecordValue, benchmark: RecordValue, root: string, r
     if (!report) fail('report_invalid');
     const target = object(report.executionTarget), metrics = object(report.executionMetrics), identity = object(report.runIdentity);
     const port = typeof target?.origin === 'string' ? new URL(target.origin).port : undefined;
-    const targetRequest = {nonce: benchmark.nonce, side: raw.side, pairId: raw.pairId, cellId: raw.cellId,
+    const targetRequest = {schemaVersion: version2 ? 'llm_execution_target_request@2' : 'llm_execution_target_request@1', nonce: benchmark.nonce, side: raw.side, pairId: raw.pairId, cellId: raw.cellId,
       repetition: raw.repetition, port: Number(port), expectedSourceFingerprint: raw.sourceFingerprint,
       observerFingerprint: observer?.fingerprint, configFingerprint: raw.configFingerprint,
-      dataRootHash: reset?.dataRootHash, ...(raw.sourceFacet ? {sourceFacet: raw.sourceFacet} : {})};
+      dataRootHash: reset?.dataRootHash,
+      ...(version2 ? {configFullFingerprint: object(raw.configuration)?.fullFingerprint, configControlsFingerprint: object(raw.configuration)?.controlsFingerprint,
+        treatmentHash: raw.treatmentHash, preflightFingerprint: hash(stableStringify(raw.preflights))} : {}), ...(raw.sourceFacet ? {sourceFacet: raw.sourceFacet} : {})};
     assertExecutionTarget(target, targetRequest, Number(lifecycle?.processId));
-    require(target?.schemaVersion === 'llm_execution_target@1' && Number(port) >= 1024 && Number(port) <= 65535,
+    require(target?.schemaVersion === (version2 ? 'llm_execution_target@2' : 'llm_execution_target@1') && Number(port) >= 1024 && Number(port) <= 65535,
       'target_invalid');
     sample.origin = target?.origin as string;
     sample.dataRootHash = validHash(reset?.dataRootHash) ? reset.dataRootHash : undefined;
@@ -297,6 +562,29 @@ function inspectSample(raw: RecordValue, benchmark: RecordValue, root: string, r
       textId(identity.gateSchemaVersion) && textId(identity.verificationSchemaVersion) &&
       typeof identity.traceProcessorVersion === 'string' && /^(?:bundled|custom):[a-f0-9]{40,64}$/.test(identity.traceProcessorVersion) &&
       typeof identity.stdlibRevision === 'string' && /^[a-f0-9]{40,64}$/.test(identity.stdlibRevision), 'oracle_identity_unproven');
+    let comparedConfig = raw.configFingerprint;
+    let purposeContractFingerprint: string | undefined;
+    if (version2) {
+      const configuration = parseRuntimeBenchmarkConfigCommitments(raw.configuration);
+      require(configuration && configuration.legacyConfigFingerprint === raw.configFingerprint &&
+        configuration.controlsFingerprint === object(benchmark.treatment)?.controlsFingerprint &&
+        object(object(benchmark.treatment)?.sideFullFingerprints)?.[sample.side] === configuration.fullFingerprint &&
+        raw.treatmentHash === hash(stableStringify(benchmark.treatment)), 'treatment_config_unproven');
+      if (configuration) {
+        const proofs = array(raw.preflights), initial = array(benchmark.preflights).filter(value => object(value)?.cellId === sample.cellId && object(value)?.side === sample.side);
+        require(proofs.length > 0 && proofs.length === initial.length, 'preflight_coverage_incomplete');
+        const current = proofs.map(proof => inspectPreflight(proof, raw, benchmark, root, configuration, true));
+        const earlier = initial.map(proof => inspectPreflight(proof, raw, benchmark, root, configuration, false));
+        require(stableStringify(current) === stableStringify(earlier) && new Set(current.map(item => item.mode)).size === current.length, 'preflight_changed');
+        if (current.length) {
+          require(current.every(item => stableStringify(item.purposeContracts) === stableStringify(current[0].purposeContracts) &&
+            stableStringify(item.resolved) === stableStringify(current[0].resolved)), 'preflight_mode_controls_mismatch');
+          purposeContractFingerprint = hash(stableStringify(current[0].purposeContracts));
+          sample.purposeControls = inspectActualTransport(raw, benchmark, report, current[0], require);
+        }
+        comparedConfig = configuration.controlsFingerprint;
+      }
+    }
     sample.quality = buildLlmExecutionQuality(report);
     let pendingSourceCollected = false;
     if (sample.cellId === 'source') {
@@ -337,7 +625,8 @@ function inspectSample(raw: RecordValue, benchmark: RecordValue, root: string, r
     sample.outcome = censored ? 'censored' : (processCompleted || pendingSourceCollected) && completion?.status === 'completed' ? 'completed' : 'failed';
     sample.totalMs = finite(metrics?.wallclockMs) ? metrics.wallclockMs : undefined;
     sample.costs = costObservations(performance);
-    sample.comparisonFingerprint = hash(stableStringify({pin, configFingerprint: raw.configFingerprint,
+    sample.comparisonFingerprint = hash(stableStringify({pin, configFingerprint: comparedConfig,
+      ...(version2 ? {treatmentHash: raw.treatmentHash, purposeContractFingerprint} : {}),
       taskFingerprint: raw.taskFingerprint, observer: observer?.fingerprint, providerSnapshotHash: snapshotHash,
       runtime: identity?.runtime, traceSha256: identity?.traceSha256, expectationHash: identity?.expectationHash,
       gate: identity?.gateSchemaVersion, verificationSchema: identity?.verificationSchemaVersion,
@@ -356,7 +645,8 @@ export interface ScoreLlmExecutionBenchmarkOptions {input: string; reviews?: str
 /** Score saved collector evidence only. No provider calls, process launches or product writes. */
 export function scoreLlmExecutionBenchmark(options: ScoreLlmExecutionBenchmarkOptions) {
   const input = explicitInput(options.input), saved = readJsonFile(input.file), benchmark = object(saved.value);
-  if (!benchmark || benchmark.schemaVersion !== 'llm_execution_benchmark@1' || benchmark.candidate !== 'llm-execution-v1' ||
+  if (!benchmark || !['llm_execution_benchmark@1', 'llm_execution_benchmark@2'].includes(String(benchmark.schemaVersion)) ||
+      benchmark.candidate !== (benchmark.schemaVersion === 'llm_execution_benchmark@2' ? TREATMENT_ID : 'llm-execution-v1') ||
       typeof benchmark.nonce !== 'string' || !/^[a-f0-9]{32}$/.test(benchmark.nonce) ||
       !['glm', 'deepseek'].includes(String(benchmark.provider)) ||
       !PRODUCTION_RUNTIME_KINDS.includes(benchmark.runtime as typeof PRODUCTION_RUNTIME_KINDS[number]) ||
@@ -368,6 +658,28 @@ export function scoreLlmExecutionBenchmark(options: ScoreLlmExecutionBenchmarkOp
       !positiveInteger(coverage.repetitions) || coverage.repetitions < 3 || coverage.repetitions > 30) fail('llm_score_coverage_invalid');
   const requested = coverage.cells as string[], repetitions = coverage.repetitions;
   const artifactIssues: string[] = [];
+  if (benchmark.schemaVersion === 'llm_execution_benchmark@2') {
+    try {
+      const base = benchmark.samples.map(object).find(sample => sample?.side === 'base');
+      const candidate = benchmark.samples.map(object).find(sample => sample?.side === 'candidate');
+      if (benchmark.candidate !== TREATMENT_ID || benchmark.runtime !== 'openai-agents-sdk' ||
+          typeof benchmark.nodeVersion !== 'string' || !/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][a-zA-Z0-9.-]+)?$/.test(benchmark.nodeVersion) ||
+          stableStringify(makeRepresentationTreatment(base?.configuration, candidate?.configuration)) !== stableStringify(benchmark.treatment)) {
+        artifactIssues.push('representation_treatment_unproven');
+      }
+    } catch {artifactIssues.push('representation_treatment_unproven');}
+  }
+  if (benchmark.schemaVersion === 'llm_execution_benchmark@2') {
+    const starts = benchmark.samples.map(value => object(object(value)?.lifecycle)?.preparedAt);
+    const firstPaid = starts.length && starts.every(finite) ? Math.min(...starts as number[]) : undefined;
+    const initial = array(benchmark.preflights);
+    // All initial gates must precede every paid sample, including the opposite side/another cell.
+    if (firstPaid === undefined || !initial.length || initial.some(value => {
+      const proof = object(value), process = object(proof?.lifecycle);
+      return !proof || !requested.includes(String(proof.cellId)) || !['base', 'candidate'].includes(String(proof.side)) ||
+        !finite(process?.settledAt) || process.settledAt > firstPaid;
+    })) artifactIssues.push('initial_preflight_not_before_first_sample');
+  }
   if (benchmark.measurementOrigin !== 'real_provider') artifactIssues.push('real_provider_origin_unproven');
   if (benchmark.sampleKind !== 'local-cold' || benchmark.lifecycle !== 'collected') artifactIssues.push('collection_incomplete');
   const expectedSamples = requested.length * repetitions * 2;
@@ -411,6 +723,13 @@ export function scoreLlmExecutionBenchmark(options: ScoreLlmExecutionBenchmarkOp
       const issues = [...base.issues, ...candidate.issues];
       if (base.pairId !== candidate.pairId || base.origin === candidate.origin || !base.comparisonFingerprint ||
           base.comparisonFingerprint !== candidate.comparisonFingerprint) issues.push('pair_identity_mismatch');
+      if (benchmark.schemaVersion === 'llm_execution_benchmark@2') {
+        const before = base.purposeControls ?? {}, after = candidate.purposeControls ?? {};
+        for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+          if (before[key] && after[key] && stableStringify(before[key]) !== stableStringify(after[key])) issues.push('paired_actual_controls_mismatch');
+          if ((!before[key] || !after[key]) && key === 'main_dispatch:answer_turn') issues.push('main_actual_controls_missing');
+        }
+      }
       if (!base.sourceFingerprint || !candidate.sourceFingerprint || base.sourceFingerprint === candidate.sourceFingerprint) issues.push('different_sources_unproven');
       const observerReview = reviews.observers.find(review => review.baselineSourceFingerprint === base.sourceFingerprint &&
         review.candidateSourceFingerprint === candidate.sourceFingerprint && review.coreFingerprint === base.observerCore &&

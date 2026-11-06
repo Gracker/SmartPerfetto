@@ -186,8 +186,10 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
     if (this.runtime.conclusionDeclarationSyntax !== undefined && syntax !== undefined &&
         this.runtime.conclusionDeclarationSyntax !== syntax) throw new Error('run_manifest_declaration_syntax_changed');
     const effectiveSyntax = syntax ?? this.runtime.conclusionDeclarationSyntax;
-    if ((finalSubmission ?? this.runtime.finalSubmission) === 'authored_claim_document_v1' &&
-        effectiveSyntax !== undefined && effectiveSyntax !== 'canonical_v1') {
+    const effectiveSubmission = finalSubmission ?? this.runtime.finalSubmission;
+    if (effectiveSyntax !== undefined && (
+      effectiveSubmission === 'authored_claim_document_v1' && effectiveSyntax !== 'canonical_v1' ||
+      effectiveSubmission === 'authored_claim_document_v2' && effectiveSyntax !== 'authoring_v2')) {
       throw new Error('run_manifest_output_config_conflict');
     }
     if (input.runtime !== this.runtime.runtime) {

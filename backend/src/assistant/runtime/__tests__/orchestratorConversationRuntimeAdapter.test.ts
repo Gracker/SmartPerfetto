@@ -3,12 +3,14 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {EventEmitter} from 'events';
+import {attachIssuedNativeObjectEntryFixture} from '../../../../tests/helpers/authoredFinalEntryFixture';
+import {installCurrentRealmStructuredCloneForTest} from '../../../../tests/helpers/openAiRuntimeFixture';
 import type {RuntimeActivitySnapshot} from '../../../agentRuntime/runtimeActivity';
 import {resolveRuntimePerformanceRecorder} from '../../../agentRuntime/runtimePerformanceContext';
 import {createRuntimePerformanceRecorder, createRuntimePerformanceRun, startRuntimeModelCall} from '../../../agentRuntime/runtimePerformance';
 import {resolveAnalysisHistoryReader, createAnalysisHistoryReader, createRuntimeAnalysisHistoryReader, type AnalysisHistoryReader, toAnalysisHistoryTurn} from '../../../agentRuntime/analysisHistory';
 import {setImmediate as nextImmediate} from 'node:timers/promises';
-import {beforeEach, describe, expect, it, jest} from '@jest/globals';
+import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 import {readRuntimeAdmission} from '../../../agentRuntime/runtimeTaskDeadline';
 import type {FinalizeAnalysisResultInput, FinalizedAnalysisResult} from '../../../services/finalizeAnalysisResult';
 import {canonicalizeAnalysisResult} from '../../../services/canonicalAnalysisResult';
@@ -1318,4 +1320,63 @@ describe('OrchestratorConversationRuntimeAdapter', () => {
     } finally {spy.mockRestore();}
   });
 
+});
+
+
+describe('issued native-object Conversation handoff', () => {
+  let restoreClone: (() => void) | undefined;
+  beforeEach(() => {restoreClone = installCurrentRealmStructuredCloneForTest();});
+  afterEach(() => {restoreClone?.(); restoreClone = undefined;});
+
+  it('preserves v2 private context through the actual shared finalizer and returns only finalized public output', async () => {
+    let issued!: ReturnType<typeof attachIssuedNativeObjectEntryFixture>;
+    const logicalSession = 'native-conversation';
+    const emitter = createOrchestrator(async options => {
+      const value = {...result('Which interval should I inspect?', conversationRuntimeSessionId(logicalSession, options.runId!)), findings: []};
+      issued = attachIssuedNativeObjectEntryFixture({result: value, runId: options.runId!, registry});
+      return value;
+    });
+    const actual = jest.requireActual<typeof import('../../../services/finalizeAnalysisResult')>('../../../services/finalizeAnalysisResult').finalizeAnalysisResult;
+    mockFinalize.mockImplementationOnce(async input => {
+      expect(input.result).toBe(issued.result); expect(finalizationContexts.takeFinalizationContext(input.result)).toBeUndefined();
+      expect(input.context?.deliveryContext).toMatchObject({finalSubmission: {mode: 'authored_claim_document_v2', outcome: 'submitted'}});
+      expect(issued.read().binding.representationVersion).toBe('authored_claim_document@2');
+      return actual(input);
+    });
+    const adapter = new OrchestratorConversationRuntimeAdapter(emitter);
+    try {
+      const outcome = await adapter.run({sessionId: logicalSession, runId: 'v2-run', query: 'Inspect an interval', history: [], traceContext: {kind: 'none'}});
+      expect(emitter.analyze).toHaveBeenCalledTimes(1); expect(mockFinalize).toHaveBeenCalledTimes(1);
+      expect(outcome.message).toBe('Which interval should I inspect?');
+      expect(outcome.finalResult).toMatchObject({conclusion: outcome.message, outputOrigin: 'model_tool_arguments', completion: {status: 'completed'}});
+      expect(() => issued.read()).toThrow('invalid');
+      expect(() => mockFinalize.mock.calls[0][0].context!.runId).toThrow('disposed');
+      expect(JSON.stringify(outcome)).not.toMatch(/rawArguments|nativeDocument|privateNativeDocument|referenceDictionary|semanticFrames|partSpans|quoteBindings|documentJson/);
+    } finally {await adapter.dispose(); issued?.cleanup();}
+  });
+
+  it('rejects the late cancelled v2 handoff without finalizing or publishing its output', async () => {
+    const started = deferred<void>(), finish = deferred<void>(), taken = deferred<void>();
+    let issued!: ReturnType<typeof attachIssuedNativeObjectEntryFixture>;
+    const logicalSession = 'native-conversation-late';
+    const emitter = createOrchestrator(async options => {
+      const value = {...result('Late clarification?', conversationRuntimeSessionId(logicalSession, options.runId!)), findings: []};
+      issued = attachIssuedNativeObjectEntryFixture({result: value, runId: options.runId!, registry});
+      started.resolve(undefined); await finish.promise; return value;
+    });
+    const adapter = new OrchestratorConversationRuntimeAdapter(emitter);
+    const take = finalizationContexts.takeFinalizationContext;
+    const spy = jest.spyOn(finalizationContexts, 'takeFinalizationContext').mockImplementation(value => {
+      const context = take(value); if (value === issued?.result) taken.resolve(undefined); return context;
+    });
+    const pending = adapter.run({sessionId: logicalSession, runId: 'v2-old', query: 'Inspect', history: [], traceContext: {kind: 'none'}});
+    try {
+      await started.promise; await adapter.cancel(logicalSession, 'v2-old');
+      await expect(pending).resolves.toEqual({kind: 'cancelled', message: ''});
+      finish.resolve(undefined); await taken.promise; await nextImmediate();
+      expect(mockFinalize).not.toHaveBeenCalled(); expect(emitter.analyze).toHaveBeenCalledTimes(1);
+      expect(finalizationContexts.takeFinalizationContext(issued.result)).toBeUndefined();
+      expect(() => issued.read()).toThrow('invalid');
+    } finally {finish.resolve(undefined); await pending; spy.mockRestore(); await adapter.dispose(); issued?.cleanup();}
+  });
 });

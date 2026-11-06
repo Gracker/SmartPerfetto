@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 
 import {createHash} from 'node:crypto';
+import {canonicalContentHash} from '../../services/selfEvolution/canonicalJson';
 import {projectAgentE2ePerformance, readAgentE2eMetrics} from '../agentE2eMetrics';
 import {measureModelRequestBody} from '../../agentRuntime/modelRequestMetrics';
 import {RUNTIME_DECLARATION_AUTHORING_STATUSES, RUNTIME_DECLARATION_AUTHORING_VERSIONS} from '../../agentRuntime/runtimePerformance';
@@ -164,4 +165,58 @@ describe('same-process E2E metrics artifact', () => {
     expect(body.normalized?.measurement).toBe('normalized_json_utf8');
     expect(body.normalized?.totalBytes).toBeLessThan(body.bodyBytes!);
   });
+});
+
+
+describe('W0 sealed actual transport projection', () => {
+  // Hand-authored stored fixture: the pre-existing metrics entry must not silently drop this receipt.
+  const payload = {sequence: 1, offsetMs: 5, kind: 'not_exercised', reason: 'program_ack'};
+  const receipt = {schemaVersion: 'final_transport_observation@1',
+    events: [{...payload, eventKey: canonicalContentHash(payload)}], truncated: 0};
+
+  it('preserves the sealed transport observation without inventing a main call from requested mode', () => {
+    const result = readAgentE2eMetrics(identity, () => ({...manifest,
+      finalSubmission: 'assistant_text', conclusionDeclarationSyntax: 'canonical_v1',
+      performance: {...performance, finalTransportObservation: receipt}} as unknown as RunManifestV1));
+    expect(result).toMatchObject({status: 'sealed', requestedOutputConfig: {finalSubmission: 'assistant_text', declarationSyntax: 'canonical_v1'},
+      performance: {finalTransportObservation: receipt}});
+    expect(projectAgentE2ePerformance(performance)).not.toHaveProperty('finalTransportObservation');
+    expect(readAgentE2eMetrics(identity, () => manifest)).not.toHaveProperty('requestedOutputConfig');
+  });
+
+  it.each([
+    {schemaVersion: 'wrong'}, {truncated: -1}, {privateBody: 'PRIVATE'},
+    {events: [{...receipt.events[0], eventKey: '0'.repeat(64)}]},
+    {events: [{...receipt.events[0], sequence: 2}]},
+    {events: [receipt.events[0], receipt.events[0]]},
+    {events: [{...receipt.events[0], privateRawArguments: 'PRIVATE'}]},
+  ])('rejects malformed stored actual observations instead of dropping them: %j', mutation => {
+    const result = readAgentE2eMetrics(identity, () => ({...manifest,
+      performance: {...performance, finalTransportObservation: {...receipt, ...mutation}}} as unknown as RunManifestV1));
+    expect(result).toEqual({schemaVersion: 'llm_execution_metrics_artifact@1', status: 'invalid_receipt'});
+    expect(JSON.stringify(result)).not.toContain('PRIVATE');
+  });
+
+  it('keeps explicit truncation and requested-only configuration distinct from complete actual evidence', () => {
+    expect(projectAgentE2ePerformance({...performance, finalTransportObservation: {...receipt, truncated: 2}}))
+      .toHaveProperty('finalTransportObservation.truncated', 2);
+    const requested = readAgentE2eMetrics(identity, () => ({...manifest,
+      finalSubmission: 'authored_claim_document_v1', conclusionDeclarationSyntax: 'canonical_v1'} as RunManifestV1));
+    expect(requested).toMatchObject({status: 'sealed', requestedOutputConfig: {finalSubmission: 'authored_claim_document_v1'}});
+    expect(requested).not.toHaveProperty('performance.finalTransportObservation');
+  });
+});
+
+
+describe('model-source metrics do not upgrade configured fallbacks', () => {
+  it.each(['configured', 'provider_reported'] as const)('preserves explicit %s independently of the model hash', modelSource => {
+    expect(projectAgentE2ePerformance({...performance, modelCalls: [{...performance.modelCalls[0], modelSource}]}).modelCalls?.[0])
+      .toMatchObject({modelSource, modelHash: createHash('sha256').update('deepseek-flash').digest('hex')});
+    expect(projectAgentE2ePerformance(performance).modelCalls?.[0]).not.toHaveProperty('modelSource');
+  });
+  it.each([{model: undefined}, {model: ''}, {model: ' model '}, {modelSource: 'unknown_private_value'}])(
+    'rejects inconsistent stored provenance without inventing actual identity: %j', mutation => {
+      expect(() => projectAgentE2ePerformance({...performance, modelCalls: [{...performance.modelCalls[0],
+        modelSource: 'provider_reported', ...mutation}]})).toThrow('metrics_');
+    });
 });

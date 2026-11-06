@@ -1,15 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2024-2026 Gracker (Chris)
 
-import {AUTHORED_CLAIM_DOCUMENT_VERSION, compileAuthoredClaimDocument, type AuthoredClaimDocumentFailure, type AuthoredClaimDocumentResult} from '../../../agent/core/authoredClaimDocument';
+import {isDeepStrictEqual, types} from 'node:util';
+import {AUTHORED_CLAIM_DOCUMENT_VERSION, compileAuthoredClaimDocument, measureAuthoredJson,
+  type AuthoredClaimDocumentResult} from '../../../agent/core/authoredClaimDocument';
+import {AUTHORED_CLAIM_OBJECT_VERSION, compileAuthoredClaimObject,
+  type AuthoredClaimObjectFailure, type AuthoredClaimObjectResult} from '../../../agent/core/authoredClaimObject';
 import {AUTHORED_CLAIM_DOCUMENT_COMPILER_VERSION, AUTHORED_FINAL_SUBMISSION_PENDING_ACK,
+  AUTHORED_CLAIM_OBJECT_COMPILER_VERSION,
   issueAuthoredFinalSubmission, readAuthoredFinalSubmission, revokeAuthoredFinalSubmissionIssuer,
   type AuthoredFinalSubmissionIssuer, type AuthoredFinalSubmissionOwnerBinding,
-  type AuthoredFinalSubmissionReadInput, type IssuedAuthoredFinalSubmission} from '../../authoredFinalSubmission';
+  type AuthoredFinalSubmissionReadInput, type AuthoredFinalSubmissionVersion, type IssuedAuthoredFinalSubmission} from '../../authoredFinalSubmission';
 import type {AuthoredConclusionSubmission} from '../../../services/security/conclusionProtocolProjection';
 
 /** Versioned experimental transport boundary; not enabled by importing it. */
 export const OPENAI_TYPED_FINAL_ADMISSION_CONTRACT_VERSION = 'openai_typed_final_admission@1';
+export const OPENAI_TYPED_FINAL_ADMISSION_CONTRACT_VERSION_V2 = 'openai_typed_final_admission@2';
 export const OPENAI_TYPED_FINAL_WIRE_VERSION = 'openai_chat_final_wire@1';
 export const OPENAI_TYPED_FINAL_RAW_BYTES = 1024 * 1024;
 
@@ -207,16 +213,31 @@ interface NativeStream {
   finalOutput: unknown;
   interruptions: unknown;
 }
-type Compiled = Extract<AuthoredClaimDocumentResult, {status: 'compiled'}>;
-interface PendingSubmission {
+type CompiledV1 = Extract<AuthoredClaimDocumentResult, {status: 'compiled'}>;
+type CompiledV2 = Extract<AuthoredClaimObjectResult, {status: 'compiled'}>;
+interface PendingCommon {
   invocation: OpenAiTypedFinalInvocation;
   context: object;
   receipt: OpenAiTypedFinalWireReceipt;
-  documentJson: string;
-  compiled: Compiled;
   handlerSucceeded: boolean;
 }
+type PendingSubmission = PendingCommon & (
+  {representationVersion: typeof AUTHORED_CLAIM_DOCUMENT_VERSION; documentJson: string; compiled: CompiledV1} |
+  {representationVersion: typeof AUTHORED_CLAIM_OBJECT_VERSION; nativeDocument: Record<string, unknown>; compiled: CompiledV2});
 interface StopDecision {response: object; processed: object; deadlineAt: number}
+
+/** Compare actual arguments, not a replacement decoded from the wire. The native
+ * subtree's own S1 bound excludes the outer transport wrapper's independent byte cap. */
+function sameSubmissionArguments(actual: unknown, original: Record<string, unknown>): boolean {
+  if (types.isProxy(actual) || !record(actual) || Object.getPrototypeOf(actual) !== Object.prototype) return false;
+  const keys = Reflect.ownKeys(actual), expected = Object.keys(original);
+  if (keys.length !== 1 || expected.length !== 1 || keys[0] !== expected[0] ||
+    (expected[0] !== 'documentJson' && expected[0] !== 'document')) return false;
+  const descriptor = Object.getOwnPropertyDescriptor(actual, keys[0]);
+  if (!descriptor?.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) return false;
+  if (expected[0] === 'document' && typeof measureAuthoredJson(descriptor.value) === 'string') return false;
+  return isDeepStrictEqual(actual, original);
+}
 
 /** Private attempt bridge. No tool registration, feature selection, model call or finalizer lives here. */
 export function createOpenAiTypedFinalAttempt(input: {
@@ -224,12 +245,18 @@ export function createOpenAiTypedFinalAttempt(input: {
   toolName: string;
   issuer: AuthoredFinalSubmissionIssuer;
   ownerBinding: AuthoredFinalSubmissionOwnerBinding;
+  /** Captured run syntax; omission keeps the existing v1 adapter contract. */
+  representationVersion?: AuthoredFinalSubmissionVersion;
   /** Product/run cancellation only; never the SDK's successful-finally cleanup controller. */
   signal: AbortSignal;
   assertCurrent(): void;
   deadlineAt(): number;
 }) {
   input = Object.freeze({...input, ownerBinding: Object.freeze({...input.ownerBinding})});
+  const representationVersion = input.representationVersion === undefined ? AUTHORED_CLAIM_DOCUMENT_VERSION : input.representationVersion;
+  if (representationVersion !== AUTHORED_CLAIM_DOCUMENT_VERSION && representationVersion !== AUTHORED_CLAIM_OBJECT_VERSION) {
+    throw new OpenAiTypedFinalAdmissionError('contract_unavailable');
+  }
   const collector = createOpenAiTypedFinalWireCollector();
   let resolveReady!: (stream: NativeStream) => void, rejectReady!: (error: unknown) => void;
   const ready = new Promise<NativeStream>((resolve, reject) => {resolveReady = resolve; rejectReady = reject;});
@@ -238,7 +265,7 @@ export function createOpenAiTypedFinalAttempt(input: {
   let naturalCompletion: Promise<boolean> | undefined;
   let pending: PendingSubmission | undefined, decision: StopDecision | undefined;
   let revoked: OpenAiTypedFinalAdmissionFailure | undefined, settled = false;
-  let firstCompilerFailure: AuthoredClaimDocumentFailure | undefined;
+  let firstCompilerFailure: AuthoredClaimObjectFailure | undefined;
   let issued: IssuedAuthoredFinalSubmission | undefined;
   const revoke = (reason: OpenAiTypedFinalAdmissionFailure) => {
     revoked ??= reason;
@@ -356,7 +383,7 @@ export function createOpenAiTypedFinalAttempt(input: {
     },
     failStartup() {revoke('contract_unavailable');},
     /** Only the actual adapter execute path receives this object-identity capability. */
-    async stageInvocation(call: {tool: object; context: unknown; toolCall: unknown}): Promise<OpenAiTypedFinalInvocation> {
+    async stageInvocation(call: {tool: object; context: unknown; toolCall: unknown; parsedArguments: unknown}): Promise<OpenAiTypedFinalInvocation> {
       const stream = await awaitStream();
       if (pending || decision || settled || call.tool !== input.finalTool || !record(call.context) ||
         readState(stream)._context !== call.context) return fail('stale_invocation');
@@ -366,21 +393,29 @@ export function createOpenAiTypedFinalAttempt(input: {
       }
       let outer: unknown;
       try {outer = JSON.parse(receipt.rawArguments);} catch {return fail('invalid_submission');}
-      if (!record(outer) || Object.keys(outer).length !== 1 || typeof outer.documentJson !== 'string') return fail('invalid_submission');
-      const compiled = compileAuthoredClaimDocument(outer.documentJson);
-      if (compiled.status !== 'compiled') {
-        firstCompilerFailure ??= compiled.code;
-        return fail('invalid_submission');
-      }
+      if (!record(outer) || Object.keys(outer).length !== 1 || !sameSubmissionArguments(call.parsedArguments, outer)) return fail('invalid_submission');
       const invocation: OpenAiTypedFinalInvocation = Object.freeze({kind: 'openai_typed_final_invocation'});
-      pending = {invocation, context: call.context, receipt, documentJson: outer.documentJson, compiled, handlerSucceeded: false};
+      const common = {invocation, context: call.context, receipt, handlerSucceeded: false};
+      if (representationVersion === AUTHORED_CLAIM_DOCUMENT_VERSION) {
+        if (typeof outer.documentJson !== 'string') return fail('invalid_submission');
+        const compiled = compileAuthoredClaimDocument(outer.documentJson);
+        if (compiled.status !== 'compiled') {firstCompilerFailure ??= compiled.code; return fail('invalid_submission');}
+        pending = {...common, representationVersion, documentJson: outer.documentJson, compiled};
+      } else {
+        if (!Object.prototype.hasOwnProperty.call(outer, 'document')) return fail('invalid_submission');
+        const compiled = compileAuthoredClaimObject(outer.document);
+        if (compiled.status !== 'compiled') {firstCompilerFailure ??= compiled.code; return fail('invalid_submission');}
+        pending = {...common, representationVersion, nativeDocument: compiled.privateNativeDocument, compiled};
+      }
       return invocation;
     },
-    markPrivateHandlerSuccess(invocation: OpenAiTypedFinalInvocation, result: {output: unknown; documentJson: unknown}) {
+    markPrivateHandlerSuccess(invocation: OpenAiTypedFinalInvocation, result: {output: unknown; arguments: unknown}) {
       assertCurrent();
       if (!pending || pending.invocation !== invocation || pending.handlerSucceeded ||
-        !collector.isCurrent(pending.receipt) || result.output !== OPENAI_TYPED_FINAL_PENDING_ACK ||
-        result.documentJson !== pending.documentJson) return fail('handler_failed');
+        !collector.isCurrent(pending.receipt) || result.output !== OPENAI_TYPED_FINAL_PENDING_ACK) return fail('handler_failed');
+      const original = pending.representationVersion === AUTHORED_CLAIM_DOCUMENT_VERSION
+        ? {documentJson: pending.documentJson} : {document: pending.nativeDocument};
+      if (!sameSubmissionArguments(result.arguments, original)) return fail('handler_failed');
       pending.handlerSucceeded = true;
     },
     async toolUseBehavior(context: unknown, results: readonly unknown[]) {
@@ -417,17 +452,25 @@ export function createOpenAiTypedFinalAttempt(input: {
           !record(state._currentStep) || state._currentStep.type !== 'next_step_final_output' ||
           state._currentStep.output !== pending.compiled.body || stream.finalOutput !== pending.compiled.body) return fail('sdk_incomplete');
         assertCurrent(false);
-        issued = issueAuthoredFinalSubmission(input.issuer, {dispatchOrdinal: pending.receipt.dispatchOrdinal,
-          responseId: pending.receipt.responseId, callId: pending.receipt.callId, rawArguments: pending.receipt.rawArguments,
-          documentJson: pending.documentJson, compiled: pending.compiled});
-        const readInput: AuthoredFinalSubmissionReadInput = {binding: Object.freeze({...input.ownerBinding,
+        const dispatch = {dispatchOrdinal: pending.receipt.dispatchOrdinal,
+          responseId: pending.receipt.responseId, callId: pending.receipt.callId, rawArguments: pending.receipt.rawArguments};
+        issued = issueAuthoredFinalSubmission(input.issuer, pending.representationVersion === AUTHORED_CLAIM_DOCUMENT_VERSION
+          ? {...dispatch, documentJson: pending.documentJson, compiled: pending.compiled}
+          : {...dispatch, nativeDocument: pending.nativeDocument, compiled: pending.compiled});
+        const binding = {...input.ownerBinding,
           dispatchOrdinal: pending.receipt.dispatchOrdinal, responseId: pending.receipt.responseId,
-          callId: pending.receipt.callId, representationVersion: AUTHORED_CLAIM_DOCUMENT_VERSION,
-          compilerContractVersion: AUTHORED_CLAIM_DOCUMENT_COMPILER_VERSION}), rawArguments: pending.receipt.rawArguments,
-          documentJson: pending.documentJson, body: pending.compiled.body,
+          callId: pending.receipt.callId};
+        const material = {rawArguments: pending.receipt.rawArguments, body: pending.compiled.body,
           rawCanonicalPayload: structuredClone(pending.compiled.rawCanonicalPayload)};
+        const readInput: AuthoredFinalSubmissionReadInput = pending.representationVersion === AUTHORED_CLAIM_DOCUMENT_VERSION
+          ? {...material, binding: Object.freeze({...binding, representationVersion: AUTHORED_CLAIM_DOCUMENT_VERSION,
+              compilerContractVersion: AUTHORED_CLAIM_DOCUMENT_COMPILER_VERSION}), documentJson: pending.documentJson}
+          : {...material, binding: Object.freeze({...binding, representationVersion: AUTHORED_CLAIM_OBJECT_VERSION,
+              compilerContractVersion: AUTHORED_CLAIM_OBJECT_COMPILER_VERSION}), nativeDocument: structuredClone(pending.nativeDocument)};
         const snapshot = readAuthoredFinalSubmission(issued, readInput);
         // Hand off the issued immutable identity, not another parser result or a JSON receipt.
+        if ('nativeDocument' in readInput && 'nativeDocument' in snapshot) return Object.freeze({submission: issued,
+          input: Object.freeze({...readInput, nativeDocument: snapshot.nativeDocument, rawCanonicalPayload: snapshot.compiled.rawCanonicalPayload})});
         return Object.freeze({submission: issued,
           input: Object.freeze({...readInput, rawCanonicalPayload: snapshot.compiled.rawCanonicalPayload})});
       } catch (error) {

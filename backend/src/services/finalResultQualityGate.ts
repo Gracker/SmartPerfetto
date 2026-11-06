@@ -378,7 +378,8 @@ export function assessFinalResultQualityAssessment(
       });
     }
   }
-  const submissionFailure = context.finalSubmission?.mode === 'authored_claim_document_v1'
+  const submissionFailure = context.finalSubmission?.mode === 'authored_claim_document_v1' ||
+    context.finalSubmission?.mode === 'authored_claim_document_v2'
     ? context.finalSubmission.outcome !== 'submitted' ? context.finalSubmission.outcome
       : hasCurrentAuthoredFinalDelivery(result, context) ? undefined : 'transport_failure' : undefined;
   if (submissionFailure) {

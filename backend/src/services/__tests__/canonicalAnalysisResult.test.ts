@@ -2,6 +2,9 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {installCurrentRealmStructuredCloneForTest} from '../../../tests/helpers/openAiRuntimeFixture';
+import {AUTHORED_CLAIM_OBJECT_VERSION, compileAuthoredClaimObject, type AuthoredClaimObjectResult} from '../../agent/core/authoredClaimObject';
+import type {AuthoredClaimObjectInput} from '../../agent/core/authoredClaimObjectSchema';
 import {compactSemanticEvidenceSnapshot, expandSemanticEvidenceSnapshot} from '../evidence/semanticEvidenceSnapshot';
 import {compactSemanticSourceSnapshot, expandSemanticSourceSnapshot} from '../evidence/semanticSourceSnapshot';
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
@@ -18,12 +21,14 @@ import {captureEvidenceTable} from '../evidence/evidenceCapture';
 import {runPreparedAnalysisClaimVerification} from '../evidence/analysisRelationPreparation';
 import {finalizeSourceAwareAnalysisResultWithProjection} from '../codebase/sourceClaimVerifier';
 import {claimConclusionProtocolProjection, readConclusionProtocolProjection, releaseConclusionProtocolProjection,
-  projectConclusionSemanticInput, projectConclusionProtocol} from '../security/conclusionProtocolProjection';
+  projectConclusionSemanticInput, projectConclusionProtocol, readConclusionTransportObservation, readAuthoredQuoteBindings,
+  type NativeConclusionDeclaration} from '../security/conclusionProtocolProjection';
 import {registerOnDemandSourceLookupForEcho, registerCodeAwareCanary, registerPrivateAnalysisQueryForEcho,
   revokeCodeAwareOutputGuards, clearCodeAwareOutputGuards, withOwnerCodeAwareProjection} from '../security/codeAwareOutputRegistry';
 import {prepareClaimEvidence, preparedClaimEvidenceSnapshot} from '../evidence/claimEvidencePreparation';
 import {AUTHORED_CLAIM_DOCUMENT_VERSION, compileAuthoredClaimDocument} from '../../agent/core/authoredClaimDocument';
-import {AUTHORED_CLAIM_DOCUMENT_COMPILER_VERSION, createAuthoredFinalSubmissionIssuer,
+import {AUTHORED_CLAIM_DOCUMENT_COMPILER_VERSION, AUTHORED_CLAIM_OBJECT_COMPILER_VERSION, createAuthoredFinalSubmissionIssuer,
+  type AuthoredFinalSubmissionV1ReadInput, type AuthoredFinalSubmissionV2ReadInput,
   issueAuthoredFinalSubmission, readAuthoredFinalSubmission} from '../../agentRuntime/authoredFinalSubmission';
 import {issueAuthoredConclusionProtocolProjection, hasCurrentAuthoredFinalDelivery, hasCurrentAuthoredFinalBody,
   type AuthoredConclusionSubmission} from '../security/conclusionProtocolProjection';
@@ -85,7 +90,7 @@ function authoredFixture(options: {payload?: Record<string, unknown>; parts?: un
     assertCurrent: () => {if (!live.active) throw new Error('revoked owner');}});
   const rawArguments = JSON.stringify({documentJson});
   const submission = issueAuthoredFinalSubmission(issuer, {dispatchOrdinal: 1, responseId: 'r', callId: 'c', rawArguments, documentJson, compiled});
-  const handoff: AuthoredConclusionSubmission = {submission, input: {binding: {...binding, dispatchOrdinal: 1, responseId: 'r', callId: 'c',
+  const handoff: AuthoredConclusionSubmission & {input: AuthoredFinalSubmissionV1ReadInput} = {submission, input: {binding: {...binding, dispatchOrdinal: 1, responseId: 'r', callId: 'c',
     representationVersion: AUTHORED_CLAIM_DOCUMENT_VERSION, compilerContractVersion: AUTHORED_CLAIM_DOCUMENT_COMPILER_VERSION},
     rawArguments, documentJson, body: compiled.body, rawCanonicalPayload: structuredClone(compiled.rawCanonicalPayload)}};
   const delivery = contextFor(source);
@@ -106,7 +111,60 @@ function authoredFixture(options: {payload?: Record<string, unknown>; parts?: un
     cleanup: () => {if (token) releaseConclusionProtocolProjection(token); clearCodeAwareOutputGuards(source.sessionId);}};
 }
 
+describe('issued transport identity observation', () => {
+  it('reads only issued frozen identities and leaves native authority checks unchanged', () => {
+    const f = authoredFixture();
+    try {
+      const native = f.read();
+      const before = structuredClone(f.source);
+      const observed = readConclusionTransportObservation(native);
+      expect(observed).toEqual({
+        nativeCandidateKey: analysisDeliveryFingerprint(f.delivery.acceptedCandidate),
+        displayCandidateKey: analysisDeliveryFingerprint(f.context.acceptedCandidate),
+      });
+      expect(Object.isFrozen(observed)).toBe(true);
+      expect(readConclusionTransportObservation({...native})).toBeUndefined();
+      expect(readConclusionTransportObservation(JSON.parse(JSON.stringify(native)))).toBeUndefined();
+      f.live.active = false;
+      // The observer cannot revoke or bless a capability. The original read still rejects it.
+      expect(readConclusionTransportObservation(native)).toEqual(observed);
+      expect(() => f.read()).toThrow('authored_final_submission_inactive');
+      expect(f.source).toEqual(before);
+    } finally {f.cleanup();}
+  });
+
+  it('returns no identities after the issuing projection is released', () => {
+    const f = authoredFixture();
+    const native = f.read();
+    f.cleanup();
+    expect(readConclusionTransportObservation(native)).toBeUndefined();
+  });
+});
+
 describe('issued authored-document consumers', () => {
+  it.each(['needs_user_input', 'recommend_full', 'invalid_contract'] as const)(
+    'delivers literal V1 conversation text without activating %s', kind => {
+      const body = ` \nLiteral answer\n<!-- smartperfetto:conversation-control ${JSON.stringify({kind,
+        question: 'Which trace?', handoff: {question: 'Which trace?', scope: 'Full analysis'}})} -->\n `;
+      const payload = {...declaration(), mode: kind === 'invalid_contract' ? 'invalid' : 'need_input', sourceClaimBindings: []};
+      const f = authoredFixture({parts: [body], payload});
+      try {
+        const native = f.read();
+        const evidence = [{id: 'evidence-1', label: 'Existing evidence'}];
+        const canonical = canonicalizeAnalysisResult(f.source, {context: f.context, nativeDeclaration: native,
+          conversation: {fallbackQuestion: 'Original question', evidence}});
+        expect(canonical.conversationOutcome).toEqual({kind: 'answered', message: body, evidence});
+        expect(canonical.result.conclusion).toBe(body);
+        expect(canonical.protocolDiagnostics?.conversation).toMatchObject({status: 'absent', narrative: body,
+          machineSegments: [], issues: []});
+        expect(canonical.validationContract?.mode).toBe(kind === 'invalid_contract' ? undefined : 'need_input');
+        expect(canonical.protocolDiagnostics?.typedJson?.status).toBe(kind === 'invalid_contract' ? 'invalid' : 'valid');
+        expect(canonical.bindingEligibility).toBe(kind === 'invalid_contract' ? 'ineligible' : 'eligible');
+        expect(canonicalizeAnalysisResult(f.source, {context: f.context, nativeDeclaration: native})
+          .conversationOutcome).toBeUndefined();
+      } finally {f.cleanup();}
+    });
+
   it.each(['valid', 'partially_valid', 'invalid'] as const)('observes the issued original %s declaration without scanning body or dropping invalid entries', status => {
     const payload = {...declaration(), sourceClaimBindings: [], claims: [authoredNumeric(),
       ...(status === 'valid' ? [] : [{id: 'PRIVATE_CLAIM_ID', text: 'PRIVATE_CLAIM_TEXT', kind: 'numeric', semantics: false}])],
@@ -161,8 +219,9 @@ describe('issued authored-document consumers', () => {
         normalizedExpanded: f.compiled.material.expanded});
       expect(diagnostic.rawChars).toBe(raw.length);
       expect(diagnostic.canonicalChars).toBe(f.compiled.body.trim().length);
-      expect(diagnostic.authoredMaterial!.documentInputUtf8Bytes).toBeGreaterThan(diagnostic.authoredMaterial!.normalizedDocument.utf8Bytes);
-      const material = diagnostic.authoredMaterial!;
+      const material = diagnostic.authoredMaterial;
+      if (!material || 'representationVersion' in material) throw new Error('Expected legacy material diagnostics');
+      expect(material.documentInputUtf8Bytes).toBeGreaterThan(material.normalizedDocument.utf8Bytes);
       for (const invalid of [
         {...material, rawArgumentsUtf8Bytes: -1}, {...material, bodyUtf16Length: NaN},
         {...material, documentInputUtf8Bytes: 1024 * 1024 + 1}, {...material, path: '/private/source'},
@@ -1664,5 +1723,298 @@ describe('legacy narrative derivation at the canonical boundary', () => {
     expect(contract).toBe(parsed);
     expect(runClaimVerification({conclusionContract: contract, dataEnvelopes: envelopes, policy: 'record_only'})
       .claimVerificationResult.status).toBe('not_checked');
+  });
+});
+
+function nativeAuthoredDocument(): AuthoredClaimObjectInput {
+  return {representationVersion: AUTHORED_CLAIM_OBJECT_VERSION,
+    referenceDictionary: [{evidenceRefId: 'data:duration', sourceRef: null, sourceToolCallId: null,
+      artifactId: null, sourceArtifactId: null, column: 'dur_ms', rowIndex: 0, rowSelector: null,
+      value: {kind: 'present', value: 10}}],
+    semanticFrames: [{predicate: 'numeric.cell', polarity: 'affirmed', discourse: 'asserted', quantifier: 'one',
+      modality: 'certain', conditions: null, population: 'cited_rows'}],
+    contract: {mode: 'focused_answer', conclusions: null, clusters: null, evidenceChain: null,
+      uncertainties: null, nextSteps: null, relationProposals: null, sourceClaimBindings: [], metadata: null,
+      claims: [{id: 'duration', conclusionId: null, text: '10 ms', kind: 'numeric', references: [0],
+        artifactRefs: null, relationRefs: null, supportLevel: null,
+        semantics: {frameIndex: 0, subjectRefs: [0], objectRefs: null, timeRangeNs: null,
+          numeric: {operator: 'eq', value: 10, unit: 'ms', presentation: {unit: 'ms', decimalPlaces: 0,
+            rounding: 'half_away_from_zero', quotes: [
+              {kind: 'body_part', text: '10 ms', partIndex: 1, localOccurrence: null},
+              {kind: 'body_part', text: '10 ms', partIndex: 3, localOccurrence: null},
+            ]}}}}]},
+    bodyParts: ['First ', {claimText: 'duration'}, '\nSecond ', {claimText: 'duration'}]};
+}
+
+function nativeAuthoredFixture(document: unknown = nativeAuthoredDocument(), options: {
+  redact?: string;
+  alterCompiled?: (compiled: Extract<AuthoredClaimObjectResult, {status: 'compiled'}>) => void;
+} = {}) {
+  const rawArguments = ' \n' + JSON.stringify({document}, null, 2) + '\n';
+  const nativeDocument = JSON.parse(rawArguments).document;
+  const compiled = compileAuthoredClaimObject(nativeDocument);
+  if (compiled.status !== 'compiled') throw new Error(`Native fixture projection failed: ${compiled.code}`);
+  options.alterCompiled?.(compiled);
+  const source = result(compiled.body), live = {active: true, attempt: true};
+  const binding = {owner: live, sessionId: source.sessionId, runId: 'run-a', attemptId: 'attempt-a',
+    providerPin: 'test-pin', authorizationFingerprint: 'test-scope'};
+  const issuer = createAuthoredFinalSubmissionIssuer({binding, representationVersion: AUTHORED_CLAIM_OBJECT_VERSION,
+    assertAttemptCurrent: () => {if (!live.attempt) throw new Error('retired');},
+    assertCurrent: () => {if (!live.active) throw new Error('revoked');}});
+  const dispatch = {dispatchOrdinal: 1, responseId: 'native-response', callId: 'native-call'};
+  const submission = issueAuthoredFinalSubmission(issuer, {...dispatch, rawArguments, nativeDocument, compiled});
+  const handoff: AuthoredConclusionSubmission & {input: AuthoredFinalSubmissionV2ReadInput} = {submission, input: {
+    binding: {...binding, ...dispatch, representationVersion: AUTHORED_CLAIM_OBJECT_VERSION,
+      compilerContractVersion: AUTHORED_CLAIM_OBJECT_COMPILER_VERSION}, rawArguments,
+    nativeDocument: structuredClone(nativeDocument), body: compiled.body, rawCanonicalPayload: structuredClone(compiled.rawCanonicalPayload)}};
+  const delivery = contextFor(source);
+  delivery.outputOrigin = 'model_tool_arguments'; delivery.finalSubmission = {mode: 'authored_claim_document_v2', outcome: 'submitted'};
+  source.outputOrigin = delivery.outputOrigin; source.completion = delivery.completion;
+  if (options.redact) registerCodeAwareCanary(source.sessionId, options.redact);
+  const projected = finalizeSourceAwareAnalysisResultWithProjection(source, undefined, {context: delivery, authoredSubmission: handoff});
+  const context = projected.deliveryContext;
+  if (!context || context.entry === 'historical_restore' || !projected.protocolProjection) throw new Error('Expected issued native projection');
+  const token = projected.protocolProjection;
+  const native = readConclusionProtocolProjection(token, {result: source, candidate: context.acceptedCandidate, runId: binding.runId});
+  const canonical = canonicalizeAnalysisResult(source, {context, nativeDeclaration: native});
+  return {source, live, compiled, handoff, context, native, canonical,
+    cleanup: () => {releaseConclusionProtocolProjection(token); clearCodeAwareOutputGuards(source.sessionId);}};
+}
+
+async function provedNativePresentation(document = nativeAuthoredDocument(), options: {value?: number; redact?: string} = {}) {
+  const f = nativeAuthoredFixture(document, options);
+  const store = new ArtifactStore();
+  const data = {columns: ['dur_ms'], rows: [[options.value ?? 10]]};
+  const witness = captureEvidenceTable(data, {dur_ms: {unit: 'ms', origin: {kind: 'skill_literal', skillId: 'fixture', stepId: 'root',
+    definitionFingerprint: 'a'.repeat(64), selectedSqlHash: 'b'.repeat(64)}}});
+  const artifact = store.store({skillId: 'fixture', data, sourceToolCallId: 'invoke:duration',
+    traceProvenance: buildTraceProcessorQueryProvenance({traceId: 'current', traceSide: 'current'})});
+  expect(store.registerEvidenceCapture(artifact, witness, {evidenceRefId: 'data:duration'})).toBe(true);
+  const prepared = await prepareClaimEvidence({conclusionContract: f.canonical.validationContract,
+    bindingEligibility: f.canonical.bindingEligibility,
+    evidenceReadView: store.createEvidenceReadView({ownerKey: 'run-a', allowedTraces: [{traceId: 'current', traceSide: 'current'}]})});
+  const verified = runClaimVerification({conclusionContract: f.canonical.validationContract, preparedEvidence: prepared});
+  const assess = (overrides: Partial<Parameters<typeof assessNumericPresentations>[0]> = {}) => assessNumericPresentations({
+    contract: f.canonical.validationContract, claims: verified.claimVerificationResult.claimResults, support: verified.claimSupport,
+    body: f.canonical.result.conclusion, candidate: f.canonical.projection.candidate!,
+    authoredQuoteContext: {expectedVersion: AUTHORED_CLAIM_OBJECT_VERSION, nativeDeclaration: f.native}, ...overrides});
+  return {...f, verified, assess};
+}
+
+describe('issued native-object quote bindings and material diagnostics', () => {
+  let restoreClone: (() => void) | undefined;
+  beforeEach(() => {restoreClone = installCurrentRealmStructuredCloneForTest();});
+  afterEach(() => {restoreClone?.(); restoreClone = undefined;});
+
+  it.each(['needs_user_input', 'recommend_full', 'invalid_contract'] as const)(
+    'delivers literal V2 conversation text without activating %s', kind => {
+      const document = nativeAuthoredDocument();
+      document.contract.mode = 'need_input';
+      document.bodyParts.push(`\n<!-- smartperfetto:conversation-control ${JSON.stringify({kind,
+        question: 'Which trace?', handoff: {question: 'Which trace?', scope: 'Full analysis'}})} -->\n `);
+      const input = kind === 'invalid_contract' ? {...document, contract: {...document.contract, mode: 'invalid'}} : document;
+      const f = nativeAuthoredFixture(input);
+      try {
+        const canonical = canonicalizeAnalysisResult(f.source, {context: f.context, nativeDeclaration: f.native,
+          conversation: {fallbackQuestion: 'Original question'}});
+        expect(canonical.conversationOutcome).toEqual({kind: 'answered', message: f.compiled.body, evidence: []});
+        expect(canonical.result.conclusion).toBe(f.compiled.body);
+        expect(canonical.protocolDiagnostics?.conversation).toMatchObject({status: 'absent', narrative: f.compiled.body,
+          machineSegments: [], issues: []});
+        expect(canonical.validationContract?.mode).toBe(kind === 'invalid_contract' ? undefined : 'need_input');
+        expect(canonical.protocolDiagnostics?.typedJson?.status).toBe(kind === 'invalid_contract' ? 'invalid' : 'valid');
+        expect(canonical.bindingEligibility).toBe(kind === 'invalid_contract' ? 'ineligible' : 'eligible');
+        expect(f.canonical.conversationOutcome).toBeUndefined();
+      } finally {f.cleanup();}
+    });
+
+  it('binds repeated text to two original body parts through actual issuer, private projection and canonical proof', async () => {
+    const f = await provedNativePresentation();
+    try {
+      expect(f.verified.claimVerificationResult.claimResults[0].deterministicProof?.status).toBe('proved');
+      expect(f.compiled.quoteBindings).toMatchObject([{claimOrdinal: 1, quoteOrdinal: 1}, {claimOrdinal: 1, quoteOrdinal: 2}]);
+      const claim = f.canonical.validationContract!.claims![0], presentation = claim.semantics!.numeric!.presentation!;
+      expect(readAuthoredQuoteBindings({nativeDeclaration: f.native, expectedVersion: AUTHORED_CLAIM_OBJECT_VERSION,
+        body: f.canonical.result.conclusion, claim, presentation})).toMatchObject({status: 'bound', bindings: f.compiled.quoteBindings});
+      const assessment = f.assess().get('duration');
+      expect(assessment).toMatchObject({status: 'matched', reason: 'display_matches', locations: [
+        {start: 6, end: 11}, {start: 19, end: 24}]});
+      expect(f.canonical.result.conclusion).toBe('First 10 ms\nSecond 10 ms');
+      expect(f.canonical.result.completion?.status).toBe('completed');
+      expect(JSON.stringify(f.canonical.result)).not.toMatch(/quoteBindings|partSpans|privateNativeDocument|referenceDictionary/);
+    } finally {f.cleanup();}
+  });
+
+  it.each(['missing', 'spread', 'json', 'compiler_only', 'stale', 'released'] as const)
+    ('does not fall back to global locations for an unavailable %s handle', async failure => {
+      const f = await provedNativePresentation();
+      try {
+        let nativeDeclaration: NativeConclusionDeclaration | undefined = f.native;
+        if (failure === 'missing') nativeDeclaration = undefined;
+        if (failure === 'spread') nativeDeclaration = {...f.native};
+        if (failure === 'json') nativeDeclaration = JSON.parse(JSON.stringify(f.native));
+        if (failure === 'compiler_only') nativeDeclaration = {...f.compiled} as unknown as NativeConclusionDeclaration;
+        if (failure === 'stale') f.live.active = false;
+        if (failure === 'released') f.cleanup();
+        expect(f.assess({authoredQuoteContext: {expectedVersion: AUTHORED_CLAIM_OBJECT_VERSION, nativeDeclaration}}).get('duration'))
+          .toMatchObject({status: 'not_checked', reason: 'quote_binding_unavailable', locations: []});
+      } finally {f.cleanup();}
+    });
+
+  it.each(['claim_text', 'assertion', 'reference', 'presentation', 'quote_order'] as const)
+    ('rejects changed canonical %s rather than trusting only the claim ID', async mutation => {
+      const f = await provedNativePresentation();
+      try {
+        const contract = structuredClone(f.canonical.validationContract!);
+        const claim = contract.claims![0], numeric = claim.semantics!.numeric!;
+        if (mutation === 'claim_text') claim.text = 'Changed proposition';
+        if (mutation === 'assertion') numeric.value = 11;
+        if (mutation === 'reference') claim.references[0].value = 11;
+        if (mutation === 'presentation') numeric.presentation!.unit = 's';
+        if (mutation === 'quote_order') numeric.presentation!.quotes.reverse();
+        expect(f.assess({contract}).get('duration')).toMatchObject({status: 'not_checked', reason: 'quote_binding_unavailable', locations: []});
+      } finally {f.cleanup();}
+    });
+
+  it.each(['claim_ordinal', 'quote_ordinal', 'span', 'canonical_quote'] as const)
+    ('refuses a forged private binding %s at the actual issuer', mutation => {
+      expect(() => nativeAuthoredFixture(nativeAuthoredDocument(), {alterCompiled: compiled => {
+        const binding = compiled.quoteBindings[0];
+        if (mutation === 'claim_ordinal') binding.claimOrdinal = 0;
+        if (mutation === 'quote_ordinal') binding.quoteOrdinal = 0;
+        if (mutation === 'span') binding.originalSpan.startUtf16++;
+        if (mutation === 'canonical_quote') binding.canonicalQuote.text = '11 ms';
+      }})).toThrow('authored_final_submission_invalid_input');
+    });
+
+  it.each(['prefix', 'append', 'reorder', 'trim'] as const)('does not search or rebase body_part positions after %s', async change => {
+    const document = nativeAuthoredDocument();
+    if (change === 'trim') {document.bodyParts[0] = '  First '; document.bodyParts.push('  ');}
+    const f = await provedNativePresentation(document);
+    try {
+      let body = f.compiled.body;
+      if (change === 'prefix') body = 'Prefix ' + body;
+      if (change === 'append') body += ' suffix';
+      if (change === 'reorder') body = body.split('\n').reverse().join('\n');
+      if (change === 'trim') body = body.trim();
+      expect(body).not.toBe(f.compiled.body);
+      expect(f.assess({body}).get('duration')).toMatchObject({status: 'not_checked', reason: 'quote_body_changed', locations: []});
+    } finally {f.cleanup();}
+  });
+
+  it('withdraws part locations after actual privacy projection changes the display body', async () => {
+    const document = nativeAuthoredDocument(); document.bodyParts[0] = 'PRIVATE_BODY_CANARY First ';
+    const f = await provedNativePresentation(document, {redact: 'PRIVATE_BODY_CANARY'});
+    try {
+      expect(f.canonical.result.conclusion).not.toContain('PRIVATE_BODY_CANARY');
+      expect(f.canonical.result.conclusion).not.toBe(f.compiled.body);
+      expect(f.assess().get('duration')).toMatchObject({status: 'not_checked', reason: 'quote_body_changed', locations: []});
+    } finally {f.cleanup();}
+  });
+
+  it('keeps an issued all-global claim usable after a body change, while the part-bound claim remains unchecked', async () => {
+    const document = nativeAuthoredDocument();
+    const part = document.contract.claims[0];
+    part.semantics!.numeric!.presentation!.quotes = [{kind: 'body_part', text: '10 ms', partIndex: 1, localOccurrence: null}];
+    const global = structuredClone(part); global.id = 'global-duration';
+    global.semantics!.numeric!.presentation!.quotes = [{kind: 'global', text: '10 ms', occurrence: 1}];
+    document.contract.claims.push(global);
+    const f = await provedNativePresentation(document);
+    try {
+      const results = f.assess({body: 'Prefix ' + f.compiled.body});
+      expect(results.get('duration')).toMatchObject({status: 'not_checked', reason: 'quote_body_changed', locations: []});
+      expect(results.get('global-duration')).toMatchObject({status: 'matched', locations: [{start: 26, end: 31}]});
+    } finally {f.cleanup();}
+  });
+
+  it('requires the whole mixed presentation binding before evaluating any global quote', async () => {
+    const document = nativeAuthoredDocument();
+    document.contract.claims[0].semantics!.numeric!.presentation!.quotes[1] = {kind: 'global', text: '10 ms', occurrence: 1};
+    const f = await provedNativePresentation(document);
+    try {
+      expect(f.assess().get('duration')?.status).toBe('matched');
+      expect(f.assess({body: 'Prefix ' + f.compiled.body}).get('duration'))
+        .toMatchObject({status: 'not_checked', reason: 'quote_body_changed', locations: []});
+      expect(f.assess({authoredQuoteContext: {expectedVersion: AUTHORED_CLAIM_OBJECT_VERSION}}).get('duration'))
+        .toMatchObject({status: 'not_checked', reason: 'quote_binding_unavailable', locations: []});
+    } finally {f.cleanup();}
+  });
+
+  it.each(['145 ms', '-45 ms', '45 msec', 'x45 ms', '45 ms/s'])('retains numeric token boundaries for the issued substring in %s', async body => {
+    const document = nativeAuthoredDocument();
+    document.referenceDictionary[0].value = {kind: 'present', value: 45};
+    const claim = document.contract.claims[0]; claim.text = '45 ms';
+    claim.semantics!.numeric!.value = 45;
+    claim.semantics!.numeric!.presentation!.quotes = [{kind: 'body_part', text: '45 ms', partIndex: 0, localOccurrence: null}];
+    document.bodyParts = [body];
+    const f = await provedNativePresentation(document, {value: 45});
+    try {
+      expect(f.verified.claimVerificationResult.claimResults[0].deterministicProof?.status).toBe('proved');
+      expect(f.assess().get('duration')).toMatchObject({status: 'not_checked', reason: 'quote_unresolved', locations: []});
+    } finally {f.cleanup();}
+  });
+
+  it('preserves cross-claim overlap detection on issued original spans', async () => {
+    const document = nativeAuthoredDocument();
+    document.contract.claims[0].semantics!.numeric!.presentation!.quotes = [{kind: 'body_part', text: '10 ms', partIndex: 1, localOccurrence: null}];
+    const second = structuredClone(document.contract.claims[0]); second.id = 'second';
+    document.contract.claims.push(second);
+    const f = await provedNativePresentation(document);
+    try {
+      expect(f.assess().get('duration')).toMatchObject({status: 'not_checked', reason: 'binding_conflict'});
+      expect(f.assess().get('second')).toMatchObject({status: 'not_checked', reason: 'binding_conflict'});
+    } finally {f.cleanup();}
+  });
+
+  it('does not turn duplicate claim IDs into an unambiguous presentation binding', async () => {
+    const document = nativeAuthoredDocument();
+    document.bodyParts = ['10 ms / 10 ms'];
+    document.contract.claims[0].semantics!.numeric!.presentation!.quotes = [{kind: 'body_part', text: '10 ms', partIndex: 0, localOccurrence: 0}];
+    document.contract.claims.push(structuredClone(document.contract.claims[0]));
+    const f = await provedNativePresentation(document);
+    try {
+      const claim = f.canonical.validationContract!.claims![0];
+      expect(readAuthoredQuoteBindings({nativeDeclaration: f.native, expectedVersion: AUTHORED_CLAIM_OBJECT_VERSION,
+        body: f.compiled.body, claim, presentation: claim.semantics!.numeric!.presentation!}))
+        .toEqual({status: 'unavailable', reason: 'quote_binding_unavailable'});
+      expect(f.assess().size).toBe(0);
+    } finally {f.cleanup();}
+  });
+
+  it('keeps original evidence and proposition gates independently required', async () => {
+    const document = nativeAuthoredDocument(); document.contract.claims[0].semantics!.numeric!.value = 11;
+    const f = await provedNativePresentation(document);
+    try {
+      expect(f.verified.claimVerificationResult.claimResults[0].deterministicProof?.status).not.toBe('proved');
+      expect(f.assess().get('duration')).toMatchObject({status: 'not_checked', reason: 'proposition_not_proved', locations: []});
+      expect(f.canonical.validationContract!.claims![0].semantics!.numeric!.value).toBe(11);
+    } finally {f.cleanup();}
+  });
+
+  it('reports only bounded numeric v2 material, not native input text or a fabricated documentJson size', () => {
+    const document = nativeAuthoredDocument();
+    document.bodyParts = ['PRIVATE_BODY 中文 😀 ', {claimText: 'duration'}, ' / ', {claimText: 'duration'}];
+    document.referenceDictionary[0].evidenceRefId = 'PRIVATE_REFERENCE';
+    const f = nativeAuthoredFixture(document);
+    try {
+      const snapshot = readAuthoredFinalSubmission(f.handoff.submission, f.handoff.input);
+      const diagnostic = buildAuthoredCandidateProtocolDiagnostic(snapshot), material = diagnostic.authoredMaterial;
+      expect(diagnostic).toMatchObject({status: 'valid', rawChars: snapshot.rawArguments.length,
+        claimCount: 1, semanticClaimCount: 1, sourceBindingCount: 0});
+      expect(material).toEqual({representationVersion: AUTHORED_CLAIM_OBJECT_VERSION,
+        rawArgumentsUtf8Bytes: Buffer.byteLength(snapshot.rawArguments), bodyUtf8Bytes: Buffer.byteLength(f.compiled.body),
+        bodyUtf16Length: f.compiled.body.length, normalizedNativeDocument: f.compiled.material.nativeDocument,
+        normalizedExpanded: f.compiled.material.expanded});
+      expect(material).not.toHaveProperty('documentInputUtf8Bytes'); expect(material).not.toHaveProperty('normalizedDocument');
+      expect(sanitizeCandidateProtocolDiagnostic(diagnostic)).toEqual(diagnostic);
+      expect(JSON.stringify(diagnostic)).not.toMatch(/PRIVATE_|referenceDictionary|privateNativeDocument|quoteBindings|documentJson/);
+      for (const invalid of [
+        {...material, representationVersion: 'unknown@2'}, {...material, documentInputUtf8Bytes: 1},
+        {...material, rawArgumentsUtf8Bytes: Infinity}, {...material, bodyUtf16Length: -1},
+        {...material, normalizedNativeDocument: {...f.compiled.material.nativeDocument, secret: 'PRIVATE_FIELD'}},
+        {...material, normalizedNativeDocument: {...f.compiled.material.nativeDocument, nodes: 10_001}},
+        {...material, normalizedExpanded: {...f.compiled.material.expanded, depth: 25}},
+      ]) expect(sanitizeCandidateProtocolDiagnostic({...diagnostic, authoredMaterial: invalid})).toBeUndefined();
+    } finally {f.cleanup();}
   });
 });

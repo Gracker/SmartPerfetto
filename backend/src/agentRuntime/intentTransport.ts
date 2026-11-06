@@ -44,7 +44,7 @@ export type IntentTransportUnavailableReason =
   | 'output_limit';
 
 export type IntentTransportResult =
-  | {status: 'ok'; text: string; actualModel?: string; finishReason?: string; attempts?: number}
+  | {status: 'ok'; text: string; actualModel?: string; modelSource?: 'provider_reported'; finishReason?: string; attempts?: number}
   | {status: 'unavailable'; reason: IntentTransportUnavailableReason; httpStatus?: number; attempts?: number};
 
 /**
@@ -219,7 +219,7 @@ export async function runIntentTransport(
 export function intentTransportTextResult(
   text: string,
   input: Pick<IntentTransportInput, 'outputByteLimit'>,
-  receipt: {actualModel?: string; finishReason?: string} = {},
+  receipt: {actualModel?: string; modelSource?: 'provider_reported'; finishReason?: string} = {},
 ): IntentTransportResult {
   if (!text.trim()) return {status: 'unavailable', reason: 'invalid_response'};
   if (Buffer.byteLength(text, 'utf8') > input.outputByteLimit) {
@@ -259,7 +259,8 @@ export async function dispatchWithModelCallRecord(
   try {
     const result = await dispatch({...input, observer});
     span.end({outcome: result.status === 'ok' ? 'ok' : input.signal?.aborted ? 'cancelled' : 'error',
-      ...(result.status === 'ok' && result.actualModel ? {model: result.actualModel} : {}),
+      ...(result.status === 'ok' && result.actualModel ? {model: result.actualModel,
+        ...(result.modelSource === 'provider_reported' ? {modelSource: 'provider_reported' as const} : {})} : {}),
       ...(reasoning ? {reasoning} : {}), ...(reasoningEffort ? {reasoningEffort} : {}), usage});
     return result;
   } catch (error) {

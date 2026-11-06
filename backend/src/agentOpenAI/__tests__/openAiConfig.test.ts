@@ -85,6 +85,19 @@ describe('createOpenAIEnv', () => {
     expect(legacy.outputConfig.declarationSyntax).toBe('canonical_v1');
   });
 
+  it('captures object mode once and preserves each independently selected rollback', () => {
+    process.env[SMARTPERFETTO_FINAL_SUBMISSION_ENV] = 'authored_claim_document_v2';
+    process.env[CONCLUSION_AUTHORING_ENV] = 'authoring_v2';
+    const native = loadOpenAIConfig(null);
+    process.env[SMARTPERFETTO_FINAL_SUBMISSION_ENV] = 'authored_claim_document_v1';
+    process.env[CONCLUSION_AUTHORING_ENV] = 'canonical_v1';
+    expect(loadOpenAIConfig(null).outputConfig).toEqual({finalSubmission: 'authored_claim_document_v1', declarationSyntax: 'canonical_v1'});
+    delete process.env[SMARTPERFETTO_FINAL_SUBMISSION_ENV];
+    expect(loadOpenAIConfig(null).outputConfig).toEqual({finalSubmission: 'assistant_text', declarationSyntax: 'canonical_v1'});
+    expect(native.outputConfig).toEqual({finalSubmission: 'authored_claim_document_v2', declarationSyntax: 'authoring_v2'});
+    expect(Object.isFrozen(native.outputConfig)).toBe(true);
+  });
+
   it('rejects invalid or conflicting output configuration through a typed, value-free error', () => {
     process.env[SMARTPERFETTO_FINAL_SUBMISSION_ENV] = 'PRIVATE_FINAL_MODE_CANARY';
     expect(() => loadOpenAIConfig(null)).toThrow('invalid_configuration:final_submission:mode');

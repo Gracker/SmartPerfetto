@@ -264,7 +264,8 @@ export function attachFinalizationContext(result: AnalysisResult, input: Runtime
   try {
     const deliveryContext = freezeSnapshot(input.deliveryContext);
     if (nativeDeclaration) bindAuthoredFinalDelivery({context: deliveryContext, result, nativeDeclaration});
-    const typedSubmission = deliveryContext.finalSubmission?.mode === 'authored_claim_document_v1';
+    const typedSubmission = deliveryContext.finalSubmission?.mode === 'authored_claim_document_v1' ||
+      deliveryContext.finalSubmission?.mode === 'authored_claim_document_v2';
     const mayReview = !typedSubmission || deliveryContext.finalSubmission?.outcome === 'submitted' &&
       hasCurrentAuthoredFinalDelivery(result, deliveryContext);
     contexts.set(result, {controller: new AbortController(), value: {

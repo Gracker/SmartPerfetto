@@ -22,6 +22,8 @@
 import { jest, describe, it, expect } from '@jest/globals';
 import * as draftDiagnostics from '../../services/draftDeclarationDiagnostics';
 import * as authoredClaimDocument from '../../agent/core/authoredClaimDocument';
+import * as authoredClaimObject from '../../agent/core/authoredClaimObject';
+import {authoredClaimObjectSchema, type AuthoredClaimObjectInput} from '../../agent/core/authoredClaimObjectSchema';
 import {AUTHORED_FINAL_SUBMISSION_PENDING_ACK} from '../../agentRuntime/authoredFinalSubmission';
 import type {FinalSubmissionMode} from '../../agentRuntime/finalSubmissionConfig';
 import * as producerCatalog from '../../services/skillEngine/investigationProducerCatalog';
@@ -1135,6 +1137,86 @@ describe('createClaudeMcpServer', () => {
       const server = createTestServer({finalSubmission});
       expect(server.resolvedFinalTool).toBeUndefined();
       expect(server.toolDefinitions.some(item => item.role === 'final_candidate_submission')).toBe(false);
+    });
+
+    function nativeObjectExample(): AuthoredClaimObjectInput {
+      const framing = requireToolDescription('prompt-authored-final-submission-v2-framing');
+      const blocks = [...framing.matchAll(/```json\n([\s\S]*?)\n```/g)];
+      const args = JSON.parse(blocks[blocks.length - 1][1]);
+      expect(authoredClaimObjectSchema.safeParse(args.document).success).toBe(true);
+      return args.document;
+    }
+
+    it('registers one native-object final role and preserves its marked literal subtree', async () => {
+      const server = createTestServer({finalSubmission: 'authored_claim_document_v2', allowNewEvidence: false});
+      const resolved = server.resolvedFinalTool!;
+      expect(server.toolDefinitions.filter(item => item.role === 'final_candidate_submission')).toHaveLength(1);
+      expect(resolved.definition).toBe(server.toolDefinitions.find(item => item.role === 'final_candidate_submission'));
+      expect(resolved.nativeName).toBe(resolved.definition.name);
+      expect(resolved.definition).toMatchObject({exposure: 'internal', evidenceEffect: 'none'});
+      const schema = runtimeToolSpec.createJsonSchemaFromZodRawShape(resolved.definition.shared.inputSchema);
+      expect(schema).toMatchObject({type: 'object', additionalProperties: false, required: ['document'],
+        properties: {document: {type: 'object', additionalProperties: false}}});
+      expect(Object.keys(schema.properties as object)).toEqual(['document']);
+      expect(JSON.stringify(schema)).not.toContain('oneOf');
+      const installed = createOpenAIToolsFromMcpDefinitions([resolved.definition])[0];
+      if (installed.type !== 'function') throw new Error('Expected installed function tool');
+      expect(installed.parameters).toMatchObject({type: 'object', required: ['document'], additionalProperties: false});
+      expect(installed.description.length).toBeLessThanOrEqual(1000);
+      console.info('[AuthoredObjectTool:cost]', JSON.stringify({sourceSchemaBytes: Buffer.byteLength(JSON.stringify(schema)),
+        sdkSchemaBytes: Buffer.byteLength(JSON.stringify(installed.parameters)), descriptionChars: installed.description.length}));
+
+      const document = nativeObjectExample();
+      document.bodyParts[0] = '{"claimText":"literal-only"}\n';
+      document.contract.claims[0].text = '["null", "中文 🧪"]';
+      document.contract.claims[0].semantics!.numeric!.presentation = null;
+      const args = runtimeToolSpec.normalizeRuntimeToolArgs({document}, resolved.definition.shared.inputSchema);
+      expect(args).toEqual({document});
+      if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Expected native object arguments');
+      const compile = jest.spyOn(authoredClaimObject, 'compileAuthoredClaimObject');
+      const fakeSuccess = jest.fn();
+      try {
+        const result = await resolved.definition.shared.handler(args as Record<string, unknown>, {markPrivateHandlerSuccess: fakeSuccess});
+        expect(compile.mock.calls[0][0]).toBe(document);
+        expect(runtimeToolSpec.stringifyRuntimeToolResult(result)).toBe(AUTHORED_FINAL_SUBMISSION_PENDING_ACK);
+        expect(result).not.toHaveProperty('_meta');
+        expect(readRuntimeToolResultFacts(result)).toEqual({});
+        expect(fakeSuccess).not.toHaveBeenCalled();
+        expect(server.mockTpService.query).not.toHaveBeenCalled();
+        expect(server.mockSkillExecutor.execute).not.toHaveBeenCalled();
+        expect(server.emittedUpdates).toEqual([]);
+      } finally {compile.mockRestore();}
+    });
+
+    it('preserves raw invalid canonical values and keeps native compilation separate from verification', async () => {
+      const server = createTestServer({finalSubmission: 'authored_claim_document_v2'});
+      const document = nativeObjectExample();
+      // Copy the ordinary JSON fixture in this realm before adding the invalid number.
+      const invalid: typeof document.contract.claims[number] = JSON.parse(JSON.stringify(document.contract.claims[0]));
+      invalid.id = 'invalid-numeric'; invalid.semantics!.numeric!.value = Infinity;
+      invalid.semantics!.numeric!.presentation = null;
+      document.contract.claims.push(invalid);
+      const compiled = authoredClaimObject.compileAuthoredClaimObject(document);
+      if (compiled.status !== 'compiled') throw new Error(`Expected structural compilation: ${compiled.code}`);
+      expect(compiled.canonicalParse.status).not.toBe('valid');
+      expect(compiled.rawCanonicalPayload).toMatchObject({claims: [{id: 'elapsed'},
+        {id: 'invalid-numeric', semantics: {numeric: {value: Infinity}}}]});
+      const result = await server.resolvedFinalTool!.definition.shared.handler({document}, {});
+      expect(runtimeToolSpec.stringifyRuntimeToolResult(result)).toBe(AUTHORED_FINAL_SUBMISSION_PENDING_ACK);
+      expect(readRuntimeToolResultFacts(result)).toEqual({});
+      expect(server.emittedUpdates).toEqual([]);
+    });
+
+    it.each([{}, {document: 'PRIVATE_NATIVE_DOCUMENT_CANARY'}, {document: {}},
+      {document: {}, documentJson: '{}'}, {document: {}, planPhaseId: 'p1'},
+      {document: {representationVersion: 'unknown'}}])('refuses malformed native arguments without data or authority: %j', async args => {
+      const server = createTestServer({finalSubmission: 'authored_claim_document_v2'});
+      const result = await server.resolvedFinalTool!.definition.shared.handler(args, {});
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({kind: 'authored_final_submission', status: 'rejected'});
+      expect(runtimeToolSpec.stringifyRuntimeToolResult(result)).not.toBe(AUTHORED_FINAL_SUBMISSION_PENDING_ACK);
+      expect(JSON.stringify(result)).not.toContain('PRIVATE_NATIVE_DOCUMENT_CANARY');
+      expect(server.mockTpService.query).not.toHaveBeenCalled();
     });
 
     it('exposes an exact required literal document string only through the explicit typed mode', async () => {

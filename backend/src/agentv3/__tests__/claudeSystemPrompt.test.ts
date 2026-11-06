@@ -43,6 +43,8 @@ jest.mock('../strategyLoader', () => ({
     if (name === 'prompt-conclusion-delivery') return '{{declarationFraming}}';
     if (name === 'prompt-conclusion-ack-rule') return 'ACK: no declaration.';
     if (name === 'prompt-authored-final-submission-delivery') return 'Submit only through {{finalSubmissionToolName}} with documentJson:string.\n{{declarationFraming}}';
+    if (name === 'prompt-authored-final-submission-v2-delivery') return 'Native object only through {{finalSubmissionToolName}}.\n{{declarationFraming}}';
+    if (name === 'prompt-authored-final-submission-v2-framing') return 'authored_claim_document@2; document:object; referenceDictionary integer refs; semanticFrames frameIndex; body_part; {{supportedProofRules}}';
     if (name === 'prompt-authored-final-submission-framing') return 'authored_claim_document@1; contract at $.contract; bodyParts are literals/claimText; compiled is not verified.';
     if (name === 'prompt-conclusion-full-framing') return '{{sidecarOpeningMarker}}\n```json\n{"schemaVersion":"conclusion_contract_v1","mode":"focused_answer","conclusions":[],"clusters":[],"evidenceChain":[],"uncertainties":[],"nextSteps":[]}\n```\n-->';
     if (name === 'prompt-conclusion-authoring-framing') return '{{authoringOpeningFence}}\n{"authoringVersion":"conclusion_authoring@1","referenceDictionary":[],"contract":{"schemaVersion":"conclusion_contract_v1","mode":"focused_answer","conclusions":[],"clusters":[],"evidenceChain":[],"uncertainties":[],"nextSteps":[]}}\n```';
@@ -361,6 +363,28 @@ describe('typed turn prompt assembly', () => {
   ])('refuses inconsistent typed prompt inputs %# without guessing a tool', overrides => {
     expect(() => buildSystemPromptParts({...fixture(), finalSubmission: 'authored_claim_document_v1',
       ...overrides} as Parameters<typeof buildSystemPromptParts>[0])).toThrow('requires canonical syntax and a resolved final tool');
+  });
+
+  it.each(['runtime_object_final', 'renamed__object_7'])('uses only native grammar for resolved object tool %s', nativeName => {
+    const parts = buildSystemPromptParts({...fixture({evidenceAccess: 'existing_only'}),
+      finalSubmission: 'authored_claim_document_v2', declarationSyntax: 'authoring_v2',
+      resolvedFinalTool: {role: 'final_candidate_submission', nativeName}});
+    const declaration = parts.segments.find(segment => segment.label === 'conclusion_declaration')!;
+    expect(declaration).toMatchObject({tier: 1, droppable: false, truncatable: false});
+    expect(declaration.content).toContain(`Native object only through ${nativeName}`);
+    expect(declaration.content).toContain('authored_claim_document@2');
+    expect(declaration.content).toContain('referenceDictionary integer refs');
+    expect(declaration.content).not.toContain('documentJson:string');
+    expect(declaration.content).not.toContain('smartperfetto-conclusion-authoring');
+    expect(declaration.content).not.toContain(CONCLUSION_CONTRACT_SIDECAR_MARKER);
+    expect(declaration.content).not.toMatch(/\{\{\w+\}\}/);
+    expect(segmentData(parts, 'turn_policy').evidenceAccess).toBe('existing_only');
+  });
+
+  it.each([undefined, 'canonical_v1', 'authoring_v1'])('refuses object mode with inconsistent syntax %s', declarationSyntax => {
+    expect(() => buildSystemPromptParts({...fixture(), finalSubmission: 'authored_claim_document_v2', declarationSyntax,
+      resolvedFinalTool: {role: 'final_candidate_submission', nativeName: 'final'}} as Parameters<typeof buildSystemPromptParts>[0]))
+      .toThrow('requires authoring_v2 syntax and a resolved final tool');
   });
 
   it('selects transport only from captured context, not ambient final-submission configuration', () => {

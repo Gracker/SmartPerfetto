@@ -9,14 +9,16 @@ const path = require('node:path');
 const {randomBytes} = require('node:crypto');
 const {pathToFileURL} = require('node:url');
 const {ProcessHarness} = require('../../scripts/e2e/process-harness.cjs');
-const {TARGET_ENV, CELLS, SOURCE_FACET, sourceFacetContext, validateSourceFacetCollection,
+const {TARGET_ENV, CELLS, SOURCE_FACET, TREATMENT_ID, TREATMENT_OUTPUTS, buildConfigCommitments, alignConfigCommitments,
+  configFieldsFingerprint, makeConfigCommitments, parsePurposeContracts, makeRepresentationTreatment, cellPreflightSelections,
+  sourceFacetContext, validateSourceFacetCollection,
   canonicalJson, hash, fingerprintSourceTree, fingerprintFixtureDirectory, fingerprintObserver,
   parseTargetRequest, assertExecutionTarget, prepareFreshOutputDirectory, writeNewJson,
   isolateChildDotenv, buildCell, pairedSchedule, runOwnedVerifier} = require('./llm-execution-lifecycle.cjs');
 
 const FLAGS = new Set(['--baseline-root', '--candidate-root', '--provider', '--runtime', '--model', '--light-model',
   '--base-port', '--candidate-port', '--output-dir', '--repetitions', '--timeout-ms', '--seed', '--cells',
-  '--sample-kind', '--observer-hook-fingerprint']);
+  '--sample-kind', '--observer-hook-fingerprint', '--treatment']);
 
 // Cross-runtime execution switches outside the adapter-specific prefixes below.
 // Keep this closed: unrelated SMARTPERFETTO environment values are not measurement inputs.
@@ -53,6 +55,9 @@ function parseArgs(argv) {
   if (!/^[a-z][a-z0-9-]+$/.test(values['--runtime'])) throw new Error('benchmark_runtime_invalid');
   if ((values['--sample-kind'] ?? 'local-cold') !== 'local-cold') throw new Error('benchmark_warm_not_configured');
   if (!/^[a-f0-9]{64}$/.test(values['--observer-hook-fingerprint'])) throw new Error('benchmark_observer_hook_fingerprint_invalid');
+  if (values['--treatment'] !== undefined && (values['--treatment'] !== TREATMENT_ID || values['--runtime'] !== 'openai-agents-sdk')) {
+    throw new Error('benchmark_treatment_invalid');
+  }
   const cells = values['--cells'] === undefined ? [...CELLS] : values['--cells'].split(',');
   if (!cells.length || cells.some(cell => !CELLS.includes(cell)) || new Set(cells).size !== cells.length) {
     throw new Error('benchmark_cells_invalid');
@@ -63,7 +68,8 @@ function parseArgs(argv) {
     provider: values['--provider'], runtime: values['--runtime'], model: values['--model'], lightModel: values['--light-model'],
     basePort, candidatePort, outputDir: values['--output-dir'], repetitions: positive('--repetitions', 3, 3, 30),
     timeoutMs: positive('--timeout-ms', 20 * 60_000, 1_000, 2 * 60 * 60_000), seed, cells,
-    sampleKind: 'local-cold', observerHookFingerprint: values['--observer-hook-fingerprint']};
+    sampleKind: 'local-cold', observerHookFingerprint: values['--observer-hook-fingerprint'],
+    ...(values['--treatment'] ? {treatment: values['--treatment']} : {})};
 }
 
 function loadCheckout(repositoryRoot, options) {
@@ -79,10 +85,11 @@ function loadCheckout(repositoryRoot, options) {
   for (const filename of [preflight, loader, verifier]) if (!fs.statSync(filename).isFile()) throw new Error('benchmark_target_entry_unavailable');
   const launcherArgs = ['--require', preflight, '--import', pathToFileURL(loader).href];
   return {root, backendRoot, api, launcherArgs, verifier, sourceFingerprint: fingerprintSourceTree(root),
-    observer: fingerprintObserver(root, options.observerHookFingerprint)};
+    observer: fingerprintObserver(root, options.observerHookFingerprint, Boolean(options.treatment)),
+    ...(options.treatment ? {preflightEntry: path.join(backendRoot, 'src/scripts/preflightLlmExecutionTarget.ts')} : {})};
 }
 
-function configFingerprint(input) {
+function configMaterial(input) {
   // Keep behavior-affecting runtime env in the hash, never in the artifact. Replace only the
   // controller-owned per-checkout/data paths so two otherwise identical targets can compare.
   const values = Object.fromEntries(Object.entries(input.env).filter(([key, value]) => value !== undefined &&
@@ -93,9 +100,9 @@ function configFingerprint(input) {
       !/(?:^|_)(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN|REFRESH_TOKEN|BEARER_TOKEN|OAUTH_TOKEN|SECRET|SECRET_KEY|PASSWORD|CREDENTIALS?)$/i.test(key))
     .map(([key, value]) => [key, String(value).split(input.isolatedRoot).join('<isolated>')
       .split(input.repositoryRoot).join('<checkout>')]));
-  return hash(canonicalJson({configuration: input.configuration, runtime: input.runtime,
-    timeoutMs: input.timeoutMs, environment: values}));
+  return {configuration: input.configuration, runtime: input.runtime, timeoutMs: input.timeoutMs, environment: values};
 }
+function configFingerprint(input) {return hash(canonicalJson(configMaterial(input)));}
 
 function taskFingerprint(checkout, args) {
   const items = [];
@@ -117,15 +124,118 @@ function taskFingerprint(checkout, args) {
   return hash(canonicalJson(items));
 }
 
-function readReport(filename) {
+function readReport(filename, maximumBytes = 64 * 1024 * 1024) {
   try {
     const stat = fs.lstatSync(filename);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024 * 1024) return {status: 'invalid'};
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > maximumBytes) return {status: 'invalid'};
     const bytes = fs.readFileSync(filename);
     const report = JSON.parse(bytes.toString('utf8'));
     if (!report || typeof report !== 'object' || Array.isArray(report)) return {status: 'invalid'};
     return {status: 'available', report, hash: hash(bytes)};
   } catch (error) {return {status: error.code === 'ENOENT' ? 'missing' : 'invalid'};}
+}
+
+function treatmentEnvironment(environment, side) {
+  return {...environment, SMARTPERFETTO_FINAL_SUBMISSION: TREATMENT_OUTPUTS[side].finalSubmission,
+    SMARTPERFETTO_CONCLUSION_AUTHORING: TREATMENT_OUTPUTS[side].declarationSyntax};
+}
+function prepareTreatmentChild(checkout, options, side, isolatedRoot, environment) {
+  fs.mkdirSync(path.join(isolatedRoot, 'data'), {recursive: true, mode: 0o700});
+  fs.mkdirSync(path.join(isolatedRoot, 'logs'), {recursive: true, mode: 0o700});
+  const prepared = checkout.api.prepareProviderChild({runtimeKind: options.runtime, isolatedRoot,
+    provider: options.provider === 'glm' ? 'zai-coding-cn' : 'deepseek', model: options.model, lightModel: options.lightModel},
+    treatmentEnvironment(environment, side));
+  if (!prepared.availability.available) throw new Error('benchmark_provider_unavailable');
+  const childEnv = isolateChildDotenv(prepared.env, isolatedRoot);
+  const material = configMaterial({env: childEnv, configuration: prepared.configuration, repositoryRoot: checkout.root,
+    isolatedRoot, runtime: options.runtime, timeoutMs: options.timeoutMs});
+  return {prepared, childEnv, fields: buildConfigCommitments(material), legacyHash: hash(canonicalJson(material))};
+}
+function probeActualControls(fields) {
+  // Output choices are independently checked against the exact side treatment.
+  // The container row commits only the two fixed output key names, never their values.
+  return fields.map(row => ['/outputConfig/finalSubmission', '/outputConfig/declarationSyntax'].includes(row.field)
+    ? {...row, valueCommitment: hash(canonicalJson(['captured_output_treatment', row.field]))} : row);
+}
+async function runTreatmentProbe({checkout, options, side, cell, directory, prepared, configuration, treatment,
+  nonce, dependencies, harness, output, mode}) {
+  const request = {schemaVersion: 'llm_target_preflight_request@1', nonce, side, cellId: cell.id, ...mode,
+    expectedSourceFingerprint: checkout.sourceFingerprint, declaredConfig: configuration, treatmentHash: hash(canonicalJson(treatment))};
+  const requestFile = path.join(directory, 'request.json'), receiptFile = path.join(directory, 'receipt.json');
+  writeNewJson(requestFile, request);
+  const lifecycle = await (dependencies.runPreflight ?? runOwnedVerifier)({label: `probe-${path.relative(output, directory).split(path.sep).join('-')}-${mode.requestedMode}`,
+    backendRoot: checkout.backendRoot,
+    args: [...checkout.launcherArgs, checkout.preflightEntry ?? path.join(checkout.backendRoot, 'src/scripts/preflightLlmExecutionTarget.ts'),
+      '--input', requestFile, '--output', receiptFile], env: prepared.childEnv,
+    // No probe listens: the harness still proves process/owned-port cleanup.
+    request: {port: side === 'base' ? options.basePort : options.candidatePort}, observationTimeoutMs: 30_000}, {harness});
+  const read = readReport(receiptFile, 1024 * 1024), result = read.report;
+  const relative = filename => path.relative(output, filename).split(path.sep).join('/');
+  const proof = {request: relative(requestFile), requestHash: hash(fs.readFileSync(requestFile)),
+    receipt: relative(receiptFile), receiptHash: read.hash, side, cellId: cell.id, requestedMode: mode.requestedMode,
+    lifecycle};
+  writeNewJson(path.join(directory, 'process.json'), proof);
+  if (lifecycle.outcome !== 'exited' || lifecycle.exitCode !== 0 || lifecycle.signal !== null || lifecycle.censored !== false ||
+      lifecycle.cleanup !== 'confirmed' || !Number.isSafeInteger(lifecycle.processId) || lifecycle.processId <= 0 || read.status !== 'available' ||
+      result?.schemaVersion !== 'llm_target_preflight@2' || result.status !== 'ready' || result.nonce !== nonce ||
+      result.side !== side || result.cellId !== cell.id || result.requestedMode !== mode.requestedMode ||
+      result.observedSourceFingerprint !== checkout.sourceFingerprint || result.declaredConfigFingerprint !== configuration.fullFingerprint ||
+      result.declaredControlsFingerprint !== configuration.controlsFingerprint || result.declaredTreatmentHash !== request.treatmentHash ||
+      canonicalJson(result.capturedOutput) !== canonicalJson(TREATMENT_OUTPUTS[side]) || result.sdk?.identity !== 'matched' ||
+      result.sdk.nodeVersion !== process.versions.node ||
+      !/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][a-zA-Z0-9.-]+)?$/.test(result.sdk.agentsCoreVersion || '') ||
+      !/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][a-zA-Z0-9.-]+)?$/.test(result.sdk.agentsOpenAiVersion || '') ||
+      (dependencies.fingerprintSourceTree ?? fingerprintSourceTree)(checkout.root) !== checkout.sourceFingerprint) {
+    throw new Error('benchmark_preflight_failed');
+  }
+  configFieldsFingerprint(result.actualResolvedConfig); // Strict structure check before comparing commitments.
+  parsePurposeContracts(result.purposeContracts);
+  return {proof, actual: result};
+}
+async function prepareTreatmentTargets({options, sides, output, nonce, dependencies, harness, environment}) {
+  const configurations = new Map(), preflights = [], actuals = new Map();
+  let treatment, expectedSdk;
+  for (const cellId of options.cells) {
+    const pending = {};
+    for (const side of ['base', 'candidate']) {
+      const checkout = sides[side], directory = path.join(output, 'preflight', cellId, side);
+      const prepared = prepareTreatmentChild(checkout, options, side, path.join(directory, 'runtime'), environment);
+      const cell = buildCell(checkout.api, cellId, path.join(directory, 'unused-report.json'), options.timeoutMs);
+      pending[side] = {checkout, directory, prepared, cell};
+    }
+    const aligned = alignConfigCommitments(pending.base.prepared.fields, pending.candidate.prepared.fields);
+    for (const [index, side] of ['base', 'candidate'].entries()) {
+      configurations.set(`${cellId}:${side}`, makeConfigCommitments(aligned[index], pending[side].prepared.legacyHash));
+    }
+    const described = makeRepresentationTreatment(configurations.get(`${cellId}:base`), configurations.get(`${cellId}:candidate`));
+    if (treatment && canonicalJson(treatment) !== canonicalJson(described)) throw new Error('benchmark_config_mismatch');
+    treatment = described;
+    for (const side of ['base', 'candidate']) {
+      const {checkout, directory, cell} = pending[side], configuration = configurations.get(`${cellId}:${side}`);
+      const observations = [];
+      for (const [index, mode] of cellPreflightSelections(cell.args).entries()) {
+        let prepared = pending[side].prepared, probeDirectory = directory;
+        if (index) {
+          probeDirectory = path.join(directory, `mode-${index}`);
+          prepared = prepareTreatmentChild(checkout, options, side, path.join(probeDirectory, 'runtime'), environment);
+        }
+        const observed = await runTreatmentProbe({checkout, options, side, cell, directory: probeDirectory, prepared,
+          configuration, treatment, nonce, dependencies, harness, output, mode});
+        preflights.push(observed.proof); observations.push(observed.actual);
+        if (expectedSdk && canonicalJson(expectedSdk) !== canonicalJson(observed.actual.sdk)) throw new Error('benchmark_sdk_mismatch');
+        expectedSdk = observed.actual.sdk;
+      }
+      actuals.set(`${cellId}:${side}`, observations);
+    }
+    const baseActual = actuals.get(`${cellId}:base`), candidateActual = actuals.get(`${cellId}:candidate`);
+    if (baseActual.length !== candidateActual.length) throw new Error('benchmark_preflight_mode_mismatch');
+    for (let index = 0; index < baseActual.length; index++) {
+      const [base, candidate] = alignConfigCommitments(baseActual[index].actualResolvedConfig, candidateActual[index].actualResolvedConfig);
+      if (canonicalJson(probeActualControls(base)) !== canonicalJson(probeActualControls(candidate)) ||
+          canonicalJson(baseActual[index].purposeContracts) !== canonicalJson(candidateActual[index].purposeContracts)) throw new Error('benchmark_resolved_config_mismatch');
+    }
+  }
+  return {configurations, preflights, actuals, treatment, sdk: expectedSdk};
 }
 
 async function runBenchmark(options, injectedDependencies) {
@@ -149,6 +259,8 @@ async function runBenchmark(options, injectedDependencies) {
   const samples = [];
   const configHashes = new Map();
   const taskHashes = new Map();
+  const environment = options.treatment ? {...(dependencies.environment ?? process.env)} : undefined;
+  let treatmentState;
   let sourceFacet;
   let sourceFacetStatus;
   let interrupted = false;
@@ -171,6 +283,7 @@ async function runBenchmark(options, injectedDependencies) {
         taskHashes.set(cellId, inputHash);
       }
     }
+    if (options.treatment) treatmentState = await prepareTreatmentTargets({options, sides, output, nonce, dependencies, harness, environment});
     for (const pair of schedule) {
       for (const side of pair.order) {
         if (harness.receivedSignal || lifecycleFailure) {interrupted = true; break;}
@@ -193,13 +306,16 @@ async function runBenchmark(options, injectedDependencies) {
         let request;
         let pin;
         let sourceFacetCollection;
+        let configuration;
+        let samplePreflights;
         try {
           if (pair.cellId === 'source' && canonicalJson(sourceFacetContext(checkout.root).contract) !== canonicalJson(sourceFacet)) {
             throw new Error('benchmark_source_facet_changed');
           }
           const prepared = checkout.api.prepareProviderChild({runtimeKind: options.runtime, isolatedRoot,
             provider: options.provider === 'glm' ? 'zai-coding-cn' : 'deepseek',
-            model: options.model, lightModel: options.lightModel}, dependencies.environment ?? process.env);
+            model: options.model, lightModel: options.lightModel}, options.treatment
+              ? treatmentEnvironment(environment, side) : dependencies.environment ?? process.env);
           if (!prepared.availability.available) throw new Error('benchmark_provider_unavailable');
           pin = {provider: prepared.configuration.provider, model: prepared.configuration.model,
             lightModel: prepared.configuration.lightModel, origin: new URL(prepared.configuration.baseUrl).origin,
@@ -207,18 +323,40 @@ async function runBenchmark(options, injectedDependencies) {
           const childEnv = isolateChildDotenv(prepared.env, isolatedRoot);
           const configHash = configFingerprint({env: childEnv, configuration: prepared.configuration,
             repositoryRoot: checkout.root, isolatedRoot, runtime: options.runtime, timeoutMs: options.timeoutMs});
-          if (configHashes.has(pair.cellId) && configHashes.get(pair.cellId) !== configHash) throw new Error('benchmark_config_mismatch');
-          configHashes.set(pair.cellId, configHash);
+          const configKey = options.treatment ? `${pair.cellId}:${side}` : pair.cellId;
+          if (configHashes.has(configKey) && configHashes.get(configKey) !== configHash) throw new Error('benchmark_config_mismatch');
+          configHashes.set(configKey, configHash);
           const cell = buildCell(checkout.api, pair.cellId, reportPath, options.timeoutMs);
           const inputHash = hash(canonicalJson({task: taskFingerprint(checkout, cell.args),
             ...(pair.cellId === 'source' ? {sourceFacet} : {})}));
           if (taskHashes.has(pair.cellId) && taskHashes.get(pair.cellId) !== inputHash) throw new Error('benchmark_task_mismatch');
           taskHashes.set(pair.cellId, inputHash);
-          request = parseTargetRequest({schemaVersion: 'llm_execution_target_request@1', nonce,
+          if (treatmentState) {
+            configuration = treatmentState.configurations.get(`${pair.cellId}:${side}`);
+            const currentFields = buildConfigCommitments(configMaterial({env: childEnv, configuration: prepared.configuration,
+              repositoryRoot: checkout.root, isolatedRoot, runtime: options.runtime, timeoutMs: options.timeoutMs}));
+            const [expected, actual] = alignConfigCommitments(configuration.fields, currentFields);
+            if (configHash !== configuration.legacyConfigFingerprint || canonicalJson(expected) !== canonicalJson(actual)) throw new Error('benchmark_config_changed');
+            samplePreflights = [];
+            for (const [index, mode] of cellPreflightSelections(cell.args).entries()) {
+              const directory = path.join(sampleDirectory, `preflight-${index}`);
+              const probePrepared = prepareTreatmentChild(checkout, options, side, path.join(directory, 'runtime'), environment);
+              const observed = await runTreatmentProbe({checkout, options, side, cell, directory, prepared: probePrepared,
+                configuration, treatment: treatmentState.treatment, nonce, dependencies, harness, output, mode});
+              const earlier = treatmentState.actuals.get(`${pair.cellId}:${side}`)[index];
+              if (canonicalJson(observed.actual.sdk) !== canonicalJson(earlier.sdk) ||
+                  canonicalJson(observed.actual.actualResolvedConfig) !== canonicalJson(earlier.actualResolvedConfig) ||
+                  canonicalJson(observed.actual.purposeContracts) !== canonicalJson(earlier.purposeContracts)) throw new Error('benchmark_preflight_changed');
+              samplePreflights.push(observed.proof);
+            }
+          }
+          request = parseTargetRequest({schemaVersion: treatmentState ? 'llm_execution_target_request@2' : 'llm_execution_target_request@1', nonce,
             side, pairId: pair.pairId, cellId: pair.cellId, repetition: pair.repetition,
             port: side === 'base' ? options.basePort : options.candidatePort,
             expectedSourceFingerprint: checkout.sourceFingerprint, observerFingerprint: checkout.observer.fingerprint,
             configFingerprint: configHash, dataRootHash: reset.dataRootHash,
+            ...(treatmentState ? {configFullFingerprint: configuration.fullFingerprint, configControlsFingerprint: configuration.controlsFingerprint,
+              treatmentHash: hash(canonicalJson(treatmentState.treatment)), preflightFingerprint: hash(canonicalJson(samplePreflights))} : {}),
             ...(pair.cellId === 'source' ? {sourceFacet} : {})});
           lifecycle = await execute({label: `${pair.pairId}-${side}`, backendRoot: checkout.backendRoot,
             args: [...checkout.launcherArgs, checkout.verifier, ...cell.args],
@@ -265,10 +403,11 @@ async function runBenchmark(options, injectedDependencies) {
             fs.rmSync(isolatedRoot, {recursive: true, force: true}); dataCleanup = 'removed';
           }
         } catch { /* Preserve task-owned evidence; never broaden cleanup after an error. */ }
-        const sample = {schemaVersion: 'llm_execution_sample@1', measurementOrigin, nonce, ...pair, side,
+        const sample = {schemaVersion: treatmentState ? 'llm_execution_sample@2' : 'llm_execution_sample@1', measurementOrigin, nonce, ...pair, side,
           sampleKind: 'local-cold', providerCacheState: 'unknown', pin,
           sourceFingerprint: checkout.sourceFingerprint, observer: checkout.observer,
           configFingerprint: request?.configFingerprint, taskFingerprint: taskHashes.get(pair.cellId),
+          ...(treatmentState ? {configuration, treatmentHash: hash(canonicalJson(treatmentState.treatment)), preflights: samplePreflights} : {}),
           targetStatus, lifecycle, dataCleanup, failureCode,
           ...(pair.cellId === 'source' ? {sourceFacet, sourceFacetCollection} : {}),
           report: path.relative(output, reportPath).split(path.sep).join('/'),
@@ -291,7 +430,8 @@ async function runBenchmark(options, injectedDependencies) {
       if (sourceFacetStatus !== 'matched') lifecycleFailure = true;
     }
   } finally {harness.disposeSignalHandlers();}
-  const artifact = {schemaVersion: 'llm_execution_benchmark@1', measurementOrigin, candidate: 'llm-execution-v1', nonce,
+  const artifact = {schemaVersion: treatmentState ? 'llm_execution_benchmark@2' : 'llm_execution_benchmark@1', measurementOrigin, candidate: options.treatment ?? 'llm-execution-v1', nonce,
+    ...(treatmentState ? {treatment: treatmentState.treatment, preflights: treatmentState.preflights, nodeVersion: process.versions.node} : {}),
     createdAt: new Date().toISOString(), provider: options.provider, runtime: options.runtime,
     model: options.model, lightModel: options.lightModel, seed: options.seed,
     ...(sourceFacet ? {sourceFacet, sourceFacetStatus} : {}),
@@ -312,7 +452,7 @@ async function runBenchmark(options, injectedDependencies) {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
-    console.log('Usage: run-llm-execution-benchmark.cjs --baseline-root <checkout> --candidate-root <checkout> --provider glm|deepseek --runtime <canonical-runtime> --model <id> --light-model <id> --base-port <port> --candidate-port <port> --observer-hook-fingerprint <sha256> --output-dir test-output/runtime-concurrency/llm-execution-v1/<fresh-run> [--repetitions 3] [--cells scheduler,startup,scrolling,source,dual] [--sample-kind local-cold]');
+    console.log('Usage: run-llm-execution-benchmark.cjs --baseline-root <checkout> --candidate-root <checkout> --provider glm|deepseek --runtime <canonical-runtime> --model <id> --light-model <id> --base-port <port> --candidate-port <port> --observer-hook-fingerprint <sha256> --output-dir test-output/runtime-concurrency/llm-execution-v1/<fresh-run> [--repetitions 3] [--cells scheduler,startup,scrolling,source,dual] [--sample-kind local-cold] [--treatment assistant_text_to_native_v2@1]');
     console.log('Collects paired lifecycle/report evidence. It does not grant quality or performance admission. Warm provider cache is not controlled.');
     return;
   }
@@ -322,7 +462,8 @@ async function main() {
   if (artifact.lifecycle !== 'collected') process.exitCode = 1;
 }
 
-module.exports = {parseArgs, loadCheckout, configFingerprint, taskFingerprint, readReport, runBenchmark};
+module.exports = {parseArgs, loadCheckout, configMaterial, configFingerprint, taskFingerprint, readReport,
+  treatmentEnvironment, probeActualControls, prepareTreatmentTargets, runBenchmark};
 if (require.main === module) main().catch(() => {
   console.error('LLM execution benchmark failed; inspect task-owned evidence.');
   process.exitCode = 1;

@@ -80,7 +80,7 @@ export function createOpenAIToolsFromMcpDefinitions(
         const attempt = finalRole ? options.currentFinalAttempt?.() : undefined;
         if (finalRole && !attempt) throw new Error('final_submission_attempt_unavailable');
         const invocation: OpenAiTypedFinalInvocation | undefined = attempt
-          ? await attempt.stageInvocation({tool: installed, context: runContext, toolCall: details?.toolCall}) : undefined;
+          ? await attempt.stageInvocation({tool: installed, context: runContext, toolCall: details?.toolCall, parsedArguments: args}) : undefined;
         const normalizedArgs = normalizeRuntimeToolArgs(args, shared.inputSchema) as Record<string, unknown>;
         const contextSignal = (runContext?.context as { signal?: AbortSignal } | undefined)?.signal;
         const signal = details?.signal || contextSignal;
@@ -92,7 +92,7 @@ export function createOpenAIToolsFromMcpDefinitions(
         }));
         const output = stringifyRuntimeToolResult(result);
         if (attempt && invocation) attempt.markPrivateHandlerSuccess(invocation,
-          {output, documentJson: normalizedArgs.documentJson});
+          {output, arguments: normalizedArgs});
         return output;
       },
       errorFunction: (_context, error) => {

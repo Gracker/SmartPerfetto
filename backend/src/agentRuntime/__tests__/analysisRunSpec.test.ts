@@ -123,6 +123,49 @@ describe('captured final submission configuration', () => {
       modelSelection: {...valid.modelSelection, requestedMode: 'full', lightModel: 'unobserved-model'}})).not.toThrow();
   });
 
+  it('captures native object mode with its own syntax and SDK contract without changing v1 rollback', () => {
+    const env = {[SMARTPERFETTO_FINAL_SUBMISSION_ENV]: 'authored_claim_document_v2', [CONCLUSION_AUTHORING_ENV]: 'authoring_v2'};
+    const nativeOutput = captureAnalysisOutputConfig(env);
+    const nativeSdk = {...sdk, contractVersion: 'openai_typed_final_admission@2'};
+    const nativeProfile = (modelId = 'deepseek-flash', adapterContractVersion = nativeSdk.contractVersion) => resolveModelExecutionProfile({
+      runtimeKind: 'openai-agents-sdk', protocol: 'chat_completions', modelId, baseUrl: 'https://api.deepseek.com/v1',
+      sdk: {packageName: '@openai/agents-openai', version: '0.13.0', adapterContractVersion},
+      sdkCapabilities: {surface: 'openai_chat', thinking: 'optional', reasoningRoundtrip: 'supported', source: 'contract_test'},
+      effective: nativeOutput,
+    });
+    const input = {...admission(), outputConfig: nativeOutput, sdk: nativeSdk, modelProfiles: [nativeProfile()]};
+    env[SMARTPERFETTO_FINAL_SUBMISSION_ENV] = 'assistant_text'; env[CONCLUSION_AUTHORING_ENV] = 'canonical_v1';
+    expect(nativeOutput).toEqual({finalSubmission: 'authored_claim_document_v2', declarationSyntax: 'authoring_v2'});
+    expect(Object.isFrozen(nativeOutput)).toBe(true);
+    expect(() => assertFinalSubmissionPreDispatch(input)).not.toThrow();
+    expect(() => assertFinalSubmissionPreDispatch({...input, sdk})).toThrow('final_submission:sdk');
+    expect(() => assertFinalSubmissionPreDispatch({...input, modelProfiles: [nativeProfile('deepseek-flash', sdk.contractVersion)]})).toThrow('model_set');
+    expect(() => assertFinalSubmissionPreDispatch({...admission(), sdk: nativeSdk})).toThrow('final_submission:sdk');
+    expect(() => assertFinalSubmissionPreDispatch(admission())).not.toThrow();
+    const classify = jest.fn();
+    for (const requestedMode of ['auto', 'fast'] as const) {
+      for (const role of ['primaryModel', 'lightModel'] as const) {
+        expect(() => {
+          assertFinalSubmissionPreDispatch({...input,
+            modelSelection: {...input.modelSelection, requestedMode, [role]: 'unobserved-model'},
+            modelProfiles: [nativeProfile(), nativeProfile('unobserved-model')]});
+          classify();
+        }).toThrow('function_tool_primitive');
+      }
+    }
+    expect(() => assertFinalSubmissionPreDispatch({...input,
+      modelSelection: {...input.modelSelection, requestedMode: 'full', lightModel: 'unobserved-model'}})).not.toThrow();
+    for (const runtime of ['claude-agent-sdk', 'pi-agent-core', 'opencode', 'qoder-agent-sdk']) {
+      expect(() => {assertFinalSubmissionRuntime(nativeOutput, runtime); classify();}).toThrow('final_submission:runtime');
+    }
+    expect(classify).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, 'canonical_v1', 'authoring_v1'])('refuses native object mode with syntax %s', declarationSyntax => {
+    expect(() => captureAnalysisOutputConfig({[SMARTPERFETTO_FINAL_SUBMISSION_ENV]: 'authored_claim_document_v2',
+      [CONCLUSION_AUTHORING_ENV]: declarationSyntax})).toThrow('declaration_syntax_conflict');
+  });
+
   it('requires profiles to fingerprint the captured output choices', () => {
     const valid = admission();
     const wrong = {...profile(), effective: {finalSubmission: 'assistant_text' as const, declarationSyntax: 'canonical_v1' as const}};
@@ -131,6 +174,21 @@ describe('captured final submission configuration', () => {
 });
 
 describe('AnalysisRunSpec shadow mode', () => {
+  it('passes the captured object-mode pair to the run and manifest without client overrides', () => {
+    const outputConfig = captureAnalysisOutputConfig({[SMARTPERFETTO_FINAL_SUBMISSION_ENV]: 'authored_claim_document_v2',
+      [CONCLUSION_AUTHORING_ENV]: 'authoring_v2'});
+    const recordRuntime = jest.fn();
+    const sink = {identity: {runId: 'object-run', sessionId: 'object-session', scope: {tenantId: 't', workspaceId: 'w'}},
+      recordScene: jest.fn(), recordMode: jest.fn(), recordRuntime} as unknown as RunManifestAttributionSink;
+    const spec = createAnalysisRunSpec({outputConfig, query: 'Analyze', sessionId: 'object-session', traceId: 'trace',
+      runtimeSelection: openAiSelection, sceneType: 'general', outputLanguage: 'en',
+      options: {runManifestAttributionSink: sink, finalSubmission: 'assistant_text', declarationSyntax: 'canonical_v1'} as AnalysisOptions});
+    expect(spec).toMatchObject({finalSubmission: 'authored_claim_document_v2', declarationSyntax: 'authoring_v2'});
+    expect(recordRuntime).toHaveBeenCalledWith(expect.objectContaining({finalSubmission: 'authored_claim_document_v2',
+      conclusionDeclarationSyntax: 'authoring_v2'}));
+    expect(spec).not.toHaveProperty('actualFinalSubmission');
+  });
+
   it('uses only the captured output choices, not client fields, and records configuration rather than adoption', () => {
     const outputConfig = captureAnalysisOutputConfig({[SMARTPERFETTO_FINAL_SUBMISSION_ENV]: 'authored_claim_document_v1'});
     const recordRuntime = jest.fn();

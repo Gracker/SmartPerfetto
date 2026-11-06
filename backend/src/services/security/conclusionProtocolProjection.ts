@@ -3,16 +3,20 @@
 
 import {isDeepStrictEqual} from 'node:util';
 import {claimAuthoredFinalSubmission, readAuthoredFinalSubmission, revokeAuthoredFinalSubmission,
-  type AuthoredFinalSubmissionReadInput, type AuthoredFinalSubmissionHashes,
+  type AuthoredFinalSubmissionReadInput, type AuthoredFinalSubmissionV1Hashes, type AuthoredFinalSubmissionV2Snapshot,
   type IssuedAuthoredFinalSubmission} from '../../agentRuntime/authoredFinalSubmission';
 import {
   CONCLUSION_PROTOCOL_VALUES, CONCLUSION_CONTRACT_SIDECAR_MARKER, conclusionParseIssueTriageCodes, declaredContractForResult,
   parseConclusionContractSidecar,
   parseTypedConclusionContractJson, renderConclusionContractSidecar,
   type ConclusionContract,
+  type ConclusionContractClaimItem,
+  type NumericPresentationDeclaration,
   type ConclusionContractClaimReference,
 } from '../../agent/core/conclusionContract';
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
+import {measureAuthoredJson} from '../../agent/core/authoredClaimDocument';
+import {AUTHORED_CLAIM_OBJECT_VERSION, type AuthoredQuoteBinding} from '../../agent/core/authoredClaimObject';
 import {analysisDeliveryFingerprint, type AnalysisCandidateIdentity, type AnalysisDeliveryContext} from '../../types/analysisDelivery';
 import {isSourceMechanismStatus} from '../codebase/sourceUseDecision';
 import {
@@ -37,15 +41,23 @@ export interface AssistantNativeConclusionDeclaration {
   readonly raw: string;
   readonly contract?: ConclusionContract;
 }
-export interface AuthoredNativeConclusionDeclaration {
+interface AuthoredNativeConclusionCommon {
   readonly inputKind: 'model_tool_arguments';
   readonly rawArguments: string;
-  readonly documentJson: string;
   readonly body: string;
   readonly rawCanonicalPayload: unknown;
   readonly contract?: ConclusionContract;
-  readonly hashes: Readonly<AuthoredFinalSubmissionHashes>;
 }
+interface AuthoredNativeConclusionV1 extends AuthoredNativeConclusionCommon {
+  readonly documentJson: string;
+  readonly hashes: Readonly<AuthoredFinalSubmissionV1Hashes>;
+}
+interface AuthoredNativeConclusionV2 extends AuthoredNativeConclusionCommon {
+  readonly representationVersion: typeof AUTHORED_CLAIM_OBJECT_VERSION;
+  readonly privateNativeDocument: Record<string, unknown>;
+  readonly hashes: AuthoredFinalSubmissionV2Snapshot['hashes'];
+}
+export type AuthoredNativeConclusionDeclaration = AuthoredNativeConclusionV1 | AuthoredNativeConclusionV2;
 export type NativeConclusionDeclaration = AssistantNativeConclusionDeclaration | AuthoredNativeConclusionDeclaration;
 /** Private adapter-to-projection handoff; never serialize this capability or its material. */
 export interface AuthoredConclusionSubmission {
@@ -80,6 +92,65 @@ const authoredDeliveries = new WeakMap<AnalysisDeliveryContext, {
   result: AuthoredDeliveryResult;
   candidate: AnalysisCandidateIdentity;
 }>();
+
+/** Observation only. Reads issued identities without checking or changing capability lifetime. */
+export function readConclusionTransportObservation(value: NativeConclusionDeclaration): Readonly<{
+  nativeCandidateKey: string; displayCandidateKey: string;
+}> | undefined {
+  const token = nativeDeclarations.get(value);
+  const state = token && issued.get(token);
+  if (!state) return undefined;
+  return Object.freeze({nativeCandidateKey: analysisDeliveryFingerprint(state.nativeCandidate),
+    displayCandidateKey: analysisDeliveryFingerprint(state.displayCandidate)});
+}
+
+export type AuthoredQuoteBindingReadResult =
+  | {status: 'not_applicable'}
+  | {status: 'bound'; bindings: readonly AuthoredQuoteBinding[]}
+  | {status: 'unavailable'; reason: 'quote_body_changed' | 'quote_binding_unavailable'};
+
+/** Private issued positions only. Neither serialized declarations nor caller-supplied spans grant a binding. */
+export function readAuthoredQuoteBindings(input: {
+  nativeDeclaration?: NativeConclusionDeclaration; expectedVersion: typeof AUTHORED_CLAIM_OBJECT_VERSION;
+  body: string; claim: ConclusionContractClaimItem; presentation: NumericPresentationDeclaration;
+}): AuthoredQuoteBindingReadResult {
+  const unavailable = (): AuthoredQuoteBindingReadResult => ({status: 'unavailable', reason: 'quote_binding_unavailable'});
+  try {
+    if (input.expectedVersion !== AUTHORED_CLAIM_OBJECT_VERSION || !input.nativeDeclaration) return unavailable();
+    const token = nativeDeclarations.get(input.nativeDeclaration);
+    const state = token && issued.get(token);
+    if (!state?.authored || state.original !== input.nativeDeclaration) return unavailable();
+    const snapshot = readAuthoredFinalSubmission(state.authored.submission.submission, state.authored.submission.input);
+    if (!('nativeDocument' in snapshot) || snapshot.binding.representationVersion !== AUTHORED_CLAIM_OBJECT_VERSION ||
+        typeof measureAuthoredJson(input.claim) === 'string' || typeof measureAuthoredJson(input.presentation) === 'string') return unavailable();
+    const id = input.claim.id;
+    const rawClaims = snapshot.compiled.rawCanonicalPayload.claims;
+    const canonicalClaims = snapshot.compiled.canonicalParse.contract?.claims;
+    if (typeof id !== 'string' || !id.trim() || !Array.isArray(rawClaims) || !canonicalClaims) return unavailable();
+    const ordinals: number[] = [];
+    rawClaims.forEach((claim, index) => {
+      if (claim && typeof claim === 'object' && !Array.isArray(claim) && claim.id === id) ordinals.push(index + 1);
+    });
+    const originals = canonicalClaims.filter(claim => claim.id === id);
+    if (ordinals.length !== 1 || originals.length !== 1 || !isDeepStrictEqual(input.claim, originals[0]) ||
+        !isDeepStrictEqual(input.presentation, originals[0].semantics?.numeric?.presentation)) return unavailable();
+    const bindings = snapshot.compiled.quoteBindings.filter(binding => binding.claimOrdinal === ordinals[0]);
+    // The issued compiler records every body_part quote. An empty set therefore proves this matching presentation is global.
+    if (bindings.length === 0) return {status: 'not_applicable'};
+    const ordinalsSeen = new Set<number>();
+    for (const binding of bindings) {
+      const ordinal = binding.quoteOrdinal;
+      const {startUtf16, endUtf16} = binding.originalSpan;
+      if (!Number.isSafeInteger(ordinal) || ordinal < 1 || ordinal > input.presentation.quotes.length || ordinalsSeen.has(ordinal) ||
+          !isDeepStrictEqual(binding.canonicalQuote, input.presentation.quotes[ordinal - 1]) ||
+          !Number.isSafeInteger(startUtf16) || !Number.isSafeInteger(endUtf16) || startUtf16 < 0 || endUtf16 < startUtf16 ||
+          endUtf16 > snapshot.compiled.body.length || snapshot.compiled.body.slice(startUtf16, endUtf16) !== binding.canonicalQuote.text) return unavailable();
+      ordinalsSeen.add(ordinal);
+    }
+    if (input.body !== snapshot.compiled.body) return {status: 'unavailable', reason: 'quote_body_changed'};
+    return {status: 'bound', bindings: Object.freeze(bindings)};
+  } catch {return unavailable();}
+}
 
 export function isIssuedNativeConclusionDeclaration(value: NativeConclusionDeclaration): boolean {
   const token = nativeDeclarations.get(value);
@@ -267,7 +338,9 @@ export function issueAuthoredConclusionProtocolProjection(input: {
   const result = projectedResultSnapshot(input.result);
   const nativeCandidate = freeze(input.nativeCandidate), displayCandidate = freeze(input.displayCandidate);
   const submittedToken = submission.submission, submittedInput = submission.input;
-  const expected = {...submittedInput, binding: Object.freeze({...submittedInput.binding})};
+  const expected: AuthoredFinalSubmissionReadInput = 'documentJson' in submittedInput
+    ? {...submittedInput, binding: Object.freeze({...submittedInput.binding})}
+    : {...submittedInput, binding: Object.freeze({...submittedInput.binding})};
   const snapshot = readAuthoredFinalSubmission(submittedToken, expected);
   if (result.sessionId !== snapshot.binding.sessionId || nativeCandidate.runId !== snapshot.binding.runId ||
       nativeCandidate.attemptId !== snapshot.binding.attemptId ||
@@ -278,8 +351,13 @@ export function issueAuthoredConclusionProtocolProjection(input: {
       bodyProjection.text !== result.conclusion) {
     throw new Error('authored_conclusion_projection_mismatch');
   }
-  const original: AuthoredNativeConclusionDeclaration = {
+  const original: AuthoredNativeConclusionDeclaration = 'documentJson' in snapshot ? {
     inputKind: 'model_tool_arguments', rawArguments: snapshot.rawArguments, documentJson: snapshot.documentJson,
+    body: snapshot.compiled.body, rawCanonicalPayload: snapshot.compiled.rawCanonicalPayload,
+    contract: snapshot.compiled.canonicalParse.contract as ConclusionContract | undefined, hashes: snapshot.hashes,
+  } : {
+    inputKind: 'model_tool_arguments', representationVersion: AUTHORED_CLAIM_OBJECT_VERSION,
+    rawArguments: snapshot.rawArguments, privateNativeDocument: snapshot.nativeDocument,
     body: snapshot.compiled.body, rawCanonicalPayload: snapshot.compiled.rawCanonicalPayload,
     contract: snapshot.compiled.canonicalParse.contract as ConclusionContract | undefined, hashes: snapshot.hashes,
   };
@@ -290,8 +368,14 @@ export function issueAuthoredConclusionProtocolProjection(input: {
     publicContractFingerprint: analysisDeliveryFingerprint(result.conclusionContract),
     sourceUseFingerprint: analysisDeliveryFingerprint(result.sourceUseDecision),
     validationFingerprint: analysisDeliveryFingerprint(original), original});
-  const readInput = Object.freeze({...expected, rawArguments: snapshot.rawArguments, documentJson: snapshot.documentJson,
-    body: snapshot.compiled.body, rawCanonicalPayload: snapshot.compiled.rawCanonicalPayload, hashes: snapshot.hashes});
+  const readInput: AuthoredFinalSubmissionReadInput | undefined = 'documentJson' in expected && 'documentJson' in snapshot
+    ? Object.freeze({...expected, rawArguments: snapshot.rawArguments, documentJson: snapshot.documentJson,
+      body: snapshot.compiled.body, rawCanonicalPayload: snapshot.compiled.rawCanonicalPayload, hashes: snapshot.hashes})
+    : 'nativeDocument' in expected && 'nativeDocument' in snapshot
+      ? Object.freeze({...expected, rawArguments: snapshot.rawArguments, nativeDocument: snapshot.nativeDocument,
+        body: snapshot.compiled.body, rawCanonicalPayload: snapshot.compiled.rawCanonicalPayload, hashes: snapshot.hashes})
+      : undefined;
+  if (!readInput) throw new Error('authored_conclusion_projection_mismatch');
   const authored: AuthoredProjectionState = Object.freeze({submission: Object.freeze({submission: submittedToken, input: readInput}),
     ...freeze({displayBody: result.conclusion, publicContract: result.conclusionContract,
       publicClaims: result.conclusionContract?.claims, sourceUse: result.sourceUseDecision})});
@@ -369,7 +453,8 @@ function currentAuthoredDelivery(context: AnalysisDeliveryContext) {
   const binding = authoredDeliveries.get(context);
   const state = binding && issued.get(binding.projection);
   if (!binding || !state?.authored || context.entry === 'historical_restore' ||
-      context.outputOrigin !== 'model_tool_arguments' || context.finalSubmission?.mode !== 'authored_claim_document_v1' ||
+      context.outputOrigin !== 'model_tool_arguments' || (context.finalSubmission?.mode !== 'authored_claim_document_v1' &&
+        context.finalSubmission?.mode !== 'authored_claim_document_v2') ||
       context.finalSubmission.outcome !== 'submitted' || !sameCandidate(context.acceptedCandidate, binding.candidate)) return;
   try { assertAuthoredCurrent(state); return binding; } catch { return undefined; }
 }

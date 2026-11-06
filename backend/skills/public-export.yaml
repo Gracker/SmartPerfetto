@@ -1561,6 +1561,15 @@ strategies:
   backend/strategies/prompt-submit-final-document-tool-description.template.md:
     disposition: product-only
     reason: SmartPerfetto experimental authored final submission tool transport and pending acknowledgement contract
+  backend/strategies/prompt-authored-final-submission-v2-delivery.template.md:
+    disposition: product-only
+    reason: SmartPerfetto private native object final submission transport
+  backend/strategies/prompt-authored-final-submission-v2-framing.template.md:
+    disposition: product-only
+    reason: SmartPerfetto native authored document grammar and private deterministic projection
+  backend/strategies/prompt-submit-final-document-v2-tool-description.template.md:
+    disposition: product-only
+    reason: SmartPerfetto native object final tool and pending acknowledgement contract
   backend/strategies/prompt-conclusion-authoring-framing.template.md:
     disposition: product-only
     reason: SmartPerfetto private declaration authoring transport and captured evidence references

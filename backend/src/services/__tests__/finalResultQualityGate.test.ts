@@ -73,6 +73,23 @@ function finalizationContext(target: AnalysisResult): AnalysisDeliveryContext {
     outputOrigin: 'sdk_final', turnIntent: resolvedIntent()};
 }
 
+describe('native v2 delivery requires its live binding', () => {
+  it.each(['submitted', 'missing_submission', 'transport_failure'] as const)(
+    'retains the transport failure for %s without treating the body as an issued submission', outcome => {
+      const target = result({conclusion: 'A completed native body.'});
+      const context = finalizationContext(target);
+      if (context.entry === 'historical_restore') throw new Error('Unexpected fixture entry');
+      context.finalSubmission = {mode: 'authored_claim_document_v2', outcome};
+      const assessment = assessFinalResultQualityAssessment({result: target, context});
+      expect(assessment.assurance.completion).toBe('failed');
+      expect(assessment.issues).toContainEqual(expect.objectContaining({
+        code: outcome === 'missing_submission' ? 'missing_submission' : 'transport_failure',
+      }));
+      expect(target.conclusion).toBe('A completed native body.');
+      expect(target.partial).toBeUndefined();
+    });
+});
+
 describe('identity uncertainty remains separate from report delivery', () => {
   it.each(['ambiguous', 'weak', 'error'] as const)('delivers the completed body while retaining %s identity assurance', status => {
     const target = result({conclusion: 'System observations are available; target process attribution remains uncertain.'});

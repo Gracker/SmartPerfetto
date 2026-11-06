@@ -97,33 +97,52 @@ observation; output count alone cannot establish truncation. See the
 [DeepSeek Chat API](https://api-docs.deepseek.com/api/create-chat-completion/).
 
 `SMARTPERFETTO_FINAL_SUBMISSION` selects the main analysis output transport and
-defaults to `assistant_text`; `authored_claim_document_v1` is an explicit experiment.
-The mode and declaration syntax are captured together before classification; the
-experiment requires `canonical_v1`. Eligibility separately checks the actual SDK
+defaults to `assistant_text`. Explicit experimental modes `authored_claim_document_v1`
+and `authored_claim_document_v2` require `canonical_v1` and `authoring_v2`, respectively.
+Transport and declaration syntax are captured together before classification.
+Eligibility separately checks the actual SDK
 contract, Chat Completions protocol and function-tool primitive facts for every
 possible main model. Unknown or incompatible configurations fail before paid
 dispatch. Observed tool calls do not establish document adoption, accuracy or
 performance acceptance.
 
 The experiment discovers the tool name from the registry's unique
-`final_candidate_submission` role. The model submits body parts and its original
-canonical declarations in `documentJson`. Tool-schema strictness constrains the
-outer string field; JSON inside it still requires independent parsing and
-validation. The deterministic compiler concatenates authored text without filling
-values from evidence. Original wire arguments, SDK
-calls, actual handler success, native final state and background drain jointly
+`final_candidate_submission` role. V1 submits body parts and original canonical
+declarations in `documentJson`. Tool-schema strictness constrains the outer string
+field. JSON inside it still requires independent parsing and validation. V2 submits
+text parts, reference dictionaries, claims and explicit semantic frames as a native
+`document` object. Its schema covers the full object. Server-side strict guarantees
+depend on the actual endpoint. Reference indices expand only authored values. The
+deterministic compiler concatenates authored text and retains original declarations
+and invalid entries for independent canonical validation. Original wire arguments,
+actual SDK parsed values and actual handler arguments must match strictly.
+JSON-looking body text remains literal. Actual handler success, native final state and background drain jointly
 admit a submission. The shared finalizer still performs evidence, semantic,
 source and report checks. Authorship is `model_tool_arguments`. A missing submission
 or transport failure is a separate product issue: it does not rewrite actual SDK
 completion or start legacy declaration repair or continuation. Program ACK and
-direct-evidence paths without a main call retain their delivery; their actual
-transport is not applicable.
+direct-evidence paths without a main call retain their delivery. Transport
+observations record `not_exercised`.
+
+The current typed envelope delivers Conversation text as `answered`, with existing
+evidence. Control-looking body text remains literal. Explicit `needs_user_input`
+and `recommend_full` actions use the `assistant_text` control protocol. The typed
+envelope currently has no corresponding control field.
+
+V2 part quotes bind original claim ordinals and exact UTF-16 body locations during
+compilation. The shared finalizer reads those bindings from private material issued
+for the current run. Missing bindings, changed declarations or privacy-induced body
+changes leave the quote unchecked with empty locations. Issued global quotes
+continue through existing matching. Raw objects and private bindings remain in run
+memory. Reports, history and public events consume canonical product results.
 
 An actually issued, drained typed submission retains its original canonical
 validation status, closed issues and available original entry counts through the existing
 `candidate_protocol` diagnostic. Successful compilation does not imply valid
 declarations. Optional `authoredMaterial` separately measures original arguments,
-the original document, the body and compiler-normalized material. It exposes no
+the body and compiler-normalized material. V1 also measures the original documentJson.
+V2 measures the native object and expanded material with distinct versions and
+measurement boundaries. It exposes no
 content, IDs or dynamic field names; nested measurements cannot be added together
 or converted to tokens. Failure-log `wireFinishReason` projects only observed
 closed native terminal facts; missing facts stay absent. Diagnostic failure never
@@ -133,6 +152,15 @@ Request `toolArguments` metrics count historical arguments sent in that request,
 excluding its subsequently generated response. Without a later dispatch, the final
 submission never enters that input counter. Missing material diagnostics do not
 mean zero output size.
+
+Internal performance observations distinguish actual main, classification and
+semantic-review dispatches, linking native termination, tool drain, candidate
+selection and finalization. Configuration commitments, applied request settings
+and explicitly reported server model identity are separate facts. Missing facts
+remain unknown. Normalized request JSON bytes and original wire-body size are
+measured separately. Transport comparisons require common observer source, fixed
+controls and per-sample quality gates, including complete tool-schema and prompt
+costs. Incomplete or incomparable samples remain inconclusive.
 
 ## M10 Independent Feedback Triage
 

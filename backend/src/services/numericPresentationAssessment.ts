@@ -9,6 +9,13 @@ import {exactNumber, type Rational} from '../utils/exactDecimal';
 import {evidenceReferenceKey} from './evidence/claimEvidencePreparation';
 import {getCapturedAnchorFacts} from './evidence/evidenceCapture';
 import {claimUnitFor, countedUnitDimension, declaredUnitAcceptsProducerDimension} from './verifier/claimUnits';
+import {findQuoteOccurrence} from '../agent/core/numericQuoteLocator';
+import {readAuthoredQuoteBindings, type NativeConclusionDeclaration} from './security/conclusionProtocolProjection';
+
+interface AuthoredQuoteContext {
+  expectedVersion: 'authored_claim_document@2';
+  nativeDeclaration?: NativeConclusionDeclaration;
+}
 
 /** One fixed-decimal literal, not a sentence, range, exponent, percentage-point claim or formula. */
 const LITERAL = /^(-?(?:\d{1,3}(?:,\d{3})+|\d+))(?:\.(\d+))?[ \u00a0\u202f]*([\p{L}%]+)?$/u;
@@ -23,15 +30,12 @@ function sameDisplayUnit(token: string, declared: string): boolean {
     displayed.numerator * expected.denominator === expected.numerator * displayed.denominator);
 }
 
-function locate(body: string, quote: NumericPresentationDeclaration['quotes'][number]): {start: number; end: number} | undefined {
-  const hits: number[] = [];
-  for (let start = body.indexOf(quote.text); start >= 0; start = body.indexOf(quote.text, start + quote.text.length)) {
-    hits.push(start);
-    if (quote.occurrence === undefined ? hits.length > 1 : hits.length > quote.occurrence) break;
-  }
-  const start = quote.occurrence === undefined ? (hits.length === 1 ? hits[0] : undefined) : hits[quote.occurrence];
-  if (start === undefined) return undefined;
-  const end = start + quote.text.length;
+function locate(body: string, quote: NumericPresentationDeclaration['quotes'][number],
+  authoredSpan?: {startUtf16: number; endUtf16: number}): {start: number; end: number} | undefined {
+  const span = authoredSpan ? {start: authoredSpan.startUtf16, end: authoredSpan.endUtf16}
+    : findQuoteOccurrence(body, quote.text, quote.occurrence);
+  if (!span || body.slice(span.start, span.end) !== quote.text) return undefined;
+  const {start, end} = span;
   // Preserve the entire numeric token: no `45` inside `145`, a lost negative
   // sign, identifier suffix, partial decimal, or `ms` inside `msec`.
   if (start > 0 && /[A-Za-z0-9_.,+\-−－]/u.test(body[start - 1])) return undefined;
@@ -49,12 +53,16 @@ function rounded(value: Rational, decimalPlaces: number): bigint {
 function assess(input: {
   claim: ConclusionContractClaimItem; prior: ClaimVerificationClaimResult | undefined;
   support: ClaimSupportV1 | undefined; body: string; candidate: AnalysisCandidateIdentity;
+  authoredQuoteContext?: AuthoredQuoteContext;
 }, presentation: NumericPresentationDeclaration): NumericPresentationAssessment {
   const {claim, prior, support, body, candidate} = input;
   const result: NumericPresentationAssessment = {schemaVersion: 'numeric_presentation_assessment@1',
     status: 'not_checked', reason: 'proposition_not_proved',
     binding: {candidate: {...candidate}, claimFingerprint: analysisDeliveryFingerprint(claim)}, locations: []};
   const finish = (reason: string, status: NumericPresentationAssessment['status'] = 'not_checked') => ({...result, reason, status});
+  const authored = input.authoredQuoteContext
+    ? readAuthoredQuoteBindings({...input.authoredQuoteContext, body, claim, presentation}) : undefined;
+  if (authored?.status === 'unavailable') return finish(authored.reason);
   const semantics = claim.semantics;
   const proof = prior?.deterministicProof;
   if (claim.valid === false || semantics?.predicate !== 'numeric.cell' || semantics.numeric?.operator !== 'eq' ||
@@ -98,8 +106,9 @@ function assess(input: {
   const recordIssue = (reason: string, status: 'mismatch' | 'not_checked' = 'not_checked') => {
     if (!issue || (status === 'mismatch' && issue.status !== 'mismatch')) issue = {reason, status};
   };
-  for (const quote of presentation.quotes) {
-    const location = locate(body, quote);
+  for (const [index, quote] of presentation.quotes.entries()) {
+    const binding = authored?.status === 'bound' ? authored.bindings.find(item => item.quoteOrdinal === index + 1) : undefined;
+    const location = locate(body, quote, binding?.originalSpan);
     if (!location) { recordIssue('quote_unresolved'); continue; }
     const literal = LITERAL.exec(quote.text);
     if (!literal || (literal[2]?.length ?? 0) !== presentation.decimalPlaces ||
@@ -122,6 +131,7 @@ function assess(input: {
 export function assessNumericPresentations(input: {
   contract?: ConclusionContract; claims: readonly ClaimVerificationClaimResult[];
   support: readonly ClaimSupportV1[]; body: string; candidate: AnalysisCandidateIdentity;
+  authoredQuoteContext?: AuthoredQuoteContext;
 }): ReadonlyMap<string, NumericPresentationAssessment> {
   const results = new Map<string, NumericPresentationAssessment>();
   const declarations = input.contract?.claims ?? [];
@@ -130,7 +140,7 @@ export function assessNumericPresentations(input: {
     if (!presentation || !claim.id || declarations.filter(other => other.id === claim.id).length !== 1) continue;
     const priors = input.claims.filter(other => other.claimId === claim.id);
     const supports = input.support.filter(other => other.claimId === claim.id);
-    results.set(claim.id, assess({claim, body: input.body, candidate: input.candidate,
+    results.set(claim.id, assess({claim, body: input.body, candidate: input.candidate, authoredQuoteContext: input.authoredQuoteContext,
       prior: priors.length === 1 ? priors[0] : undefined, support: supports.length === 1 ? supports[0] : undefined}, presentation));
   }
   // The same body token cannot silently serve conflicting claim bindings.

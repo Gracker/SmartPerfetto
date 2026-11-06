@@ -10,7 +10,7 @@ import {createRuntimeToolResult, readRuntimeToolResultFacts} from '../../agentRu
 import {McpToolRegistry} from '../../agentv3/mcpToolRegistry';
 import {Agent, OpenAIProvider, Runner, RunContext, setTracingDisabled, tool} from '@openai/agents';
 import OpenAI from 'openai';
-import {createJsonSchemaFromZodRawShape, preserveRuntimeLiteralStrings} from '../../agentRuntime/runtimeToolSpec';
+import {createJsonSchemaFromZodRawShape, preserveRuntimeLiteralStrings, preserveRuntimeLiteralJson} from '../../agentRuntime/runtimeToolSpec';
 import {chatCompletionResponse} from '../../../tests/helpers/openAiRuntimeFixture';
 import {AUTHORED_FINAL_SUBMISSION_PENDING_ACK} from '../../agentRuntime/authoredFinalSubmission';
 import type {createOpenAiTypedFinalAttempt} from '../../agentRuntime/engines/openai/openAiTypedFinalAdmission';
@@ -80,8 +80,34 @@ describe('createOpenAIToolsFromMcpDefinitions', () => {
     expect(output).toBe(AUTHORED_FINAL_SUBMISSION_PENDING_ACK);
     expect(order).toEqual(['stage', 'handler', 'success']);
     expect(mapped).toHaveBeenCalledWith(registry.list()[0], installed);
-    expect(stage).toHaveBeenCalledWith({tool: installed, context, toolCall: call});
-    expect(success).toHaveBeenCalledWith(invocation, {output: AUTHORED_FINAL_SUBMISSION_PENDING_ACK, documentJson});
+    expect(stage).toHaveBeenCalledWith({tool: installed, context, toolCall: call, parsedArguments: {documentJson}});
+    expect(success).toHaveBeenCalledWith(invocation, {output: AUTHORED_FINAL_SUBMISSION_PENDING_ACK, arguments: {documentJson}});
+  });
+
+  it('passes actual native object arguments through the marked handler subtree with installed-tool identity', async () => {
+    const rawArguments = '{"document":{"parts":["{\\\"literal\\\":true}","[1,2]"],"values":[null,1e999,-0]}}';
+    const expected = JSON.parse(rawArguments);
+    const invocation = Object.freeze({kind: 'openai_typed_final_invocation' as const});
+    const stage = jest.fn<ReturnType<typeof createOpenAiTypedFinalAttempt>['stageInvocation']>(async () => invocation);
+    const success = jest.fn<ReturnType<typeof createOpenAiTypedFinalAttempt>['markPrivateHandlerSuccess']>();
+    const bridge = {stageInvocation: stage, markPrivateHandlerSuccess: success} as unknown as ReturnType<typeof createOpenAiTypedFinalAttempt>;
+    let handlerArgs: Record<string, unknown> | undefined;
+    const registry = new McpToolRegistry();
+    registry.registerShared({name: 'renamed_native_final', role: 'final_candidate_submission', exposure: 'internal',
+      evidenceEffect: 'none', description: 'Native fixture', inputSchema: {document: preserveRuntimeLiteralJson(
+        z.object({parts: z.array(z.string()), values: z.array(z.number().nullable())}))},
+      handler: async args => {handlerArgs = args; return {content: [{type: 'text', text: AUTHORED_FINAL_SUBMISSION_PENDING_ACK}]};}});
+    const [installed] = createOpenAIToolsFromMcpDefinitions(registry.list(), {currentFinalAttempt: () => bridge});
+    if (installed.type !== 'function') throw new Error('Expected function');
+    const context = new RunContext();
+    const call = {type: 'function_call' as const, name: installed.name, callId: 'native-call', arguments: rawArguments};
+    expect(await installed.invoke(context, rawArguments, {toolCall: call})).toBe(AUTHORED_FINAL_SUBMISSION_PENDING_ACK);
+    expect(stage).toHaveBeenCalledWith({tool: installed, context, toolCall: call, parsedArguments: expected});
+    expect(handlerArgs).toEqual(expected);
+    expect(handlerArgs!.document).toBe((stage.mock.calls[0][0].parsedArguments as Record<string, unknown>).document);
+    expect(success).toHaveBeenCalledWith(invocation, {output: AUTHORED_FINAL_SUBMISSION_PENDING_ACK, arguments: handlerArgs});
+    expect(Object.is((handlerArgs!.document as {values: number[]}).values[1], Infinity)).toBe(true);
+    expect(Object.is((handlerArgs!.document as {values: number[]}).values[2], -0)).toBe(true);
   });
 
   it.each([false, true])('does not expose typed raw errors or treat extra values as a private bridge (bound=%s)', async bound => {

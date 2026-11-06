@@ -1,17 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2024-2026 Gracker (Chris)
 
-import {describe, expect, it, jest} from '@jest/globals';
+import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
+import {installCurrentRealmStructuredCloneForTest} from '../../../tests/helpers/openAiRuntimeFixture';
 import {Agent, OpenAIProvider, Runner, shellTool, tool,
   type FunctionToolResult, type RunContext} from '@openai/agents';
 import OpenAI from 'openai';
 import {z} from 'zod';
 import {compileAuthoredClaimDocument} from '../../agent/core/authoredClaimDocument';
+import {compileAuthoredClaimObject, type AuthoredClaimObjectResult} from '../../agent/core/authoredClaimObject';
+import {authoredClaimObjectSchema, type AuthoredClaimObjectInput} from '../../agent/core/authoredClaimObjectSchema';
+import {createJsonSchemaFromZodRawShape, normalizeRuntimeToolArgs, preserveRuntimeLiteralJson} from '../runtimeToolSpec';
+import {isDeepStrictEqual} from 'node:util';
+import {McpToolRegistry} from '../../agentv3/mcpToolRegistry';
+import {createOpenAIToolsFromMcpDefinitions} from '../engines/openai/openAiToolAdapter';
 import {__testing as openAiRuntimeTesting} from '../engines/openai/openAiRuntime';
 import {createOpenAiTypedFinalAttempt, createOpenAiTypedFinalWireCollector, OPENAI_TYPED_FINAL_PENDING_ACK,
   OPENAI_TYPED_FINAL_RAW_BYTES, type OpenAiTypedFinalWireObserver} from '../engines/openai/openAiTypedFinalAdmission';
 import {createAuthoredFinalSubmissionIssuer, readAuthoredFinalSubmission,
-  AUTHORED_CLAIM_DOCUMENT_COMPILER_VERSION} from '../authoredFinalSubmission';
+  AUTHORED_CLAIM_DOCUMENT_COMPILER_VERSION, revokeAuthoredFinalSubmissionIssuer} from '../authoredFinalSubmission';
 import type {AuthoredConclusionSubmission} from '../../services/security/conclusionProtocolProjection';
 
 /**
@@ -121,12 +128,12 @@ function probe(options: {
       observations.sdkArguments = details?.toolCall?.arguments ?? '';
       handlerEntered.resolve();
       const invocation = admission ? await admission.stageInvocation({tool: finalTool, context: _context,
-        toolCall: details?.toolCall}) : undefined;
+        toolCall: details?.toolCall, parsedArguments: args}) : undefined;
       handlerWorkEntered.resolve();
       await options.handlerGate;
       expect(args.documentJson).toBe(documentJson);
       if (admission && invocation && !options.skipPrivateSuccess) admission.markPrivateHandlerSuccess(invocation,
-        {output: OPENAI_TYPED_FINAL_PENDING_ACK, documentJson: options.handlerDocument ?? args.documentJson});
+        {output: OPENAI_TYPED_FINAL_PENDING_ACK, arguments: {documentJson: options.handlerDocument ?? args.documentJson}});
       return ack;
     }});
   if (issuer) admission = createOpenAiTypedFinalAttempt({finalTool, toolName: finalToolName, issuer, ownerBinding,
@@ -650,5 +657,465 @@ describe('actual typed-final attempt helper with installed SDK and shared issued
       other.revokeOwner();
       expect(() => other.readSubmission()).toThrow();
     } finally {await other.cleanup();}
+  });
+});
+
+/** Independent native wire fixture; P1 prototype and P2 actual bridge share only test data. */
+function nativeObjectFixture(): AuthoredClaimObjectInput {
+  return {representationVersion: 'authored_claim_document@2', referenceDictionary: [
+    {evidenceRefId: 'data:fixture', sourceRef: null, sourceToolCallId: null, artifactId: null,
+      sourceArtifactId: null, column: 'duration', rowIndex: 0, rowSelector: null, value: {kind: 'present', value: 10}},
+    {evidenceRefId: null, sourceRef: null, sourceToolCallId: null, artifactId: null,
+      sourceArtifactId: null, column: null, rowIndex: null, rowSelector: null, value: {kind: 'present', value: null}},
+    {evidenceRefId: null, sourceRef: null, sourceToolCallId: null, artifactId: null,
+      sourceArtifactId: null, column: null, rowIndex: null, rowSelector: [], value: {kind: 'absent'}},
+  ], semanticFrames: [{predicate: 'numeric.cell', polarity: 'affirmed', discourse: 'asserted', quantifier: 'one',
+    modality: 'certain', conditions: null, population: 'cited_rows'}], contract: {
+    mode: 'focused_answer', conclusions: null, clusters: null, evidenceChain: null, uncertainties: [], nextSteps: [],
+    relationProposals: null, sourceClaimBindings: null, metadata: null, claims: [{id: 'duration', conclusionId: null,
+      text: '10 ms', kind: 'numeric', references: [0], artifactRefs: null, relationRefs: null, supportLevel: null,
+      semantics: {frameIndex: 0, subjectRefs: [0], objectRefs: null, timeRangeNs: null,
+        numeric: {operator: 'eq', value: 10, unit: 'ms', presentation: null}}}],
+  }, bodyParts: ['{"literal":"keep"}', '[1,2]', '\n```json\n{"literal":true}\n```\n',
+    '<!-- perfetto-conclusion-contract literal -->', ' emoji: 😀 lone: \ud800 ', {claimText: 'duration'}]};
+}
+
+function nativeObjectProbe(options: {
+  productionBridge?: boolean;
+  literalSubtree?: boolean;
+  mutateHandler?: boolean;
+  deadlineAt?: () => number;
+  argumentsText?: string;
+  normalizeHandler?: boolean;
+  optionalNullControl?: boolean;
+  manualBinding?: boolean;
+  handlerGate?: Promise<void>;
+  consumerGate?: Promise<void>;
+  fetchGate?: Promise<void>;
+  otherGate?: Promise<void>;
+  guardrail?: 'input_reject' | 'output_rewrite';
+} = {}) {
+  const argumentsText = options.argumentsText ?? JSON.stringify({document: nativeObjectFixture()});
+  const documentSchema = authoredClaimObjectSchema.describe('Native object fixture');
+  const shape = {document: options.literalSubtree ? preserveRuntimeLiteralJson(documentSchema) : documentSchema,
+    ...(options.optionalNullControl ? {optionalSelector: z.string().optional()} : {})};
+  const schema = createJsonSchemaFromZodRawShape(shape);
+  const controller = new AbortController(), productController = new AbortController(), ready = deferred<NativeStream>();
+  void ready.promise.catch(() => undefined);
+  const collector = createOpenAiTypedFinalWireCollector();
+  const fetchEntered = deferred<void>(), stageEntered = deferred<void>(), handlerEntered = deferred<void>(), callbackEntered = deferred<void>(), otherEntered = deferred<void>();
+  const observations = {sdkArgs: undefined as unknown, handlerArgs: undefined as unknown, sdkRawArguments: '',
+    requestSchema: undefined as unknown, handlerCalls: 0, callbackCalls: 0, drained: false, consumerDrained: false,
+    compiled: undefined as AuthoredClaimObjectResult | undefined, admissionFailure: undefined as unknown};
+  const handler = async (args: unknown) => {
+    observations.handlerArgs = args; observations.handlerCalls++; handlerEntered.resolve();
+    await options.handlerGate;
+    if (options.mutateHandler) (args as {document: AuthoredClaimObjectInput}).document.bodyParts.push('handler mutation');
+    const record = args as Record<string, unknown>;
+    if (!record || typeof record !== 'object' || Array.isArray(record) || Object.keys(record).length !== 1 ||
+        !Object.prototype.hasOwnProperty.call(record, 'document')) throw new Error('prototype_outer_shape');
+    const result = compileAuthoredClaimObject(record.document);
+    observations.compiled = result;
+    if (result.status !== 'compiled') throw new Error(`prototype_projection:${result.code}`);
+    return OPENAI_TYPED_FINAL_PENDING_ACK;
+  };
+  let finalTool = tool({name: finalToolName, description: 'Local native-object feasibility fixture.',
+    parameters: schema as any, strict: true, errorFunction: null,
+    ...(options.guardrail === 'input_reject' ? {inputGuardrails: [{name: 'native-input-reject',
+      run: async () => ({behavior: {type: 'rejectContent' as const, message: 'fixture reject'}})}]} : {}),
+    ...(options.guardrail === 'output_rewrite' ? {outputGuardrails: [{name: 'native-output-rewrite',
+      run: async () => ({behavior: {type: 'rejectContent' as const, message: 'fixture rewritten ACK'}})}]} : {}),
+    execute: async (args, _context, details) => {
+      observations.sdkArgs = args;
+      observations.sdkRawArguments = details?.toolCall?.arguments ?? '';
+      return handler(options.normalizeHandler ? normalizeRuntimeToolArgs(args, shape) : args);
+    }});
+  const ownerBinding = {owner: {}, sessionId: 'native-session', runId: 'native-run', attemptId: 'native-attempt',
+    providerPin: 'native-pin', authorizationFingerprint: 'native-auth'};
+  let ownerCurrent = true, attemptCurrent = true;
+  const assertCurrent = () => {if (!ownerCurrent || productController.signal.aborted) throw new Error('owner revoked');};
+  const issuer = options.productionBridge ? createAuthoredFinalSubmissionIssuer({binding: ownerBinding,
+    representationVersion: 'authored_claim_document@2', assertCurrent,
+    assertAttemptCurrent: () => {if (!attemptCurrent) throw new Error('attempt ended');}}) : undefined;
+  let admission: ReturnType<typeof createOpenAiTypedFinalAttempt> | undefined;
+  let submission: AuthoredConclusionSubmission | undefined;
+  if (issuer) {
+    const registry = new McpToolRegistry();
+    registry.registerShared({name: finalToolName, role: 'final_candidate_submission', exposure: 'internal',
+      evidenceEffect: 'none', description: 'Actual adapter native object fixture', inputSchema: shape,
+      handler: async args => ({content: [{type: 'text', text: await handler(args)}]})});
+    const [installed] = createOpenAIToolsFromMcpDefinitions(registry.list(), {currentFinalAttempt: () => admission});
+    if (installed.type !== 'function') throw new Error('Expected function tool');
+    // Add fixture guardrails before installation without replacing the adapter's invoke or identity.
+    installed.inputGuardrails = finalTool.inputGuardrails;
+    installed.outputGuardrails = finalTool.outputGuardrails;
+    finalTool = installed;
+    admission = createOpenAiTypedFinalAttempt({finalTool, toolName: finalTool.name, issuer, ownerBinding,
+      representationVersion: 'authored_claim_document@2', signal: productController.signal, assertCurrent,
+      deadlineAt: options.deadlineAt ?? (() => Date.now() + 60_000)});
+    const actualStage = admission.stageInvocation;
+    admission.stageInvocation = call => {
+      stageEntered.resolve();
+      observations.sdkArgs = call.parsedArguments;
+      observations.sdkRawArguments = (call.toolCall as {arguments?: string})?.arguments ?? '';
+      return actualStage(call); // Observe the actual SDK values, never substitute parsed fixture data.
+    };
+  }
+  const otherTool = tool({name: 'other_fixture', description: 'Independent pending work.', parameters: z.object({}),
+    execute: async () => {otherEntered.resolve(); await options.otherGate; return 'finished';}});
+  const agent = new Agent<unknown, 'text'>({name: 'native-object-test-only', model: 'fixture-model', instructions: 'Fixture only.',
+    tools: [finalTool, ...(options.otherGate ? [otherTool] : [])], toolUseBehavior: async (context, results) => {
+      observations.callbackCalls++; callbackEntered.resolve();
+      if (admission) return admission.toolUseBehavior(context, results);
+      const stream = await ready.promise;
+      if (controller.signal.aborted) throw new Error('prototype_cancelled');
+      if (results.length !== 1) throw new Error('prototype_multiple_tools');
+      const receipt = collector.current();
+      if (!receipt || observations.sdkRawArguments !== receipt.rawArguments) throw new Error('prototype_raw_mismatch');
+      const wireValue: unknown = JSON.parse(receipt.rawArguments);
+      if (!isDeepStrictEqual(wireValue, observations.sdkArgs)) throw new Error('prototype_sdk_args_changed');
+      if (!isDeepStrictEqual(wireValue, observations.handlerArgs)) throw new Error('prototype_handler_args_changed');
+      const result = results[0];
+      if (result.type !== 'function_output' || result.tool !== finalTool || result.output !== OPENAI_TYPED_FINAL_PENDING_ACK ||
+        observations.handlerCalls !== 1 || observations.compiled?.status !== 'compiled') throw new Error('prototype_handler_ack');
+      expect(context).toBe(stream.state._context);
+      expect(stream.state._lastTurnResponse?.responseId).toBe(receipt.responseId);
+      expect(stream.state._lastProcessedResponse?.functions).toHaveLength(1);
+      expect(stream.state._pendingAgentToolRuns.size).toBe(0);
+      return {isFinalOutput: true, isInterrupted: undefined, finalOutput: observations.compiled.body};
+    }});
+  const fetcher = jest.fn<typeof fetch>(async (_input, init) => {
+    const request = JSON.parse(String(init?.body));
+    observations.requestSchema = request.tools[0].function.parameters;
+    fetchEntered.resolve(); await options.fetchGate;
+    if (options.otherGate) return chatResponse(argumentsText, {}, true);
+    const pieces: string[] = [];
+    for (let offset = 0; offset < argumentsText.length; offset += 4096) pieces.push(argumentsText.slice(offset, offset + 4096));
+    return streamedArgumentResponse(pieces);
+  });
+  const actualFetch = openAiRuntimeTesting.createOpenAiTerminalFetch(fetcher, () => undefined, admission?.wireObserver ?? collector);
+  const runner = new Runner({modelProvider: new OpenAIProvider({useResponses: false,
+    openAIClient: new OpenAI({apiKey: 'test-only', baseURL: 'https://fixture.invalid/v1', maxRetries: 0, fetch: actualFetch})}),
+    tracingDisabled: true, traceIncludeSensitiveData: false, toolExecution: {maxFunctionToolConcurrency: 1}});
+  const started = startNativeRun(runner, agent, controller.signal);
+  let native: NativeStream | undefined;
+  let admissionBound = false;
+  const bind = (stream: NativeStream) => {
+    ready.resolve(stream);
+    if (admission && !admissionBound) {admissionBound = true; admission.bindStream(stream);}
+  };
+  const tracked = started.then(stream => {
+    native = stream;
+    if (!options.manualBinding) bind(stream);
+    const getter = (stream as NativeStream & {_getStreamLoopPromise?: () => unknown})._getStreamLoopPromise;
+    if (typeof getter !== 'function') throw new Error('Missing actual SDK drain getter');
+    const drain = Promise.resolve(getter.call(stream)).then(() => {observations.drained = true;});
+    const consumer = (async () => {
+      try {for await (const _event of stream) { /* Consume the real stream, including its rejection. */ } await stream.completed;}
+      finally {await options.consumerGate; observations.consumerDrained = true;}
+    })();
+    void consumer.catch(() => undefined); void stream.completed.catch(() => undefined);
+    return {stream, drain, consumer};
+  }, error => {ready.reject(error); admission?.failStartup(); throw error;});
+  void tracked.catch(() => undefined);
+  const admissionOutcome = admission ? tracked.then(async state => {
+    try {submission = await admission!.settleAfterDrain(state.consumer);}
+    catch (error) {observations.admissionFailure = error;}
+  }) : Promise.resolve();
+  void admissionOutcome.catch(() => undefined);
+  return {argumentsText, collector, observations, started, tracked, bind, controller,
+    submission: () => submission, admission: () => admission,
+    readSubmission: () => readAuthoredFinalSubmission(submission!.submission, submission!.input),
+    cancel: () => {productController.abort(); controller.abort();},
+    revokeOwner: () => {ownerCurrent = false;}, clearAttempt: () => {attemptCurrent = false;},
+    fetchEntered, stageEntered, handlerEntered, callbackEntered, otherEntered, fetcher,
+    settle: async () => {const state = await tracked;
+      await Promise.allSettled([state.drain, state.consumer, state.stream.completed]); await admissionOutcome; return state.stream;},
+    cleanup: async () => {controller.abort(); if (native) bind(native);
+      const state = await tracked.catch(() => undefined);
+      if (state) await Promise.allSettled([state.drain, state.consumer, state.stream.completed]);
+      await admissionOutcome; if (issuer) revokeAuthoredFinalSubmissionIssuer(issuer);},
+  };
+}
+
+describe('S2 P1 native-object installed-SDK feasibility (no product issuer)', () => {
+  it('sends the complete converted schema and preserves required nulls, literals and all three material views', async () => {
+    const h = nativeObjectProbe();
+    try {
+      const stream = await h.settle();
+      expect(stream.error).toBeNull();
+      expect(h.observations.sdkRawArguments).toBe(h.argumentsText);
+      expect(h.collector.current()?.rawArguments).toBe(h.argumentsText);
+      const expected = JSON.parse(h.argumentsText);
+      expect(h.observations.sdkArgs).toEqual(expected); expect(h.observations.handlerArgs).toEqual(expected);
+      expect(expected.document.referenceDictionary[1].value).toEqual({kind: 'present', value: null});
+      expect(expected.document.referenceDictionary[2].value).toEqual({kind: 'absent'});
+      expect(h.observations.compiled?.status).toBe('compiled');
+      if (h.observations.compiled?.status !== 'compiled') throw new Error('Expected local compiler result');
+      expect(stream.finalOutput).toBe(h.observations.compiled.body);
+      expect(h.observations.compiled.privateNativeDocument).toEqual(expected.document);
+      const walk = (entry: unknown) => {
+        if (!entry || typeof entry !== 'object') return;
+        if (Array.isArray(entry)) {entry.forEach(walk); return;}
+        const schema = entry as Record<string, unknown>;
+        if (schema.type === 'object') {
+          expect(schema.additionalProperties).toBe(false);
+          expect(schema.required).toEqual(Object.keys(schema.properties as object));
+        }
+        expect(schema).not.toHaveProperty('oneOf');
+        Object.values(schema).forEach(walk);
+      };
+      walk(h.observations.requestSchema);
+      expect(h.observations.requestSchema).toMatchObject({type: 'object', required: ['document']});
+      expect(h.observations.drained).toBe(true); expect(h.observations.consumerDrained).toBe(true);
+      expect(h.fetcher).toHaveBeenCalledTimes(1); expect(h.observations.handlerCalls).toBe(1);
+      console.info('S2 P1 native schema observation', {schemaUtf8Bytes: Buffer.byteLength(JSON.stringify(h.observations.requestSchema)),
+        rawArgumentsUtf8Bytes: Buffer.byteLength(h.argumentsText)});
+    } finally {await h.cleanup();}
+  });
+
+  it.each(['1e999', '-0'] as const)('preserves raw numeric spelling %s through actual SDK and pure projection', async literal => {
+    const finiteWire = JSON.stringify({document: nativeObjectFixture()});
+    const argumentsText = finiteWire.replace('"numeric":{"operator":"eq","value":10', `"numeric":{"operator":"eq","value":${literal}`);
+    expect(argumentsText).not.toBe(finiteWire); // Numeric wire text is never produced by stringify of Infinity/-0.
+    const h = nativeObjectProbe({argumentsText});
+    try {
+      const stream = await h.settle(); expect(stream.error).toBeNull();
+      const actual = (h.observations.handlerArgs as {document: AuthoredClaimObjectInput}).document;
+      const expected = literal === '1e999' ? Infinity : -0;
+      expect(Object.is(actual.contract.claims[0].semantics!.numeric!.value, expected)).toBe(true);
+      expect(h.observations.sdkRawArguments).toBe(argumentsText);
+      const compiled = h.observations.compiled;
+      if (compiled?.status !== 'compiled') throw new Error('Expected preserved semantic value');
+      const rawClaim = (compiled.rawCanonicalPayload.claims as Array<{semantics: {numeric: {value: unknown}}}>)[0];
+      expect(Object.is(rawClaim.semantics.numeric.value, expected)).toBe(true);
+      if (literal === '1e999') expect(compiled.canonicalParse.status).not.toBe('valid');
+      expect(actual.referenceDictionary[0].value).toEqual({kind: 'present', value: 10});
+      expect(h.fetcher).toHaveBeenCalledTimes(1);
+    } finally {await h.cleanup();}
+  });
+
+  it('can await real stream binding in the native-object callback without deadlock', async () => {
+    const h = nativeObjectProbe({manualBinding: true});
+    try {
+      await h.callbackEntered.promise;
+      const stream = await h.started; expect(h.observations.drained).toBe(false);
+      h.bind(stream); await h.settle();
+      expect(stream.error).toBeNull(); expect(stream.state._currentStep?.type).toBe('next_step_final_output');
+      expect(stream.state._currentTurnInProgress).toBe(false);
+    } finally {await h.cleanup();}
+  });
+
+  it('does not equate visible finalOutput/native drain with a completed caller consumer', async () => {
+    const gate = deferred<void>(), h = nativeObjectProbe({consumerGate: gate.promise});
+    let settled = false;
+    const work = h.settle().then(stream => {settled = true; return stream;});
+    try {
+      const state = await h.tracked; await state.stream.completed; await state.drain; await boundary();
+      expect(state.stream.finalOutput).toBeTruthy(); expect(h.observations.drained).toBe(true);
+      expect(h.observations.consumerDrained).toBe(false); expect(settled).toBe(false);
+      gate.resolve(); await work; expect(h.observations.consumerDrained).toBe(true);
+    } finally {gate.resolve(); await h.cleanup();}
+  });
+
+  it('waits for another actual function and rejects the ambiguous multi-tool final', async () => {
+    const gate = deferred<void>(), h = nativeObjectProbe({otherGate: gate.promise});
+    try {
+      await h.otherEntered.promise; expect(h.observations.callbackCalls).toBe(0); expect(h.observations.drained).toBe(false);
+      gate.resolve(); const stream = await h.settle();
+      expect(stream.error).toMatchObject({message: 'prototype_multiple_tools'});
+      expect(h.collector.current()).toBeUndefined(); expect(h.observations.drained).toBe(true);
+    } finally {gate.resolve(); await h.cleanup();}
+  });
+
+  it('detects actual SDK raw argument repair instead of accepting a normalized outer object', async () => {
+    const raw = JSON.stringify({document: nativeObjectFixture()});
+    const h = nativeObjectProbe({argumentsText: '{}' + raw});
+    try {
+      const stream = await h.settle();
+      expect(h.observations.sdkRawArguments).toBe(raw); expect(h.collector.current()?.rawArguments).toBe('{}' + raw);
+      expect(stream.error).toMatchObject({message: 'prototype_raw_mismatch'});
+    } finally {await h.cleanup();}
+  });
+
+  it('demonstrates optional-null SDK stripping on a deliberately unsafe control schema', async () => {
+    const h = nativeObjectProbe({optionalNullControl: true,
+      argumentsText: JSON.stringify({document: nativeObjectFixture(), optionalSelector: null})});
+    try {
+      const stream = await h.settle();
+      expect(h.observations.sdkArgs).not.toHaveProperty('optionalSelector');
+      expect(JSON.parse(h.collector.current()!.rawArguments)).toHaveProperty('optionalSelector', null);
+      expect(stream.error).toMatchObject({message: 'prototype_sdk_args_changed'});
+    } finally {await h.cleanup();}
+  });
+
+  it.each(['input_reject', 'output_rewrite'] as const)('keeps actual %s distinct from handler plus exact ACK success', async guardrail => {
+    const h = nativeObjectProbe({guardrail});
+    try {
+      const stream = await h.settle();
+      expect(h.observations.handlerCalls).toBe(guardrail === 'input_reject' ? 0 : 1);
+      expect(stream.error).toBeTruthy(); expect(stream.state._currentStep?.type).not.toBe('next_step_final_output');
+      expect(h.fetcher).toHaveBeenCalledTimes(1);
+    } finally {await h.cleanup();}
+  });
+
+  it.each(['fetch', 'handler'] as const)('drains actual native-object %s work which ignores cancellation', async held => {
+    const gate = deferred<void>(), h = nativeObjectProbe(held === 'fetch' ? {fetchGate: gate.promise} : {handlerGate: gate.promise});
+    try {
+      await (held === 'fetch' ? h.fetchEntered.promise : h.handlerEntered.promise);
+      const stream = await h.started; h.controller.abort(); await stream.completed; await boundary();
+      expect(stream.cancelled).toBe(true); expect(h.observations.drained).toBe(false);
+      gate.resolve(); await h.settle(); expect(h.observations.drained).toBe(true);
+      expect(stream.state._currentStep?.type).not.toBe('next_step_final_output');
+    } finally {gate.resolve(); await h.cleanup();}
+  });
+
+  it.each(['version', 'extra_key', 'frame_index', 'nodes', 'expanded'] as const)('retains the local compiler refusal for actual SDK object input: %s', async kind => {
+    const document = nativeObjectFixture();
+    let argumentsText: string;
+    if (kind === 'frame_index') document.contract.claims[0].semantics!.frameIndex = 999;
+    if (kind === 'nodes') document.semanticFrames[0].conditions = Array(10_001).fill('condition');
+    if (kind === 'expanded') {
+      document.semanticFrames[0].conditions = ['x'.repeat(600_000)];
+      document.contract.claims.push({...document.contract.claims[0], id: 'second'});
+    }
+    if (kind === 'version') argumentsText = JSON.stringify({document: {...document, representationVersion: 'unknown@999'}});
+    else if (kind === 'extra_key') argumentsText = JSON.stringify({document: {...document, extra: 'unallowed'}});
+    else argumentsText = JSON.stringify({document});
+    const expected = {version: 'unsupported_version', extra_key: 'invalid_structure', frame_index: 'invalid_frame_index',
+      nodes: 'raw_nodes_exceeded', expanded: 'expanded_bytes_exceeded'}[kind];
+    const h = nativeObjectProbe({argumentsText});
+    try {
+      const stream = await h.settle();
+      expect(h.observations.handlerCalls).toBe(1);
+      expect(h.observations.compiled).toMatchObject({status: 'projection_failed', code: expected});
+      expect(stream.error).toMatchObject({message: `Failed to run function tools: Error: prototype_projection:${expected}`,
+        error: {message: `prototype_projection:${expected}`}});
+      expect(stream.state._currentStep?.type).not.toBe('next_step_final_output');
+      expect(h.fetcher).toHaveBeenCalledTimes(1);
+    } finally {await h.cleanup();}
+  });
+
+  // P1's retained RED log proves this defect; unmarked legacy behavior remains an explicit unsafe control.
+  it('retains the unmarked normalizer counterexample without changing ordinary tool behavior', async () => {
+    const h = nativeObjectProbe({normalizeHandler: true});
+    try {
+      await h.settle();
+      expect(h.observations.sdkArgs).toEqual(JSON.parse(h.argumentsText));
+      expect(h.observations.handlerArgs).not.toEqual(h.observations.sdkArgs);
+      expect(h.observations.compiled?.status).toBe('projection_failed');
+    } finally {await h.cleanup();}
+  });
+});
+
+
+describe('S2 P2 registry/adapter/native SDK/issued object bridge', () => {
+  let restoreClone: (() => void) | undefined;
+  beforeEach(() => {restoreClone = installCurrentRealmStructuredCloneForTest();});
+  afterEach(() => {restoreClone?.(); restoreClone = undefined;});
+
+  it('preserves the marked object through all three views and issues only an actual drained native final', async () => {
+    const h = nativeObjectProbe({productionBridge: true, literalSubtree: true});
+    try {
+      const stream = await h.settle(); expect(stream.error).toBeNull();
+      expect(h.observations.admissionFailure).toBeUndefined();
+      expect(h.observations.sdkRawArguments).toBe(h.argumentsText);
+      expect(h.observations.sdkArgs).toEqual(JSON.parse(h.argumentsText));
+      expect(h.observations.handlerArgs).toEqual(h.observations.sdkArgs);
+      const issued = h.readSubmission();
+      expect(issued.binding.representationVersion).toBe('authored_claim_document@2');
+      expect(issued).not.toHaveProperty('documentJson');
+      expect(issued.rawArguments).toBe(h.argumentsText);
+      expect(issued.compiled.body).toBe(stream.finalOutput);
+      expect(issued.compiled.body).toContain('{"literal":"keep"}');
+      expect(issued.compiled.body).toContain('[1,2]');
+      expect(h.observations.drained).toBe(true); expect(h.observations.consumerDrained).toBe(true);
+      expect(h.fetcher).toHaveBeenCalledTimes(1); expect(h.observations.handlerCalls).toBe(1);
+      h.clearAttempt(); h.controller.abort(); expect(h.readSubmission()).toBe(issued);
+      h.revokeOwner(); expect(() => h.readSubmission()).toThrow('inactive');
+    } finally {await h.cleanup();}
+  });
+
+  it.each(['1e999', '-0'])('issues original native %s without repairing its canonical value', async literal => {
+    const finite = JSON.stringify({document: nativeObjectFixture()});
+    const argumentsText = finite.replace('"numeric":{"operator":"eq","value":10', `"numeric":{"operator":"eq","value":${literal}`);
+    const h = nativeObjectProbe({productionBridge: true, literalSubtree: true, argumentsText});
+    try {
+      const stream = await h.settle(); expect(stream.error).toBeNull();
+      const issued = h.readSubmission();
+      const rawClaim = (issued.compiled.rawCanonicalPayload.claims as Array<{semantics: {numeric: {value: unknown}}}>)[0];
+      expect(Object.is(rawClaim.semantics.numeric.value, literal === '1e999' ? Infinity : -0)).toBe(true);
+      expect(issued.rawArguments).toBe(argumentsText);
+      if (literal === '1e999') expect(issued.compiled.canonicalParse.status).not.toBe('valid');
+      expect(h.fetcher).toHaveBeenCalledTimes(1);
+    } finally {await h.cleanup();}
+  });
+
+  it.each(['unmarked', 'sdk_null_strip', 'handler_mutation', 'sdk_raw_repair', 'wrong_version', 'wrong_key', 'input_reject', 'output_rewrite'] as const)
+    ('refuses actual transport/material mismatch %s without a receipt or fallback', async failure => {
+      let argumentsText = JSON.stringify({document: nativeObjectFixture()});
+      if (failure === 'sdk_null_strip') argumentsText = JSON.stringify({document: nativeObjectFixture(), optionalSelector: null});
+      if (failure === 'sdk_raw_repair') argumentsText = '{}' + argumentsText;
+      if (failure === 'wrong_version') argumentsText = argumentsText.replace('authored_claim_document@2', 'authored_claim_document@1');
+      if (failure === 'wrong_key') argumentsText = JSON.stringify({documentJson});
+      const h = nativeObjectProbe({productionBridge: true, literalSubtree: failure !== 'unmarked', argumentsText,
+        optionalNullControl: failure === 'sdk_null_strip', mutateHandler: failure === 'handler_mutation',
+        ...(failure === 'input_reject' || failure === 'output_rewrite' ? {guardrail: failure} : {})});
+      try {
+        const stream = await h.settle();
+        expect(h.submission()).toBeUndefined(); expect(h.observations.admissionFailure).toBeDefined();
+        expect(stream.state._currentStep?.type).not.toBe('next_step_final_output');
+        expect(h.fetcher).toHaveBeenCalledTimes(1);
+        if (failure === 'sdk_null_strip') expect(h.observations.sdkArgs).not.toHaveProperty('optionalSelector');
+        if (failure === 'sdk_raw_repair') expect(h.observations.sdkRawArguments).not.toBe(argumentsText);
+        if (failure === 'handler_mutation') expect(h.admission()?.diagnostic()).toMatchObject({admissionFailure: 'handler_failed'});
+      } finally {await h.cleanup();}
+    });
+
+  it('waits for real stream binding during the adapter stage without circular SDK dependency', async () => {
+    const h = nativeObjectProbe({productionBridge: true, literalSubtree: true, manualBinding: true});
+    try {
+      await h.stageEntered.promise;
+      const stream = await h.started;
+      expect(h.observations.handlerCalls).toBe(0); expect(h.submission()).toBeUndefined();
+      h.bind(stream); await h.settle();
+      expect(stream.error).toBeNull(); expect(h.submission()).toBeDefined();
+      expect(h.fetcher).toHaveBeenCalledTimes(1);
+    } finally {await h.cleanup();}
+  });
+
+  it('retains the issued body behind the real consumer-drain gate even after visible native completion', async () => {
+    const gate = deferred<void>(), h = nativeObjectProbe({productionBridge: true, literalSubtree: true, consumerGate: gate.promise});
+    try {
+      const state = await h.tracked; await state.stream.completed; await state.drain; await boundary();
+      expect(state.stream.finalOutput).toBeTruthy(); expect(h.submission()).toBeUndefined();
+      expect(h.observations.consumerDrained).toBe(false);
+      gate.resolve(); await h.settle(); expect(h.submission()).toBeDefined();
+    } finally {gate.resolve(); await h.cleanup();}
+  });
+
+  it.each(['cancel', 'owner', 'deadline'])('rejects %s during actual handler work and drains without a second dispatch', async reason => {
+    const gate = deferred<void>(); let deadline = Date.now() + 60_000;
+    const h = nativeObjectProbe({productionBridge: true, literalSubtree: true, handlerGate: gate.promise, deadlineAt: () => deadline});
+    try {
+      await h.handlerEntered.promise;
+      if (reason === 'cancel') h.cancel();
+      if (reason === 'owner') h.revokeOwner();
+      if (reason === 'deadline') deadline = 0;
+      await boundary(); expect(h.submission()).toBeUndefined(); expect(h.observations.drained).toBe(false);
+      gate.resolve(); await h.settle();
+      expect(h.submission()).toBeUndefined(); expect(h.observations.drained).toBe(true);
+      expect(h.fetcher).toHaveBeenCalledTimes(1);
+    } finally {gate.resolve(); await h.cleanup();}
+  });
+
+  it('waits for another actual tool before rejecting the non-unique final response', async () => {
+    const gate = deferred<void>(), h = nativeObjectProbe({productionBridge: true, literalSubtree: true, otherGate: gate.promise});
+    try {
+      await h.otherEntered.promise; expect(h.submission()).toBeUndefined(); expect(h.observations.drained).toBe(false);
+      gate.resolve(); await h.settle(); expect(h.submission()).toBeUndefined();
+      expect(h.admission()?.diagnostic()).toMatchObject({admissionFailure: 'wire_ineligible'});
+      expect(h.fetcher).toHaveBeenCalledTimes(1);
+    } finally {gate.resolve(); await h.cleanup();}
   });
 });

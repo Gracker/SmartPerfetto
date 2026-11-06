@@ -122,7 +122,7 @@ interface CurrentAnalysisDeliveryContext {
   outputOrigin?: AnalysisOutputOrigin;
   /** Actual final-role main dispatch only; requested configuration alone never sets this. */
   finalSubmission?: {
-    mode: 'authored_claim_document_v1';
+    mode: 'authored_claim_document_v1' | 'authored_claim_document_v2';
     outcome: 'submitted' | 'missing_submission' | 'transport_failure';
   };
   turnIntent?: AnalysisTurnIntent;

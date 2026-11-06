@@ -1,19 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2024-2026 Gracker (Chris)
 
-import {describe, expect, it} from '@jest/globals';
+import {afterEach, beforeEach, describe, expect, it} from '@jest/globals';
+import {installCurrentRealmStructuredCloneForTest} from '../../../tests/helpers/openAiRuntimeFixture';
 import {AUTHORED_CLAIM_DOCUMENT_VERSION, compileAuthoredClaimDocument} from '../../agent/core/authoredClaimDocument';
+import {AUTHORED_CLAIM_OBJECT_VERSION, compileAuthoredClaimObject} from '../../agent/core/authoredClaimObject';
 import {CONCLUSION_AUTHORING_LIMITS} from '../../agent/core/conclusionAuthoring';
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
 import {
   AUTHORED_CLAIM_DOCUMENT_COMPILER_VERSION,
+  AUTHORED_CLAIM_OBJECT_COMPILER_VERSION,
   claimAuthoredFinalSubmission,
   createAuthoredFinalSubmissionIssuer,
   issueAuthoredFinalSubmission,
   readAuthoredFinalSubmission,
   revokeAuthoredFinalSubmission,
   revokeAuthoredFinalSubmissionIssuer,
-  type AuthoredFinalSubmissionReadInput,
+  type AuthoredFinalSubmissionV1ReadInput,
+  type AuthoredFinalSubmissionV2ReadInput,
 } from '../authoredFinalSubmission';
 
 function rawDocument(text = 'Authored text.'): string {
@@ -36,7 +40,7 @@ function fixture(documentJson = rawDocument(), rawArguments = JSON.stringify({do
     assertAttemptCurrent: () => {if (!owner.attemptActive) throw new Error('PRIVATE_ATTEMPT_CANARY');},
     assertCurrent: () => {if (!owner.active) throw new Error('PRIVATE_RUN_CANARY');}});
   const input = {dispatchOrdinal: 4, responseId: 'response', callId: 'call', rawArguments, documentJson, compiled};
-  const read: AuthoredFinalSubmissionReadInput = {binding: {...binding, dispatchOrdinal: 4, responseId: 'response', callId: 'call',
+  const read: AuthoredFinalSubmissionV1ReadInput = {binding: {...binding, dispatchOrdinal: 4, responseId: 'response', callId: 'call',
     representationVersion: AUTHORED_CLAIM_DOCUMENT_VERSION, compilerContractVersion: AUTHORED_CLAIM_DOCUMENT_COMPILER_VERSION},
     rawArguments, documentJson, body: compiled.body, rawCanonicalPayload: structuredClone(compiled.rawCanonicalPayload)};
   return {owner, binding, issuer, input, read};
@@ -307,4 +311,179 @@ describe('submission handoff and revocation lifetime', () => {
     expect(() => createAuthoredFinalSubmissionIssuer({binding: f.binding,
       assertAttemptCurrent: true, assertCurrent: true} as any)).toThrow('authored_final_submission_invalid_binding');
   });
+});
+
+
+function nativeFixture(numberLiteral = '7') {
+  // Raw number spelling is intentionally not round-tripped through JSON.stringify.
+  const rawArguments = `{"document":{"representationVersion":"authored_claim_document@2",
+    "referenceDictionary":[],"semanticFrames":[{"predicate":"numeric.cell","polarity":"affirmed",
+    "discourse":"asserted","quantifier":"one","modality":"certain","conditions":null,"population":"cited_rows"}],
+    "contract":{"mode":"focused_answer","conclusions":null,"clusters":null,"evidenceChain":null,
+    "uncertainties":null,"nextSteps":null,"relationProposals":null,"sourceClaimBindings":null,"metadata":null,
+    "claims":[{"id":"number","conclusionId":null,"text":"Original value","kind":"numeric","references":[],
+    "artifactRefs":null,"relationRefs":null,"supportLevel":null,"semantics":{"frameIndex":0,"subjectRefs":null,
+    "objectRefs":null,"timeRangeNs":null,"numeric":{"operator":"eq","value":${numberLiteral},"unit":"ms","presentation":null}}}]},
+    "bodyParts":["Original literal ",{"claimText":"number"}]}}`;
+  const nativeDocument = JSON.parse(rawArguments).document;
+  const compiled = compileAuthoredClaimObject(nativeDocument);
+  if (compiled.status !== 'compiled') throw new Error('Native fixture must compile');
+  const owner = {active: true, attemptActive: true};
+  const binding = {owner, sessionId: 'native-session', runId: 'native-run', attemptId: 'native-attempt',
+    providerPin: 'native-pin', authorizationFingerprint: 'native-auth'};
+  const issuer = createAuthoredFinalSubmissionIssuer({binding, representationVersion: AUTHORED_CLAIM_OBJECT_VERSION,
+    assertCurrent: () => {if (!owner.active) throw new Error('closed');},
+    assertAttemptCurrent: () => {if (!owner.attemptActive) throw new Error('closed');}});
+  const dispatch = {dispatchOrdinal: 1, responseId: 'native-response', callId: 'native-call'};
+  const input = {...dispatch, rawArguments, nativeDocument, compiled};
+  const read: AuthoredFinalSubmissionV2ReadInput = {binding: {...binding, ...dispatch,
+    representationVersion: AUTHORED_CLAIM_OBJECT_VERSION, compilerContractVersion: AUTHORED_CLAIM_OBJECT_COMPILER_VERSION},
+    rawArguments, nativeDocument: structuredClone(nativeDocument), body: compiled.body, rawCanonicalPayload: structuredClone(compiled.rawCanonicalPayload)};
+  return {owner, issuer, input, read, binding};
+}
+
+describe('versioned native-object authored snapshots', () => {
+  let restoreClone: (() => void) | undefined;
+  beforeEach(() => {restoreClone = installCurrentRealmStructuredCloneForTest();});
+  afterEach(() => {restoreClone?.(); restoreClone = undefined;});
+
+  it.each(['7', '1e999', '-0'])('retains original native IR and canonical value %s without a fake string document', literal => {
+    const f = nativeFixture(literal), token = issueAuthoredFinalSubmission(f.issuer, f.input);
+    const snapshot = readAuthoredFinalSubmission(token, f.read);
+    assertFrozen(snapshot);
+    expect(snapshot).not.toHaveProperty('documentJson');
+    expect(snapshot.compiled).not.toHaveProperty('privateRawDocument');
+    expect(Object.keys(snapshot.hashes).sort()).toEqual(['bodyHash', 'rawArgumentsHash', 'rawCanonicalPayloadHash']);
+    expect(snapshot.rawArguments).toBe(f.input.rawArguments);
+    expect(snapshot.nativeDocument).toEqual(f.input.nativeDocument);
+    expect(snapshot.nativeDocument).toBe(snapshot.compiled.privateNativeDocument);
+    const value = (snapshot.compiled.rawCanonicalPayload.claims as Array<{semantics: {numeric: {value: number}}}>)[0].semantics.numeric.value;
+    expect(Object.is(value, literal === '1e999' ? Infinity : Number(literal))).toBe(true);
+    if (literal === '1e999') expect(snapshot.compiled.canonicalParse.status).not.toBe('valid');
+    f.owner.attemptActive = false;
+    const fromIssued = {...f.read, nativeDocument: snapshot.nativeDocument, rawCanonicalPayload: snapshot.compiled.rawCanonicalPayload};
+    expect(readAuthoredFinalSubmission(token, fromIssued)).toBe(snapshot);
+    f.input.nativeDocument.bodyParts.push('later mutation');
+    expect(snapshot.compiled.body).toBe(f.read.body);
+    expect(() => readAuthoredFinalSubmission(token, {...f.read, nativeDocument: structuredClone(f.input.nativeDocument)})).toThrow('mismatch');
+    f.owner.active = false;
+    expect(() => readAuthoredFinalSubmission(token, fromIssued)).toThrow('inactive');
+  });
+
+  it.each(['raw', 'native', 'body', 'canonical', 'version', 'compiler', 'extra_hash', 'hybrid'])('rejects changed read binding: %s', field => {
+    const f = nativeFixture('-0'), token = issueAuthoredFinalSubmission(f.issuer, f.input);
+    const snapshot = readAuthoredFinalSubmission(token, f.read);
+    let read: AuthoredFinalSubmissionV2ReadInput = {...f.read};
+    if (field === 'raw') read.rawArguments += ' ';
+    if (field === 'native') read.nativeDocument = {...f.input.nativeDocument, bodyParts: ['different']};
+    if (field === 'body') read.body += ' ';
+    if (field === 'canonical') read.rawCanonicalPayload = {...snapshot.compiled.rawCanonicalPayload, claims: []};
+    if (field === 'version') read = {...read, binding: {...read.binding, representationVersion: 'authored_claim_document@1'}} as unknown as AuthoredFinalSubmissionV2ReadInput;
+    if (field === 'compiler') read = {...read, binding: {...read.binding, compilerContractVersion: 'authored_claim_document_compiler@1'}} as unknown as AuthoredFinalSubmissionV2ReadInput;
+    if (field === 'extra_hash') read.hashes = {...snapshot.hashes, documentJsonHash: 'not-native'} as typeof read.hashes;
+    if (field === 'hybrid') read = {...read, documentJson: '{}'} as AuthoredFinalSubmissionV2ReadInput;
+    expect(() => readAuthoredFinalSubmission(token, read)).toThrow('mismatch');
+  });
+
+  it.each(['v1_issuer', 'v1_material', 'hybrid', 'native_changed', 'compiled_changed'])('refuses wrong issued representation: %s', change => {
+    const f = nativeFixture();
+    let issuer = f.issuer, input: Parameters<typeof issueAuthoredFinalSubmission>[1] = f.input;
+    if (change === 'v1_issuer') issuer = fixture().issuer;
+    if (change === 'v1_material') input = fixture().input;
+    if (change === 'hybrid') input = {...f.input, documentJson: '{}'};
+    if (change === 'native_changed') input = {...f.input, nativeDocument: {...f.input.nativeDocument, bodyParts: ['changed']}};
+    if (change === 'compiled_changed') input = {...f.input, compiled: {...f.input.compiled, body: 'changed'}};
+    expect(() => issueAuthoredFinalSubmission(issuer, input)).toThrow('invalid_input');
+  });
+
+  it.each(['proxy', 'accessor', 'cycle'])('rejects hostile native material before reading values: %s', kind => {
+    const f = nativeFixture(); let reads = 0;
+    let nativeDocument: unknown;
+    if (kind === 'proxy') nativeDocument = new Proxy(f.input.nativeDocument, {ownKeys: () => {reads++; throw new Error('private');}});
+    if (kind === 'accessor') nativeDocument = {get representationVersion() {reads++; throw new Error('private');}};
+    if (kind === 'cycle') {const value: Record<string, unknown> = {}; value.self = value; nativeDocument = value;}
+    expect(() => issueAuthoredFinalSubmission(f.issuer, {...f.input, nativeDocument})).toThrow('invalid_input');
+    expect(reads).toBe(0);
+  });
+
+  it('does not accept a JSON clone that erases invalid numbers or a serialized token', () => {
+    const f = nativeFixture('1e999'), token = issueAuthoredFinalSubmission(f.issuer, f.input);
+    const snapshot = readAuthoredFinalSubmission(token, f.read);
+    expect(() => readAuthoredFinalSubmission(token, {...f.read, nativeDocument: JSON.parse(JSON.stringify(f.input.nativeDocument))})).toThrow('mismatch');
+    expect(() => readAuthoredFinalSubmission(JSON.parse(JSON.stringify(token)), f.read)).toThrow('invalid');
+    claimAuthoredFinalSubmission(token);
+    expect(() => claimAuthoredFinalSubmission(token)).toThrow('already_claimed');
+    revokeAuthoredFinalSubmission(token);
+    expect(() => readAuthoredFinalSubmission(token, {...f.read, nativeDocument: snapshot.nativeDocument})).toThrow('invalid');
+  });
+});
+
+
+describe('native read preflight before strict equality', () => {
+  let restoreClone: (() => void) | undefined;
+  beforeEach(() => {restoreClone = installCurrentRealmStructuredCloneForTest();});
+  afterEach(() => {restoreClone?.(); restoreClone = undefined;});
+
+  it.each(['root_getter', 'nested_getter', 'root_proxy', 'nested_proxy', 'revoked_proxy'] as const)
+    ('rejects an equal %s without executing caller behavior', kind => {
+      const f = nativeFixture(), token = issueAuthoredFinalSubmission(f.issuer, f.input);
+      const snapshot = readAuthoredFinalSubmission(token, f.read);
+      const clone = structuredClone(snapshot.nativeDocument) as Record<string, unknown>;
+      let executions = 0;
+      const proxy = (target: object) => new Proxy(target, {
+        get: (target, key, receiver) => {executions++; return Reflect.get(target, key, receiver);},
+        ownKeys: target => {executions++; return Reflect.ownKeys(target);},
+        getPrototypeOf: target => {executions++; return Reflect.getPrototypeOf(target);},
+      });
+      let nativeDocument: unknown = clone;
+      if (kind === 'root_getter') {
+        const original = clone.representationVersion;
+        Object.defineProperty(clone, 'representationVersion', {enumerable: true, get() {executions++; return original;}});
+      }
+      if (kind === 'nested_getter') {
+        const target = clone.contract as Record<string, unknown>, original = target.mode;
+        Object.defineProperty(target, 'mode', {enumerable: true, get() {executions++; return original;}});
+      }
+      if (kind === 'root_proxy') nativeDocument = proxy(clone);
+      if (kind === 'nested_proxy') clone.contract = proxy(clone.contract as object);
+      if (kind === 'revoked_proxy') {const revoked = Proxy.revocable(clone, {}); revoked.revoke(); nativeDocument = revoked.proxy;}
+      let failure: unknown;
+      try {readAuthoredFinalSubmission(token, {...f.read, nativeDocument});} catch (error) {failure = error;}
+      expect({failure: failure instanceof Error ? failure.message : undefined, executions})
+        .toEqual({failure: 'authored_final_submission_mismatch', executions: 0});
+    });
+
+  it('accepts the issued identity and a separate legal lossless clone', () => {
+    const f = nativeFixture('-0'), token = issueAuthoredFinalSubmission(f.issuer, f.input);
+    const snapshot = readAuthoredFinalSubmission(token, f.read);
+    expect(readAuthoredFinalSubmission(token, {...f.read, nativeDocument: snapshot.nativeDocument})).toBe(snapshot);
+    const clone = structuredClone(snapshot.nativeDocument);
+    expect(clone).not.toBe(snapshot.nativeDocument);
+    expect(readAuthoredFinalSubmission(token, {...f.read, nativeDocument: clone})).toBe(snapshot);
+  });
+});
+
+
+
+it('keeps the scoped clone fixture lossless, alias-preserving and reversible', () => {
+  const original = globalThis.structuredClone;
+  const shared = {values: [Infinity, -0, '\ud800']};
+  const source = {first: shared, second: shared, cycle: undefined as unknown, date: new Date(123)};
+  source.cycle = source;
+  const nativeDatePrototype = Object.getPrototypeOf(original(source.date));
+  const restore = installCurrentRealmStructuredCloneForTest();
+  try {
+    const copied = structuredClone(source);
+    expect(copied).not.toBe(source); expect(copied.first).not.toBe(shared);
+    expect(copied.first).toBe(copied.second); expect(copied.cycle).toBe(copied);
+    expect(Object.getPrototypeOf(copied)).toBe(Object.prototype);
+    expect(Object.getPrototypeOf(copied.first.values)).toBe(Array.prototype);
+    expect(Object.is(copied.first.values[0], Infinity)).toBe(true);
+    expect(Object.is(copied.first.values[1], -0)).toBe(true);
+    expect(copied.first.values[2]).toBe('\ud800');
+    expect(Object.getPrototypeOf(copied.date)).toBe(nativeDatePrototype);
+    expect(copied.date.getTime()).toBe(123);
+    expect(source.first).toBe(shared); expect(source.cycle).toBe(source);
+  } finally {restore();}
+  expect(globalThis.structuredClone).toBe(original);
 });

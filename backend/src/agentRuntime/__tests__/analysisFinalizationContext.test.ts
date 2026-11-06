@@ -58,6 +58,25 @@ describe('report review budget', () => {
   });
 });
 
+describe('native v2 finalization transport admission', () => {
+  it.each(['submitted', 'missing_submission', 'transport_failure'] as const)(
+    'keeps %s without an issued v2 binding from dispatching review', async outcome => {
+      const dispatch = jest.fn<NonNullable<RuntimeFinalizationContextInput['dispatchText']>>()
+        .mockResolvedValue({status: 'ok', text: '{}'});
+      const {result, input} = fixture({dispatchText: dispatch});
+      if (input.deliveryContext.entry === 'historical_restore') throw new Error('Unexpected fixture entry');
+      input.deliveryContext.finalSubmission = {mode: 'authored_claim_document_v2', outcome};
+      attachFinalizationContext(result, input);
+      const context = takeFinalizationContext(result)!;
+      try {
+        expect(context.hasSemanticTransport).toBe(false);
+        expect(await context.dispatchText(textInput(new AbortController().signal)))
+          .toEqual({status: 'unavailable', reason: 'invalid_configuration'});
+        expect(dispatch).not.toHaveBeenCalled();
+      } finally {context.dispose();}
+    });
+});
+
 describe('private runtime finalization context', () => {
   function projectedFixture() {
     const {result, input} = fixture();

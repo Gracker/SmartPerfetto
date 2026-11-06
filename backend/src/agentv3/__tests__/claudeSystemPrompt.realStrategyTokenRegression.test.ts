@@ -34,6 +34,8 @@ import {buildNativeOutputCompletionPrompt} from '../../agentRuntime/runtimeConcl
 import {buildCandidateProtocolDiagnostic, inspectCandidateProtocol} from '../../services/canonicalAnalysisResult';
 import {createHash} from 'crypto';
 import {compileAuthoredClaimDocument} from '../../agent/core/authoredClaimDocument';
+import {compileAuthoredClaimObject} from '../../agent/core/authoredClaimObject';
+import {authoredClaimObjectSchema} from '../../agent/core/authoredClaimObjectSchema';
 
 describe('typed prompt with real strategy assets', () => {
   function expectNoAdditionalTransportDrops(context: ClaudeAnalysisContext, label: string,
@@ -51,6 +53,19 @@ describe('typed prompt with real strategy assets', () => {
     console.info('[AuthoredFinalPrompt:pressure]', JSON.stringify({label,
       tokens: estimatePromptTokens(typed.fullPrompt), droppedLabels: typed.droppedLabels,
       truncatedLabels: typed.truncatedLabels}));
+    const object = buildSystemPromptParts({...context, declarationSyntax: 'authoring_v2',
+      finalSubmission: 'authored_claim_document_v2',
+      resolvedFinalTool: {role: 'final_candidate_submission', nativeName: 'renamed__native_final_7'}});
+    expect(object.droppedLabels.every(item => legacy.droppedLabels.includes(item))).toBe(true);
+    expect(object.truncatedLabels.every(item => legacy.truncatedLabels.includes(item))).toBe(true);
+    expect(estimatePromptTokens(object.fullPrompt)).toBeLessThanOrEqual(MAX_PROMPT_TOKENS);
+    for (const segment of legacy.segments.filter(item => !item.droppable && !item.truncatable
+      && !item.truncated && item.label !== 'conclusion_declaration')) {
+      expect(object.segments.find(item => item.label === segment.label)).toEqual(segment);
+    }
+    console.info('[AuthoredObjectPrompt:pressure]', JSON.stringify({label,
+      tokens: estimatePromptTokens(object.fullPrompt), droppedLabels: object.droppedLabels,
+      truncatedLabels: object.truncatedLabels}));
     return typed;
   }
 
@@ -108,6 +123,68 @@ describe('typed prompt with real strategy assets', () => {
     console.info('[AuthoredFinalPrompt:token]', JSON.stringify({sceneType, outputLanguage,
       tokens: estimatePromptTokens(parts.fullPrompt), declarationTokens: guide.estimatedTokens,
       droppedLabels: parts.droppedLabels, truncatedLabels: parts.truncatedLabels}));
+  });
+
+  it.each((['startup', 'scrolling'] as const).flatMap(sceneType =>
+    (['zh-CN', 'en'] as const).map(outputLanguage => ({sceneType, outputLanguage}))))
+  ('uses complete native grammar within the unchanged $sceneType $outputLanguage budget', ({sceneType, outputLanguage}) => {
+    const context = {...makeWorstCaseContext(sceneType), declarationSyntax: 'canonical_v1' as const, outputLanguage};
+    const legacy = buildSystemPromptParts(context);
+    const parts = buildSystemPromptParts({...context, declarationSyntax: 'authoring_v2', finalSubmission: 'authored_claim_document_v2',
+      resolvedFinalTool: {role: 'final_candidate_submission', nativeName: 'renamed__native_final_7'}});
+    const guide = parts.segments.find(segment => segment.label === 'conclusion_declaration')!;
+    expect(guide).toMatchObject({tier: 1, droppable: false, truncatable: false});
+    for (const text of ['renamed__native_final_7', 'authored_claim_document@2', 'referenceDictionary', 'semanticFrames',
+      'frameIndex', 'body_part', 'localOccurrence', 'sourceClaimBindings', 'relationProposals', 'json_object',
+      'independent', 'Unknown rules/missing proof stay unverified', 'Do not truncate/drop claims',
+      'empty claims are allowed only without facts', 'No omitted keys', 'Present null is SQL NULL']) {
+      expect(guide.content).toContain(text);
+    }
+    expect(guide.content).toContain(JSON.stringify(SUPPORTED_DETERMINISTIC_CLAIM_RULES));
+    for (const wrongGrammar of [CONCLUSION_CONTRACT_SIDECAR_MARKER, CONCLUSION_AUTHORING_FENCE,
+      CONCLUSION_AUTHORING_FENCE_V2, 'JSON-escape the whole document', 'ACK: no declaration.', 'decoded `documentJson`']) {
+      expect(guide.content).not.toContain(wrongGrammar);
+    }
+    expect(guide.content).not.toMatch(/\{\{\w+\}\}/);
+    expect(parts.segments.filter(segment => segment.label !== 'conclusion_declaration'))
+      .toEqual(legacy.segments.filter(segment => segment.label !== 'conclusion_declaration'));
+    expect(MAX_PROMPT_TOKENS).toBe(16_000);
+    expect(estimatePromptTokens(parts.fullPrompt)).toBeLessThanOrEqual(MAX_PROMPT_TOKENS);
+    expect(parts.droppedLabels).toEqual(legacy.droppedLabels);
+    expect(parts.truncatedLabels).toEqual(legacy.truncatedLabels);
+    console.info('[AuthoredObjectPrompt:token]', JSON.stringify({sceneType, outputLanguage,
+      tokens: estimatePromptTokens(parts.fullPrompt), declarationTokens: guide.estimatedTokens,
+      droppedLabels: parts.droppedLabels, truncatedLabels: parts.truncatedLabels}));
+  });
+
+  it('compiles the actual native example to the independently authored canonical example without asserting proof', () => {
+    const framing = stripTemplateComments(loadPromptTemplate('prompt-authored-final-submission-v2-framing')!);
+    const blocks = [...framing.matchAll(/```json\n([\s\S]*?)\n```/g)];
+    const args = JSON.parse(blocks[blocks.length - 1][1]);
+    expect(authoredClaimObjectSchema.safeParse(args.document).success).toBe(true);
+    const original = structuredClone(args.document);
+    const compiled = compileAuthoredClaimObject(args.document);
+    expect(compiled.status).toBe('compiled');
+    if (compiled.status !== 'compiled') throw new Error('Native prompt example failed');
+    const v1Framing = stripTemplateComments(loadPromptTemplate('prompt-authored-final-submission-framing')!);
+    const v1 = JSON.parse(v1Framing.match(/```json\n([\s\S]*?)\n```/)![1]);
+    v1.contract.claims[0].semantics.numeric.presentation.quotes = [{text: '7.1 ms', occurrence: 0}];
+    expect(compiled.body).toBe('## Findings\n\nElapsed 7.1 ms.');
+    expect(compiled.rawCanonicalPayload.claims).toEqual(v1.contract.claims);
+    expect(compiled.canonicalParse.status).toBe('valid');
+    expect(args.document).toEqual(original);
+    expect(compiled.privateNativeDocument).toEqual(args.document);
+    expect(compiled).not.toHaveProperty('documentJson');
+    expect(compiled).not.toHaveProperty('verified');
+    expect(compiled.quoteBindings).toEqual([{claimOrdinal: 1, quoteOrdinal: 1,
+      originalSpan: {startUtf16: 21, endUtf16: 27}, canonicalQuote: {text: '7.1 ms', occurrence: 0}}]);
+    // Parse the ordinary JSON fixture here, then add Infinity without serializing it.
+    const invalid = JSON.parse(JSON.stringify(args.document));
+    invalid.contract.claims[0].semantics.numeric.value = Infinity;
+    const failed = compileAuthoredClaimObject(invalid);
+    if (failed.status !== 'compiled') throw new Error(`Expected raw-invalid semantic compilation: ${failed.code}`);
+    expect(failed.rawCanonicalPayload).toMatchObject({claims: [{semantics: {numeric: {value: Infinity}}}]});
+    expect(failed.canonicalParse.status).not.toBe('valid');
   });
 
   it('compiles the actual typed document example without hydrating or verifying its claims', () => {

@@ -6,7 +6,7 @@ import type {ConclusionDeclarationSyntax} from '../agent/core/conclusionContract
 import type {ModelExecutionProtocol, ResolvedModelExecutionProfile} from '../services/providerManager/modelExecutionProfile';
 
 export const SMARTPERFETTO_FINAL_SUBMISSION_ENV = 'SMARTPERFETTO_FINAL_SUBMISSION';
-export type FinalSubmissionMode = 'assistant_text' | 'authored_claim_document_v1';
+export type FinalSubmissionMode = 'assistant_text' | 'authored_claim_document_v1' | 'authored_claim_document_v2';
 export interface CapturedAnalysisOutputConfig {
   readonly finalSubmission: FinalSubmissionMode;
   readonly declarationSyntax: ConclusionDeclarationSyntax;
@@ -24,7 +24,7 @@ export class FinalSubmissionConfigurationError extends Error {
 }
 
 export function isFinalSubmissionMode(value: unknown): value is FinalSubmissionMode {
-  return value === 'assistant_text' || value === 'authored_claim_document_v1';
+  return value === 'assistant_text' || value === 'authored_claim_document_v1' || value === 'authored_claim_document_v2';
 }
 
 export function assertCapturedAnalysisOutputConfig(config: CapturedAnalysisOutputConfig): void {
@@ -32,7 +32,8 @@ export function assertCapturedAnalysisOutputConfig(config: CapturedAnalysisOutpu
       !['canonical_v1', 'authoring_v1', 'authoring_v2'].includes(config.declarationSyntax)) {
     throw new FinalSubmissionConfigurationError('invalid_configuration', 'captured_config');
   }
-  if (config.finalSubmission === 'authored_claim_document_v1' && config.declarationSyntax !== 'canonical_v1') {
+  if (config.finalSubmission === 'authored_claim_document_v1' && config.declarationSyntax !== 'canonical_v1' ||
+      config.finalSubmission === 'authored_claim_document_v2' && config.declarationSyntax !== 'authoring_v2') {
     throw new FinalSubmissionConfigurationError('invalid_configuration', 'declaration_syntax_conflict');
   }
 }
@@ -82,8 +83,10 @@ export function assertFinalSubmissionPreDispatch(input: FinalSubmissionPreDispat
     throw new FinalSubmissionConfigurationError('unsupported_final_submission', reason);
   }
   if (input.protocol !== 'chat_completions') unsupported('protocol');
+  const sdkContract = input.outputConfig.finalSubmission === 'authored_claim_document_v2'
+    ? 'openai_typed_final_admission@2' : 'openai_typed_final_admission@1';
   if (input.sdk?.agentsCoreVersion !== '0.13.0' || input.sdk.agentsOpenAiVersion !== '0.13.0' ||
-      input.sdk.contractVersion !== 'openai_typed_final_admission@1') unsupported('sdk');
+      input.sdk.contractVersion !== sdkContract) unsupported('sdk');
   const selection = input.modelSelection;
   if (!selection || !['auto', 'fast', 'full'].includes(selection.requestedMode)) unsupported('model_set');
   // A failed quick classifier retains the primary model; checking only the
@@ -99,6 +102,7 @@ export function assertFinalSubmissionPreDispatch(input: FinalSubmissionPreDispat
     const profile = profiles.find(candidate => candidate.model.requestedId === modelId);
     if (!profile || profile.model.identity !== 'configured' || profile.runtimeKind !== input.runtimeKind ||
         profile.protocol !== input.protocol || profile.sdk.version !== input.sdk.agentsOpenAiVersion ||
+        input.outputConfig.finalSubmission === 'authored_claim_document_v2' && profile.sdk.adapterContractVersion !== sdkContract ||
         profile.effective.finalSubmission !== input.outputConfig.finalSubmission ||
         profile.effective.declarationSyntax !== input.outputConfig.declarationSyntax) unsupported('model_set');
     if (profile.server.functionTools.status !== 'supported' ||
