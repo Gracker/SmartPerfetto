@@ -55,6 +55,118 @@ import {buildAuthoredCandidateProtocolDiagnostic} from '../../services/canonical
 import {projectCodeAwareStreamingUpdate} from '../../services/security/codeAwareStreamingUpdateProjection';
 
 describe('transparent verification diagnostics', () => {
+  function privateCaptureFixture(directory: string, phase = () => 'analysis_stream') {
+    const jsonTarget = {parse: JSON.parse};
+    const options = {phase, privateOutputDirectory: directory, jsonTarget,
+      fetchTarget: {fetch: jest.fn()}, queryPrototype: {query: jest.fn(), queryBounded: jest.fn()}};
+    return {jsonTarget, diagnostics: installVerificationDiagnostics(options)};
+  }
+
+  it('keeps private parser capture absent by default', () => {
+    const jsonTarget = {parse: JSON.parse};
+    const diagnostics = installVerificationDiagnostics({phase: () => 'analysis_stream',
+      fetchTarget: {fetch: jest.fn()}, queryPrototype: {query: jest.fn(), queryBounded: jest.fn()}, jsonTarget});
+    try {
+      expect(jsonTarget.parse).toBe(JSON.parse);
+      expect(diagnostics.privateOutputCaptureReady).toBe(false);
+      expect(diagnostics.stop()).not.toHaveProperty('privateNativeOutputCapture');
+    } finally {diagnostics.stop();}
+  });
+
+  it('captures opt-in private native parse samples losslessly while preserving parsing', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smp-private-native-'));
+    const directory = path.join(root, 'private');
+    const originalParse = JSON.parse;
+    const jsonTarget = {parse: originalParse};
+    const options = {phase: () => 'analysis_stream', privateOutputDirectory: directory, jsonTarget,
+      fetchTarget: {fetch: jest.fn()}, queryPrototype: {query: jest.fn(), queryBounded: jest.fn()}};
+    const diagnostics = installVerificationDiagnostics(options);
+    const valid = '{"document":{"representationVersion":"authored_claim_document@2","text":"PRIVATE_NATIVE_CANARY\ud800"}}  ';
+    const invalid = '{"document":{"representationVersion":"authored_claim_document@2","text":"PRIVATE_NATIVE_CANARY"';
+    try {
+      expect(jsonTarget.parse(valid)).toEqual(originalParse(valid));
+      expect(() => jsonTarget.parse(invalid)).toThrow(SyntaxError);
+      jsonTarget.parse(valid);
+      const snapshot = diagnostics.stop();
+      expect(snapshot).toMatchObject({privateNativeOutputCapture: {enabled: true, attemptedCount: 2,
+        records: [expect.objectContaining({fileName: 'native-output-0001.json'}), expect.objectContaining({fileName: 'native-output-0002.json'})]}});
+      expect(originalParse(fs.readFileSync(path.join(directory, 'native-output-0001.json'), 'utf8')).text).toBe(valid);
+      expect(originalParse(fs.readFileSync(path.join(directory, 'native-output-0002.json'), 'utf8')).text).toBe(invalid);
+      expect(fs.statSync(directory).mode & 0o777).toBe(0o700);
+      expect(fs.statSync(path.join(directory, 'native-output-0001.json')).mode & 0o777).toBe(0o600);
+      expect(JSON.stringify(snapshot)).not.toContain('PRIVATE_NATIVE_CANARY');
+      expect(jsonTarget.parse).toBe(originalParse);
+    } finally {diagnostics.stop(); fs.rmSync(root, {recursive: true, force: true});}
+  });
+
+  it('distinguishes lone surrogates and passes the original reviver', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smp-private-native-'));
+    const target = privateCaptureFixture(path.join(root, 'private'));
+    const document = (text: string) => `{"document":{"representationVersion":"authored_claim_document@2","text":"${text}"}}`;
+    try {
+      const reviver = jest.fn((_key: string, value: unknown) => value === 'original' ? 'changed' : value);
+      expect(target.jsonTarget.parse(document('original'), reviver).document.text).toBe('changed');
+      target.jsonTarget.parse(document('\ud800'));
+      target.jsonTarget.parse(document('\ud801'));
+      const snapshot = target.diagnostics.stop();
+      expect(snapshot).toMatchObject({privateNativeOutputCapture: {attemptedCount: 3, records: expect.any(Array)}});
+      const artifacts = fs.readdirSync(path.join(root, 'private')).map(file => JSON.parse(fs.readFileSync(path.join(root, 'private', file), 'utf8')).text);
+      expect(artifacts).toEqual([document('original'), document('\ud800'), document('\ud801')]);
+      expect(reviver).toHaveBeenCalled();
+    } finally {target.diagnostics.stop(); fs.rmSync(root, {recursive: true, force: true});}
+  });
+
+  it('limits failed private writes without affecting parsing or leaking errors', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smp-private-native-'));
+    const target = privateCaptureFixture(path.join(root, 'private'));
+    const write = jest.spyOn(fs, 'writeFileSync').mockImplementation(() => {throw new Error('PRIVATE_IO_CANARY');});
+    try {
+      for (let index = 0; index < 12; index++) {
+        const raw = JSON.stringify({document: {representationVersion: 'authored_claim_document@2', index}});
+        expect(target.jsonTarget.parse(raw).document.index).toBe(index);
+        target.jsonTarget.parse(raw);
+      }
+      expect(write).toHaveBeenCalledTimes(8);
+      const snapshot = target.diagnostics.stop();
+      expect(snapshot).toMatchObject({observationFailures: 8, privateNativeOutputCapture: {attemptedCount: 8, records: []}});
+      expect(JSON.stringify(snapshot)).not.toContain('PRIVATE_IO_CANARY');
+    } finally {write.mockRestore(); target.diagnostics.stop(); fs.rmSync(root, {recursive: true, force: true});}
+  });
+
+  it('keeps private capture scoped and preserves a successor parser', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smp-private-native-'));
+    let phase = 'context_setup';
+    const target = privateCaptureFixture(path.join(root, 'private'), () => phase);
+    const raw = JSON.stringify({document: {representationVersion: 'authored_claim_document@2'}});
+    try {
+      target.jsonTarget.parse(raw);
+      phase = 'analysis_stream';
+      target.jsonTarget.parse('{"other":"authored_claim_document@2"}');
+      expect(target.jsonTarget.parse(raw + ' '.repeat(1024 * 1024))).toEqual(JSON.parse(raw));
+      expect(fs.readdirSync(path.join(root, 'private'))).toEqual([]);
+      expect(() => target.jsonTarget.parse(' '.repeat(4096))).toThrow(SyntaxError);
+      const successor = JSON.parse.bind(JSON);
+      target.jsonTarget.parse = successor;
+      expect(target.diagnostics.stop()).toMatchObject({restoreConflicts: 1,
+        privateNativeOutputCapture: {attemptedCount: 1, records: [expect.objectContaining({whitespaceChars: 4096})]}});
+      expect(target.jsonTarget.parse).toBe(successor);
+    } finally {target.diagnostics.stop(); fs.rmSync(root, {recursive: true, force: true});}
+  });
+
+  it.each(['directory', 'symlink'] as const)('refuses an existing private capture %s', kind => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smp-private-native-'));
+    const directory = path.join(root, 'private');
+    if (kind === 'directory') fs.mkdirSync(directory);
+    else fs.symlinkSync(root, directory);
+    const target = privateCaptureFixture(directory);
+    try {
+      expect(target.diagnostics.privateOutputCaptureReady).toBe(false);
+      expect(target.jsonTarget.parse).toBe(JSON.parse);
+      expect(target.diagnostics.stop()).toMatchObject({observationFailures: 1,
+        privateNativeOutputCapture: {enabled: false, attemptedCount: 0, records: []}});
+    } finally {target.diagnostics.stop(); fs.rmSync(root, {recursive: true, force: true});}
+  });
+
   it('keeps the source action facet strictly incomplete even when every automatic check passes', () => {
     const result = evaluateAgentSseAcceptance({strict: true,
       task: {checkGroups: {value: {marker: true}, proof: {proved: true}, delivery: {delivered: true}}, facts: {},

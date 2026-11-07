@@ -482,6 +482,14 @@ observation changes neither budget nor acceptance. Runtime/provider/scene lists,
 model pin defaults and implementation ownership live in
 [Agent Runtime](../../docs/architecture/agent-runtime.md).
 
+Local E2E diagnostics can opt in with
+`SMARTPERFETTO_E2E_PRIVATE_OUTPUT_CAPTURE=1` when `CI` is absent. Each run creates
+a fresh `0700` directory beside its report and retains at most eight unique
+parse inputs, each bounded by the native raw-input limit, in `0600` files.
+These heuristic samples preserve exact strings for debugging, including invalid
+JSON and large whitespace runs. Keep them in owner-controlled QA directories.
+Use native receipts and the original quality gates for attribution and acceptance.
+
 Flagship expectations come from `backend/tests/e2e/flagship/*.expectation.json`
 and independent trace oracles, not model output. Preserve original startup
 classification even when a Skill offers a corrected category. Value, delivery

@@ -40,6 +40,7 @@ import type {ClaimVerificationResult, ClaimVerificationClaimResult} from '../typ
 import type {ClaimSupportV1, EvidenceAnchorV1, EvidenceCellV1} from '../types/evidenceContract';
 import type {AnalysisDeliveryAssurance, AnalysisCompletion} from '../types/analysisDelivery';
 import {analysisDeliveryFingerprint} from '../types/analysisDelivery';
+import {OPENAI_TYPED_FINAL_RAW_BYTES} from '../agentRuntime/engines/openai/openAiTypedFinalAdmission';
 import type {AnalysisTurnIntent} from '../agentRuntime/analysisTurnIntent';
 import type {FinalInvestigationAssessment, InvestigationRequirementAssessment} from '../types/analysisInvestigationAssessment';
 import {sanitizeCandidateProtocolDiagnostic, type CandidateProtocolDiagnostic} from '../services/canonicalAnalysisResult';
@@ -2444,6 +2445,14 @@ export class VerificationSseTimeoutError extends Error {
 }
 
 type VerificationDiagnosticRow = Record<string, string | number | boolean>;
+interface PrivateNativeOutputRecord {
+  fileName: string;
+  sha256Utf16: string;
+  utf16Chars: number;
+  utf8Bytes: number;
+  whitespaceChars: number;
+  trailingWhitespaceChars: number;
+}
 export interface VerificationDiagnosticsSnapshot {
   schemaVersion: 'verification_observation@1';
   diagnosticOnly: true;
@@ -2455,6 +2464,8 @@ export interface VerificationDiagnosticsSnapshot {
   sqlDroppedCount: number;
   observationFailures: number;
   restoreConflicts: number;
+  privateNativeOutputCapture?: Readonly<{enabled: boolean; attemptedCount: number;
+    records: readonly Readonly<PrivateNativeOutputRecord>[]} >;
 }
 
 /** Process-local observation only. No hooks are installed when this module is imported. */
@@ -2462,6 +2473,8 @@ export function installVerificationDiagnostics(input: {
   phase: () => string;
   fetchTarget?: object;
   queryPrototype?: object;
+  privateOutputDirectory?: string;
+  jsonTarget?: object;
   now?: () => number;
 }) {
   const now = input.now ?? Date.now;
@@ -2472,6 +2485,8 @@ export function installVerificationDiagnostics(input: {
   let frozen: VerificationDiagnosticsSnapshot | undefined;
   const restores: Array<{target: WeakRef<object>; key: string; original?: PropertyDescriptor; wrapper: Function}> = [];
   const removeListeners: Array<() => void> = [];
+  const privateNativeOutputs: PrivateNativeOutputRecord[] = [];
+  let privateOutputCaptureReady = false, privateCaptureAttempts = 0;
   const processorIds = new WeakMap<object, number>();
   let nextProcessorId = 0;
   const bounded = (value: number) => Number.isFinite(value) ? Math.max(0, Math.min(1_000_000_000, Math.floor(value))) : 0;
@@ -2504,6 +2519,35 @@ export function installVerificationDiagnostics(input: {
     Object.defineProperty(target, key, original ? {...original, value: wrapper}
       : {value: wrapper, writable: true, configurable: true, enumerable: false});
     restores.push({target: new WeakRef(target), key, original, wrapper});
+  });
+  if (input.privateOutputDirectory !== undefined) safe(() => {
+    const directory = input.privateOutputDirectory!;
+    fs.mkdirSync(directory, {mode: 0o700});
+    const seen = new Set<string>();
+    const previousWrappers = restores.length;
+    wrap(input.jsonTarget ?? JSON, 'parse', original => function(this: unknown, ...args: unknown[]) {
+      safe(() => {
+        const raw = args[0];
+        if (typeof raw !== 'string' || raw.length > OPENAI_TYPED_FINAL_RAW_BYTES || privateCaptureAttempts >= 8 ||
+          !['analysis_stream', 'follow_up_stream'].includes(phase())) return;
+        const document = /^\s*\{\s*"document"\s*:/.test(raw) && raw.includes('authored_claim_document@2');
+        const whitespace = raw.length >= 1024 && raw.trim().length === 0;
+        if (!document && !whitespace) return;
+        const utf8Bytes = Buffer.byteLength(raw);
+        if (utf8Bytes > OPENAI_TYPED_FINAL_RAW_BYTES) return;
+        const sha256Utf16 = createHash('sha256').update(Buffer.from(raw, 'utf16le')).digest('hex');
+        if (seen.has(sha256Utf16)) return;
+        seen.add(sha256Utf16);
+        const fileName = `native-output-${String(++privateCaptureAttempts).padStart(4, '0')}.json`;
+        fs.writeFileSync(path.join(directory, fileName), JSON.stringify({schemaVersion: 'private_native_output@1',
+          source: 'heuristic_json_parse_input', text: raw}), {flag: 'wx', mode: 0o600});
+        privateNativeOutputs.push({fileName, sha256Utf16, utf16Chars: raw.length, utf8Bytes,
+          whitespaceChars: raw.length - raw.replace(/[ \t\r\n]/g, '').length,
+          trailingWhitespaceChars: raw.length - raw.trimEnd().length});
+      });
+      return Reflect.apply(original, this, args);
+    });
+    privateOutputCaptureReady = restores.length > previousWrappers;
   });
   const modelHash = (row: VerificationDiagnosticRow, key: string, model: unknown) => {
     if (typeof model === 'string' && model.length > 0 && model.length <= 256) row[key] = hash(model);
@@ -2639,7 +2683,7 @@ export function installVerificationDiagnostics(input: {
       }
       return promise;
     });
-  return {stop(): VerificationDiagnosticsSnapshot {
+  return {privateOutputCaptureReady, stop(): VerificationDiagnosticsSnapshot {
     if (frozen) return frozen;
     active = false;
     for (const remove of removeListeners.splice(0)) {try {remove();} catch {observationFailures++;}}
@@ -2655,7 +2699,11 @@ export function installVerificationDiagnostics(input: {
     frozen = Object.freeze({schemaVersion: 'verification_observation@1', diagnosticOnly: true,
       timing: 'elapsed_since_install_not_native_budget', jsonTiming: 'body_read_and_parse_combined',
       fetch: Object.freeze(fetchRows.map(row => Object.freeze({...row}))), sql: Object.freeze(sqlRows.map(row => Object.freeze({...row}))),
-      fetchDroppedCount, sqlDroppedCount, observationFailures: bounded(observationFailures), restoreConflicts: bounded(restoreConflicts)});
+      fetchDroppedCount, sqlDroppedCount, observationFailures: bounded(observationFailures), restoreConflicts: bounded(restoreConflicts),
+      ...(input.privateOutputDirectory === undefined ? {} : {privateNativeOutputCapture: Object.freeze({
+        enabled: privateOutputCaptureReady, attemptedCount: privateCaptureAttempts,
+        records: Object.freeze(privateNativeOutputs.map(row => Object.freeze({...row}))),
+      })})});
     return frozen;
   }};
 }
@@ -3449,7 +3497,10 @@ async function main(): Promise<PendingSourceCompletion | void> {
   let pendingSource = false;
   const startedAt = Date.now();
   const outputPath = options.outputPath ?? path.resolve(process.cwd(), `test-output/verify-agent-sse-scrolling-${startedAt}.json`);
-  const diagnostics = installVerificationDiagnostics({phase: () => phase});
+  const privateCaptureRequested = process.env.SMARTPERFETTO_E2E_PRIVATE_OUTPUT_CAPTURE === '1';
+  if (privateCaptureRequested && process.env.CI !== undefined) throw new Error('private_native_capture_local_only');
+  const diagnostics = installVerificationDiagnostics({phase: () => phase,
+    ...(privateCaptureRequested ? {privateOutputDirectory: `${outputPath}.private-native`} : {})});
   let diagnosticsWritten = false;
   const persistDiagnostics = () => {
     if (diagnosticsWritten) return;
@@ -3458,6 +3509,7 @@ async function main(): Promise<PendingSourceCompletion | void> {
   };
 
   try {
+    if (privateCaptureRequested && !diagnostics.privateOutputCaptureReady) throw new Error('private_native_capture_unavailable');
     const app = createVerificationApp();
     const targetInput = process.env[benchmarkLifecycle.TARGET_ENV];
     const targetRequest = targetInput === undefined ? undefined : benchmarkLifecycle.parseTargetRequest(targetInput);
