@@ -14,7 +14,7 @@ import {createHash} from 'node:crypto';
 import {OPENAI_TYPED_FINAL_CONTRACTS, OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION} from '../../agentRuntime/finalSubmissionImplementation';
 import {stableStringify} from '../../utils/stableJson';
 import {buildLlmExecutionQuality} from '../llmExecutionBenchmark';
-import {parseLlmExecutionScoreArgs, scoreLlmExecutionBenchmark} from '../scoreLlmExecutionBenchmark';
+import {parseLlmExecutionScoreArgs, scoreLlmExecutionBenchmark, scoreLlmExecutionBenchmarkTesting} from '../scoreLlmExecutionBenchmark';
 
 // Synthetic saved receipts exercise the checker; these tests establish no real-provider performance.
 type Json = Record<string, any>;
@@ -536,6 +536,43 @@ function syntheticPurposeContracts(common: {baseURL: string; protocol: string; m
       ...(common.maxOutputTokens === undefined ? {} : {maxOutputTokens: common.maxOutputTokens}), runtime: 'openai-agents-sdk', sdk}),
     tokenLimit: limit(common.maxOutputTokens)}};
 }
+
+describe('SDK declaration repair settings verification', () => {
+  const model = 'glm-5.3-flash', baseURL = 'https://open.bigmodel.cn/api/coding/paas/v4';
+  const common = {baseURL, protocol: 'chat_completions', model, lightModel: model, maxOutputTokens: 4096};
+  const profile = resolveModelExecutionProfile({runtimeKind: 'openai-agents-sdk', protocol: 'chat_completions', modelId: model,
+    baseUrl: baseURL, sdk: {packageName: '@openai/agents-openai', version: 'unknown', adapterContractVersion: 'provider-data@1'},
+    sdkCapabilities: {surface: 'openai_chat', thinking: 'optional', efforts: ['low', 'high'],
+      reasoningRoundtrip: 'unknown', source: 'contract_test'}, effective: {maxOutputTokens: 4096}});
+  const probe = {mode: 'full', sdk: {nodeVersion: process.versions.node}, resolved: buildRuntimeConfigCommitments(common)!,
+    schemaVersion: 'llm_target_preflight@3', outputImplementation: undefined,
+    purposeContracts: sourceLifecycle.parsePurposeContracts(syntheticPurposeContracts(common))};
+  const expected = {maxTokens: 4096, parallelToolCalls: false, store: false, toolChoice: 'none',
+    reasoning: {effort: 'low'}, providerData: {thinking: {type: 'enabled'}, response_format: {type: 'json_object'}}};
+
+  const matches = (appliedSettings: Record<string, unknown>) => {
+    const controls = buildRuntimeAppliedModelControls({requestedOutput: sourceLifecycle.TREATMENT_OUTPUTS.base, commonConfig: common,
+      appliedSettings, profiles: [buildRuntimeExecutionProfileObservation(profile, {role: 'stage_policy', purpose: 'declaration_repair'})!]})!;
+    return scoreLlmExecutionBenchmarkTesting.purposeSettingsMatch({kind: 'main_dispatch', eventKey: hash('repair-event'),
+      sequence: 1, offsetMs: 0, attemptKey: hash('repair-attempt'), logicalCallKey: hash('repair-call'), purpose: 'declaration_repair',
+      configuredModelHash: hash(model), providerOriginHash: hash(new URL(baseURL).origin), controls}, common, probe);
+  };
+
+  it('accepts independently specified top-level SDK reasoning and HTTP JSON provider data', () => {
+    expect(matches(expected)).toBe(true);
+  });
+
+  it.each([
+    {reasoning: undefined, providerData: {...expected.providerData, reasoning_effort: 'low'}},
+    {reasoning: undefined, providerData: {...expected.providerData, reasoning: {effort: 'low'}}},
+    {providerData: {thinking: {type: 'enabled'}}},
+    {providerData: {...expected.providerData, response_format: {type: 'text'}}},
+    {maxTokens: 99999},
+    {newBehavior: true},
+  ])('rejects legacy SDK placement or control drift: %j', mutation => {
+    expect(matches({...expected, ...mutation})).toBe(false);
+  });
+});
 
 /** Synthetic reader fixtures only: these never constitute real benchmark evidence. */
 function treatmentScoreFixture(root: string, cells = ['scheduler'], configured: {maxOutputTokens?: number} = {maxOutputTokens: 4096},

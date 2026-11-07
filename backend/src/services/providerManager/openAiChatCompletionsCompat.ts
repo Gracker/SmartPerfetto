@@ -89,6 +89,11 @@ export function resolveOpenAITextRequestPurpose(input: OpenAITextRequestPurposeI
       else if (setting.effort !== undefined) options.reasoning = {effort: setting.effort};
       else throw new OpenAITextPolicyConfigurationError();
     }
+    const jsonPurpose = input.purpose === 'classification' || input.purpose === 'final_semantic' || input.purpose === 'declaration_repair';
+    if (input.protocol === 'chat_completions' && profile.adapter.surface === 'openai_chat' &&
+        jsonPurpose && profile.server.jsonOutput?.status === 'supported') {
+      options.response_format = {type: profile.server.jsonOutput.value};
+    }
     // Retain the existing DeepSeek review JSON syntax contract only for a recognized model/API.
     if (input.purpose === 'final_semantic' && profile.endpoint.family === 'deepseek' && profile.server.thinking.status === 'supported') {
       if (input.protocol === 'responses') options.text = {format: {type: 'json_object'}};

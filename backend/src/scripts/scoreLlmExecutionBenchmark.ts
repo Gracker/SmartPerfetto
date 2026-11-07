@@ -13,6 +13,7 @@ import {RUNTIME_MODEL_CALL_PURPOSES, projectRuntimeFinalTransportObservation, pa
 import {canonicalContentHash} from '../services/selfEvolution/canonicalJson';
 import {resolveModelExecutionProfile} from '../services/providerManager/modelExecutionProfile';
 import {resolveOpenAITextRequestPurpose} from '../services/providerManager/openAiChatCompletionsCompat';
+import {withOpenAITextPurposeOptions} from '../agentRuntime/engines/openai/openAiModelSettings';
 import type {LlmPurposeContractsV1} from './preflightLlmExecutionTarget';
 import {createOpenAiCandidateIdentity} from '../agentRuntime/openAiCandidateIdentity';
 import type {OpenAiOutputImplementation} from '../agentRuntime/finalSubmissionImplementation';
@@ -373,8 +374,8 @@ function purposeSettingsMatch(dispatch: Extract<RuntimeFinalTransportEvent, {kin
         reasoningRoundtrip: 'unknown', source: 'contract_test'}});
     const tokenField = limit?.status === 'explicit' ? limit.field : 'max_tokens';
     const expected = direct ? {model, temperature: 0, stream: true, ...execution.options, ...(cap ? {[tokenField]: 1} : {})}
-      : {...(cap ? {maxTokens: 1} : {}), parallelToolCalls: false, store: false, toolChoice: 'none',
-        ...(Object.keys(execution.options).length ? {providerData: execution.options} : {})};
+      : withOpenAITextPurposeOptions({...(cap ? {maxTokens: 1} : {}), parallelToolCalls: false, store: false,
+        toolChoice: 'none'}, execution.options);
     const fields = buildRuntimeConfigCommitments(expected)!.map(row => cap && [`/${tokenField}`, '/maxTokens'].includes(row.field)
       ? {...row, valueCommitment: cap.valueCommitment} : row);
     return equalFields(fields, dispatch.controls.appliedSettings);
@@ -832,6 +833,8 @@ export function parseLlmExecutionScoreArgs(argv: readonly string[]): ScoreLlmExe
   if (!values['--input'] || !values['--output']) fail('llm_score_arguments_invalid');
   return {input: values['--input'], output: values['--output'], ...(values['--reviews'] ? {reviews: values['--reviews']} : {})};
 }
+
+export const scoreLlmExecutionBenchmarkTesting = {purposeSettingsMatch};
 
 if (require.main === module) {
   try {

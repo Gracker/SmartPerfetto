@@ -16,7 +16,9 @@ function config(overrides: Partial<ResolveModelExecutionProfileInput> = {}): Res
 describe('model execution profile facts', () => {
   it.each([
     ['glm-5.3-flash', 'https://open.bigmodel.cn/api/coding/paas/v4', 'glm-json-output-2026-11-07'],
+    ['glm-5.3-flash', 'https://open.bigmodel.cn/api/coding/paas/v4/chat/completions', 'glm-json-output-2026-11-07'],
     ['deepseek-flash', 'https://api.deepseek.com/v1', 'deepseek-json-output-2026-11-07'],
+    ['deepseek-flash', 'https://api.deepseek.com/v1/chat/completions', 'deepseek-json-output-2026-11-07'],
   ])('records the documented JSON output parameter for the admitted %s endpoint', (modelId, baseUrl, evidenceId) => {
     const profile = resolveModelExecutionProfile(config({modelId, baseUrl}));
     expect(profile.server.jsonOutput).toEqual({status: 'supported', value: 'json_object', source: 'official', evidenceId});

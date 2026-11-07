@@ -163,6 +163,23 @@ describe('OpenAI native intent transport', () => {
     }
   });
 
+  it.each([
+    ['https://open.bigmodel.cn/api/coding/paas/v4', 'glm-5.3-flash'],
+    ['https://api.deepseek.com/v1', 'deepseek-flash'],
+  ])('sends JSON mode through the actual Flash no-tool HTTP transport at %s', async (baseURL, model) => {
+    for (const purpose of ['classification', 'final_semantic', 'declaration_repair', 'continuation'] as const) {
+      const {input, fetchImpl} = fixture('chat_completions');
+      input.config.baseURL = baseURL; input.config.lightModel = model; input.purpose = purpose;
+      expect(await runOpenAiIntentTransport(input)).toMatchObject({status: 'ok'});
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(String(fetchImpl.mock.calls[0][0])).toBe(`${baseURL}/chat/completions`);
+      const body = JSON.parse(String(fetchImpl.mock.calls[0][1]?.body));
+      if (purpose === 'continuation') expect(body).not.toHaveProperty('response_format');
+      else expect(body.response_format).toEqual({type: 'json_object'});
+      expect(body).not.toHaveProperty('tools');
+    }
+  });
+
   it.each(['responses', 'chat_completions'] as const)('requests official DeepSeek JSON mode only for %s final semantics', async protocol => {
     const {input, fetchImpl} = fixture(protocol);
     input.config.baseURL = 'https://api.deepseek.com/v1';
@@ -303,9 +320,9 @@ describe('OpenAI native intent transport', () => {
       .then(() => expect(fetchImpl).not.toHaveBeenCalled());
   });
 
-  it('keeps a truncated official classification unavailable without increasing the cap or retrying', async () => {
+  it('keeps a truncated official alias classification unavailable without increasing the cap or retrying', async () => {
     const {input, chatChoice, fetchImpl} = fixture('chat_completions');
-    input.config.baseURL = 'https://api.deepseek.com/v1'; input.config.lightModel = 'deepseek-flash'; input.config.lightModel = 'deepseek-v4-flash'; input.purpose = 'classification';
+    input.config.baseURL = 'https://api.deepseek.com/v1'; input.config.lightModel = 'deepseek-v4-flash'; input.purpose = 'classification';
     chatChoice.finish_reason = 'length';
     expect(await runOpenAiIntentTransport(input)).toEqual({status: 'unavailable', reason: 'incomplete_output'});
     expect(fetchImpl).toHaveBeenCalledTimes(1);

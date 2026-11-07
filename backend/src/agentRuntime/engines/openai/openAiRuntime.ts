@@ -64,6 +64,7 @@ import {
 import {isPlainObject} from '../../../utils/llmJson';
 import {planPhaseUpdatedContent} from '../../../agentv3/planPhaseEvents';
 import {loadOpenAIConfig, createOpenAiFinalizationConfig, resolveOpenAiClassifierOutputLimit, type OpenAIAgentConfig} from './openAiConfig';
+import {withOpenAITextPurposeOptions} from './openAiModelSettings';
 import {
   buildOpenAIChatCompletionsTokenLimit,
   resolveOpenAITextRequestPurpose,
@@ -1553,8 +1554,8 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
                 hadDeclarations: nativeProtocol.status !== 'absent', ...(declarationRequest ? {declarationRequest} : {})};
               observedStageProfile = repairsDeclaration ? repairProfile : undefined;
               const recoverySettings = repairsDeclaration ? buildOpenAIBaseModelSettings(config, selectedModel) : agent.modelSettings;
-              agent = agent.clone({tools: [], modelSettings: {...recoverySettings, toolChoice: 'none',
-                ...(repairProviderData ? {providerData: {...recoverySettings.providerData, ...repairProviderData}} : {})}});
+              agent = agent.clone({tools: [], modelSettings: withOpenAITextPurposeOptions(
+                {...recoverySettings, toolChoice: 'none'}, repairProviderData)});
               runInput = recoveryInput;
               continue;
             }
@@ -1654,8 +1655,8 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               observedStageProfile = closeoutProfile;
               deliveryDeadlineAt = Date.now() + deliveryWindowMs;
               const closeoutSettings = buildOpenAIBaseModelSettings(config, selectedModel);
-              agent = agent.clone({tools: [], modelSettings: {...closeoutSettings, toolChoice: 'none',
-                ...(closeoutProviderData ? {providerData: {...closeoutSettings.providerData, ...closeoutProviderData}} : {})}});
+              agent = agent.clone({tools: [], modelSettings: withOpenAITextPurposeOptions(
+                {...closeoutSettings, toolChoice: 'none'}, closeoutProviderData)});
               runInput = [{role: 'user' as const, content: boundedPrompt}];
               continue;
             }

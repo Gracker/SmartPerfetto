@@ -20,12 +20,43 @@ function purposeInput(input: Pick<OpenAITextRequestPurposeInput, 'requestUrl' | 
 }
 const buildOpenAITextRequestPurposeOptions = (input: Parameters<typeof purposeInput>[0]) => resolveOpenAITextRequestPurpose(purposeInput(input)).options;
 
+describe('JSON controls at the actual no-tool dispatch URL', () => {
+  it.each([
+    ['https://open.bigmodel.cn/api/coding/paas/v4', 'glm-5.3-flash', {thinking: {type: 'enabled'}, reasoning_effort: 'low'}],
+    ['https://api.deepseek.com/v1', 'deepseek-flash', {thinking: {type: 'disabled'}}],
+  ] as const)('keeps new HTTP JSON controls out of OpenCode provider options at %s', (url, model, expected) => {
+    for (const purpose of ['classification', 'declaration_repair'] as const) {
+      expect(buildOpenAITextRequestPurposeOptions({requestUrl: new URL(url), protocol: 'chat_completions', model, purpose,
+        runtimeKind: 'opencode', sdkCapabilities: {surface: 'opencode_agent_options', thinking: 'optional',
+          efforts: ['low', 'high'], reasoningRoundtrip: 'unknown', source: 'contract_test'}})).toEqual(expected);
+    }
+  });
+
+  it.each([
+    ['https://open.bigmodel.cn/api/coding/paas/v4/chat/completions', 'glm-5.3-flash'],
+    ['https://api.deepseek.com/v1/chat/completions', 'deepseek-flash'],
+  ])('requests JSON only for JSON-returning purposes at %s', (url, model) => {
+    for (const purpose of ['classification', 'final_semantic', 'declaration_repair'] as const) {
+      expect(buildOpenAITextRequestPurposeOptions({requestUrl: new URL(url), protocol: 'chat_completions', model, purpose}))
+        .toHaveProperty('response_format', {type: 'json_object'});
+    }
+    expect(buildOpenAITextRequestPurposeOptions({requestUrl: new URL(url), protocol: 'chat_completions', model,
+      purpose: 'continuation', outputOnly: true})).not.toHaveProperty('response_format');
+    for (const suffix of ['?', '#', '?private=PRIVATE_CANARY', '/unsupported']) {
+      const options = buildOpenAITextRequestPurposeOptions({requestUrl: new URL(url + suffix), protocol: 'chat_completions',
+        model, purpose: 'declaration_repair'});
+      expect(options).not.toHaveProperty('response_format');
+      expect(JSON.stringify(options)).not.toContain('PRIVATE_CANARY');
+    }
+  });
+});
+
 describe('official DeepSeek delivery protocol options', () => {
   it.each(['https://api.deepseek.com/v1', 'https://API.DEEPSEEK.COM:443/v1'])(
     'uses only the parsed official origin for %s', url => {
       const requestUrl = new URL(url);
       expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'chat_completions', purpose: 'classification'}))
-        .toEqual({thinking: {type: 'disabled'}});
+        .toEqual({thinking: {type: 'disabled'}, response_format: {type: 'json_object'}});
       expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'responses', purpose: 'classification'}))
         .toEqual({reasoning: {effort: 'none'}});
       expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'chat_completions', purpose: 'final_semantic'}))
@@ -34,7 +65,7 @@ describe('official DeepSeek delivery protocol options', () => {
         .toEqual({reasoning: {effort: 'none'}, text: {format: {type: 'json_object'}}});
       for (const purpose of ['declaration_repair', 'continuation'] as const) {
         expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'chat_completions', purpose, outputOnly: true}))
-          .toEqual({thinking: {type: 'disabled'}});
+          .toEqual({thinking: {type: 'disabled'}, ...(purpose === 'declaration_repair' ? {response_format: {type: 'json_object'}} : {})});
         expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'responses', purpose, outputOnly: true}))
           .toEqual({reasoning: {effort: 'none'}});
       }
@@ -69,12 +100,16 @@ describe('official GLM origin boundary', () => {
 });
 
 describe('official GLM delivery protocol options', () => {
-  it.each(['https://open.bigmodel.cn/api/coding/paas/v4/chat/completions', 'https://api.z.ai/api/paas/v4/chat/completions'])(
-    'selects legal enabled low for the candidate delivery purposes on chat completions only on %s', url => {
+  it.each([
+    ['https://open.bigmodel.cn/api/coding/paas/v4/chat/completions', true],
+    ['https://api.z.ai/api/paas/v4/chat/completions', false],
+  ] as const)(
+    'selects legal enabled low for the candidate delivery purposes on chat completions only on %s', (url, jsonKnown) => {
       const requestUrl = new URL(url);
       for (const purpose of ['classification', 'final_semantic', 'declaration_repair', 'continuation'] as const) {
         expect(buildOpenAITextRequestPurposeOptions({requestUrl, model: 'glm-5.3-flash', protocol: 'chat_completions', purpose, outputOnly: true}))
-          .toEqual({thinking: {type: 'enabled'}, reasoning_effort: 'low'});
+          .toEqual({thinking: {type: 'enabled'}, reasoning_effort: 'low',
+            ...(jsonKnown && purpose !== 'continuation' ? {response_format: {type: 'json_object'}} : {})});
         expect(buildOpenAITextRequestPurposeOptions({requestUrl, model: 'glm-5.3-flash', protocol: 'responses', purpose, outputOnly: true})).toEqual({});
       }
       expect(buildOpenAITextRequestPurposeOptions({requestUrl, model: 'glm-5.3-flash', protocol: 'chat_completions'})).toEqual({});
@@ -92,7 +127,7 @@ describe('model-bound purpose policy metadata', () => {
   it('uses the selected model, not the origin or the primary/light role name', () => {
     const known = resolveOpenAITextRequestPurpose(purposeInput({requestUrl, protocol: 'chat_completions',
       model: 'glm-5.3-flash', purpose: 'final_semantic'}));
-    expect(known.options).toEqual({thinking: {type: 'enabled'}, reasoning_effort: 'low'});
+    expect(known.options).toEqual({thinking: {type: 'enabled'}, reasoning_effort: 'low', response_format: {type: 'json_object'}});
     expect(known.policy).toMatchObject({purpose: 'review', modelId: 'glm-5.3-flash',
       selection: 'minimum_legal_candidate', wireObservation: 'not_observed'});
     expect(known.options).not.toHaveProperty('profile');

@@ -255,7 +255,7 @@ function documentedOutputTokens(baseUrl: string | undefined, modelId: string | u
 /** Official JSON-mode parameter, checked 2026-11-07:
  * https://docs.z.ai/guides/capabilities/struct-output
  * https://api-docs.deepseek.com/api/create-chat-completion/
- * Keep the experimental bridge's exact endpoint/model scope. */
+ * Accept the exact base and dispatch URLs of the admitted endpoints. */
 function documentedJsonOutput(baseUrl: string | undefined, modelId: string | undefined,
   protocol: ModelExecutionProtocol, unknown: ModelCapabilityFact<never>): ResolvedModelExecutionProfile['server']['jsonOutput'] {
   if (!baseUrl || protocol !== 'chat_completions') return unknown;
@@ -263,10 +263,12 @@ function documentedJsonOutput(baseUrl: string | undefined, modelId: string | und
   try {url = new URL(baseUrl);} catch {return unknown;}
   if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || /[?@#]/.test(baseUrl)) return unknown;
   const endpoint = `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
-  if (modelId === 'glm-5.3-flash' && endpoint === 'https://open.bigmodel.cn/api/coding/paas/v4') {
+  if (modelId === 'glm-5.3-flash' && ['https://open.bigmodel.cn/api/coding/paas/v4',
+    'https://open.bigmodel.cn/api/coding/paas/v4/chat/completions'].includes(endpoint)) {
     return supported('json_object', 'glm-json-output-2026-11-07');
   }
-  if (modelId === 'deepseek-flash' && endpoint === 'https://api.deepseek.com/v1') {
+  if (modelId === 'deepseek-flash' && ['https://api.deepseek.com/v1',
+    'https://api.deepseek.com/v1/chat/completions'].includes(endpoint)) {
     return supported('json_object', 'deepseek-json-output-2026-11-07');
   }
   return unknown;

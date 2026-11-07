@@ -1946,9 +1946,8 @@ describe('OpenAI cancellation and bounded recovery', () => {
       expect(mainSettings.providerData ?? {}).not.toHaveProperty('thinking');
       expect(mainSettings.providerData ?? {}).not.toHaveProperty('reasoning');
       expect(mainSettings.reasoning).toEqual(analysisReasoningEffort ? {effort: analysisReasoningEffort} : undefined);
-      expect(closeoutSettings).not.toHaveProperty('reasoning');
-      if (controls) expect(closeoutSettings.providerData).toMatchObject(controls);
-      else expect(closeoutSettings.providerData).toEqual(mainSettings.providerData);
+      expect(closeoutSettings.reasoning).toEqual(controls?.reasoning);
+      expect(closeoutSettings.providerData).toEqual(mainSettings.providerData);
       expect(recorder.seal().modelCalls).toEqual(expect.arrayContaining([
         expect.objectContaining({purpose: 'answer_turn', reasoning: analysisReasoningEffort ? 'enabled' : 'provider_default', outcome: 'cancelled'}),
         expect.objectContaining({purpose: 'continuation', trigger: 'timeout',
@@ -3108,6 +3107,65 @@ describe('explicit OpenAI analysis reasoning', () => {
 
 describe('OpenAI output-only delivery provider controls', () => {
   it.each([
+    ['https://open.bigmodel.cn/api/coding/paas/v4', 'glm-5.3-flash', {thinking: {type: 'enabled'}, reasoning_effort: 'low'}],
+    ['https://api.deepseek.com/v1', 'deepseek-flash', {thinking: {type: 'disabled'}}],
+  ] as const)('passes declaration repair controls through the actual Runner for %s', async (baseURL, model, controls) => {
+    const config = createOpenAiConfigForTest({protocol: 'chat_completions', baseURL, model, lightModel: model,
+      analysisReasoningEffort: 'high'});
+    jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(config);
+    const valid = {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [],
+      evidenceChain: [], claims: [], uncertainties: [], nextSteps: []};
+    const rejected = `${renderConclusionContractSidecar({...valid, clusters: undefined} as any)}\nBounded answer.`;
+    const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
+    const request = jest.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(chatCompletionResponse('stage-analysis', {role: 'assistant', content: rejected}, 'stop'))
+      .mockResolvedValueOnce(chatCompletionResponse('stage-repair', {role: 'assistant', content: JSON.stringify(valid)}, 'stop'));
+    const result = await runtime.analyze('query', `stage-repair-${model}`, 'trace', {providerId: null});
+    expect(request).toHaveBeenCalledTimes(2);
+    const [main, repair] = request.mock.calls.map(call => JSON.parse(String(call[1]?.body)));
+    expect(main.reasoning_effort).toBe('high'); expect(main).not.toHaveProperty('response_format');
+    expect(repair).toMatchObject({...controls, response_format: {type: 'json_object'},
+      max_tokens: config.maxOutputTokens, tool_choice: 'none'});
+    expect(repair.tools ?? []).toHaveLength(0);
+    expect(inspectCandidateProtocol(result.conclusion).status).toBe('valid');
+    expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim())
+      .toBe(inspectCandidateProtocol(rejected).canonicalBody.trim());
+    const context = finalization.takeFinalizationContext(result); if (context) finalizationContexts.push(context);
+  });
+
+  it.each([
+    ['https://open.bigmodel.cn/api/coding/paas/v4', 'glm-5.3-flash', {thinking: {type: 'enabled'}, reasoning_effort: 'low'}],
+    ['https://api.deepseek.com/v1', 'deepseek-flash', {thinking: {type: 'disabled'}}],
+  ] as const)('passes timeout closeout controls through the actual Runner for %s', async (baseURL, model, controls) => {
+    const config = createOpenAiConfigForTest({protocol: 'chat_completions', baseURL, model, lightModel: model,
+      quickPathPerTurnMs: 100, quickMaxTurns: 3, maxRunTimeoutMs: 3000, streamIdleTimeoutMs: 50});
+    jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(config);
+    const runtime = createOpenAiRuntimeForTest();
+    prepareStub(runtime).mockImplementation(async (...args: any[]) => {
+      const invocation = {toolCallId: 'closeout-data', toolName: 'execute_sql', params: {}, extra: {}};
+      await args[4].toolObserver({...invocation, phase: 'started'});
+      await args[4].toolObserver({...invocation, phase: 'completed', result: {
+        content: [{type: 'text', text: '{"success":true,"columns":["value"],"rows":[[1]]}'}]}});
+      return {systemPrompt: 'Use retained fixture evidence.', tools: [], allowedTools: [], hypotheses: [],
+        sessionContext: args[4].sessionContext, previousTurns: args[4].previousTurns};
+    });
+    const request = jest.spyOn(globalThis, 'fetch').mockImplementationOnce((_input, init) =>
+      new Promise((_resolve, reject) => {
+        const signal = init!.signal!;
+        const cancel = () => reject(signal.reason);
+        if (signal.aborted) cancel(); else signal.addEventListener('abort', cancel, {once: true});
+      })).mockResolvedValueOnce(chatCompletionResponse('stage-closeout', {role: 'assistant', content: 'Retained answer.'}, 'stop'));
+    const result = await runtime.analyze('query', `stage-closeout-${model}`, 'trace', {analysisMode: 'fast', providerId: null});
+    expect(request).toHaveBeenCalledTimes(2);
+    const closeout = JSON.parse(String(request.mock.calls[1][1]?.body));
+    expect(closeout).toMatchObject({...controls, tool_choice: 'none', max_tokens: config.maxOutputTokens});
+    expect(closeout).not.toHaveProperty('response_format'); expect(closeout.tools ?? []).toHaveLength(0);
+    expect(result).toMatchObject({partial: true, terminationReason: 'timeout', conclusion: 'Retained answer.',
+      completion: {status: 'incomplete', reason: 'timeout'}});
+    const context = finalization.takeFinalizationContext(result); if (context) finalizationContexts.push(context);
+  });
+
+  it.each([
     ['https://api.deepseek.com/v1', 'chat_completions', 'deepseek-flash', {thinking: {type: 'disabled'}}],
     ['https://api.deepseek.com/v1', 'responses', 'deepseek-flash', {reasoning: {effort: 'none'}}],
     ['https://open.bigmodel.cn/api/paas/v4', 'chat_completions', 'glm-5.3-flash', {thinking: {type: 'enabled'}, reasoning_effort: 'low'}],
@@ -3117,7 +3175,10 @@ describe('OpenAI output-only delivery provider controls', () => {
     ['', 'chat_completions', 'deepseek-flash', undefined],
   ] as const)('maps %s %s %s to model-aware delivery controls', (baseURL, protocol, model, expected) => {
     for (const purpose of ['declaration_repair', 'continuation'] as const) {
-      expect(__testing.outputOnlyProviderData({baseURL, protocol}, purpose, model)).toEqual(expected);
+      const jsonRepair = purpose === 'declaration_repair' && baseURL === 'https://api.deepseek.com/v1' &&
+        protocol === 'chat_completions' && model === 'deepseek-flash';
+      expect(__testing.outputOnlyProviderData({baseURL, protocol}, purpose, model))
+        .toEqual(jsonRepair ? {...expected, response_format: {type: 'json_object'}} : expected);
     }
   });
 
@@ -3125,7 +3186,7 @@ describe('OpenAI output-only delivery provider controls', () => {
     const config = createOpenAiConfigForTest({baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4',
       protocol: 'chat_completions', model: 'glm-5.3-flash', lightModel: 'unknown-light'});
     expect(__testing.outputOnlyProviderData(config, 'declaration_repair', config.model))
-      .toEqual({thinking: {type: 'enabled'}, reasoning_effort: 'low'});
+      .toEqual({thinking: {type: 'enabled'}, reasoning_effort: 'low', response_format: {type: 'json_object'}});
     expect(__testing.outputOnlyProviderData(config, 'declaration_repair', config.lightModel)).toBeUndefined();
   });
 });
