@@ -36,8 +36,9 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   createAssistantMessageEventStream,
-  Type,
   createModels,
+  getCurrentSystemPrompt,
+  getCurrentTools,
   fauxAssistantMessage,
   fauxProvider,
   fauxToolCall,
@@ -50,8 +51,10 @@ import {googleProvider} from '@earendil-works/pi-ai/providers/google';
 import {takeFinalizationContext} from './src/agentRuntime/analysisFinalizationContext.ts';
 import {
   PI_AGENT_CORE_MODEL_JSON_ENV,
+  PI_FINAL_REPORT_CORRECTION_SECTION,
   PiAgentCoreRuntime,
   loadPiAgentCoreModule,
+  piSystemSectionMessage,
 } from './src/agentRuntime/engines/pi/piAgentCoreRuntime.ts';
 import {renderConclusionContractSidecar} from './src/agent/core/conclusionContract.ts';
 import {inspectCandidateProtocol} from './src/services/canonicalAnalysisResult.ts';
@@ -76,7 +79,7 @@ const agent = new Agent({
       name: 'echo',
       label: 'Echo',
       description: 'Echo a value',
-      parameters: Type.Object({value: Type.String()}),
+      parameters: {type: 'object', properties: {value: {type: 'string'}}, required: ['value'], additionalProperties: false},
       execute: async (_toolCallId, args) => {
         calls.push(args);
         return {content: [{type: 'text', text: 'echo:' + args.value}], details: {}};
@@ -89,6 +92,12 @@ const agent = new Agent({
 await agent.prompt('call the echo tool');
 assert.deepEqual(calls, [{value: 'provider-explicit'}]);
 assert.equal(agent.state.messages.at(-1)?.stopReason, 'stop');
+
+// The runtime's correction section must round-trip through the installed SDK's prompt replay.
+const sectionBase = [{role: 'system', content: 'base prompt', timestamp: 0}];
+const withSection = [...sectionBase, piSystemSectionMessage(PI_FINAL_REPORT_CORRECTION_SECTION, 'correction rules')];
+assert.equal(getCurrentSystemPrompt(withSection), 'base prompt\n\ncorrection rules');
+assert.equal(getCurrentSystemPrompt([...withSection, piSystemSectionMessage(PI_FINAL_REPORT_CORRECTION_SECTION, null)]), 'base prompt');
 
 const resumedMessages = structuredClone(agent.state.messages);
 faux.setResponses([fauxAssistantMessage('resumed-finished')]);
@@ -139,7 +148,7 @@ const model = {
 
 // Resolve the actual installed model capabilities; never substitute model names or a second catalog.
 const nativeGlm = zaiCodingCnProvider().getModels().find(value => value.id === 'glm-5.3-flash');
-const nativeDeepSeek = deepseekProvider().getModels().find(value => value.id === 'deepseek-v4-flash');
+const nativeDeepSeek = deepseekProvider().getModels().find(value => value.id === 'deepseek-flash');
 assert.ok(nativeGlm); assert.ok(nativeDeepSeek);
 function wireReply(modelId) {
   return new Response('data: ' + JSON.stringify({id: 'wire', model: modelId,
@@ -167,7 +176,7 @@ for (const purpose of ['classification', 'declaration_repair', 'review']) {
   assert.equal(request.model, 'glm-5.3-flash');
   assert.equal(request.thinking.type, 'enabled'); assert.equal(request.reasoning_effort, 'low');
   const deepseek = await reasoningRequest({model: nativeDeepSeek}, {}, purpose);
-  assert.equal(deepseek.model, 'deepseek-v4-flash');
+  assert.equal(deepseek.model, 'deepseek-flash');
   assert.deepEqual(deepseek.thinking, {type: 'disabled'}); assert.equal(deepseek.reasoning_effort, undefined);
 }
 const authoredReasoning = {thinkingLevel: 'high', model: {
@@ -302,7 +311,7 @@ function createRuntimeProvider(options) {
       streamFn: (runtimeModel, context, requestOptions) => {
         requests.push({
           messages: structuredClone(context.messages),
-          tools: (context.tools ?? []).map(tool => tool.name),
+          tools: getCurrentTools(context.messages).map(tool => tool.name),
         });
         return runtimeModels.streamSimple(runtimeModel, context, requestOptions);
       },
@@ -432,9 +441,12 @@ assert.deepEqual(resumedSnapshot.engineState, runtimeSnapshot.engineState);
 // history supplies continuity to both classification and the answer request.
 assert.equal(resumedRuntimeProvider.requests.length, 2);
 for (const request of resumedRuntimeProvider.requests) {
-  assert.equal(request.messages.length, 1);
-  assert.equal(request.messages[0].role, 'user');
-  const currentInput = JSON.stringify(request.messages[0].content);
+  // Pi 1.x carries the prompt as at most one leading system message; no stale turns follow.
+  const conversation = request.messages.filter(message => message.role !== 'system');
+  assert.ok(request.messages.findIndex(message => message.role !== 'system') <= 1);
+  assert.equal(conversation.length, 1);
+  assert.equal(conversation[0].role, 'user');
+  const currentInput = JSON.stringify(conversation[0].content);
   assert.match(currentInput, /historical_context/);
   assert.match(currentInput, /runtime-first/);
   assert.match(currentInput, /completionStatus/);

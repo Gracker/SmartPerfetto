@@ -158,6 +158,8 @@ import {
   DEFAULT_PROVIDER_STREAM_IDLE_TIMEOUT_MS,
   type RuntimeTimeoutKind,
 } from '../../runtimeLimits';
+import type {AgentOptions as InstalledPiAgentOptions} from '@earendil-works/pi-agent-core';
+import type {SystemMessage} from '@earendil-works/pi-ai';
 import {
   createPiAgentCoreProviderRuntime,
   type PiAgentCoreProviderRuntime,
@@ -219,8 +221,6 @@ type EnvLike = Record<string, string | undefined>;
 interface PiAgentCoreAgentState {
   messages?: unknown[];
   tools?: unknown[];
-  systemPrompt?: string;
-  errorMessage?: string;
 }
 
 interface PiAgentCoreAgent {
@@ -231,9 +231,13 @@ interface PiAgentCoreAgent {
   reset(): void;
 }
 
-export interface PiAgentCoreAgentOptions extends Record<string, unknown> {
-  streamFn: (...args: any[]) => unknown;
-}
+/**
+ * Bound to the installed SDK's option names so an upstream rename or removal
+ * fails typecheck instead of being silently ignored by the dynamic import.
+ */
+export type PiAgentCoreAgentOptions = {
+  [K in keyof InstalledPiAgentOptions]?: K extends 'streamFn' ? (...args: any[]) => unknown : unknown;
+} & {streamFn: (...args: any[]) => unknown};
 
 interface PiAgentCoreModule {
   Agent: new (options: PiAgentCoreAgentOptions) => PiAgentCoreAgent;
@@ -544,6 +548,13 @@ export async function loadPiAgentCoreModule(
 
   const packageName = '@earendil-works/pi-agent-core';
   return importEsmModule(packageName) as Promise<PiAgentCoreModule>;
+}
+
+export const PI_FINAL_REPORT_CORRECTION_SECTION = 'smartperfetto-final-report-correction';
+
+/** A later transcript system message that sets (or, with null, removes) one named prompt section. */
+export function piSystemSectionMessage(name: string, text: string | null): SystemMessage {
+  return {role: 'system', content: '', sections: {[name]: text}, timestamp: Date.now()};
 }
 
 function extractAssistantText(message: unknown): string {
@@ -1684,23 +1695,23 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       maxRetryDelayMs: modelConfig.maxRetryDelayMs,
       thinkingBudgets: modelConfig.thinkingBudgets,
       // Pi calls this after the real assistant/tool turn, before dispatching another.
-      shouldStopAfterTurn: ({message}: {message: Record<string, unknown>}) => {
-        if (rounds < providerTurnLimit) return false;
+      finishTurn: (({message}) => {
+        if (rounds < providerTurnLimit) return undefined;
         const toolCall = Array.isArray(message.content) && message.content.some(part => part?.type === 'toolCall');
         const finished = message.stopReason === 'stop' && !message.errorMessage
           && message.deferred === undefined && !toolCall;
         turnLimitReached = !finished && message.stopReason !== 'error'
           && message.stopReason !== 'aborted' && message.stopReason !== 'length'
           && !message.errorMessage;
-        return true;
-      },
-      beforeToolCall: async ({toolCall}: {toolCall?: {name?: string}}) => {
+        return {action: 'end' as const};
+      }) satisfies InstalledPiAgentOptions['finishTurn'],
+      beforeToolCall: (async ({toolCall}) => {
         work.assertActive();
         if (!toolAdmissionsOpen || turnLimitReached || !toolCall?.name || !prep.allowedToolNames.has(toolCall.name)) {
           return {block: true, reason: 'Tool is not in the SmartPerfetto request-scoped allowlist.'};
         }
         return undefined;
-      },
+      }) satisfies InstalledPiAgentOptions['beforeToolCall'],
     });
     runAgent = agent;
     this.activeAgents.set(sessionId, agent);
@@ -1874,17 +1885,18 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           remainingMs: getRunDeadlineMs() - Date.now(),
           failOpen: deliveryCallFailsOpen(turnIntent, {bodyMissing: !declarationRequest && !candidateHasAnswerBody(acceptedText)})})) {
         const originalTools = agent.state.tools;
-        const originalSystemPrompt = agent.state.systemPrompt;
-        const originalError = agent.state.errorMessage;
         const declarationMessageBoundary = agent.state.messages?.length ?? 0;
         let acceptedDeclaration: string | undefined;
         correctionInProgress = true;
         declarationCompletionInProgress = Boolean(declarationRequest);
         try {
           agent.state.tools = [];
-          agent.state.systemPrompt = declarationRequest
-            ? originalSystemPrompt
-            : `${originalSystemPrompt}\n\n${loadPiFinalReportCorrectionSystemPrompt(outputLanguage)}`;
+          // Pi replays the prompt from transcript system messages: an ordinary correction
+          // adds a named section, removed by name in finally.
+          if (!declarationRequest) {
+            agent.state.messages = [...(agent.state.messages ?? []), piSystemSectionMessage(
+              PI_FINAL_REPORT_CORRECTION_SECTION, loadPiFinalReportCorrectionSystemPrompt(outputLanguage))];
+          }
           const candidate = await runProviderPrompt(correctionPrompt,
             Math.min(turnBudget.totalTurns, rounds + 1));
           authorization.assertCurrent();
@@ -1939,8 +1951,10 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
             agent.state.messages = (agent.state.messages ?? []).slice(0, declarationMessageBoundary);
           }
           agent.state.tools = originalTools;
-          agent.state.systemPrompt = originalSystemPrompt;
-          agent.state.errorMessage = originalError;
+          if (!declarationRequest) {
+            agent.state.messages = [...(agent.state.messages ?? []),
+              piSystemSectionMessage(PI_FINAL_REPORT_CORRECTION_SECTION, null)];
+          }
           declarationCompletionInProgress = false;
           correctionInProgress = false;
         }

@@ -101,11 +101,11 @@ test('Pi provider-explicit runtime ships exact aligned optional dependencies and
   const backendPackage = JSON.parse(readFileSync(join(root, 'backend/package.json'), 'utf8'));
   assert.equal(
     backendPackage.optionalDependencies['@earendil-works/pi-agent-core'],
-    '0.85.1',
+    '1.5.0',
   );
   assert.equal(
     backendPackage.optionalDependencies['@earendil-works/pi-ai'],
-    '0.85.1',
+    '1.5.0',
   );
   assert.match(backendPackage.scripts['test:architecture'], /test:pi-provider-runtime/);
 

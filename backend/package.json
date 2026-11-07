@@ -229,8 +229,8 @@
   },
   "optionalDependencies": {
     "@ai-sdk/openai-compatible": "^3.0.48",
-    "@earendil-works/pi-agent-core": "0.85.1",
-    "@earendil-works/pi-ai": "0.85.1",
+    "@earendil-works/pi-agent-core": "1.5.0",
+    "@earendil-works/pi-ai": "1.5.0",
     "@opencode-ai/sdk": "^1.15.13",
     "opencode-ai": "^1.15.13"
   },

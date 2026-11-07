@@ -19,7 +19,6 @@ import type {
   ProviderEnv,
   ProviderStreams,
   SimpleStreamOptions,
-  StreamFunction,
   StreamOptions,
 } from '@earendil-works/pi-ai';
 import {
@@ -70,6 +69,11 @@ export interface PiStreamPurposePolicy {
   sdkIdentity?: ResolveModelExecutionProfileInput['sdk'];
   onExecutionPolicy?: (receipt: ModelExecutionPolicyReceipt) => void;
 }
+/**
+ * Wraps `Models.streamSimple`, which accepts a plain Context and normalizes it itself.
+ * Pi agent transcripts (already normalized) and tool-free one-shot calls both fit.
+ */
+export type PiStreamFunction = Models['streamSimple'];
 export class PiModelExecutionConfigurationError extends Error {
   constructor() {super('pi_model_execution_invalid_configuration');}
 }
@@ -77,8 +81,8 @@ export class PiModelExecutionConfigurationError extends Error {
 export interface PiAgentCoreProviderRuntime {
   model: Model<Api>;
   models: PiAgentCoreProviderModels;
-  streamFn: StreamFunction;
-  streamFnForPurpose?: (purpose: RuntimeModelCallPurpose, policy?: PiStreamPurposePolicy) => StreamFunction;
+  streamFn: PiStreamFunction;
+  streamFnForPurpose?: (purpose: RuntimeModelCallPurpose, policy?: PiStreamPurposePolicy) => PiStreamFunction;
 }
 
 export type PiAgentCoreProviderRuntimeLoader = (
@@ -471,7 +475,7 @@ export async function createPiAgentCoreProviderRuntime(
   const capturedIdentity = structuredClone(identity(model));
   const asSetting = (level: ModelThinkingLevel | undefined): ReasoningSetting | undefined => level === undefined
     ? undefined : level === 'off' ? {mode: 'disabled'} : {mode: 'enabled', effort: level};
-  const streamFnForPurpose = (purpose: RuntimeModelCallPurpose, policy?: PiStreamPurposePolicy): StreamFunction => {
+  const streamFnForPurpose = (purpose: RuntimeModelCallPurpose, policy?: PiStreamPurposePolicy): PiStreamFunction => {
     // Per-invocation selection: cached provider runtimes must never retain a run's observer or output cap.
     return (sentModel, context, options) => {
       let requestedLevel: ModelThinkingLevel | undefined;

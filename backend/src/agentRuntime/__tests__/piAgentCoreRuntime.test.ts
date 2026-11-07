@@ -116,11 +116,22 @@ class FakePiAgent {
     promptIndex: number,
   ) => Promise<unknown[] | undefined> | unknown[] | undefined) | undefined;
 
+  // Mirrors Pi 1.x: systemPrompt is read-only, replayed from the seed plus transcript sections.
   state = {
+    basePrompt: '',
     messages: [] as unknown[],
     tools: [] as unknown[],
-    systemPrompt: '',
     model: undefined as unknown,
+    get systemPrompt(): string {
+      const sections = new Map<string, string>();
+      for (const message of this.messages as Array<{role?: string; sections?: Record<string, string | null>}>) {
+        if (message?.role !== 'system') continue;
+        for (const [name, value] of Object.entries(message.sections ?? {})) {
+          if (value === null) sections.delete(name); else sections.set(name, value);
+        }
+      }
+      return [this.basePrompt, ...sections.values()].filter(Boolean).join('\n\n');
+    },
   };
 
   private readonly listeners: Array<(event: PiAgentCoreEvent) => void> = [];
@@ -141,7 +152,7 @@ class FakePiAgent {
       messages?: unknown[];
     } | undefined;
     this.state.tools = initialState?.tools ?? [];
-    this.state.systemPrompt = initialState?.systemPrompt ?? '';
+    this.state.basePrompt = initialState?.systemPrompt ?? '';
     this.state.model = initialState?.model;
     this.state.messages = [...(initialState?.messages ?? [])];
   }
@@ -3671,7 +3682,7 @@ describe('experimental Pi agent-core runtime contract', () => {
         dispatched++;
         const message = {role: 'assistant', stopReason: 'toolUse', content: [{type: 'text', text: `attempt ${dispatched}`} ]};
         agent.emitForTest({type: 'turn_end', message});
-        if (await (agent.options?.shouldStopAfterTurn as any)({message})) return [message];
+        if (await (agent.options?.finishTurn as any)({message})) return [message];
         if (dispatched > 5) throw new Error('native turn guard was not enforced');
       }
     };
@@ -3700,7 +3711,7 @@ describe('experimental Pi agent-core runtime contract', () => {
     FakePiAgent.promptHandler = async agent => {
       const message = {role: 'assistant', stopReason: 'toolUse', content: [{type: 'text', text: 'Retained evidence'}]};
       agent.emitForTest({type: 'turn_end', message});
-      expect(await (agent.options?.shouldStopAfterTurn as any)({message})).toBe(true);
+      expect(await (agent.options?.finishTurn as any)({message})).toEqual({action: 'end'});
       return [message];
     };
     const result = await typedRuntime({env: {AGENT_QUICK_MAX_TURNS: String(maxTurns)}})
@@ -3729,7 +3740,7 @@ describe('experimental Pi agent-core runtime contract', () => {
     const mainLoader = jest.fn(async () => ({Agent: FakePiAgent}));
     const runtime = new PiAgentCoreRuntime(createFakeTraceProcessorService(), {kind: 'pi-agent-core', source: 'env'}, {
       env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON}, moduleLoader: mainLoader,
-      providerRuntimeLoader: async config => ({model: config.model as any, models: {} as any,
+      providerRuntimeLoader: async config => ({...await loadFakePiProviderRuntime(config),
         streamFn: (() => {invoked = true; return {result: () => classifier.promise};}) as any}),
     });
     const pending = runtime.analyze('question', 'typed-pi-cancel-classification', 'trace-pi');
@@ -3841,7 +3852,7 @@ describe('experimental Pi agent-core runtime contract', () => {
         expect(await (agent.options!.beforeToolCall as any)({toolCall: {name: 'execute_sql'}})).toMatchObject({block: true});
       }
       agent.emitForTest({type: 'turn_end', message});
-      expect(await (agent.options!.shouldStopAfterTurn as any)({message})).toBe(index === 2);
+      expect(await (agent.options!.finishTurn as any)({message})).toEqual(index === 2 ? {action: 'end'} : undefined);
       return [message];
     };
     const result = await typedRuntime({env: {AGENT_QUICK_MAX_TURNS: '50'}})
@@ -3878,7 +3889,7 @@ describe('experimental Pi agent-core runtime contract', () => {
         const message = {role: 'assistant', stopReason: index === 2 && outcome === 'incomplete' ? 'length' : 'stop',
           content: [{type: 'text', text: index === 1 ? first : second}]};
         agent.emitForTest({type: 'turn_end', message});
-        expect(await (agent.options!.shouldStopAfterTurn as any)({message})).toBe(true);
+        expect(await (agent.options!.finishTurn as any)({message})).toEqual({action: 'end'});
         return [message];
       };
       const result = await typedRuntime({env: {AGENT_QUICK_MAX_TURNS: '2'}})
@@ -3914,7 +3925,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       if (index === 2) {expect(agent.state.tools).toEqual([]); expect(prompt).toContain('invalid_framing');}
       const message = {role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: index === 1 ? first : good}]};
       agent.emitForTest({type: 'turn_end', message});
-      expect(await (agent.options!.shouldStopAfterTurn as any)({message})).toBe(true);
+      expect(await (agent.options!.finishTurn as any)({message})).toEqual({action: 'end'});
       return [message];
     };
     const result = await typedRuntime({env: {AGENT_QUICK_MAX_TURNS: '2'}})
