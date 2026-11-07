@@ -181,6 +181,7 @@ export function copyAnalysisDeliveryFields(input: AnalysisDeliveryFields): Analy
       taskKind: intent.taskKind, sceneId: opaqueId(intent.sceneId), scope: intent.scope,
       recommendedComplexity: intent.recommendedComplexity, deliverable: intent.deliverable,
       evidenceAccess: intent.evidenceAccess, registryFingerprint: opaqueId(intent.registryFingerprint),
+      ...(member(intent.targetUse, ['current_selection', 'other_target', 'unknown']) ? {targetUse: intent.targetUse} : {}),
       ...(member(intent.sourceNeed, SOURCE_NEEDS) ? {sourceNeed: intent.sourceNeed} : {}),
       ...(typeof intent.reason === 'string' ? {reason: intent.reason} : {}),
       ...(typeof intent.actualModel === 'string' ? {actualModel: intent.actualModel} : {}),

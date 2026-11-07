@@ -997,8 +997,12 @@ describe('investigation assessment result surfaces', () => {
   const INVESTIGATION_ASSESSMENT_FIELDS = {schemaVersion: true, binding: true, status: true, requirements: true,
     evidenceRecords: true, ledgerAcquisition: true} as const satisfies Record<keyof FinalInvestigationAssessment, true>;
 
-  function withInvestigation(): AnalysisResult {
+  function withInvestigation(targetUse?: NonNullable<AnalysisResult['turnIntent']>['targetUse']): AnalysisResult {
     const result = deliveredResult();
+    if (targetUse !== undefined) {
+      result.turnIntent = {...result.turnIntent!, targetUse};
+      result.reportAssessment!.binding.intentFingerprint = analysisDeliveryFingerprint(result.turnIntent);
+    }
     result.investigationAssessment = {schemaVersion: 1, status: 'checked',
       binding: {...result.reportAssessment!.binding, ledgerFingerprint: analysisDeliveryFingerprint('ledger')},
       evidenceRecords: [{recordId: 'capture-1', captureId: 'capture-1', rowIndex: 0,
@@ -1037,6 +1041,42 @@ describe('investigation assessment result surfaces', () => {
       expect(copied.completion).toEqual(result.completion);
     }
   });
+
+  it.each(['current_selection', 'other_target', 'unknown'] as const)(
+    'preserves the bound target decision %s through owner delivery and snapshots', targetUse => {
+      const result = withInvestigation(targetUse);
+      for (const copy of [projectOwnerAnalysisResult(result.sessionId, result, 'en'), copyAnalysisResultForSnapshot(result)]) {
+        expect(copy.turnIntent).toEqual(result.turnIntent);
+        expect(copy.reportAssessment).toEqual(result.reportAssessment);
+        expect(copy.investigationAssessment).toEqual(result.investigationAssessment);
+        expect(copy.deliveryAssurance).toEqual(result.deliveryAssurance);
+        expect(copy.completion).toEqual(result.completion);
+      }
+    });
+
+  it.each(['other_target', 'unknown', undefined] as const)(
+    'withdraws report and investigation bindings when the pinned target decision changes to %s', targetUse => {
+      const result = withInvestigation('current_selection');
+      const {targetUse: _original, ...intent} = result.turnIntent!;
+      result.turnIntent = {...intent, ...(targetUse === undefined ? {} : {targetUse})};
+      const copy = copyAnalysisResultForSnapshot(result);
+      expect(copy.reportAssessment?.binding.intentFingerprint).toBe('');
+      expect(copy.investigationAssessment?.binding.intentFingerprint).toBe('');
+      expect(copy.investigationAssessment?.requirements[0].evidenceRecordIds).toEqual([]);
+      expect(copy.deliveryAssurance).toMatchObject({report: 'not_checked', investigation: 'not_checked', investigationEvidence: 'not_checked'});
+      expect(copy.completion).toEqual(result.completion);
+    });
+
+  it.each([null, true, [], {}, 'PRIVATE_TARGET_CANARY'])(
+    'does not copy an invalid target decision or preserve its binding: %j', targetUse => {
+      const result = withInvestigation('current_selection');
+      result.turnIntent = {...result.turnIntent!, targetUse: targetUse as never};
+      const copy = copyAnalysisResultForSnapshot(result);
+      expect(copy.turnIntent).not.toHaveProperty('targetUse');
+      expect(copy.reportAssessment?.binding.intentFingerprint).toBe('');
+      expect(copy.investigationAssessment?.binding.intentFingerprint).toBe('');
+      expect(JSON.stringify(copy)).not.toContain('PRIVATE_TARGET_CANARY');
+    });
 
   it.each(['identityChanged', 'evidenceChanged', 'sourceChanged', 'claimsChanged'] as const)(
     'invalidates investigation evidence when %s without changing native completion', field => {
