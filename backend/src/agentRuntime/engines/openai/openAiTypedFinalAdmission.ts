@@ -31,7 +31,7 @@ export type OpenAiTypedFinalWireFailure =
   | 'invalid_json' | 'invalid_framing' | 'transport_error' | 'not_sse'
   | 'unknown_field' | 'invalid_chunk' | 'multiple_choices' | 'invalid_tool_delta'
   | 'multiple_tools' | 'conflicting_identity' | 'raw_limit' | 'assistant_content' | 'assistant_refusal'
-  | 'missing_done' | 'data_after_done' | 'missing_tool' | 'non_tool_terminal';
+  | 'missing_done' | 'data_after_done' | 'missing_tool' | 'non_tool_terminal' | 'invalid_envelope';
 
 const WIRE_FINISH_REASONS = TYPED_OUTPUT_WIRE_FINISH_REASONS;
 type WireFinishReason = typeof WIRE_FINISH_REASONS[number];
@@ -76,6 +76,35 @@ export interface OpenAiTypedFinalWireCollector extends OpenAiTypedFinalWireObser
 
 const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
+
+/** Final carriers have exactly one outer field. A root comma cannot belong to
+ * that envelope, even when JSON.parse would silently collapse duplicate keys.
+ * This is only a veto; the existing JSON/compiler/native gates still validate it. */
+function createFinalEnvelopeObserver() {
+  let rootObject: boolean | undefined;
+  let depth = 0, inString = false, escaped = false, rootComma = false;
+  return {
+    hasRootComma: () => rootComma,
+    append(fragment: string) {
+      for (const char of fragment) {
+        if (rootComma || rootObject === false) return;
+        if (rootObject === undefined) {
+          if (' \t\r\n'.includes(char)) continue;
+          rootObject = char === '{';
+          if (!rootObject) return;
+        }
+        if (inString) {
+          if (escaped) escaped = false;
+          else if (char === '\\') escaped = true;
+          else if (char === '"') inString = false;
+        } else if (char === '"') inString = true;
+        else if (char === '{' || char === '[') depth++;
+        else if (char === '}' || char === ']') depth--;
+        else if (char === ',' && depth === 1) rootComma = true;
+      }
+    },
+  };
+}
 const onlyKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean =>
   Object.keys(value).every(key => keys.includes(key));
 const nonempty = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
@@ -121,6 +150,7 @@ export function createOpenAiTypedFinalWireCollector(options: OpenAiTypedFinalMat
       let responseId: string | undefined, callId: string | undefined, callIndex: number | undefined;
       let toolName = '', rawArguments = '', argumentBytes = 0;
       let companion = '', companionBytes = 0, argumentsOverLimit = false, companionOverLimit = false;
+      const argumentEnvelope = createFinalEnvelopeObserver(), assistantEnvelope = createFinalEnvelopeObserver();
       let finishReason: string | undefined;
       let done = false, ended = false;
       let actionSeen = false;
@@ -185,7 +215,7 @@ export function createOpenAiTypedFinalWireCollector(options: OpenAiTypedFinalMat
                 const nextBytes = companionBytes + appendedUtf8Bytes(companion, delta.content);
                 if (nextBytes > OPENAI_TYPED_FINAL_RAW_BYTES || nextBytes + argumentBytes > OPENAI_TYPED_FINAL_RAW_BYTES) {
                   companionOverLimit = true; reject('raw_limit');
-                } else {companionBytes = nextBytes; companion += delta.content;}
+                } else {companionBytes = nextBytes; companion += delta.content; assistantEnvelope.append(delta.content);}
               }
             } else if ((typeof delta.content === 'string' && delta.content.length) ||
               (typeof delta.refusal === 'string' && delta.refusal.length)) reject('assistant_content', false);
@@ -218,12 +248,12 @@ export function createOpenAiTypedFinalWireCollector(options: OpenAiTypedFinalMat
                   const nextBytes = argumentBytes + appendedUtf8Bytes(rawArguments, args);
                   if (nextBytes > OPENAI_TYPED_FINAL_RAW_BYTES || nextBytes + companionBytes > OPENAI_TYPED_FINAL_RAW_BYTES) {
                     argumentsOverLimit = true; reject('raw_limit');
-                  } else {argumentBytes = nextBytes; rawArguments += args;}
+                  } else {argumentBytes = nextBytes; rawArguments += args; argumentEnvelope.append(args);}
                 }
               } else if (typeof args === 'string' && failure !== 'raw_limit') {
                 argumentBytes += appendedUtf8Bytes(rawArguments, args);
                 if (argumentBytes > OPENAI_TYPED_FINAL_RAW_BYTES) reject('raw_limit');
-                else rawArguments += args;
+                else {rawArguments += args; argumentEnvelope.append(args);}
               }
             }
           }
@@ -237,6 +267,7 @@ export function createOpenAiTypedFinalWireCollector(options: OpenAiTypedFinalMat
           if (dual && !actionSeen) {
             if (finishReason !== 'stop') reject('non_tool_terminal', false);
             if (!responseId) reject('conflicting_identity');
+            if (assistantEnvelope.hasRootComma()) reject('invalid_envelope', false);
             if (failure || unsafeWireFailure || ordinal !== dispatchOrdinal) return;
             current = Object.freeze({sourceKind: 'assistant_json', wireVersion: DUAL_CONTRACT.wireVersion,
               dispatchOrdinal, responseId: responseId!, rawAssistantText: companion});
@@ -245,6 +276,7 @@ export function createOpenAiTypedFinalWireCollector(options: OpenAiTypedFinalMat
           }
           if (finishReason !== 'tool_calls') reject('non_tool_terminal', false);
           if (!responseId || !callId || !toolName || !rawArguments || (mixed && toolName !== options.finalToolName)) reject('missing_tool', false);
+          if (toolName === options.finalToolName && argumentEnvelope.hasRootComma()) reject('invalid_envelope', false);
           if (failure || unsafeWireFailure || ordinal !== dispatchOrdinal) return;
           const retained = {dispatchOrdinal, responseId: responseId!, callId: callId!, toolName, rawArguments};
           current = Object.freeze(mixed ? {...retained, wireVersion: dual ? DUAL_CONTRACT.wireVersion : MIXED_CONTRACT.wireVersion, companion}

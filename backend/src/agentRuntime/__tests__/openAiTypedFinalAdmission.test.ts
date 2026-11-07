@@ -528,6 +528,70 @@ describe('actual bounded typed-final wire collector at the existing terminal fet
   });
 });
 
+describe('single-field final submission envelopes', () => {
+  const finish = (events: ReturnType<OpenAiTypedFinalWireObserver['startRequest']>, reason: string) => {
+    events.chunk({id: 'envelope-response', choices: [{index: 0, delta: {}, finish_reason: reason}]});
+    events.done(); events.end(true);
+  };
+  const fragments = (events: ReturnType<OpenAiTypedFinalWireObserver['startRequest']>, text: string,
+    carrier: 'function' | 'assistant', name = finalToolName) => {
+    text.split('').forEach((part, index) => events.chunk({id: 'envelope-response', choices: [{index: 0,
+      delta: carrier === 'assistant' ? {content: part} : {tool_calls: [{index: 0,
+        ...(index === 0 ? {id: 'envelope-call', type: 'function'} : {}),
+        function: {...(index === 0 ? {name} : {}), arguments: part}}]}, finish_reason: null}]}));
+  };
+
+  it.each(['function', 'assistant'] as const)('rejects repeated root fields before %s admission', carrier => {
+    const collector = createOpenAiTypedFinalWireCollector({finalToolName, wireVersion: 'openai_chat_final_wire@3'});
+    const events = collector.startRequest();
+    const text = '{"document":{"bodyParts":["first"]},"document":{"bodyParts":["second"]}}';
+    // Native JSON.parse silently loses the first authored document.
+    expect(JSON.parse(text).document.bodyParts).toEqual(['second']);
+    fragments(events, text, carrier); finish(events, carrier === 'function' ? 'tool_calls' : 'stop');
+    expect(collector.current()).toBeUndefined();
+    expect(collector.diagnostic()).toMatchObject({status: 'rejected', reason: 'invalid_envelope'});
+    expect(JSON.stringify(collector.diagnostic())).not.toContain('bodyParts');
+  });
+
+  it.each([
+    '{"document":{},"document":{}}',
+    String.raw`{"document":{},"\u0064ocument":{}}`,
+    '{"document":{},"PRIVATE_ENVELOPE_CANARY":{}}',
+    '{"document":{},}',
+  ])('rejects an additional root member without retaining its name: %s', text => {
+    const collector = createOpenAiTypedFinalWireCollector({finalToolName});
+    const events = collector.startRequest();
+    fragments(events, text, 'function'); finish(events, 'tool_calls');
+    expect(collector.current()).toBeUndefined();
+    expect(collector.diagnostic()).toMatchObject({status: 'rejected', reason: 'invalid_envelope'});
+    expect(JSON.stringify(collector.diagnostic())).not.toContain('PRIVATE_ENVELOPE_CANARY');
+  });
+
+  it.each(['function', 'assistant'] as const)('preserves single-field %s envelopes with nested commas and escaped strings', carrier => {
+    const collector = createOpenAiTypedFinalWireCollector({finalToolName, wireVersion: 'openai_chat_final_wire@3'});
+    const events = collector.startRequest();
+    const text = ` \n${JSON.stringify({document: {nested: [{a: 1, b: 2}, [3, 4]],
+      text: '\\"},"document":{,[😀', empty: {}, truth: true}})}\t`;
+    fragments(events, text, carrier); finish(events, carrier === 'function' ? 'tool_calls' : 'stop');
+    expect(collector.diagnostic()).toMatchObject({status: 'complete'});
+    expect(collector.current()).toMatchObject(carrier === 'function'
+      ? {rawArguments: text} : {rawAssistantText: text});
+  });
+
+  it('leaves ordinary multi-parameter tools and function companion text eligible', () => {
+    const collector = createOpenAiTypedFinalWireCollector({finalToolName, wireVersion: 'openai_chat_final_wire@3'});
+    const ordinary = collector.startRequest();
+    fragments(ordinary, '{"first":1,"second":2}', 'function', 'ordinary_read_tool');
+    finish(ordinary, 'tool_calls');
+    expect(collector.diagnostic()).toMatchObject({status: 'rejected', reason: 'missing_tool'});
+    const final = collector.startRequest();
+    fragments(final, '{"first":1,"second":2}', 'assistant');
+    fragments(final, '{"document":{}}', 'function'); finish(final, 'tool_calls');
+    expect(collector.current()).toMatchObject({toolName: finalToolName,
+      companion: '{"first":1,"second":2}', rawArguments: '{"document":{}}'});
+  });
+});
+
 describe('actual typed-final attempt helper with installed SDK and shared issued submission', () => {
   it.each([
     {document: 'PRIVATE_COMPILER_CANARY', code: 'invalid_json'},
@@ -1873,6 +1937,19 @@ describe('R13 explicit dual carrier through the actual installed SDK', () => {
     expect(h.submission()).toBeUndefined(); expect(issue).not.toHaveBeenCalled();
   }
 
+  it.each(['function', 'assistant'] as const)('does not issue the SDK last-wins document from %s root duplicates', async carrier => {
+    const repeated = `${whole.slice(0, -1)},${whole.slice(1)}`;
+    expect(JSON.parse(repeated)).toEqual(JSON.parse(whole));
+    const h = dual({argumentsText: repeated,
+      ...(carrier === 'assistant' ? {response: () => response(wire(repeated.split('')))} : {})});
+    try {
+      await h.settle();
+      expectNoIssue(h); expect(h.observations.handlerCalls).toBe(0);
+      expect(h.admission()!.diagnostic()).toMatchObject({status: 'rejected', reason: 'invalid_envelope'});
+      expect(h.fetcher).toHaveBeenCalledTimes(1);
+    } finally {await h.cleanup();}
+  });
+
   it.each(['whole', 'split_unicode', 'outer_whitespace', 'literal_fake_id', 'empty_actions'] as const)
     ('issues exact assistant source after all original drains for %s', async variation => {
       const text = variation === 'outer_whitespace' ? ` \n${whole}\t ` : whole;
@@ -1906,7 +1983,8 @@ describe('R13 explicit dual carrier through the actual installed SDK', () => {
         : invalid === 'missing_document' ? '{}' : invalid === 'invalid_document' ? '{"document":{}}' : ' \n ';
       const h = dual({response: () => response(wire([text]))});
       try {const stream = await h.settle(); expect(stream.finalOutput).toBe(text); expectNoIssue(h);
-        expect(h.observations.admissionFailure).toMatchObject({code: 'invalid_submission'});}
+        expect(h.observations.admissionFailure).toMatchObject({code: invalid === 'extra_key' ? 'sdk_incomplete' : 'invalid_submission'});
+        if (invalid === 'extra_key') expect(h.admission()!.diagnostic()).toMatchObject({reason: 'invalid_envelope'});}
       finally {await h.cleanup();}
     });
 
