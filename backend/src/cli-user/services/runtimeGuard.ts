@@ -84,6 +84,18 @@ function buildSqliteNativeCheck(): DoctorCheck {
   }
 }
 
+const PI_SETUP_HINT =
+  'Configure an active Pi provider (GLM, DeepSeek, Kimi, Kimi Code, MiniMax or custom) or set SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON.';
+
+function runtimeNotReadyError(problem: string, remedy: string): Error {
+  return new Error([
+    problem,
+    remedy,
+    providerConfigurationHelp(parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE), 'cli'),
+    'Run `smp doctor --format text` for the resolved runtime and provider details.',
+  ].join(' '));
+}
+
 export function assertAnalysisRuntimeReady(options: RuntimeGuardOptions = {}): RuntimeGuardResult {
   assertAiFeatureEnabled(options.aiFeature ?? 'agent_analyze');
   const selection = resolveAgentRuntimeSelection(options.providerId, options.runtimeOverride);
@@ -92,13 +104,9 @@ export function assertAnalysisRuntimeReady(options: RuntimeGuardOptions = {}): R
 
   if (selection.kind === 'openai-agents-sdk') {
     if (!hasOpenAICredentials(providerId)) {
-      throw new Error(
-        [
-          'OpenAI runtime is selected but no usable OpenAI-compatible credentials were found.',
-          'Set OPENAI_API_KEY, configure an active OpenAI/Ollama provider, or use a localhost OpenAI-compatible endpoint.',
-          providerConfigurationHelp(parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE), 'cli'),
-          'Run `smp doctor --format text` for the resolved runtime and provider details.',
-        ].join(' '),
+      throw runtimeNotReadyError(
+        'OpenAI runtime is selected but no usable OpenAI-compatible credentials were found.',
+        'Set OPENAI_API_KEY, configure an active OpenAI/Ollama provider, or use a localhost OpenAI-compatible endpoint.',
       );
     }
     return { selection, diagnostics };
@@ -108,6 +116,9 @@ export function assertAnalysisRuntimeReady(options: RuntimeGuardOptions = {}): R
     selection.kind === EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND ||
     selection.kind === PI_AGENT_CORE_RUNTIME_KIND
   ) {
+    if (diagnostics.configured !== true) {
+      throw runtimeNotReadyError('Pi Agent Core runtime is selected but no Pi model is configured.', PI_SETUP_HINT);
+    }
     return { selection, diagnostics };
   }
 
@@ -236,7 +247,7 @@ export function collectDoctorReport(cliHome: string): DoctorReport {
           ? 'Qoder SDK has no explicit PAT or CLI path; local qodercli login fallback will be used if available'
         : selection.kind === PI_AGENT_CORE_RUNTIME_KIND ||
             selection.kind === EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND
-          ? 'Pi agent-core runtime needs SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON or a configured custom provider'
+          ? PI_SETUP_HINT
           : selection.kind === EXPERIMENTAL_OPENCODE_RUNTIME_KIND ||
             selection.kind === OPENCODE_RUNTIME_KIND
             ? 'OpenCode runtime needs @opencode-ai/sdk and opencode-ai available, plus OpenAI-compatible model configuration'

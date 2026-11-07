@@ -11,7 +11,7 @@ or environment.
 
 | Runtime | SDK | Provider family | Notes |
 |---|---|---|---|
-| `claude-agent-sdk` | Claude Agent SDK | Anthropic, Bedrock, Vertex, DeepSeek, Anthropic-compatible gateways | Default runtime; requires explicit provider/env credentials and supports MCP server and configurable sub-agents under shared completion and verification contracts |
+| `claude-agent-sdk` | Claude Agent SDK | Anthropic, Bedrock, Vertex, DeepSeek, Anthropic-compatible gateways | Default when env carries Claude credentials; requires explicit provider/env credentials and supports MCP server and configurable sub-agents under shared completion and verification contracts |
 | `openai-agents-sdk` | OpenAI Agents SDK | OpenAI, Ollama, OpenAI-compatible gateways | Native OpenAI runtime; adapts the same SmartPerfetto tools as function tools |
 | `pi-agent-core` | Pi Agent Core | custom, GLM, DeepSeek, Kimi, Kimi Code, MiniMax | Optional public runtime; real model configurations reuse the shared SmartPerfetto prompt/tool/report pipeline, while fake-stream remains smoke-only; does not enable `.pi` discovery, package extensions, shell tools, or file tools |
 | `opencode` | OpenCode server / SDK | custom only | Optional public runtime; uses explicit OpenAI-compatible or OpenCode model configuration, request-scoped SmartPerfetto MCP tools, and a hardened isolated OpenCode server; does not read local OpenCode login/project state or enable built-in file/shell/web/edit tools |
@@ -47,7 +47,7 @@ Priority, highest first:
 1. `providerId` from the request or session.
 2. The Provider Manager active provider.
 3. `SMARTPERFETTO_AGENT_RUNTIME`.
-4. Default `claude-agent-sdk`.
+4. Default: `claude-agent-sdk` when env already carries Claude credentials (Anthropic key/token, Bedrock, Vertex), otherwise `pi-agent-core`.
 
 `SMARTPERFETTO_AGENT_RUNTIME` only accepts `claude-agent-sdk`,
 `openai-agents-sdk`, `pi-agent-core`, `opencode`, or `qoder-agent-sdk`. Provider names such as

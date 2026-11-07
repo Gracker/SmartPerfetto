@@ -190,7 +190,7 @@ smp config init
 
 SmartPerfetto 后端支持这些 runtime path：
 
-- `claude-agent-sdk`：默认 runtime。适合 Anthropic、Bedrock、Vertex，以及 Anthropic/Claude Code-compatible provider。
+- `claude-agent-sdk`：env 已有 Claude 凭据时的默认 runtime。适合 Anthropic、Bedrock、Vertex，以及 Anthropic/Claude Code-compatible provider。
 - `openai-agents-sdk`：OpenAI runtime。适合 OpenAI Responses API、Ollama 和支持流式 function/tool calling 的 OpenAI-compatible gateway。
 - `pi-agent-core`：可选 public runtime。真实模型配置下复用 SmartPerfetto 共享 prompt、SQL/Skill、plan/hypothesis 和 report/claim-verification 管线；后端只在选择这个 runtime 时动态加载 `@earendil-works/pi-agent-core`，不会启用 `.pi` project discovery、package extension、shell tool 或 file tool。
 - `opencode`：可选 public runtime。它会启动加固隔离的 OpenCode server，使用显式 OpenAI-compatible 或 OpenCode model 配置，只暴露 request-scoped SmartPerfetto MCP 工具；不会读取用户自己的 OpenCode CLI 登录态、project config、extension，也不会启用内建 file/shell/web/edit tools。
@@ -198,7 +198,7 @@ SmartPerfetto 后端支持这些 runtime path：
 
 这些 runtime 是互斥选择的后端编排路径。配置 OpenAI runtime 时不需要先安装或登录 Claude Code；配置 Claude API 时也不需要 OpenAI key，但本机 Claude Code 登录态不能替代 Claude Agent SDK 的显式凭据。Pi Agent Core、OpenCode 和 Qoder 与两者独立。真实模型路径应通过启动/滑动 E2E 验证分析质量；fake-stream 只用于 smoke/test，不能代表等价分析效果。
 
-运行时选择不会根据“哪个 key 存在”自动猜。优先级是：请求/会话里的 `providerId`、Provider Manager 当前 active provider、`SMARTPERFETTO_AGENT_RUNTIME`、最后默认 `claude-agent-sdk`。首次配置不要同时启用 `ANTHROPIC_*` 和 `OPENAI_*`；如果高级部署确实同时写了两类 env，但没有设置 `SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk`，实际仍会走 Claude Agent SDK。active Provider Manager profile 会覆盖 `.env` fallback；当前来源可通过带鉴权的 `/api/runtime-health` 中的 `aiEngine.credentialSource` 和 `aiEngine.providerOverridesEnv` 确认。
+除默认值只看 env 是否已有 Claude 凭据外，运行时选择不会根据“哪个 key 存在”自动猜。优先级是：请求/会话里的 `providerId`、Provider Manager 当前 active provider、`SMARTPERFETTO_AGENT_RUNTIME`、最后是默认值：env 已有 Claude 凭据（Anthropic key/token、Bedrock、Vertex）时为 `claude-agent-sdk`，否则为 `pi-agent-core`。首次配置不要同时启用 `ANTHROPIC_*` 和 `OPENAI_*`；如果高级部署确实同时写了两类 env，但没有设置 `SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk`，实际仍会走 Claude Agent SDK。active Provider Manager profile 会覆盖 `.env` fallback；当前来源可通过带鉴权的 `/api/runtime-health` 中的 `aiEngine.credentialSource` 和 `aiEngine.providerOverridesEnv` 确认。
 
 Perfetto UI 的 Provider Management 支持把同一个 provider 的两组端点一起保存：`claudeBaseUrl` / `claudeApiKey` / `claudeAuthToken` 对应 Claude Code SDK，`openaiBaseUrl` / `openaiApiKey` / `openaiProtocol` 对应 OpenAI SDK。custom provider 也可以选择 `pi-agent-core`，并填写 `piAgentCoreModelJson` 以及可选 module path / system prompt；选择 `opencode`，填写 `openCodeModelJson` / `openCodeSdkModulePath` / `openCodeSystemPrompt`；或选择 `qoder-agent-sdk`，填写 `qoderAccessToken` / `qoderCliPath` 和可选 model/system prompt 字段。AI 输入框旁的 provider switcher 会显示当前 runtime；对 DeepSeek、Qwen、Kimi、MiMo、TokenHub 或 custom 这类双端点 provider，可以在同一个下拉菜单里显式切换 runtime。切换 provider 或 runtime 会开启新的 SDK/server session。
 

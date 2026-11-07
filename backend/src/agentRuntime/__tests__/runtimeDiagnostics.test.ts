@@ -2,6 +2,12 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+const mockGetEnvForProvider = jest.fn((_id: string, _scope?: unknown): Record<string, string> | null => null);
+jest.mock('../../services/providerManager', () => ({
+  ...(jest.requireActual('../../services/providerManager') as object),
+  getProviderService: () => ({getEnvForProvider: mockGetEnvForProvider}),
+}));
+
 import {
   asRuntimeDiagnosticsPayload,
   getRuntimeDiagnosticModel,
@@ -26,6 +32,18 @@ describe('runtime diagnostics resolver', () => {
       experimental: false,
       modelConfigured: true,
     });
+  });
+
+  it('reads a Pi provider selection from that provider env, not the process env', () => {
+    mockGetEnvForProvider.mockReturnValueOnce({
+      SMARTPERFETTO_AGENT_RUNTIME: 'pi-agent-core',
+      SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON: '{"catalog":{"providers":["deepseek"],"id":"deepseek-flash"}}',
+    });
+    const diagnostics = getRuntimeDiagnostics({kind: 'pi-agent-core', source: 'provider', providerId: 'deepseek-pi'},
+      {env: {}});
+
+    expect(mockGetEnvForProvider).toHaveBeenCalledWith('deepseek-pi', undefined);
+    expect(diagnostics).toMatchObject({runtime: 'pi-agent-core', configured: true, modelConfigured: true});
   });
 
   it('resolves hidden experimental diagnostics without exposing them as production descriptors', () => {

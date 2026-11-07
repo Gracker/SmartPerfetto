@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import crypto from 'crypto';
+import {defaultEnvRuntimeKind} from '../../agentRuntime/defaultRuntimeKind';
 import {piRuntimeFingerprintInput} from '../../agentRuntime/engines/pi/piAgentCoreConfig';
 import {redactUrlForDiagnostics} from '../../agentRuntime/envCredentialSources';
 import { mergeIsolatedProviderEnv } from './envIsolation';
@@ -349,7 +350,7 @@ function inferBaseUrl(runtimeKind: AgentRuntimeKind, env: Record<string, string>
 function envRuntimeSnapshot(runtimeOverride?: AgentRuntimeKind): ProviderRuntimeSnapshot {
   const runtimeKind = runtimeOverride
     ?? parseRuntimeEnv(process.env.SMARTPERFETTO_AGENT_RUNTIME)
-    ?? 'claude-agent-sdk';
+    ?? defaultEnvRuntimeKind();
   const env = process.env;
   const timeoutPrefix = runtimeKind === 'qoder-agent-sdk'
     ? 'QODER'

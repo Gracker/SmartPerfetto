@@ -104,6 +104,7 @@ describe('buildRuntimeHealthPayload', () => {
 
   it.each([undefined, 'https://proxy.example/anthropic'])(
     'keeps the backend healthy but Claude unconfigured without credentials (%s)', (baseUrl) => {
+      process.env.SMARTPERFETTO_AGENT_RUNTIME = 'claude-agent-sdk';
       if (baseUrl) process.env.ANTHROPIC_BASE_URL = baseUrl;
       const payload = buildRuntimeHealthPayload();
       expect(payload.status).toBe('OK');
@@ -113,6 +114,12 @@ describe('buildRuntimeHealthPayload', () => {
       });
     },
   );
+
+  it('reports the Pi Agent Core default as unconfigured while the backend stays healthy', () => {
+    const payload = buildRuntimeHealthPayload();
+    expect(payload.status).toBe('OK');
+    expect(payload.aiEngine).toMatchObject({runtime: 'pi-agent-core', configured: false});
+  });
 
   // authRequired mirrors the request authenticator, including every enterprise
   // spelling and a whitespace-only operator key (which locks the API).

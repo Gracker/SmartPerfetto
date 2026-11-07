@@ -9,11 +9,12 @@ import type { RuntimeSelection } from './runtimeSelection';
 export type RuntimeFactoryEnv = Record<string, string | undefined>;
 
 export function createRuntimeFactoryEnv(
-  selection: RuntimeSelection<string>,
+  selection: Pick<RuntimeSelection<string>, 'source' | 'providerId'>,
   providerScope?: ProviderScope,
+  baseEnv: Record<string, string | undefined> = process.env,
 ): RuntimeFactoryEnv {
   const providerEnv = selection.source === 'provider' && selection.providerId
     ? getProviderService().getEnvForProvider(selection.providerId, providerScope)
     : null;
-  return mergeIsolatedProviderEnv(process.env, providerEnv);
+  return mergeIsolatedProviderEnv(baseEnv, providerEnv);
 }

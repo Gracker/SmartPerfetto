@@ -52,8 +52,13 @@ describe('resolveAgentRuntimeSelection', () => {
   const originalAiEnabled = process.env.SMARTPERFETTO_AI_ENABLED;
   const originalExperimentalEnabled = process.env.SMARTPERFETTO_ENABLE_EXPERIMENTAL_AGENT_RUNTIME;
   const originalExperimentalRuntime = process.env.SMARTPERFETTO_EXPERIMENTAL_AGENT_RUNTIME;
+  // The no-provider default depends on Claude credentials in env (hasClaudeCredentials); isolate them.
+  const originalEnv = {...process.env};
 
   beforeEach(() => {
+    for (const key of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX']) {
+      delete process.env[key];
+    }
     provider = undefined;
     providerEnv = null;
     delete process.env.SMARTPERFETTO_AGENT_RUNTIME;
@@ -64,6 +69,7 @@ describe('resolveAgentRuntimeSelection', () => {
   });
 
   afterEach(() => {
+    process.env = {...originalEnv};
     if (originalRuntime === undefined) delete process.env.SMARTPERFETTO_AGENT_RUNTIME;
     else process.env.SMARTPERFETTO_AGENT_RUNTIME = originalRuntime;
     if (originalAiEnabled === undefined) delete process.env.SMARTPERFETTO_AI_ENABLED;
@@ -93,7 +99,16 @@ describe('resolveAgentRuntimeSelection', () => {
     });
   });
 
-  it('uses Claude Agent SDK by default when no provider, snapshot, or env runtime exists', async () => {
+  it('uses Pi Agent Core by default when no provider, snapshot, env runtime or Claude credentials exist', async () => {
+    const { resolveAgentRuntimeSelection } = await import('../runtimeSelection');
+    expect(resolveAgentRuntimeSelection()).toEqual({
+      kind: 'pi-agent-core',
+      source: 'default',
+    });
+  });
+
+  it('keeps the Claude Agent SDK default for an env-only setup with Claude credentials', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-env-only';
     const { resolveAgentRuntimeSelection } = await import('../runtimeSelection');
     expect(resolveAgentRuntimeSelection()).toEqual({
       kind: 'claude-agent-sdk',
@@ -156,7 +171,7 @@ describe('resolveAgentRuntimeSelection', () => {
 
     const { resolveAgentRuntimeSelection } = await import('../runtimeSelection');
     expect(resolveAgentRuntimeSelection(null)).toMatchObject({
-      kind: 'claude-agent-sdk',
+      kind: 'pi-agent-core',
       source: 'default',
     });
   });
@@ -312,6 +327,7 @@ describe('resolveAgentRuntimeSelection', () => {
   });
 
   it('passes the resolved Claude runtime selection snapshot into the runtime instance', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-env-only';
     const claudeRuntime = createMockOrchestrator('claude');
     const createClaudeRuntime = jest.fn(() => claudeRuntime);
     jest.doMock('../engines/claude', () => ({ createClaudeRuntime }));
@@ -331,6 +347,7 @@ describe('resolveAgentRuntimeSelection', () => {
 
   it('blocks runtime creation while leaving runtime selection inspectable when AI is disabled', async () => {
     process.env.SMARTPERFETTO_AI_ENABLED = 'false';
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-env-only';
     const claudeRuntime = createMockOrchestrator('claude');
     const createClaudeRuntime = jest.fn(() => claudeRuntime);
     jest.doMock('../engines/claude', () => ({ createClaudeRuntime }));

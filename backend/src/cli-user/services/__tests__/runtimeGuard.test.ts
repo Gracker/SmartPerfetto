@@ -104,7 +104,14 @@ describe('runtime guard', () => {
     expect(() => JSON.stringify(report)).not.toThrow();
   });
 
+  test('defaults to Pi Agent Core and names its provider requirement when nothing is configured', () => {
+    expect(() => assertAnalysisRuntimeReady()).toThrow(/Pi/);
+    expect(collectDoctorReport(tmpDir).checks.find(check => check.name === 'runtime')?.message)
+      .toContain('Pi provider (GLM, DeepSeek, Kimi, Kimi Code, MiniMax or custom)');
+  });
+
   test('rejects Claude without credentials even when the SDK binary is executable', () => {
+    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'claude-agent-sdk';
     process.env.CLAUDE_BINARY_PATH = createExecutableStub(tmpDir);
     expect(() => assertAnalysisRuntimeReady()).toThrow('no configured credentials');
     expect(() => assertAnalysisRuntimeReady()).toThrow('Providers');
@@ -152,6 +159,7 @@ describe('runtime guard', () => {
   });
 
   test('rejects Claude runtime when explicit SDK binary path is not executable', () => {
+    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'claude-agent-sdk';
     process.env.CLAUDE_BINARY_PATH = path.join(tmpDir, 'missing-claude-binary');
     expect(() => assertAnalysisRuntimeReady()).toThrow('native binary is not executable');
   });

@@ -233,7 +233,7 @@ evidence semantics.
 
 SmartPerfetto has these runtime paths:
 
-- `claude-agent-sdk`: the default runtime. Use it for Anthropic, Bedrock, Vertex, and Anthropic/Claude Code-compatible providers.
+- `claude-agent-sdk`: the default runtime when env carries Claude credentials. Use it for Anthropic, Bedrock, Vertex, and Anthropic/Claude Code-compatible providers.
 - `openai-agents-sdk`: the OpenAI runtime. Use it for OpenAI Responses API, Ollama, and OpenAI-compatible gateways that support streaming function/tool calling.
 - `pi-agent-core`: optional public runtime. With a real model config it reuses SmartPerfetto's shared prompt, SQL/Skill, planning/hypothesis, and report/claim-verification pipeline. It dynamically loads `@earendil-works/pi-agent-core` and does not enable `.pi` project discovery, package extensions, shell tools, or file tools.
 - `opencode`: optional public runtime. It runs a hardened isolated OpenCode server, feeds it explicit OpenAI-compatible or OpenCode model configuration, and exposes only request-scoped SmartPerfetto MCP tools. It does not read the user's OpenCode CLI login, project config, extensions, or built-in file/shell/web/edit tools.
@@ -241,7 +241,7 @@ SmartPerfetto has these runtime paths:
 
 These runtimes are mutually selected backend orchestration paths. OpenAI runtime setup does not require installing or logging in to Claude Code; Claude API setup does not require an OpenAI key. Pi Agent Core, OpenCode, and Qoder setup are separate from both. Real-model analysis quality should be verified with startup/scrolling E2E; fake-stream is smoke/test-only and does not represent parity.
 
-Runtime selection priority is: request/session `providerId`, active Provider Manager profile, `SMARTPERFETTO_AGENT_RUNTIME`, then the default `claude-agent-sdk`. Do not enable both `ANTHROPIC_*` and `OPENAI_*` for first setup; if an advanced deployment does contain both without `SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk`, analysis still uses Claude Agent SDK. An active Provider Manager profile overrides `.env` fallback; confirm the current source with `aiEngine.credentialSource` and `aiEngine.providerOverridesEnv` from authenticated `/api/runtime-health`.
+Runtime selection priority is: request/session `providerId`, active Provider Manager profile, `SMARTPERFETTO_AGENT_RUNTIME`, then the default: `claude-agent-sdk` when env carries Claude credentials (Anthropic key/token, Bedrock, Vertex), otherwise `pi-agent-core`. Do not enable both `ANTHROPIC_*` and `OPENAI_*` for first setup; if an advanced deployment does contain both without `SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk`, analysis still uses Claude Agent SDK. An active Provider Manager profile overrides `.env` fallback; confirm the current source with `aiEngine.credentialSource` and `aiEngine.providerOverridesEnv` from authenticated `/api/runtime-health`.
 
 Perfetto UI Provider Management can store both endpoint families for the same provider: `claudeBaseUrl` / `claudeApiKey` / `claudeAuthToken` for Claude Code SDK, and `openaiBaseUrl` / `openaiApiKey` / `openaiProtocol` for OpenAI SDK. Custom providers can also select `pi-agent-core` with `piAgentCoreModelJson` and an optional module path/system prompt, `opencode` with `openCodeModelJson` / `openCodeSdkModulePath` / `openCodeSystemPrompt`, or `qoder-agent-sdk` with `qoderAccessToken` / `qoderCliPath` and optional model/system prompt fields. The provider switcher beside the AI input shows the active runtime.
 

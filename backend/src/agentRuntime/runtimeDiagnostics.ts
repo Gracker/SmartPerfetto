@@ -111,10 +111,15 @@ export function getRuntimeDiagnostics(
   selection: Pick<RuntimeSelection<string>, 'kind' | 'source' | 'providerId'>,
   input: GetRuntimeDiagnosticsInput = {},
 ): RuntimeDiagnosticsPayload {
-  const env = input.env ?? process.env;
   const selectedProviderId = input.selectedProviderId !== undefined
     ? input.selectedProviderId
     : providerIdFromSelection(selection);
+  // A selected provider's runtime config lives in its provider env, as for the runtime itself.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const {createRuntimeFactoryEnv} = require('./runtimeFactoryEnv') as typeof import('./runtimeFactoryEnv');
+  const env = selectedProviderId
+    ? createRuntimeFactoryEnv({source: 'provider', providerId: selectedProviderId}, undefined, input.env ?? process.env)
+    : input.env ?? process.env;
 
   if (isProductionAgentRuntimeKind(selection.kind)) {
     const descriptor = getProductionRuntimeDescriptor(selection.kind);

@@ -8,7 +8,7 @@ SmartPerfetto 后端现在把“模型 SDK”与“Perfetto 分析能力”分�
 
 | Runtime | SDK | Provider 类型 | 说明 |
 |---|---|---|---|
-| `claude-agent-sdk` | Claude Agent SDK | Anthropic、Bedrock、Vertex、DeepSeek、Anthropic-compatible gateway | 默认运行时，需要显式 provider/env 凭据，支持 MCP server 和可配置 sub-agent，复用共享终态与验证合约 |
+| `claude-agent-sdk` | Claude Agent SDK | Anthropic、Bedrock、Vertex、DeepSeek、Anthropic-compatible gateway | env 已有 Claude 凭据时的默认运行时，需要显式 provider/env 凭据，支持 MCP server 和可配置 sub-agent，复用共享终态与验证合约 |
 | `openai-agents-sdk` | OpenAI Agents SDK | OpenAI、Ollama、OpenAI-compatible gateway | 原生 OpenAI runtime，通过 function tools 复用同一套 SmartPerfetto 工具 |
 | `pi-agent-core` | Pi Agent Core | custom、GLM、DeepSeek、Kimi、Kimi Code、MiniMax | 可选 public runtime；真实模型配置下复用 SmartPerfetto 共享 prompt/tool/report 管线，fake-stream 仅用于 smoke；不启用 `.pi` discovery、package extension、shell/file tools |
 | `opencode` | OpenCode server / SDK | custom only | 可选 public runtime；使用显式 OpenAI-compatible 或 OpenCode model 配置、request-scoped SmartPerfetto MCP 工具和加固隔离的 OpenCode server；不读取本地 OpenCode 登录态/project state，也不启用内建 file/shell/web/edit tools |
@@ -44,11 +44,11 @@ CLI npm 包是独立终端产品，入口是 `smp` / `smartperfetto`；它不启
 1. 请求体或会话内的 `providerId`。
 2. Provider Manager 当前 active provider。
 3. `SMARTPERFETTO_AGENT_RUNTIME` env。
-4. 默认 `claude-agent-sdk`。
+4. 默认：env 中已有 Claude 凭据（Anthropic key/token、Bedrock、Vertex）时为 `claude-agent-sdk`，否则为 `pi-agent-core`。
 
 `SMARTPERFETTO_AGENT_RUNTIME` 只接受 `claude-agent-sdk`、`openai-agents-sdk`、`pi-agent-core`、`opencode` 或 `qoder-agent-sdk`。`deepseek`、`openai` 这类 provider 名称不能写在 runtime env 里；DeepSeek 应通过 Provider Manager 或 Claude/Anthropic-compatible env 配置。
 
-环境变量不会被用来猜运行时。没有 active provider 且未设置 `SMARTPERFETTO_AGENT_RUNTIME` 时，即使同时存在 `OPENAI_API_KEY` 和 `ANTHROPIC_API_KEY`，默认仍是 `claude-agent-sdk`。Provider Manager 内的 active provider 会优先于 env；双端点 provider 通过 `connection.agentRuntime` 显式决定当前 SDK。
+除第 4 步只看 env 是否已有 Claude 凭据外，其他 key（例如 `OPENAI_API_KEY`）不会被用来猜运行时；带 Claude 凭据的旧 env 配置因此保持 `claude-agent-sdk`，不会被静默迁移。Provider Manager 内的 active provider 会优先于 env；双端点 provider 通过 `connection.agentRuntime` 显式决定当前 SDK。
 
 每个分析 session 会固定自己的 credential source：具体 Provider Manager profile，或显式的 env/default fallback。恢复历史 session 时不会重新读取后来切换的 active provider；如果快照绑定的 provider 已被删除，后端会 fail-fast，而不是静默回退到另一个 provider。
 

@@ -17,6 +17,7 @@ import {
   resolveExperimentalAgentRuntimeSelection,
 } from './experimentalRuntime';
 import { createRuntimeFactoryEnv } from './runtimeFactoryEnv';
+import { defaultEnvRuntimeKind } from './defaultRuntimeKind';
 import { createRuntimeRegistryForSelection } from './runtimeRegistry';
 import {
   assertAiFeatureEnabled,
@@ -127,7 +128,7 @@ export function selectRuntimeForProvider(
     return experimentalRuntime;
   }
 
-  return { kind: 'claude-agent-sdk', source: 'default' };
+  return { kind: defaultEnvRuntimeKind(), source: 'default' };
 }
 
 export function createAgentOrchestrator(input: CreateAgentOrchestratorInput): IOrchestrator {
