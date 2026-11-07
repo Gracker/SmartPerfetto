@@ -37,6 +37,7 @@ import {createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext, toAnal
 import type {RuntimeToolObserver} from '../../runtimeToolObserver';
 import {runIntentTransport, type IntentTransportInput} from '../../intentTransport';
 import {runPiIntentTransport} from './piIntentTransport';
+import {createPiAgentModelCallTracker} from './piAgentModelCalls';
 import {admitDeliveryCall, deliveryCallFailsOpen} from '../../../services/runtimeCallStats';
 import {buildComplexityClassifierInput} from '../../../agentv3/queryComplexityContext';
 import type {ReadonlyStrategyRegistrySnapshot} from '../../../services/selfEvolution/effectiveRuntimeRegistryContext';
@@ -1666,6 +1667,8 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     let closeoutAccepted = false;
     let checkpoint: (() => AnalysisResult) | undefined;
     const emitUpdate = (update: StreamingUpdate) => this.emit('update', update);
+    const agentModelCalls = createPiAgentModelCallTracker(input => runtimePerformance.startModelCall(input),
+      {model: providerRuntime.model.id, providerOrigin: providerRuntime.model.baseUrl}, work.signal);
     const agent = new Agent({
       initialState: {
         systemPrompt: prep.systemPrompt,
@@ -1679,11 +1682,11 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       },
       sessionId,
       streamFn: (...args: Parameters<PiAgentCoreProviderRuntime['streamFn']>) => {
-        const stream = correctionInProgress
-          ? providerRuntime.streamFnForPurpose?.(declarationCompletionInProgress ? 'declaration_repair' : 'continuation',
-            {outputOnly: true}) ?? providerRuntime.streamFn
-          : providerRuntime.streamFn;
-        return stream(...args);
+        const purpose = !correctionInProgress ? 'answer_turn'
+          : declarationCompletionInProgress ? 'declaration_repair' : 'continuation';
+        return agentModelCalls.dispatch(purpose, onExecutionPolicy => (providerRuntime.streamFnForPurpose?.(purpose, {
+          ...(correctionInProgress ? {outputOnly: true} : {}), onExecutionPolicy,
+        }) ?? providerRuntime.streamFn)(...args));
       },
       toolExecution: resolvePiAgentCoreNativeToolExecutionMode({quickMode: prep.quickMode, tools: prep.tools, env: this.env}),
       transport: modelConfig.transport ?? 'auto',
@@ -1753,10 +1756,12 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       providerIdle.onEvent(event);
       if (event.type === 'turn_end') rounds++;
       if (event.type === 'done') recordEvaluationTokenDeltaIfPresent(event.message);
-      if (declarationCompletionInProgress && isPiAgentCoreVisibleOutputEvent(event)) return;
+      const visibleOutput = isPiAgentCoreVisibleOutputEvent(event);
+      if (visibleOutput) agentModelCalls.recordFirstOutput();
+      if (declarationCompletionInProgress && visibleOutput) return;
       const update = projectPiAgentCoreEventToStreamingUpdate(event, Date.now(), outputLanguage);
       if (correctionInProgress && update?.type === 'error') return;
-      if (isPiAgentCoreVisibleOutputEvent(event)) runtimePerformance.recordFirstOutput();
+      if (visibleOutput) runtimePerformance.recordFirstOutput();
       if (update) this.emit('update', update);
     });
     const verifyCandidate = async (text: string, assistant: Record<string, unknown> | undefined, attemptId: string, limited = false) => {

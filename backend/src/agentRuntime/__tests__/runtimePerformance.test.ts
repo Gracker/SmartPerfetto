@@ -559,6 +559,8 @@ describe('runtime performance receipt', () => {
     expect(normalizeModelCallUsage({prompt_tokens: 7, completion_tokens: 3,
       completion_tokens_details: {reasoning_tokens: 2}, prompt_tokens_details: {cached_tokens: 1}}))
       .toEqual({inputTokens: 7, outputTokens: 3, reasoningTokens: 2, cachedInputTokens: 1});
+    const normalized = {inputTokens: 28, outputTokens: 4, reasoningTokens: 2, cachedInputTokens: 20};
+    expect(normalizeModelCallUsage(normalized)).toEqual(normalized);
     expect(normalizeModelCallUsage({prompt_tokens: -1, completion_tokens: 'many'})).toBeUndefined();
     expect(normalizeModelCallUsage('usage')).toBeUndefined();
   });

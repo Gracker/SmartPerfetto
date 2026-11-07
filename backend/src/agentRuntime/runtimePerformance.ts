@@ -1524,7 +1524,8 @@ function tokenCount(...values: unknown[]): number | undefined {
 
 /**
  * Copy only the token counts a provider returned. Accepts the Agents SDK
- * camelCase usage and the raw Chat Completions / Responses snake_case shapes.
+ * camelCase usage, the raw Chat Completions / Responses snake_case shapes and
+ * an already normalized `RuntimeModelCallUsageV1`.
  */
 export function normalizeModelCallUsage(value: unknown): RuntimeModelCallUsageV1 | undefined {
   if (!isPlainObject(value)) return undefined;
@@ -1535,8 +1536,8 @@ export function normalizeModelCallUsage(value: unknown): RuntimeModelCallUsageV1
     .find(isPlainObject);
   const inputTokens = tokenCount(usage.inputTokens, usage.input_tokens, usage.prompt_tokens);
   const outputTokens = tokenCount(usage.outputTokens, usage.output_tokens, usage.completion_tokens);
-  const reasoningTokens = tokenCount(outputDetails?.reasoning_tokens, outputDetails?.reasoningTokens);
-  const cachedInputTokens = tokenCount(inputDetails?.cached_tokens, inputDetails?.cachedTokens);
+  const reasoningTokens = tokenCount(outputDetails?.reasoning_tokens, outputDetails?.reasoningTokens, usage.reasoningTokens);
+  const cachedInputTokens = tokenCount(inputDetails?.cached_tokens, inputDetails?.cachedTokens, usage.cachedInputTokens);
   const result: RuntimeModelCallUsageV1 = {
     ...(inputTokens !== undefined ? {inputTokens} : {}),
     ...(outputTokens !== undefined ? {outputTokens} : {}),

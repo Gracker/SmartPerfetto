@@ -54,6 +54,14 @@ describe('Pi intent transport', () => {
     expect(options).not.toHaveProperty('sessionId');
   });
 
+  it('reports provider usage to the observer with cache tokens in the prompt count', async () => {
+    const {input, message} = fixture();
+    message.usage = {...message.usage, input: 7, output: 3, cacheRead: 11, cacheWrite: 2};
+    const usage = jest.fn();
+    await expect(runPiIntentTransport({...input, observer: {usage}})).resolves.toMatchObject({status: 'ok'});
+    expect(usage).toHaveBeenCalledWith({inputTokens: 20, outputTokens: 3, cachedInputTokens: 11});
+  });
+
   it('derives the output cap from the byte limit when no explicit cap is supplied', async () => {
     const {input, model, streamFn} = fixture();
     delete (input as Partial<PiIntentTransportInput>).maxOutputTokens;

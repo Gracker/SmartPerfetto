@@ -6,6 +6,7 @@ import type {AssistantMessage} from '@earendil-works/pi-ai';
 import {PiModelExecutionConfigurationError, type PiAgentCoreProviderRuntime, type PiStreamPurposePolicy} from './piAgentCoreProvider';
 import {intentTransportTextResult, runIntentTransport, type IntentTransportInput} from '../../intentTransport';
 import type {RuntimeModelCallPurpose} from '../../runtimePerformance';
+import {piReasoningFromPolicyReceipt, piUsageToModelCallUsage} from './piAgentModelCalls';
 
 export interface PiIntentTransportInput extends IntentTransportInput {
   providerRuntime: Pick<PiAgentCoreProviderRuntime, 'model' | 'streamFn' | 'streamFnForPurpose'>;
@@ -40,10 +41,9 @@ export function runPiIntentTransport(input: PiIntentTransportInput) {
         ...(input.purpose === 'continuation' ? {outputOnly: true} : {}), sdkIdentity: input.sdkIdentity,
         onExecutionPolicy: receipt => {
           try {input.onExecutionPolicy?.(receipt);} catch { /* Observers never change a call. */ }
-          const setting = receipt.sdkEffective === 'unknown' ? undefined : receipt.sdkEffective;
+          const {reasoning, reasoningEffort} = piReasoningFromPolicyReceipt(receipt);
           try {
-            if (setting?.mode === 'disabled') input.observer?.reasoning?.('disabled');
-            else if (setting?.mode === 'enabled') input.observer?.reasoning?.('enabled', setting.effort);
+            if (reasoning) input.observer?.reasoning?.(reasoning, reasoningEffort);
           } catch { /* Observers never change a call. */ }
         },
       })
@@ -69,6 +69,7 @@ export function runPiIntentTransport(input: PiIntentTransportInput) {
       if (error instanceof PiModelExecutionConfigurationError) return {status: 'unavailable', reason: 'invalid_configuration'};
       throw error;
     }
+    try {input.observer?.usage?.(piUsageToModelCallUsage(result.usage));} catch { /* Observers never change a call. */ }
     scope.throwIfInactive();
     if (result.content.some(part => part.type === 'toolCall') || result.stopReason === 'toolUse') {
       return {status: 'unavailable', reason: 'tool_use'};
