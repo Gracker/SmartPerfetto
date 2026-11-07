@@ -15,7 +15,7 @@ export interface CapturedAnalysisOutputConfig {
 }
 
 type ConfigurationReason = 'mode' | 'captured_config' | 'declaration_syntax' | 'declaration_syntax_conflict' |
-  'runtime' | 'protocol' | 'sdk' | 'model_set' | 'function_tool_primitive';
+  'runtime' | 'protocol' | 'sdk' | 'model_set' | 'function_tool_primitive' | 'json_output_primitive';
 
 /** Internal configuration only; this error never reflects environment or model values. */
 export class FinalSubmissionConfigurationError extends Error {
@@ -109,5 +109,9 @@ export function assertFinalSubmissionPreDispatch(input: FinalSubmissionPreDispat
         profile.effective.declarationSyntax !== input.outputConfig.declarationSyntax) unsupported('model_set');
     if (profile.server.functionTools.status !== 'supported' ||
         profile.server.functionTools.value !== 'function_call_arguments') unsupported('function_tool_primitive');
+    if (getAuthoredFinalSubmissionModeDescriptor(input.outputConfig.finalSubmission)?.sourcePolicy === 'function_or_assistant_json' &&
+        (profile.server.jsonOutput?.status !== 'supported' || profile.server.jsonOutput.value !== 'json_object')) {
+      unsupported('json_output_primitive');
+    }
   }
 }

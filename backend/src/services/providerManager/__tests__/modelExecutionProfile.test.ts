@@ -14,6 +14,33 @@ function config(overrides: Partial<ResolveModelExecutionProfileInput> = {}): Res
 }
 
 describe('model execution profile facts', () => {
+  it.each([
+    ['glm-5.3-flash', 'https://open.bigmodel.cn/api/coding/paas/v4', 'glm-json-output-2026-11-07'],
+    ['deepseek-flash', 'https://api.deepseek.com/v1', 'deepseek-json-output-2026-11-07'],
+  ])('records the documented JSON output parameter for the admitted %s endpoint', (modelId, baseUrl, evidenceId) => {
+    const profile = resolveModelExecutionProfile(config({modelId, baseUrl}));
+    expect(profile.server.jsonOutput).toEqual({status: 'supported', value: 'json_object', source: 'official', evidenceId});
+    expect(Object.isFrozen(profile.server.jsonOutput)).toBe(true);
+    expect(profile.server).not.toHaveProperty('typedFinalQuality');
+  });
+
+  it.each([
+    {modelId: 'deepseek-flash', baseUrl: 'https://api.deepseek.com/v1?extra=1'},
+    {modelId: 'deepseek-flash', baseUrl: 'https://api.deepseek.com/v1?'},
+    {modelId: 'deepseek-flash', baseUrl: 'https://api.deepseek.com/v1#'},
+    {modelId: 'deepseek-flash', baseUrl: 'https://PRIVATE_CANARY@api.deepseek.com/v1'},
+    {modelId: 'deepseek-flash', baseUrl: 'https://gateway.invalid/v1'},
+    {modelId: 'deepseek-v4-flash', baseUrl: 'https://api.deepseek.com/v1'},
+    {modelId: 'glm-5.3-flash', baseUrl: 'https://open.bigmodel.cn/api/paas/v4'},
+    {modelId: 'glm-5.3', baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4'},
+    {protocol: 'responses' as const},
+    {protocol: 'anthropic_messages' as const},
+  ])('does not extrapolate JSON controls beyond the exact admitted endpoint: %p', overrides => {
+    const profile = resolveModelExecutionProfile(config(overrides));
+    expect(profile.server.jsonOutput).toEqual({status: 'unknown', reason: 'unrecognized_endpoint_model_protocol'});
+    expect(JSON.stringify(profile)).not.toContain('PRIVATE_CANARY');
+  });
+
   it.each(['deepseek-flash', 'deepseek-v4-pro'].flatMap(modelId => [
     'https://api.deepseek.com', 'https://api.deepseek.com/', 'https://api.deepseek.com/v1',
     'https://api.deepseek.com/v1/', 'https://api.deepseek.com/chat/completions',
@@ -28,7 +55,7 @@ describe('model execution profile facts', () => {
     expect(profile.effective).not.toHaveProperty('maxOutputTokens');
     expect(profile.server).not.toHaveProperty('contextSize');
     expect(profile.server).not.toHaveProperty('availableOutputTokens');
-    expect(profile.rulesetVersion).toBe('model_execution_profile_rules@4');
+    expect(profile.rulesetVersion).toBe('model_execution_profile_rules@5');
   });
 
   it.each([

@@ -10,6 +10,8 @@ import {OPENAI_TYPED_FINAL_CONTRACTS, OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION,
 import {AUTHORED_CLAIM_DOCUMENT_VERSION} from '../../agent/core/authoredClaimDocument';
 import {AUTHORED_CLAIM_OBJECT_VERSION} from '../../agent/core/authoredClaimObject';
 import {AUTHORED_CLAIM_DOCUMENT_COMPILER_VERSION, AUTHORED_CLAIM_OBJECT_COMPILER_VERSION} from '../authoredFinalSubmission';
+import {assertFinalSubmissionPreDispatch} from '../finalSubmissionConfig';
+import type {ResolvedModelExecutionProfile} from '../../services/providerManager/modelExecutionProfile';
 
 function config(overrides: Partial<OpenAIAgentConfig> = {}): OpenAIAgentConfig {
   return {
@@ -103,6 +105,19 @@ describe('shared production final-submission configuration gate', () => {
       expect(() => admitFinalSubmissionConfiguration({...input, ...override}, 'auto')).toThrow('unsupported_final_submission');
     }
     expect(installedOpenAiSdkCompatibility('authored_claim_document_v2').contractVersion).toBe('openai_typed_final_admission@3');
+  });
+
+  it.each(['absent', 'unknown', 'unsupported'] as const)('refuses dual with %s JSON capability before native dispatch', variation => {
+    const input = config({outputConfig: {finalSubmission: 'authored_claim_document_v2_dual', declarationSyntax: 'authoring_v2'}});
+    const profile = admitFinalSubmissionConfiguration(input, 'full')!.get(input.model)!;
+    const jsonOutput: ResolvedModelExecutionProfile['server']['jsonOutput'] = variation === 'absent' ? undefined
+      : variation === 'unknown' ? {status: 'unknown', reason: 'unrecognized_endpoint_model_protocol'}
+        : {status: 'unsupported', reason: 'capability_unsupported', source: 'official', evidenceId: 'fixture-json-unsupported'};
+    expect(() => assertFinalSubmissionPreDispatch({outputConfig: input.outputConfig, runtimeKind: 'openai-agents-sdk',
+      protocol: input.protocol, sdk: installedOpenAiSdkCompatibility(input.outputConfig.finalSubmission),
+      modelSelection: {primaryModel: input.model, lightModel: input.lightModel, requestedMode: 'full'},
+      modelProfiles: [{...profile, server: {...profile.server, jsonOutput}}]}))
+      .toThrow('unsupported_final_submission:final_submission:json_output_primitive');
   });
 
   it.each(['canonical_v1', 'authoring_v1', 'authoring_v2'] as const)(

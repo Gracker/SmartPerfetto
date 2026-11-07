@@ -9,7 +9,7 @@ import {isFinalSubmissionMode, type FinalSubmissionMode} from '../../agentRuntim
 import {resolveConclusionDeclarationSyntax} from '../../agent/core/conclusionAuthoring';
 import type {ConclusionDeclarationSyntax} from '../../agent/core/conclusionContract';
 
-export const MODEL_EXECUTION_PROFILE_RULESET = 'model_execution_profile_rules@4';
+export const MODEL_EXECUTION_PROFILE_RULESET = 'model_execution_profile_rules@5';
 export type ModelExecutionProtocol = 'chat_completions' | 'responses' | 'anthropic_messages' | 'native' | 'unknown';
 export type ReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type ReasoningSetting = Readonly<{mode: 'disabled'} | {mode: 'enabled'; effort?: ReasoningEffort}>;
@@ -94,6 +94,8 @@ export interface ResolvedModelExecutionProfile {
     toolReasoning: ModelCapabilityFact<'verbatim_native_context'>;
     /** Observed function-call primitive only; neither strict-final nor analysis quality. */
     functionTools: ModelCapabilityFact<'function_call_arguments'>;
+    /** JSON syntax control only, not schema conformance, tools compatibility or quality. */
+    jsonOutput?: ModelCapabilityFact<'json_object'>;
     /** Documented parameter facts only, not available context/output budget or effective settings. Older profiles may omit this fact. */
     outputTokens?: ModelCapabilityFact<Readonly<{
       parameter: 'max_tokens';
@@ -250,6 +252,26 @@ function documentedOutputTokens(baseUrl: string | undefined, modelId: string | u
     defaults: {thinkingDisabled: 8192, thinkingEnabled: 65536, thinkingEnabledMaxEffort: 131072}}, DEEPSEEK_OUTPUT_TOKENS_EVIDENCE);
 }
 
+/** Official JSON-mode parameter, checked 2026-11-07:
+ * https://docs.z.ai/guides/capabilities/struct-output
+ * https://api-docs.deepseek.com/api/create-chat-completion/
+ * Keep the experimental bridge's exact endpoint/model scope. */
+function documentedJsonOutput(baseUrl: string | undefined, modelId: string | undefined,
+  protocol: ModelExecutionProtocol, unknown: ModelCapabilityFact<never>): ResolvedModelExecutionProfile['server']['jsonOutput'] {
+  if (!baseUrl || protocol !== 'chat_completions') return unknown;
+  let url: URL;
+  try {url = new URL(baseUrl);} catch {return unknown;}
+  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || /[?@#]/.test(baseUrl)) return unknown;
+  const endpoint = `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+  if (modelId === 'glm-5.3-flash' && endpoint === 'https://open.bigmodel.cn/api/coding/paas/v4') {
+    return supported('json_object', 'glm-json-output-2026-11-07');
+  }
+  if (modelId === 'deepseek-flash' && endpoint === 'https://api.deepseek.com/v1') {
+    return supported('json_object', 'deepseek-json-output-2026-11-07');
+  }
+  return unknown;
+}
+
 function serverFacts(modelId: string | undefined, endpoint: ResolvedModelExecutionProfile['endpoint'], protocol: ModelExecutionProtocol,
   baseUrl: string | undefined): {
   model: ResolvedModelExecutionProfile['model']; server: ResolvedModelExecutionProfile['server'];
@@ -260,6 +282,7 @@ function serverFacts(modelId: string | undefined, endpoint: ResolvedModelExecuti
     ? 'native_model_unknown' : 'unrecognized_endpoint_model_protocol'};
   const server: ResolvedModelExecutionProfile['server'] = {thinking: unknown, efforts: unknown, effortAliases: unknown,
     defaultReasoning: unknown, toolReasoning: unknown, functionTools: observedFunctionTools(baseUrl, modelId, protocol, unknown),
+    jsonOutput: documentedJsonOutput(baseUrl, modelId, protocol, unknown),
     outputTokens: documentedOutputTokens(baseUrl, modelId, protocol, unknown)};
   // Small protocol facts, not a provider model catalog. Preserve the exact requested ID.
   // https://docs.z.ai/api-reference/llm/chat-completion

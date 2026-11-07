@@ -12,7 +12,7 @@ import os from 'os';
 import path from 'path';
 import {EventEmitter} from 'events';
 import type {StreamingUpdate} from '../../agent/types';
-import {MaxTurnsExceededError, OpenAIChatCompletionsModel, OpenAIResponsesModel, OpenAIProvider, Runner, RunContext, StreamedRunResult, tool, withTrace, type ModelSettings} from '@openai/agents';
+import {MaxTurnsExceededError, OpenAIChatCompletionsModel, OpenAIResponsesModel, OpenAIProvider, Runner, RunContext, StreamedRunResult, tool, withTrace, type Model, type ModelRequest, type ModelSettings} from '@openai/agents';
 import {z} from 'zod';
 import {OpenAIRuntime, __testing} from '../openAiRuntime';
 import {createOpenAiTypedFinalWireCollector} from '../../agentRuntime/engines/openai/openAiTypedFinalAdmission';
@@ -2957,6 +2957,55 @@ describe('explicit OpenAI analysis reasoning', () => {
     return JSON.parse(JSON.stringify(create.mock.calls[0][0])) as Record<string, any>;
   }
 
+  it('requires the selected admitted profile before adding dual JSON controls', () => {
+    const config = createOpenAiConfigForTest({protocol: 'chat_completions', baseURL: 'https://api.deepseek.com/v1',
+      model: 'deepseek-flash', lightModel: 'deepseek-flash',
+      outputConfig: {finalSubmission: 'authored_claim_document_v2_dual', declarationSyntax: 'authoring_v2'}});
+    expect(() => __testing.buildOpenAIModelSettings(config, config.model)).toThrow('openai_text_policy_invalid_configuration');
+    const profile = __testing.admitFinalSubmissionConfiguration(config, 'full')!.get(config.model)!;
+    for (const bad of [{...profile, model: {...profile.model, requestedId: 'other-model'}},
+      {...profile, effective: {...profile.effective, finalSubmission: 'authored_claim_document_v2' as const}},
+      {...profile, server: {...profile.server, jsonOutput: undefined}}]) {
+      expect(() => __testing.buildOpenAIModelSettings(config, config.model, undefined, undefined, bad))
+        .toThrow('openai_text_policy_invalid_configuration');
+    }
+  });
+
+  it('isolates provider request settings while preserving native methods, retry advice and stream identity', async () => {
+    const settings = Object.freeze({providerData: Object.freeze({response_format: {type: 'json_object'}})});
+    const request: ModelRequest = {input: [{role: 'user', content: 'fixture'}], tools: [], handoffs: [],
+      outputType: 'text', tracing: false, modelSettings: settings, signal: new AbortController().signal};
+    const stream = (async function* () {})();
+    const failure = new Error('fixture-model-failure'), advice = {suggested: false, retryAfterMs: 7};
+    const observed: ModelRequest[] = [];
+    const mutate = (copy: ModelRequest) => {
+      observed.push(copy);
+      copy.modelSettings.providerData!.reasoning_effort = 'max';
+    };
+    const native: Model = {
+      async getResponse(copy) {expect(this).toBe(native); mutate(copy); throw failure;},
+      getStreamedResponse(copy) {expect(this).toBe(native); mutate(copy); return stream;},
+      getRetryAdvice(args) {expect(this).toBe(native); mutate(args.request); return advice;},
+    };
+    const getModel = jest.fn((_modelName?: string) => native);
+    const isolated = await __testing.createRequestIsolatedOpenAiModelProvider({getModel}).getModel('fixture-pinned');
+    expect(getModel).toHaveBeenCalledWith('fixture-pinned');
+    await expect(isolated.getResponse(request)).rejects.toBe(failure);
+    expect(isolated.getStreamedResponse(request)).toBe(stream);
+    expect(await isolated.getRetryAdvice!({request, error: failure, stream: true, attempt: 1})).toBe(advice);
+    expect(observed).toHaveLength(3);
+    for (const copy of observed) {
+      expect(copy).not.toBe(request); expect(copy.modelSettings).not.toBe(settings);
+      expect(copy.modelSettings.providerData).not.toBe(settings.providerData);
+      expect(copy.input).toBe(request.input); expect(copy.tools).toBe(request.tools);
+      expect(copy.handoffs).toBe(request.handoffs); expect(copy.signal).toBe(request.signal);
+    }
+    expect(settings.providerData).toEqual({response_format: {type: 'json_object'}});
+    const plain = await __testing.createRequestIsolatedOpenAiModelProvider({getModel: () => ({
+      getResponse: native.getResponse, getStreamedResponse: native.getStreamedResponse})}).getModel();
+    expect(plain).not.toHaveProperty('getRetryAdvice');
+  });
+
   it.each([
     ['chat_completions', 'https://api.openai.com/v1', 'gpt-5.6-sol'],
     ['chat_completions', 'https://gateway.example/v1', 'unknown-model'],
@@ -5183,10 +5232,10 @@ describe('R13 explicit dual main transport', () => {
       relationProposals: null, sourceClaimBindings: null, uncertainties: null, nextSteps: null, metadata: null}, bodyParts: [body]};
   const raw = ` \n${JSON.stringify({document})}\t `;
   const options = {providerId: null, assistantSurface: 'conversation' as const, conversationTraceAttached: false, analysisMode: 'fast' as const};
-  function setup(id: string) {
+  function setup(id: string, overrides: Partial<ReturnType<typeof createOpenAiConfigForTest>> = {}) {
     jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(createOpenAiConfigForTest({protocol: 'chat_completions',
       baseURL: 'https://api.deepseek.com/v1', model: 'deepseek-flash', lightModel: 'deepseek-flash', quickMaxTurns: 3,
-      outputConfig: Object.freeze({finalSubmission: 'authored_claim_document_v2_dual', declarationSyntax: 'authoring_v2'})}));
+      outputConfig: Object.freeze({finalSubmission: 'authored_claim_document_v2_dual', declarationSyntax: 'authoring_v2'}), ...overrides}));
     const {runtime, updates} = createRuntimeWithUpdates(), recorder = createRuntimePerformanceRecorder();
     const scope = createRuntimePerformanceScope({recorder, identity: {runId: id, sessionId: id,
       scope: {tenantId: 'test', workspaceId: 'test'}}, assertCurrent() {}});
@@ -5208,6 +5257,44 @@ describe('R13 explicit dual main transport', () => {
       {index: 0, delta: {}, finish_reason: finish}];
     return choices.map(choice => `data: ${JSON.stringify({id: 'dual-main-response', model: 'observed-model', choices: [choice]})}\n\n`).join('') + 'data: [DONE]\n\n';
   }
+
+  it.each([
+    ['https://api.deepseek.com/v1', 'deepseek-flash', 'none'],
+    ['https://api.deepseek.com/v1', 'deepseek-flash', 'max'],
+    ['https://open.bigmodel.cn/api/coding/paas/v4', 'glm-5.3-flash', 'low'],
+    ['https://open.bigmodel.cn/api/coding/paas/v4', 'glm-5.3-flash', 'max'],
+  ] as const)('keeps JSON mode, tools and authored controls across native turns for %s', async (baseURL, model, effort) => {
+    const restoreClone = installCurrentRealmStructuredCloneForTest();
+    const f = setup(`dual-json-native-${model}`, {baseURL, model, lightModel: model,
+      analysisReasoningEffort: effort, maxOutputTokens: 16384});
+    const requests: Array<Record<string, any>> = [];
+    const request = jest.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      const payload = JSON.parse(String(init?.body)); requests.push(payload); finalTool(init);
+      if (requests.length === 1) {
+        const history = payload.tools.find((entry: any) => entry.function.name.endsWith('read_session_history'));
+        expect(history).toBeDefined();
+        return chatCompletionToolCall('dual-json-read', history.function.name,
+          {turnId: null, offset: null, limit: 1, textOffset: null, maxChars: null});
+      }
+      return new Response(assistantWire(raw), {headers: {'content-type': 'text/event-stream'}});
+    });
+    try {
+      const result = await f.run();
+      expect(request).toHaveBeenCalledTimes(2); expect(result.conclusion).toBe(body);
+      for (const payload of requests) {
+        expect(payload).toMatchObject({model, response_format: {type: 'json_object'}, max_tokens: 16384,
+          parallel_tool_calls: false, store: false,
+          ...(effort === 'none' ? {thinking: {type: 'disabled'}} : {reasoning_effort: effort})});
+      }
+      expect(requests[1].messages).toEqual(expect.arrayContaining([
+        expect.objectContaining({role: 'tool', tool_call_id: 'dual-json-read-call'}),
+      ]));
+      const classificationCalls = jest.mocked(intentTransport.runOpenAiIntentTransport).mock.calls;
+      const classified = classificationCalls[classificationCalls.length - 1][0];
+      expect(classified).not.toHaveProperty('response_format');
+      expect(classified).not.toHaveProperty('providerData');
+    } finally {f.scope.dispose(); restoreClone();}
+  });
 
   it.each(['assistant', 'function'] as const)('binds the actual %s source with its native finish and precise observer chain', async lane => {
     const restoreClone = installCurrentRealmStructuredCloneForTest(), id = `r13-main-${lane}`, f = setup(id);

@@ -12,6 +12,7 @@ import {EventEmitter} from 'events';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {types} from 'node:util';
 import {Agent, MaxTurnsExceededError, OpenAIProvider, Runner, StreamedRunResult, setTracingDisabled, type AgentInputItem, type ModelSettings, type RunStreamEvent, type Tool} from '@openai/agents';
+import type {Model, ModelProvider, ModelRequest} from '@openai/agents';
 import OpenAI from 'openai';
 import {commitEvaluationSdkHandoffIfActive, recordEvaluationTokenDeltaIfPresent} from '../../../services/selfEvolution/evaluationRuntimeHooks';
 
@@ -664,6 +665,29 @@ function filterOpenAiVisibleAnswerDelta(delta: string, state: OpenAiReasoningFil
   return output;
 }
 
+/** The installed Chat serializer writes reasoning_effort into providerData.
+ * Give it request-local settings so that the next Runner turn cannot mistake
+ * that write for inherited GPT-only defaults and strip the authored effort. */
+function createRequestIsolatedOpenAiModelProvider(delegate: ModelProvider): ModelProvider {
+  const copyRequestSettings = (request: ModelRequest): ModelRequest => {
+    const modelSettings = {...request.modelSettings};
+    if (request.modelSettings.providerData) modelSettings.providerData = {...request.modelSettings.providerData};
+    return {...request, modelSettings};
+  };
+  return {
+    async getModel(modelName): Promise<Model> {
+      const model = await delegate.getModel(modelName);
+      const retryAdvice = model.getRetryAdvice?.bind(model);
+      const isolated: Model = {
+        getResponse: request => model.getResponse(copyRequestSettings(request)),
+        getStreamedResponse: request => model.getStreamedResponse(copyRequestSettings(request)),
+      };
+      if (retryAdvice) isolated.getRetryAdvice = args => retryAdvice({...args, request: copyRequestSettings(args.request)});
+      return isolated;
+    },
+  };
+}
+
 function buildOpenAIBaseModelSettings(
   config: Pick<OpenAIAgentConfig, 'maxOutputTokens' | 'protocol'>,
   model: string,
@@ -685,12 +709,24 @@ function buildOpenAIBaseModelSettings(
 }
 
 function buildOpenAIModelSettings(
-  config: Pick<OpenAIAgentConfig, 'maxOutputTokens' | 'protocol' | 'analysisReasoningEffort' | 'baseURL'>,
+  config: Pick<OpenAIAgentConfig, 'maxOutputTokens' | 'protocol' | 'analysisReasoningEffort' | 'baseURL'> &
+    Partial<Pick<OpenAIAgentConfig, 'outputConfig'>>,
   model: string,
   onPolicy?: (receipt: unknown) => void,
   onProfile?: (profile: ResolvedModelExecutionProfile) => void,
+  admittedProfile?: ResolvedModelExecutionProfile,
 ): ModelSettings {
   const settings = buildOpenAIBaseModelSettings(config, model);
+  const descriptor = getAuthoredFinalSubmissionModeDescriptor(config.outputConfig?.finalSubmission);
+  if (descriptor?.sourcePolicy === 'function_or_assistant_json') {
+    if (config.protocol !== 'chat_completions' || admittedProfile?.model.requestedId !== model ||
+        admittedProfile.effective.finalSubmission !== config.outputConfig?.finalSubmission ||
+        admittedProfile.effective.declarationSyntax !== config.outputConfig?.declarationSyntax ||
+        admittedProfile.server.jsonOutput?.status !== 'supported' || admittedProfile.server.jsonOutput.value !== 'json_object') {
+      throw new OpenAITextPolicyConfigurationError();
+    }
+    settings.providerData = {...settings.providerData, response_format: {type: admittedProfile.server.jsonOutput.value}};
+  }
   const effort = config.analysisReasoningEffort;
   if (effort === undefined) return settings;
   try {
@@ -705,15 +741,15 @@ function buildOpenAIModelSettings(
       effective: {authoredReasoning: effort === 'none' ? {mode: 'disabled'} : {mode: 'enabled', effort},
         ...(config.maxOutputTokens === undefined ? {} : {maxOutputTokens: config.maxOutputTokens})}});
     observeSafely(() => onProfile?.(profile));
-    // The native SDK union has no max. Only an already-known chat contract may
-    // express it through the tested providerData passthrough.
+    // SDK 0.13 serializes the string unchanged, although its type union omits
+    // max. Only the known Chat profiles below admit that tested passthrough.
     if (effort === 'max' && (config.protocol !== 'chat_completions' || profile.server.efforts.status !== 'supported' ||
       !profile.server.efforts.value.includes('max'))) throw new OpenAITextPolicyConfigurationError();
     const policy = resolveModelExecutionPolicy({profile, purpose: 'answer_turn', selection: 'preserve'});
     if (policy.status === 'unsupported') throw new OpenAITextPolicyConfigurationError();
     try {onPolicy?.(policy.receipt);} catch { /* Observation never changes dispatch. */ }
     if (effort === 'max') return {...settings,
-      providerData: {...settings.providerData, reasoning_effort: effort}};
+      reasoning: {effort: effort as NonNullable<ModelSettings['reasoning']>['effort']}};
     if (effort === 'none' && config.protocol === 'chat_completions' && profile.endpoint.family === 'deepseek' &&
       profile.server.thinking.status === 'supported' && profile.server.thinking.value === 'optional') {
       return {...settings, providerData: {...settings.providerData, thinking: {type: 'disabled'}}};
@@ -832,6 +868,7 @@ export const __testing = {
   projectCompilerFailureLocation,
   commitAfterProviderClose,
   buildOpenAIModelSettings,
+  createRequestIsolatedOpenAiModelProvider,
   outputOnlyProviderData,
   createOpenAiTerminalFetch,
   createOpenAiWireRequestTicket,
@@ -1082,12 +1119,13 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           openAIClient: new OpenAI({apiKey: config.apiKey, baseURL: config.baseURL, fetch: observedFetch as any}),
           useResponses: config.protocol === 'responses',
         });
-        runner = new Runner({modelProvider: provider, tracingDisabled: true,
+        runner = new Runner({modelProvider: createRequestIsolatedOpenAiModelProvider(provider), tracingDisabled: true,
           traceIncludeSensitiveData: false, workflowName: 'SmartPerfetto Analysis',
           toolExecution: {maxFunctionToolConcurrency: 1}});
         agent = new Agent({name: 'SmartPerfetto', instructions: context.systemPrompt,
           model: selectedModel, tools: context.tools, toolUseBehavior: 'run_llm_again',
-          modelSettings: buildOpenAIModelSettings(config, selectedModel, observePolicy, profile => {observedMainProfile = profile;})});
+          modelSettings: buildOpenAIModelSettings(config, selectedModel, observePolicy,
+            profile => {observedMainProfile = profile;}, admittedFinalModels?.get(selectedModel))});
         sdkStartPhase.end('ok');
       } catch (error) {
         sdkStartPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
