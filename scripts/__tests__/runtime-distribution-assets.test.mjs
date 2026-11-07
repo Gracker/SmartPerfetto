@@ -97,16 +97,13 @@ test('npm, Docker, and portable ship the same tracked backend/data runtime asset
   assert.deepEqual(sorted(runtimeCopies.map(match => match[1])), tracked);
 });
 
-test('Pi provider-explicit runtime ships exact aligned optional dependencies and a real integration gate', () => {
+test('Pi default runtime ships exact aligned required dependencies and a real integration gate', () => {
   const backendPackage = JSON.parse(readFileSync(join(root, 'backend/package.json'), 'utf8'));
-  assert.equal(
-    backendPackage.optionalDependencies['@earendil-works/pi-agent-core'],
-    '1.5.0',
-  );
-  assert.equal(
-    backendPackage.optionalDependencies['@earendil-works/pi-ai'],
-    '1.5.0',
-  );
+  // Pi is the default runtime: a failed install must fail loudly, never be skipped as optional.
+  for (const name of ['@earendil-works/pi-agent-core', '@earendil-works/pi-ai']) {
+    assert.equal(backendPackage.dependencies[name], '1.5.0');
+    assert.equal(backendPackage.optionalDependencies?.[name], undefined);
+  }
   assert.match(backendPackage.scripts['test:architecture'], /test:pi-provider-runtime/);
 
   const integrationGate = readFileSync(
