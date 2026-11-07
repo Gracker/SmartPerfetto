@@ -56,6 +56,8 @@ const OPENAI_SENSITIVE_CONNECTION_FIELDS: Array<keyof ProviderConfig['connection
 ];
 
 const PI_AGENT_CORE_SENSITIVE_CONNECTION_FIELDS: Array<keyof ProviderConfig['connection']> = [
+  // A catalog-backed provider passes its own key through the Pi key env.
+  'apiKey',
   'piAgentCoreModelJson',
 ];
 

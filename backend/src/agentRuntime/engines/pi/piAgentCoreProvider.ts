@@ -85,6 +85,8 @@ export interface PiAgentCoreProviderRuntime {
   models: PiAgentCoreProviderModels;
   streamFn: PiStreamFunction;
   streamFnForPurpose?: (purpose: RuntimeModelCallPurpose, policy?: PiStreamPurposePolicy) => PiStreamFunction;
+  /** The authored reasoning level, including a catalog reference's resolved default; undefined: provider default. */
+  thinkingLevel: ModelThinkingLevel | undefined;
 }
 
 export type PiAgentCoreProviderRuntimeLoader = (
@@ -393,6 +395,8 @@ export async function loadPiProviderRuntimeModules(
   return {piAi, catalog, providerStreams};
 }
 
+const LOWEST_THINKING_LEVELS: readonly ModelThinkingLevel[] = ['off', 'minimal', 'low'];
+
 /** The installed builtin catalog entry a reference names, with the configured endpoint. */
 export async function resolvePiCatalogModel(
   reference: NonNullable<PiAgentCoreModelConfig['catalog']>,
@@ -437,8 +441,9 @@ export async function createPiAgentCoreProviderRuntime(
     env,
     moduleLoader,
   );
-  const authoredLevel = config.thinkingLevel;
   const supportedLevels = piAi.getSupportedThinkingLevels(model);
+  const authoredLevel = config.thinkingLevel ?? (config.catalog?.defaultThinkingLevel === 'lowest_supported'
+    ? LOWEST_THINKING_LEVELS.find(level => supportedLevels.includes(level)) : undefined);
   const assertSupportedLevel = (level: ModelThinkingLevel | undefined) => {
     if (level !== undefined && !supportedLevels.includes(level)) {
       throw new PiModelExecutionConfigurationError();
@@ -568,7 +573,7 @@ export async function createPiAgentCoreProviderRuntime(
       return nativeStream(sentModel, context, scopedOptions);
     };
   };
-  return {model, models, streamFn: streamFnForPurpose('answer_turn'), streamFnForPurpose};
+  return {model, models, streamFn: streamFnForPurpose('answer_turn'), streamFnForPurpose, thinkingLevel: authoredLevel};
 }
 
 function isOfficialGlmModel(model: Model<Api>): boolean {

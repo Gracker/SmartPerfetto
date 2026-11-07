@@ -31,6 +31,20 @@ describe('provider runtime snapshot hash', () => {
     await fsp.rm(dir, { recursive: true, force: true });
   });
 
+  it('changes the secret version when a catalog-backed Pi provider rotates its API key', () => {
+    const provider = svc.create({
+      name: 'DeepSeek Pi', category: 'official', type: 'deepseek',
+      models: {primary: 'deepseek-flash', light: 'deepseek-flash'},
+      connection: {apiKey: 'sk-first-key', agentRuntime: 'pi-agent-core', openaiBaseUrl: 'https://api.deepseek.com/v1'},
+    });
+    const before = resolveProviderRuntimeSnapshot(svc, provider.id);
+    svc.update(provider.id, {connection: {apiKey: 'sk-second-key'}});
+    const after = resolveProviderRuntimeSnapshot(svc, provider.id);
+    expect(before.snapshot.runtimeKind).toBe('pi-agent-core');
+    expect(after.snapshot.secretVersion).not.toBe(before.snapshot.secretVersion);
+    expect(JSON.stringify(after.snapshot)).not.toContain('sk-second-key');
+  });
+
   const openAIProvider: ProviderCreateInput = {
     name: 'OpenAI Provider',
     category: 'official',

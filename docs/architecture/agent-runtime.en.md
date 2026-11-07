@@ -13,7 +13,7 @@ or environment.
 |---|---|---|---|
 | `claude-agent-sdk` | Claude Agent SDK | Anthropic, Bedrock, Vertex, DeepSeek, Anthropic-compatible gateways | Default runtime; requires explicit provider/env credentials and supports MCP server and configurable sub-agents under shared completion and verification contracts |
 | `openai-agents-sdk` | OpenAI Agents SDK | OpenAI, Ollama, OpenAI-compatible gateways | Native OpenAI runtime; adapts the same SmartPerfetto tools as function tools |
-| `pi-agent-core` | Pi Agent Core | custom only | Optional public runtime; real model configurations reuse the shared SmartPerfetto prompt/tool/report pipeline, while fake-stream remains smoke-only; does not enable `.pi` discovery, package extensions, shell tools, or file tools |
+| `pi-agent-core` | Pi Agent Core | custom, GLM, DeepSeek, Kimi, Kimi Code, MiniMax | Optional public runtime; real model configurations reuse the shared SmartPerfetto prompt/tool/report pipeline, while fake-stream remains smoke-only; does not enable `.pi` discovery, package extensions, shell tools, or file tools |
 | `opencode` | OpenCode server / SDK | custom only | Optional public runtime; uses explicit OpenAI-compatible or OpenCode model configuration, request-scoped SmartPerfetto MCP tools, and a hardened isolated OpenCode server; does not read local OpenCode login/project state or enable built-in file/shell/web/edit tools |
 | `qoder-agent-sdk` | Qoder Agent SDK / `qodercli` | custom only or env | Optional public runtime; SDK is an opt-in optional peer, uses a local Qoder CLI login or PAT, exposes request-scoped SmartPerfetto MCP tools, and isolates private-knowledge streams/sessions/snapshots |
 
@@ -59,10 +59,11 @@ Provider mapping:
 
 | Provider type | Runtime | Protocol |
 |---|---|---|
-| `anthropic` / `bedrock` / `vertex` / `deepseek` | `claude-agent-sdk` | Claude/Anthropic |
+| `anthropic` / `bedrock` / `vertex` | `claude-agent-sdk` | Claude/Anthropic |
+| `deepseek` / `glm` (new templates) | `pi-agent-core` | Pi builtin catalog model + the provider's OpenAI-compatible endpoint |
 | `openai` | `openai-agents-sdk` | OpenAI Responses |
 | `ollama` | `openai-agents-sdk` | OpenAI-compatible Chat Completions |
-| `custom` | selected by `connection.agentRuntime` or `connection.openaiProtocol` | explicit configuration; Pi Agent Core, OpenCode, and Qoder are custom-only |
+| `custom` | selected by `connection.agentRuntime` or `connection.openaiProtocol` | explicit configuration; OpenCode and Qoder are custom-only |
 
 Provider connection fields map to runtime-specific env:
 
@@ -406,9 +407,16 @@ for real-provider evidence.
 The Pi Agent Core real-model path reuses SmartPerfetto scene strategies, system
 prompt assembly, SQL/Skill tools, planning/hypothesis tools, artifacts, and the
 route-owned quality/finalization/report pipeline. It does not read `.pi`
-project configuration, package extensions, shell tools, or file tools. Provider
-Manager only exposes it for `custom` providers with explicit Pi model JSON or
-equivalent env configuration. `SMARTPERFETTO_PI_AGENT_CORE_FAKE_STREAM=1` is
+project configuration, package extensions, shell tools, or file tools. `custom`
+providers need explicit Pi model JSON or equivalent env. Without a model JSON,
+Provider Manager gives GLM, DeepSeek, Kimi, Kimi Code and MiniMax a catalog
+reference, `{catalog: {providers, id, baseUrl, defaultThinkingLevel:
+'lowest_supported'}, apiKeyEnv}`: model capabilities come from the installed
+pi-ai builtin catalog (no network refresh, nothing fabricated), the endpoint is
+the provider's own, and the key goes only into Pi's key env. Without an authored
+level, reasoning uses the lowest of off/minimal/low the model supports. New GLM
+and DeepSeek templates default to Pi; saved providers and API records without a
+runtime are not migrated. Snapshots pin the key env and installed pi-ai version. `SMARTPERFETTO_PI_AGENT_CORE_FAKE_STREAM=1` is
 smoke/test-only and must stay labeled capability-limited.
 
 The OpenCode path is also custom-only. It can use `SMARTPERFETTO_OPENCODE_MODEL_JSON`

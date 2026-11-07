@@ -77,4 +77,10 @@ describe('Provider Manager templates', () => {
       light: 'deepseek-v4-flash',
     });
   });
+
+  it('defaults the catalog-backed GLM and DeepSeek templates to Pi Agent Core', () => {
+    expect(templateFor('deepseek').defaultConnection?.agentRuntime).toBe('pi-agent-core');
+    expect(templateFor('glm').defaultConnection?.agentRuntime).toBe('pi-agent-core');
+    expect(templateFor('qwen').defaultConnection?.agentRuntime).toBe('claude-agent-sdk');
+  });
 });

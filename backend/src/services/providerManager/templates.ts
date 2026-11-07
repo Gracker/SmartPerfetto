@@ -78,7 +78,8 @@ export const officialTemplates: ProviderTemplate[] = [
       { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', tier: 'primary' },
     ],
     defaultConnection: {
-      agentRuntime: 'claude-agent-sdk',
+      // Pi resolves this model from its builtin catalog on the OpenAI-compatible endpoint.
+      agentRuntime: 'pi-agent-core',
       claudeBaseUrl: 'https://api.deepseek.com/anthropic',
       openaiBaseUrl: 'https://api.deepseek.com/v1',
       openaiProtocol: 'chat_completions',
@@ -101,7 +102,8 @@ export const officialTemplates: ProviderTemplate[] = [
       { id: 'glm-4.7-flash', name: 'GLM 4.7 Flash', tier: 'light' },
     ],
     defaultConnection: {
-      agentRuntime: 'claude-agent-sdk',
+      // Pi resolves this model from its builtin catalog on the OpenAI-compatible endpoint.
+      agentRuntime: 'pi-agent-core',
       claudeBaseUrl: 'https://open.bigmodel.cn/api/anthropic',
       openaiBaseUrl: 'https://open.bigmodel.cn/api/paas/v4',
       openaiProtocol: 'chat_completions',

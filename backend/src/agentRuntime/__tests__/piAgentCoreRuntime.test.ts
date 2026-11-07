@@ -90,9 +90,10 @@ let piClassifierDecision: AnalysisTurnIntentDecision;
 let piClassifierResponses: Array<Record<string, unknown> | Error>;
 let piClassifierCalls: Array<{model: unknown; context: any; options: any}>;
 
-async function loadFakePiProviderRuntime(config: {model: Record<string, unknown>}) {
+async function loadFakePiProviderRuntime(config: {model: Record<string, unknown>; thinkingLevel?: any}) {
   return {
     model: config.model as any,
+    thinkingLevel: config.thinkingLevel,
     models: {} as any,
     streamFn: ((model: unknown, context: unknown, options: unknown) => {
       piClassifierCalls.push({model, context, options});

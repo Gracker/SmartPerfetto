@@ -1675,7 +1675,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         // history is in the prompt, and a native transcript would carry stale
         // selections and unbounded tool payloads.
         messages: [],
-        thinkingLevel: modelConfig.thinkingLevel ?? 'off',
+        thinkingLevel: providerRuntime.thinkingLevel ?? 'off',
       },
       sessionId,
       streamFn: (...args: Parameters<PiAgentCoreProviderRuntime['streamFn']>) => {

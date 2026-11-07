@@ -276,7 +276,7 @@ private advisory。详见
 |---|---|---|
 | `claude-agent-sdk` | Anthropic、Bedrock、Vertex、Claude/Anthropic-compatible provider | 所有运行方式都需要显式 provider/env 凭据；Claude Code 登录态不代表 SDK 已配置 |
 | `openai-agents-sdk` | OpenAI、Ollama、OpenAI-compatible provider | 按 OpenAI runtime 规则验证凭证和 chat-completions/Responses 协议 |
-| `pi-agent-core` | Custom provider | 需要显式 Pi model JSON 或等价 env；不读取 `.pi` project config、package extension、shell tool 或 file tool |
+| `pi-agent-core` | Custom、GLM、DeepSeek、Kimi、Kimi Code、MiniMax provider | Custom 需要显式 Pi model JSON 或等价 env，目录型 provider 由 Pi 内置目录解析模型；不读取 `.pi` project config、package extension、shell tool 或 file tool |
 | `opencode` | Custom provider | 需要显式 OpenCode/OpenAI-compatible model 配置；使用隔离 OpenCode server 和 request-scoped MCP tools，不读取个人 OpenCode 登录态/project state |
 | `qoder-agent-sdk` | Custom provider 或显式 env | Qoder SDK 是 opt-in optional peer；使用本机 Qoder CLI 登录态或 PAT，并隔离私有知识的 stream/session/snapshot |
 

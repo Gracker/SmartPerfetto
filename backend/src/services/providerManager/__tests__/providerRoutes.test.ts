@@ -357,17 +357,17 @@ describe('Provider Routes', () => {
     expect(runtimeRes.body.error).toMatch(/does not support openai-agents-sdk/);
   });
 
-  it('POST /:id/runtime rejects public Pi runtime for non-custom providers', async () => {
+  it('POST /:id/runtime rejects public Pi runtime for providers without a Pi catalog route', async () => {
     const createRes = await request(appServer).post('/api/v1/providers').send({
-      name: 'DeepSeek Dual',
+      name: 'Qwen Dual',
       category: 'official',
-      type: 'deepseek',
-      models: { primary: 'deepseek-v4-pro', light: 'deepseek-v4-flash' },
+      type: 'qwen',
+      models: { primary: 'qwen3.8-flash', light: 'qwen3.8-flash' },
       connection: {
-        apiKey: 'sk-deepseek-test',
+        apiKey: 'sk-qwen-test',
         agentRuntime: 'claude-agent-sdk',
-        claudeBaseUrl: 'https://api.deepseek.com/anthropic',
-        openaiBaseUrl: 'https://api.deepseek.com/v1',
+        claudeBaseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic',
+        openaiBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       },
     });
     const id = createRes.body.provider.id;

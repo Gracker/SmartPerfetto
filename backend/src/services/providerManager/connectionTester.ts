@@ -1,7 +1,14 @@
 // backend/src/services/providerManager/connectionTester.ts
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import {parsePiAgentCoreModelConfig} from '../../agentRuntime/engines/pi/piAgentCoreConfig';
+import {parsePiAgentCoreModelConfig, readPiAgentCoreModelConfig} from '../../agentRuntime/engines/pi/piAgentCoreConfig';
+import {createPiAgentCoreProviderRuntime} from '../../agentRuntime/engines/pi/piAgentCoreProvider';
+import {runPiIntentTransport} from '../../agentRuntime/engines/pi/piIntentTransport';
+import {mergeIsolatedProviderEnv} from './envIsolation';
+import {isPiCatalogProviderType} from './piProviderCatalog';
+import {getProviderService} from './index';
+
+const PI_CONNECTION_TEST_TIMEOUT_MS = 30_000;
 import type { OpenAIProtocol, ProviderConfig, TestResult } from './types';
 import {
   normalizeBedrockModelId,
@@ -86,9 +93,34 @@ function getOpenAIApiKey(provider: ProviderConfig): string | undefined {
   return provider.connection.openaiApiKey || provider.connection.apiKey;
 }
 
-function testPiAgentCore(provider: ProviderConfig): Omit<TestResult, 'latencyMs'> {
+/**
+ * A catalog-backed provider without its own model JSON: one real, tool-free
+ * request through the Pi path analysis will use (the provider's Pi env, the
+ * installed catalog model, its key env and reasoning default).
+ */
+async function testPiCatalogProvider(provider: ProviderConfig): Promise<Omit<TestResult, 'latencyMs'>> {
+  try {
+    const env = mergeIsolatedProviderEnv(process.env, getProviderService().getEnvForProviderConfig(provider));
+    const config = readPiAgentCoreModelConfig(env);
+    if (!config) return { success: false, error: 'Pi Agent Core model is not configured' };
+    const result = await runPiIntentTransport({
+      prompt: 'Reply with OK.', systemPrompt: '', deadlineMs: Date.now() + PI_CONNECTION_TEST_TIMEOUT_MS,
+      outputByteLimit: 1024, providerRuntime: await createPiAgentCoreProviderRuntime(config, env), purpose: 'review',
+    });
+    return result.status === 'ok'
+      ? { success: true, modelVerified: true }
+      : { success: false, error: `Pi Agent Core request failed: ${result.reason}` };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+}
+
+async function testPiAgentCore(provider: ProviderConfig): Promise<Omit<TestResult, 'latencyMs'>> {
+  if (!provider.connection.piAgentCoreModelJson?.trim() && isPiCatalogProviderType(provider.type)) {
+    return testPiCatalogProvider(provider);
+  }
   if (provider.type !== 'custom') {
-    return { success: false, error: 'Pi Agent Core runtime is only supported for custom providers' };
+    return { success: false, error: 'Pi Agent Core runtime is only supported for custom and catalog-backed providers' };
   }
   const rawModel = provider.connection.piAgentCoreModelJson?.trim();
   if (!rawModel) {

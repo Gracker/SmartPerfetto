@@ -10,7 +10,7 @@ SmartPerfetto 后端现在把“模型 SDK”与“Perfetto 分析能力”分�
 |---|---|---|---|
 | `claude-agent-sdk` | Claude Agent SDK | Anthropic、Bedrock、Vertex、DeepSeek、Anthropic-compatible gateway | 默认运行时，需要显式 provider/env 凭据，支持 MCP server 和可配置 sub-agent，复用共享终态与验证合约 |
 | `openai-agents-sdk` | OpenAI Agents SDK | OpenAI、Ollama、OpenAI-compatible gateway | 原生 OpenAI runtime，通过 function tools 复用同一套 SmartPerfetto 工具 |
-| `pi-agent-core` | Pi Agent Core | custom only | 可选 public runtime；真实模型配置下复用 SmartPerfetto 共享 prompt/tool/report 管线，fake-stream 仅用于 smoke；不启用 `.pi` discovery、package extension、shell/file tools |
+| `pi-agent-core` | Pi Agent Core | custom、GLM、DeepSeek、Kimi、Kimi Code、MiniMax | 可选 public runtime；真实模型配置下复用 SmartPerfetto 共享 prompt/tool/report 管线，fake-stream 仅用于 smoke；不启用 `.pi` discovery、package extension、shell/file tools |
 | `opencode` | OpenCode server / SDK | custom only | 可选 public runtime；使用显式 OpenAI-compatible 或 OpenCode model 配置、request-scoped SmartPerfetto MCP 工具和加固隔离的 OpenCode server；不读取本地 OpenCode 登录态/project state，也不启用内建 file/shell/web/edit tools |
 | `qoder-agent-sdk` | Qoder Agent SDK / `qodercli` | custom only 或 env | 可选 public runtime；SDK 是 opt-in optional peer，使用本机 Qoder CLI 登录态或 PAT，只暴露 request-scoped SmartPerfetto MCP 工具，并隔离私有知识的流式输出、session 和 snapshot |
 
@@ -56,10 +56,11 @@ Provider 默认映射：
 
 | Provider type | Runtime | Protocol |
 |---|---|---|
-| `anthropic` / `bedrock` / `vertex` / `deepseek` | `claude-agent-sdk` | Claude/Anthropic |
+| `anthropic` / `bedrock` / `vertex` | `claude-agent-sdk` | Claude/Anthropic |
+| `deepseek` / `glm`（新建模板） | `pi-agent-core` | Pi 内置目录模型 + 该 provider 的 OpenAI-compatible endpoint |
 | `openai` | `openai-agents-sdk` | OpenAI Responses |
 | `ollama` | `openai-agents-sdk` | OpenAI-compatible Chat Completions |
-| `custom` | 由 `connection.agentRuntime` 或 `connection.openaiProtocol` 决定 | 显式配置；Pi Agent Core、OpenCode 和 Qoder 只允许 custom provider |
+| `custom` | 由 `connection.agentRuntime` 或 `connection.openaiProtocol` 决定 | 显式配置；OpenCode 和 Qoder 只允许 custom provider |
 
 Provider connection 支持两套端点字段：
 
@@ -433,7 +434,7 @@ OpenAI 的采集截止时间可随实际进展延后，但不侵占预留交付�
 `analysis_completed` 由产品层在 finalization 和报告处理后发出。native completion、
 证据/claim、报告完整度各自保留状态；报告失败不能被成功的聊天投影掩盖。
 
-Pi Agent Core 的真实模型路径复用 SmartPerfetto 的 scene strategy、系统 prompt、SQL/Skill、plan/hypothesis、artifact、route-owned quality/finalization/report 管线。它不会把 SmartPerfetto 运行时变成 Pi coding-agent harness，也不读取 `.pi` 项目配置、package extension、shell tool 或 file tool。Provider Manager 只允许 `custom` provider 选择 `pi-agent-core`，并且必须提供 Pi model JSON 或等价 env 配置。`SMARTPERFETTO_PI_AGENT_CORE_FAKE_STREAM=1` 只用于本地 smoke/test，输出必须继续标记为 capability-limited。
+Pi Agent Core 的真实模型路径复用 SmartPerfetto 的 scene strategy、系统 prompt、SQL/Skill、plan/hypothesis、artifact、route-owned quality/finalization/report 管线。它不会把 SmartPerfetto 运行时变成 Pi coding-agent harness，也不读取 `.pi` 项目配置、package extension、shell tool 或 file tool。`custom` provider 需要显式 Pi model JSON 或等价 env。GLM、DeepSeek、Kimi、Kimi Code、MiniMax 在未填写 model JSON 时由 Provider Manager 生成 catalog reference：`{catalog: {providers, id, baseUrl, defaultThinkingLevel: 'lowest_supported'}, apiKeyEnv}`，模型能力取自已安装 pi-ai 的内置目录（不联网刷新、不伪造），endpoint 沿用 provider 自己的配置，key 只写入 Pi 的 key env；未显式设置时 reasoning 取该模型支持的 off/minimal/low 中最低一档。GLM、DeepSeek 新建模板默认 Pi；已保存的 provider 和未写 runtime 的 API 记录不迁移。快照固定 key env 和已安装 pi-ai 版本。`SMARTPERFETTO_PI_AGENT_CORE_FAKE_STREAM=1` 只用于本地 smoke/test，输出必须继续标记为 capability-limited。
 
 OpenCode 路径同样只允许 custom provider。它可以使用带 `providerID` / `modelID` / `baseUrl` / `apiKey` 的 `SMARTPERFETTO_OPENCODE_MODEL_JSON`，也可以回退到 OpenAI-compatible 的 `OPENAI_*` env/provider 字段。SmartPerfetto 不复用用户自己的 OpenCode CLI 登录态、配置文件或 project extension；回滚路径是把 custom provider 或 `SMARTPERFETTO_AGENT_RUNTIME` 切回 `claude-agent-sdk` / `openai-agents-sdk`。
 

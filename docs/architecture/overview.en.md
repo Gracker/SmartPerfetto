@@ -319,7 +319,7 @@ Source use adds another orthogonal boundary. `SourceUseDecisionV1` records selec
 |---|---|---|
 | `claude-agent-sdk` | Anthropic, Bedrock, Vertex, Claude/Anthropic-compatible providers | All run modes require explicit provider/env credentials; Claude Code login does not establish SDK readiness |
 | `openai-agents-sdk` | OpenAI, Ollama, OpenAI-compatible providers | Credentials and Responses/chat-completions protocol are validated by OpenAI runtime rules |
-| `pi-agent-core` | Custom providers | Requires explicit Pi model JSON or equivalent env; does not read `.pi` project config, package extensions, shell tools, or file tools |
+| `pi-agent-core` | Custom, GLM, DeepSeek, Kimi, Kimi Code, MiniMax providers | Custom needs explicit Pi model JSON or equivalent env; catalog-backed providers resolve the model from the Pi builtin catalog; does not read `.pi` project config, package extensions, shell tools, or file tools |
 | `opencode` | Custom providers | Requires explicit OpenCode/OpenAI-compatible model config; uses an isolated OpenCode server and request-scoped MCP tools, not personal OpenCode login/project state |
 | `qoder-agent-sdk` | Custom providers or explicit env | The Qoder SDK is an opt-in optional peer; it uses local Qoder CLI login or a PAT and isolates private-knowledge streams, sessions, and snapshots |
 

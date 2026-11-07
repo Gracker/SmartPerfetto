@@ -424,16 +424,54 @@ describe('ProviderService', () => {
       })).toThrow(/does not support claude-agent-sdk/);
     });
 
-    it('rejects public Pi runtime for non-custom provider types', () => {
+    it('rejects public Pi runtime for provider types without a Pi catalog route', () => {
       expect(() => svc.create({
         ...validInput,
-        type: 'deepseek',
+        type: 'qwen',
         connection: {
-          apiKey: 'sk-deepseek-test',
+          apiKey: 'sk-qwen-test',
           agentRuntime: 'pi-agent-core',
           piAgentCoreModelJson: '{"id":"pi-test","provider":"test"}',
         },
       })).toThrow(/does not support pi-agent-core/);
+    });
+
+    it('runs a catalog-backed provider on Pi with a catalog reference and only the Pi key env', () => {
+      const p = svc.create({
+        ...validInput,
+        name: 'DeepSeek Pi',
+        type: 'deepseek',
+        models: {primary: 'deepseek-flash', light: 'deepseek-flash'},
+        connection: {
+          apiKey: 'sk-deepseek-test',
+          agentRuntime: 'pi-agent-core',
+          claudeBaseUrl: 'https://api.deepseek.com/anthropic',
+          openaiBaseUrl: 'https://api.deepseek.com/v1',
+        },
+      });
+      const env = svc.getEnvForProvider(p.id)!;
+      expect(env.SMARTPERFETTO_AGENT_RUNTIME).toBe('pi-agent-core');
+      expect(JSON.parse(env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON)).toEqual({
+        catalog: {providers: ['deepseek'], id: 'deepseek-flash', baseUrl: 'https://api.deepseek.com/v1',
+          defaultThinkingLevel: 'lowest_supported'},
+        apiKeyEnv: 'DEEPSEEK_API_KEY',
+      });
+      expect(env.DEEPSEEK_API_KEY).toBe('sk-deepseek-test');
+      expect(Object.keys(env).filter(key => key.startsWith('ANTHROPIC_') || key.startsWith('OPENAI_'))).toEqual([]);
+    });
+
+    it('keeps an explicit Pi model JSON over the catalog route', () => {
+      const explicit = '{"catalog":{"providers":["zai"],"id":"glm-4.7"},"apiKeyEnv":"ZAI_API_KEY"}';
+      const p = svc.create({
+        ...validInput,
+        name: 'GLM Pi',
+        type: 'glm',
+        models: {primary: 'glm-5.3-flash', light: 'glm-5.3-flash'},
+        connection: {apiKey: 'sk-glm-test', agentRuntime: 'pi-agent-core', piAgentCoreModelJson: explicit},
+      });
+      const env = svc.getEnvForProvider(p.id)!;
+      expect(env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON).toBe(explicit);
+      expect(env.ZAI_CODING_CN_API_KEY).toBeUndefined();
     });
 
     it('rejects stale non-SDK runtime overrides on providers', () => {

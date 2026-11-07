@@ -19,6 +19,8 @@ export interface PiCatalogModelReference {
   providers: string[];
   id: string;
   baseUrl?: string;
+  /** Without an explicit thinkingLevel: the model's lowest supported of off/minimal/low. */
+  defaultThinkingLevel?: 'lowest_supported';
 }
 
 export interface PiAgentCoreModelConfig {
@@ -243,7 +245,7 @@ export function parsePiAgentCoreModelConfig(rawModel: string): PiAgentCoreModelC
 
 function piCatalogReference(value: unknown): PiCatalogModelReference {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Pi catalog must be an object');
-  const {providers, id, baseUrl, ...rest} = value as Record<string, unknown>;
+  const {providers, id, baseUrl, defaultThinkingLevel, ...rest} = value as Record<string, unknown>;
   if (Object.keys(rest).length > 0) throw new Error('Pi catalog has unknown fields');
   if (!Array.isArray(providers) || providers.length === 0 || providers.length > 8
     || !providers.every(provider => typeof provider === 'string' && /^[a-z0-9][a-z0-9-]*$/.test(provider))) {
@@ -255,7 +257,11 @@ function piCatalogReference(value: unknown): PiCatalogModelReference {
   if (baseUrl !== undefined && (!endpoint || !isCredentialFreeHttpUrl(endpoint))) {
     throw new Error('Pi catalog baseUrl must be a credential-free HTTP(S) URL');
   }
-  return {providers: [...providers] as string[], id: modelId, ...(endpoint ? {baseUrl: endpoint} : {})};
+  if (defaultThinkingLevel !== undefined && defaultThinkingLevel !== 'lowest_supported') {
+    throw new Error('Pi catalog defaultThinkingLevel must be lowest_supported');
+  }
+  return {providers: [...providers] as string[], id: modelId, ...(endpoint ? {baseUrl: endpoint} : {}),
+    ...(defaultThinkingLevel ? {defaultThinkingLevel} : {})};
 }
 
 /** The installed pi-ai version, which decides what a catalog reference resolves to. */

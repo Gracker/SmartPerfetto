@@ -38,6 +38,7 @@ import type {
   ProviderMutationOwner,
   ProviderMutationScope,
 } from './providerMutationGeneration';
+import {piCatalogProviderEnv} from './piProviderCatalog';
 import {isPiProviderEnvKey, isQoderByokEnvKey} from './envIsolation';
 import { withoutRetiredTuning } from './retiredTuning';
 
@@ -582,8 +583,10 @@ export class ProviderService {
     if (provider.connection.piAgentCoreModulePath) {
       env.SMARTPERFETTO_PI_AGENT_CORE_MODULE_PATH = provider.connection.piAgentCoreModulePath;
     }
-    if (provider.connection.piAgentCoreModelJson) {
+    if (provider.connection.piAgentCoreModelJson?.trim()) {
       env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON = provider.connection.piAgentCoreModelJson;
+    } else {
+      Object.assign(env, piCatalogProviderEnv(provider));
     }
     if (provider.connection.piAgentCoreSystemPrompt) {
       env.SMARTPERFETTO_PI_AGENT_CORE_SYSTEM_PROMPT = provider.connection.piAgentCoreSystemPrompt;
@@ -670,6 +673,9 @@ export class ProviderService {
         if (runtime === 'openai-agents-sdk') {
           env.SMARTPERFETTO_AGENT_RUNTIME = 'openai-agents-sdk';
           this.applyOpenAIConnection(env, provider);
+        } else if (runtime === 'pi-agent-core') {
+          // Pi gets its key only under its own key env; no Claude/OpenAI surface env.
+          this.applyPiAgentCoreConnection(env, provider);
         } else {
           const baseUrl = this.getClaudeBaseUrl(provider);
           if (baseUrl) env.ANTHROPIC_BASE_URL = baseUrl;
