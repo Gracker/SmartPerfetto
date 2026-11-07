@@ -3,6 +3,7 @@
 import {
   getProviderTypesForRuntime,
   isProductionAgentRuntimeKind,
+  listProductionRuntimeKinds,
   supportsRuntimeProviderType,
 } from '../../agentRuntime/runtimeDescriptors';
 import type {
@@ -26,6 +27,16 @@ export function isDualSurfaceProviderType(type: ProviderType): type is DualSurfa
 
 export function supportsAgentRuntimeType(type: ProviderType, runtime: AgentRuntimeKind): boolean {
   return supportsRuntimeProviderType(type, runtime);
+}
+
+/** Every production runtime a provider type may select, from the runtime descriptors. */
+export function supportedAgentRuntimesForType(type: ProviderType): AgentRuntimeKind[] {
+  return listProductionRuntimeKinds().filter(runtime => supportsAgentRuntimeType(type, runtime));
+}
+
+/** A provider-shaped API object with the runtimes its type may select, so clients need no type table. */
+export function withSupportedRuntimes<T extends {type: ProviderType}>(value: T): T & {supportedRuntimes: AgentRuntimeKind[]} {
+  return {...value, supportedRuntimes: supportedAgentRuntimesForType(value.type)};
 }
 
 export function assertAgentRuntimeSupported(type: ProviderType, runtime?: unknown): asserts runtime is AgentRuntimeKind | undefined {

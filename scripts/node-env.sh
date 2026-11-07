@@ -19,12 +19,13 @@ smartperfetto_node_spec() {
   fi
 }
 
+# Plain stdout writes: `node -p` colors numbers under FORCE_COLOR, which breaks the comparisons.
 smartperfetto_node_major() {
-  node -p "Number(process.versions.node.split('.')[0])" 2>/dev/null || printf '0\n'
+  node -e "process.stdout.write(process.versions.node.split('.')[0])" 2>/dev/null || printf '0'
 }
 
 smartperfetto_node_modules_abi() {
-  node -p "process.versions.modules" 2>/dev/null || printf 'unknown\n'
+  node -e "process.stdout.write(process.versions.modules)" 2>/dev/null || printf 'unknown'
 }
 
 smartperfetto_prepend_path_once() {

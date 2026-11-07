@@ -10,7 +10,9 @@ import {
   officialTemplates,
 } from '../services/providerManager';
 import type { AgentRuntimeKind, ProviderCreateInput, ProviderScope, ProviderUpdateInput } from '../services/providerManager';
+import type { ProviderType } from '../services/providerManager/types';
 import { testProviderConnection } from '../services/providerManager/connectionTester';
+import { withSupportedRuntimes } from '../services/providerManager/providerRuntimeMatrix';
 import { authenticate, requireRequestContext, type RequestContext } from '../middleware/auth';
 import { sendRouteError } from '../middleware/routeFailure';
 import { ProviderRequestError } from '../services/providerManager/providerRequestError';
@@ -81,13 +83,18 @@ router.get('/', (req, res) => {
   const svc = getProviderService();
   res.json({
     success: true,
-    providers: svc.list(providerScopeForRequest(req)),
+    providers: svc.list(providerScopeForRequest(req)).map(withSupportedRuntimes),
     store: providerStoreState(),
   });
 });
 
+const withProviderRuntimes = <T extends {type: ProviderType}>(provider: T | undefined) =>
+  provider && withSupportedRuntimes(provider);
+
+const TEMPLATES_WITH_RUNTIMES = officialTemplates.map(withSupportedRuntimes);
+
 router.get('/templates', (_req, res) => {
-  res.json({ success: true, templates: officialTemplates });
+  res.json({ success: true, templates: TEMPLATES_WITH_RUNTIMES });
 });
 
 router.get('/:id/models', async (req, res) => {
@@ -140,7 +147,7 @@ router.get('/effective', (req, res) => {
   const env = svc.getEffectiveEnv(scope);
   if (env) {
     const active = svc.list(scope).find(p => p.isActive);
-    res.json({ success: true, source: 'provider-manager', provider: active, env: maskEnvKeys(env), store });
+    res.json({ success: true, source: 'provider-manager', provider: active && withSupportedRuntimes(active), env: maskEnvKeys(env), store });
   } else {
     res.json({ success: true, source: 'env-fallback', provider: null, store });
   }
@@ -155,7 +162,7 @@ router.get('/:id', (req, res) => {
     type: provider.type,
     active: provider.isActive,
   });
-  res.json({ success: true, provider });
+  res.json({ success: true, provider: withSupportedRuntimes(provider) });
 });
 
 /**
@@ -183,7 +190,7 @@ router.post('/', (req, res) => {
       category: provider.category,
       runtime: provider.connection.agentRuntime,
     });
-    res.status(201).json({ success: true, provider: svc.get(provider.id, scope) });
+    res.status(201).json({ success: true, provider: withProviderRuntimes(svc.get(provider.id, scope)) });
   } catch (err: unknown) {
     sendProviderError(res, err, 'Create provider');
   }
@@ -200,7 +207,7 @@ router.patch('/:id', (req, res) => {
       type: updated.type,
       changedFields: Object.keys(input),
     });
-    res.json({ success: true, provider: svc.get(req.params.id, scope) });
+    res.json({ success: true, provider: withProviderRuntimes(svc.get(req.params.id, scope)) });
   } catch (err: unknown) {
     sendProviderError(res, err, 'Update provider');
   }
@@ -268,7 +275,7 @@ router.post('/:id/runtime', (req, res) => {
       type: provider.type,
       runtime,
     });
-    res.json({ success: true, provider: svc.get(req.params.id, scope) });
+    res.json({ success: true, provider: withProviderRuntimes(svc.get(req.params.id, scope)) });
   } catch (err: unknown) {
     sendProviderError(res, err, 'Switch provider runtime');
   }
@@ -285,7 +292,7 @@ router.post('/:id/rotate-secret', (req, res) => {
       type: provider?.type,
       secretVersion,
     });
-    res.json({ success: true, secretVersion, provider: svc.get(req.params.id, scope) });
+    res.json({ success: true, secretVersion, provider: withProviderRuntimes(svc.get(req.params.id, scope)) });
   } catch (err: unknown) {
     sendProviderError(res, err, 'Rotate provider secret');
   }

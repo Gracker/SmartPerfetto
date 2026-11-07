@@ -40,8 +40,8 @@ chmod +x "$TMP_HOME/tools/volta"
 
 cat > "$TMP_HOME/.volta/bin/node" <<'NODE'
 #!/bin/sh
-if [ "$1" = "-p" ]; then
-  echo 24
+if [ "$1" = "-e" ]; then
+  printf 24
 else
   echo v24.15.0
 fi
@@ -54,6 +54,15 @@ HOME="$TMP_HOME" PATH="$TMP_HOME/tools:/usr/bin:/bin" env -u VOLTA_HOME -u NVM_D
   smartperfetto_try_switch_node "$1" "24"
   test "$(command -v node)" = "$HOME/.volta/bin/node"
   test "$(smartperfetto_node_major)" = "24"
+' bash "$PROJECT_ROOT"
+
+# A colored terminal (FORCE_COLOR) must not decorate the version the scripts compare.
+# shellcheck disable=SC2016
+FORCE_COLOR=1 bash -u -c '
+  . "$1/scripts/node-env.sh"
+  major="$(smartperfetto_node_major)"
+  abi="$(smartperfetto_node_modules_abi)"
+  case "$major$abi" in *[!0-9]*|"") echo "uncolored version expected, got: $major / $abi" >&2; exit 1 ;; esac
 ' bash "$PROJECT_ROOT"
 
 echo "node-env tests passed"

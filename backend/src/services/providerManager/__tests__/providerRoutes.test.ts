@@ -195,6 +195,26 @@ describe('Provider Routes', () => {
       availableModels: [],
       defaultConnection: { agentRuntime: 'claude-agent-sdk' },
     });
+    // Each template carries the runtimes its type may select, from the runtime descriptors.
+    const supported = (type: string) => res.body.templates
+      .find((template: { type: string }) => template.type === type).supportedRuntimes;
+    expect(supported('glm')).toEqual(['claude-agent-sdk', 'openai-agents-sdk', 'pi-agent-core']);
+    expect(supported('qwen')).toEqual(['claude-agent-sdk', 'openai-agents-sdk']);
+    expect(supported('custom')).toEqual(
+      ['claude-agent-sdk', 'openai-agents-sdk', 'pi-agent-core', 'opencode', 'qoder-agent-sdk']);
+  });
+
+  it('lists each provider with the runtimes its type may select', async () => {
+    await request(appServer).post('/api/v1/providers').send({
+      name: 'DeepSeek Pi', category: 'official', type: 'deepseek',
+      models: {primary: 'deepseek-flash', light: 'deepseek-flash'},
+      connection: {apiKey: 'sk-deepseek-test', agentRuntime: 'pi-agent-core'},
+    });
+    const res = await request(appServer).get('/api/v1/providers');
+    expect(res.status).toBe(200);
+    const provider = res.body.providers.find((item: {name: string}) => item.name === 'DeepSeek Pi');
+    expect(provider.supportedRuntimes).toEqual(['claude-agent-sdk', 'openai-agents-sdk', 'pi-agent-core']);
+    expect(JSON.stringify(provider)).not.toContain('sk-deepseek-test');
   });
 
   it('keeps live model suggestions isolated to the saved provider ID', async () => {
