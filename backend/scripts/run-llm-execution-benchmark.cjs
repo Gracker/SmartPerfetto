@@ -9,7 +9,7 @@ const path = require('node:path');
 const {randomBytes} = require('node:crypto');
 const {pathToFileURL} = require('node:url');
 const {ProcessHarness} = require('../../scripts/e2e/process-harness.cjs');
-const {TARGET_ENV, CELLS, SOURCE_FACET, TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID, DUAL_CARRIER_TREATMENT_ID, EVIDENCE_QUOTES_TREATMENT_ID, treatmentOutputs, buildConfigCommitments, alignConfigCommitments,
+const {TARGET_ENV, CELLS, SOURCE_FACET, TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID, DUAL_CARRIER_TREATMENT_ID, treatmentOutputs, buildConfigCommitments, alignConfigCommitments,
   configFieldsFingerprint, makeConfigCommitments, parsePurposeContracts, makeRepresentationTreatment, parsePreflightOutputImplementation, cellPreflightSelections,
   sourceFacetContext, validateSourceFacetCollection,
   canonicalJson, hash, fingerprintSourceTree, fingerprintFixtureDirectory, fingerprintObserver,
@@ -55,7 +55,7 @@ function parseArgs(argv) {
   if (!/^[a-z][a-z0-9-]+$/.test(values['--runtime'])) throw new Error('benchmark_runtime_invalid');
   if ((values['--sample-kind'] ?? 'local-cold') !== 'local-cold') throw new Error('benchmark_warm_not_configured');
   if (!/^[a-f0-9]{64}$/.test(values['--observer-hook-fingerprint'])) throw new Error('benchmark_observer_hook_fingerprint_invalid');
-  if (values['--treatment'] !== undefined && (![TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID, DUAL_CARRIER_TREATMENT_ID, EVIDENCE_QUOTES_TREATMENT_ID].includes(values['--treatment']) || values['--runtime'] !== 'openai-agents-sdk')) {
+  if (values['--treatment'] !== undefined && (![TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID, DUAL_CARRIER_TREATMENT_ID].includes(values['--treatment']) || values['--runtime'] !== 'openai-agents-sdk')) {
     throw new Error('benchmark_treatment_invalid');
   }
   const cells = values['--cells'] === undefined ? [...CELLS] : values['--cells'].split(',');
@@ -457,7 +457,7 @@ async function runBenchmark(options, injectedDependencies) {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
-    console.log('Usage: run-llm-execution-benchmark.cjs --baseline-root <checkout> --candidate-root <checkout> --provider glm|deepseek --runtime <canonical-runtime> --model <id> --light-model <id> --base-port <port> --candidate-port <port> --observer-hook-fingerprint <sha256> --output-dir test-output/runtime-concurrency/llm-execution-v1/<fresh-run> [--repetitions 3] [--cells scheduler,startup,scrolling,source,dual] [--sample-kind local-cold] [--treatment assistant_text_to_native_v2@1|assistant_text_to_native_v2@2|assistant_text_to_native_v2_dual@1|assistant_text_to_evidence_quotes_v3@1]');
+    console.log('Usage: run-llm-execution-benchmark.cjs --baseline-root <checkout> --candidate-root <checkout> --provider glm|deepseek --runtime <canonical-runtime> --model <id> --light-model <id> --base-port <port> --candidate-port <port> --observer-hook-fingerprint <sha256> --output-dir test-output/runtime-concurrency/llm-execution-v1/<fresh-run> [--repetitions 3] [--cells scheduler,startup,scrolling,source,dual] [--sample-kind local-cold] [--treatment assistant_text_to_native_v2@1|assistant_text_to_native_v2@2|assistant_text_to_native_v2_dual@1]');
     console.log('Collects paired lifecycle/report evidence. It does not grant quality or performance admission. Warm provider cache is not controlled.');
     return;
   }

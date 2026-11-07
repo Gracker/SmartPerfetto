@@ -197,7 +197,7 @@ function directModelProjectionTable<T>(displayData: T, witness?: EvidenceTableWi
     displayRows: displayRows as unknown[][], table, rawIndexes};
 }
 
-export function safeModelUnit(field: CapturedFieldSemantics | undefined): string | undefined {
+function safeModelUnit(field: CapturedFieldSemantics | undefined): string | undefined {
   const unit = field?.unit;
   const fingerprint = field?.origin.definitionFingerprint;
   if (!field || !['skill_literal', 'native_producer'].includes(field.origin.kind) ||

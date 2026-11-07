@@ -1266,8 +1266,6 @@ function previewFromColumnarData(data: any): Record<string, any> | undefined {
 }
 
 export interface ClaudeMcpServerOptions {
-  /** Internal run-bound preparation; presence never grants tool or evidence access. */
-  quoteContext?: import('../services/evidence/evidenceQuoteContext').EvidenceQuoteContext;
   /** Internal captured policy. Only an admitted native runtime opts in; never read request JSON or env here. */
   finalSubmission?: FinalSubmissionMode;
   traceId: string;
@@ -1423,13 +1421,6 @@ function lightweightPreviewIndexes(results: readonly {layer?: string}[], limit: 
 
 export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   const { traceId, traceProcessorService, skillExecutor, packageName, emitUpdate, onSkillResult, analysisNotes, artifactStore } = options;
-  const quoteToolResult = (payload: Parameters<typeof createRuntimeToolResult>[0],
-    resultOptions: Parameters<typeof createRuntimeToolResult>[1] = {}) => {
-    if (!options.quoteContext) return createRuntimeToolResult(payload, resultOptions);
-    const prepared = options.quoteContext.prepareToolQuoteProjection(payload);
-    return createRuntimeToolResult(prepared.payload, {...resultOptions,
-      ...(prepared.projection ? {quoteProjection: prepared.projection} : {})});
-  };
   // Issuer identity is separate from the private-context `enforced` flag below.
   const originalTraceAuthorization = options.runAuthorization;
   const artifactAccessPolicy = resolveArtifactAccessPolicy(options.userQuery);
@@ -2704,7 +2695,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             );
             updateSqlArtifactQueryReview(artifactStore, sqlArtifact, emittedEvidence.queryReview);
           }
-          return quoteToolResult({
+          return createRuntimeToolResult({
             success: true,
             mode: 'summary',
             autoSummarized: !summary && !!sqlArtifact,
@@ -2760,7 +2751,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           );
         }
 
-        return quoteToolResult(success ? {
+        return createRuntimeToolResult(success ? {
           success,
           columns: result.columns,
           rows,
@@ -3148,7 +3139,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
                 return {...locator, previewOmitted: true};
               })
             : artifacts;
-          return quoteToolResult({
+          return createRuntimeToolResult({
             success: result.success,
             skillId: result.skillId,
             partial: result.partial,
@@ -3188,7 +3179,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         }
 
         // Default: return full displayResults (backward compatible)
-        return quoteToolResult({
+        return createRuntimeToolResult({
           success: result.success,
           skillId: result.skillId,
           partial: result.partial,
@@ -4073,7 +4064,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         sourceArtifactId: artifactId,
         ...(purpose ? { purpose } : {}),
       };
-      return quoteToolResult(payload, {
+      return createRuntimeToolResult(payload, {
         decorate: text => reminder ? text + reminder : text,
       });
     },
@@ -7078,7 +7069,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             stdlibInjectedModules: injected,
             ...(processIdentityWarning ? { processIdentityWarning } : {}),
           };
-          return quoteToolResult(text, {
+          return createRuntimeToolResult(text, {
             decorate: text => consumeWatchdogWarning(text + getReasoningNudge()),
           });
         }
@@ -7148,7 +7139,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           durationMs,
           outputLanguage,
         });
-        return quoteToolResult(text, {
+        return createRuntimeToolResult(text, {
           decorate: text => consumeWatchdogWarning(success ? text + getReasoningNudge() : text),
         });
       } catch (e: any) {

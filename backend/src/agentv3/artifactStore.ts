@@ -19,7 +19,7 @@
 
 import type { TraceProcessorQueryProvenance } from '../services/traceProcessorConnectionModel';
 import {randomUUID} from 'crypto';
-import {isDeepStrictEqual, types} from 'util';
+import {isDeepStrictEqual} from 'util';
 import type {RuntimeToolInvocationEvent} from '../agentRuntime/runtimeToolObserver';
 import {captureInvestigationToolObservation, recordCaptureToolCall,
   type InvestigationToolObservation} from '../services/evidence/investigationEvidenceLedger';
@@ -27,14 +27,11 @@ import {currentRuntimeToolInvocation} from '../agentRuntime/runtimeToolInvocatio
 import {resolveRuntimePerformanceRecorder, runtimePerformanceRunId} from '../agentRuntime/runtimePerformanceContext';
 import {currentRunManifestAttributionSink} from '../services/selfEvolution/runManifestLifecycle';
 import {createDataEnvelope} from '../types/dataContract';
-import {capturedEvidenceTable, capturedRawSqlContext, freezeEvidenceValue, type CapturedEvidenceTable, type EvidenceTableWitness, INDEXED_ROW_SHAPE, indexEvidenceRows,
+import {capturedEvidenceTable, freezeEvidenceValue, type CapturedEvidenceTable, type EvidenceTableWitness, INDEXED_ROW_SHAPE, indexEvidenceRows,
   MODEL_EVIDENCE_TRUNCATED_CELL_LIMIT, type ModelEvidenceProjectionStatus,
   type ModelEvidenceProjectionUnavailableReason} from '../services/evidence/evidenceCapture';
-import {projectModelEvidenceMetadata, quoteProjectedPageMatchesCapture, snapshotQuoteProjectionScope,
-  type ModelEvidenceMetadata, type PreparedQuoteProjectionBinding, type QuoteLocator, type QuoteProjectedPage,
-  type QuoteProjectionScope} from '../services/evidence/modelEvidenceMetadata';
-import {createEvidenceReadView, createEvidenceReadSession, matchesIssuedEvidenceReadRecord, MAX_EVIDENCE_READ_REFERENCES,
-  type EvidenceReadSession, type EvidenceReadSessionOptions, type EvidenceReadView, type EvidenceReadViewOptions,
+import {projectModelEvidenceMetadata, type ModelEvidenceMetadata} from '../services/evidence/modelEvidenceMetadata';
+import {createEvidenceReadView, MAX_EVIDENCE_READ_REFERENCES, type EvidenceReadView, type EvidenceReadViewOptions,
   type EvidenceReadRecord} from '../services/evidence/evidenceReadView';
 import { scopeMetadata, type IdentityResolutionV1, type EvidenceScopeMetadata, type EvidenceScopeProvenanceV1 } from '../types/identityContract';
 import type { DataEnvelopeMeta } from '../types/dataContract';
@@ -342,7 +339,6 @@ function sameCapturedTable(left: CapturedEvidenceTable | undefined, right: Captu
 export class ArtifactStore {
   private artifacts: Map<string, StoredArtifact> = new Map();
   private readonly executionCaptures = new Map<string, EvidenceReadRecord>();
-  private readonly quoteProjectionBindings = new WeakMap<object, EvidenceReadRecord>();
   private readonly investigationToolObservations = new Map<string, InvestigationToolObservation & {originRunId?: string}>();
   private readonly evidenceStoreId = randomUUID();
   private captureGeneration = 0;
@@ -513,82 +509,6 @@ export class ArtifactStore {
     const admitted = new Set(this.executionCaptures.values());
     const observations = [...this.investigationToolObservations.values()];
     return createEvidenceReadView(() => [...this.executionCaptures.values()].filter(record => admitted.has(record)), options, () => observations);
-  }
-
-  createEvidenceReadSession(options: EvidenceReadSessionOptions): EvidenceReadSession {
-    const admitted = new Set(this.executionCaptures.values());
-    const observations = [...this.investigationToolObservations.values()];
-    return createEvidenceReadSession(() => [...this.executionCaptures.values()].filter(record => admitted.has(record)),
-      options, () => observations, items => this.areEvidenceReadResolutionsRetained(items));
-  }
-
-  /** Check current registration retention. Ownership, trace access and run origin have separate guards. */
-  isEvidenceReadResolutionRetained(resolution: unknown): boolean {
-    for (const entry of this.executionCaptures.values()) {
-      if (matchesIssuedEvidenceReadRecord(resolution, entry)) return true;
-    }
-    return false;
-  }
-
-  /** Validate the supplied producer page; this performs no evidence read or final retention check. */
-  prepareQuoteProjectionBinding(locator: QuoteLocator,
-    actual: {scope: QuoteProjectionScope; page: QuoteProjectedPage}): PreparedQuoteProjectionBinding | undefined {
-    if (!locator || typeof locator !== 'object' || types.isProxy(locator) ||
-        !actual || typeof actual !== 'object' || types.isProxy(actual)) return undefined;
-    const keys = Reflect.ownKeys(locator);
-    const key = keys[0];
-    if (keys.length !== 1 || (key !== 'artifactId' && key !== 'evidenceRefId')) return undefined;
-    const identifier = Object.getOwnPropertyDescriptor(locator, key);
-    if (!identifier || !('value' in identifier) || typeof identifier.value !== 'string' || !identifier.value.trim()) return undefined;
-    const scopeField = Object.getOwnPropertyDescriptor(actual, 'scope');
-    const pageField = Object.getOwnPropertyDescriptor(actual, 'page');
-    if (!scopeField || !('value' in scopeField) || !pageField || !('value' in pageField)) return undefined;
-    const scope = snapshotQuoteProjectionScope(scopeField.value);
-    if (!scope) return undefined;
-    let selected: EvidenceReadRecord | undefined;
-    for (const entry of this.executionCaptures.values()) {
-      if (entry.record.meta[key] !== identifier.value) continue;
-      if (selected) return undefined;
-      selected = entry;
-    }
-    if (!selected) return undefined;
-    const {record, witness} = selected;
-    if (record.originRunId !== scope.runId || record.captureId !== witness.captureId ||
-        !scope.allowedTraces.some(trace => trace.traceId === record.meta.traceId && trace.traceSide === record.meta.traceSide)) return undefined;
-    const {executionStatus} = record.meta;
-    if (executionStatus === 'unavailable' || executionStatus === 'optional_error' || executionStatus === 'skipped') return undefined;
-    const rawContext = capturedRawSqlContext(witness);
-    if (rawContext && (rawContext.traceId !== record.meta.traceId || rawContext.traceSide !== record.meta.traceSide)) return undefined;
-    const table = capturedEvidenceTable(witness);
-    if (!table || table.unavailableReason) return undefined;
-    try {if (!quoteProjectedPageMatchesCapture(pageField.value, table)) return undefined;} catch {return undefined;}
-    const binding: PreparedQuoteProjectionBinding = Object.freeze({kind: 'prepared_quote_projection'});
-    this.quoteProjectionBindings.set(binding, selected);
-    return binding;
-  }
-
-  /** Preparation-time exact identity only; A2 separately checks current retention of the full batch. */
-  matchesQuoteProjectionRead(binding: unknown, resolution: unknown): boolean {
-    if (!binding || typeof binding !== 'object') return false;
-    const prepared = this.quoteProjectionBindings.get(binding);
-    return Boolean(prepared && matchesIssuedEvidenceReadRecord(resolution, prepared));
-  }
-
-  /** A pure complete-set check. Callers establish authorization once before entering this scan. */
-  areEvidenceReadResolutionsRetained(resolutions: readonly unknown[]): boolean {
-    if (types.isProxy(resolutions) || !Array.isArray(resolutions) || Object.getPrototypeOf(resolutions) !== Array.prototype) return false;
-    const length = Object.getOwnPropertyDescriptor(resolutions, 'length')?.value;
-    if (!Number.isSafeInteger(length) || length < 0 || Reflect.ownKeys(resolutions).length !== length + 1) return false;
-    for (let index = 0; index < length; index++) {
-      const descriptor = Object.getOwnPropertyDescriptor(resolutions, String(index));
-      if (!descriptor || !('value' in descriptor)) return false;
-      let retained = false;
-      for (const entry of this.executionCaptures.values()) {
-        if (matchesIssuedEvidenceReadRecord(descriptor.value, entry)) {retained = true; break;}
-      }
-      if (!retained) return false;
-    }
-    return true;
   }
 
   /** Shared admitted-tool observer; records no payload or model-authored success claims. */

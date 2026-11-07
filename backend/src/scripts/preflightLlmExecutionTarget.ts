@@ -32,7 +32,7 @@ export interface LlmTargetPreflightRequest {
 }
 type PreflightOutputConfig =
   | Readonly<{finalSubmission: 'assistant_text'; declarationSyntax: 'canonical_v1'}>
-  | Readonly<{finalSubmission: 'authored_claim_document_v2' | 'authored_claim_document_v2_dual' | 'authored_claim_document_v3_quotes'; declarationSyntax: 'authoring_v2'}>;
+  | Readonly<{finalSubmission: 'authored_claim_document_v2' | 'authored_claim_document_v2_dual'; declarationSyntax: 'authoring_v2'}>;
 type PreflightFailureCode = 'invalid_configuration' | 'unsupported_final_submission' | 'source_mismatch' | 'probe_unavailable';
 export type PurposeTokenLimit = Readonly<{status: 'absent'}> | Readonly<{
   status: 'explicit';
@@ -206,12 +206,9 @@ function inspectTarget(request: LlmTargetPreflightRequest, directory: string): L
     try {admittedModels = admitFinalSubmissionConfiguration(config, request.requestedMode);} catch (error) {
       return failed(error instanceof FinalSubmissionConfigurationError ? error.code : 'probe_unavailable');
     }
-    // The production gate ran first. Observed future descriptors cannot activate a mode or create actual implementation facts.
-    // The active writer remains limited to the existing implementations until the separately reviewed D/F integration.
+    // The production gate ran first. This probe serves only the declared v3 treatment.
     const output = config.outputConfig as Readonly<{finalSubmission: string; declarationSyntax: string}>;
-    let capturedOutput: PreflightOutputConfig & Readonly<{
-      finalSubmission: 'assistant_text' | 'authored_claim_document_v2' | 'authored_claim_document_v2_dual';
-    }>;
+    let capturedOutput: PreflightOutputConfig;
     if (request.side === 'base' && output.finalSubmission === 'assistant_text' && output.declarationSyntax === 'canonical_v1') {
       capturedOutput = {finalSubmission: 'assistant_text', declarationSyntax: 'canonical_v1'};
     } else if (request.side === 'candidate' && (output.finalSubmission === 'authored_claim_document_v2' ||

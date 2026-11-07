@@ -181,21 +181,6 @@ RuntimeAdmission | undefined {
   return binding.scope.view;
 }
 
-/** Read before native ensure; this view does not certify where an admission originated. */
-export function readRuntimeAdmissionLifetime(options: object, expected: RuntimeTaskDeadlineIdentity):
-Readonly<{ownerSignal: AbortSignal; assertCurrent(): void}> | undefined {
-  const capturedIdentity = Object.freeze({runId: expected.runId, sessionId: expected.sessionId});
-  const binding = bindingOf(options);
-  if (!binding) return undefined;
-  assertIdentity(binding, capturedIdentity);
-  const scope = binding.scope, ownerSignal = scope.ownerSignal;
-  if (!ownerSignal) return undefined;
-  return Object.freeze({ownerSignal, assertCurrent() {
-    assertActive(scope);
-    assertIdentity(binding, capturedIdentity);
-  }});
-}
-
 /** Forward only this issued sidecar through an explicit options whitelist. */
 export function forwardRuntimeAdmission<T extends object>(source: object, target: T): T {
   const sourceBinding = bindingOf(source);
