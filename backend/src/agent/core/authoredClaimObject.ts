@@ -50,10 +50,33 @@ export type AuthoredClaimObjectResult = {
 type JsonRecord = Record<string, unknown>;
 const object = (value: unknown): value is JsonRecord => value !== null && typeof value === 'object' && !Array.isArray(value);
 class ProjectionFailure extends Error {constructor(readonly code: AuthoredClaimObjectFailure) {super(code);}}
-function refuse(code: AuthoredClaimObjectFailure): never {throw new ProjectionFailure(code);}
+function refuse(code: AuthoredClaimObjectFailure): never {
+  if (code === 'invalid_structure') {
+    try {
+      const location: {stack?: string} = {};
+      Error.captureStackTrace(location, refuse);
+      if (typeof location.stack === 'string') {
+        const sourceLocations = [...location.stack.matchAll(/authoredClaimObject\.[jt]s:(\d+):(\d+)/g)]
+          .map(match => ({line: Number(match[1]), column: Number(match[2])}))
+          .filter(site => Number.isSafeInteger(site.line) && site.line > 0 && Number.isSafeInteger(site.column) && site.column > 0)
+          .slice(0, 3);
+        if (sourceLocations.length) console.warn('[AuthoredClaimObject] invalid structure location', {sourceLocations});
+      }
+    } catch { /* Diagnostics cannot change the original rejection. */ }
+  }
+  throw new ProjectionFailure(code);
+}
 function shape(value: unknown, keys: readonly string[]): JsonRecord {
   if (!object(value) || Object.keys(value).length !== keys.length ||
       keys.some(key => !Object.prototype.hasOwnProperty.call(value, key))) {
+    try {
+      console.warn('[AuthoredClaimObject] structure mismatch', {
+        expectedFields: keys,
+        missingFields: object(value) ? keys.filter(key => !Object.prototype.hasOwnProperty.call(value, key)) : keys,
+        unexpectedFieldCount: object(value) ? Object.keys(value).filter(key => !keys.includes(key)).length : 0,
+        actualKind: value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value,
+      });
+    } catch { /* Diagnostics cannot change the original rejection. */ }
     return refuse('invalid_structure');
   }
   return value;

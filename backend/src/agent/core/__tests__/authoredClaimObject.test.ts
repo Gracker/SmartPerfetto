@@ -269,6 +269,40 @@ describe('native authored object pure compiler', () => {
     expect((compiled(f.wire).rawCanonicalPayload.claims as Json[])[0].artifactRefs[0].rowSelector).toEqual({cell: null});
   });
 
+  it('reports closed structure diagnostics without private keys or values', () => {
+    const f = fixture();
+    delete f.wire.referenceDictionary[0].sourceRef;
+    f.wire.referenceDictionary[0]['private-key-canary'] = 'private-value-canary';
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      expect(compileAuthoredClaimObject(f.wire)).toMatchObject({status: 'projection_failed', code: 'invalid_structure'});
+      expect(warn).toHaveBeenCalledWith('[AuthoredClaimObject] structure mismatch', expect.objectContaining({
+        expectedFields: expect.arrayContaining(['sourceRef']), missingFields: ['sourceRef'],
+        unexpectedFieldCount: 1, actualKind: 'object',
+      }));
+      expect(warn).toHaveBeenCalledWith('[AuthoredClaimObject] invalid structure location', {
+        sourceLocations: expect.any(Array),
+      });
+      const locations = warn.mock.calls.find(call => call[0] === '[AuthoredClaimObject] invalid structure location')?.[1].sourceLocations;
+      expect(locations.length).toBeGreaterThan(0);
+      expect(locations.length).toBeLessThanOrEqual(3);
+      for (const location of locations) {
+        expect(Object.keys(location).sort()).toEqual(['column', 'line']);
+        expect(Number.isSafeInteger(location.line) && location.line > 0).toBe(true);
+        expect(Number.isSafeInteger(location.column) && location.column > 0).toBe(true);
+      }
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('private-key-canary');
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('private-value-canary');
+    } finally {warn.mockRestore();}
+  });
+
+  it('preserves the structure failure when diagnostic logging throws', () => {
+    const f = fixture(); delete f.wire.referenceDictionary[0].sourceRef;
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {throw new Error('diagnostic unavailable');});
+    try {expect(compileAuthoredClaimObject(f.wire)).toMatchObject({status: 'projection_failed', code: 'invalid_structure'});}
+    finally {warn.mockRestore();}
+  });
+
   it.each(['frame_negative', 'frame_fraction', 'frame_missing', 'ref_negative', 'ref_unsafe', 'ref_missing',
     'duplicate_selector', 'selector_json', 'unknown_key', 'wrong_version', 'semantics_container'])(
     'refuses structural %s without returning a filtered candidate', failure => {
