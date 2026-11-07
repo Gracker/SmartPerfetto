@@ -19,6 +19,8 @@ import {
 import {extractFirstJsonObject} from '../evolutionLifecycle/reviewExecution';
 import {getProviderService, type ProviderScope} from '../providerManager';
 import {mergeIsolatedProviderEnv} from '../providerManager/envIsolation';
+import {readPiAgentCoreModelConfig} from '../../agentRuntime/engines/pi/piAgentCoreConfig';
+import {resolvePiModelRecord} from '../../agentRuntime/engines/pi/piAgentCoreProvider';
 import {buildOpenAIChatCompletionsTokenLimit} from '../providerManager/openAiChatCompletionsCompat';
 import type {
   ExternalIssueOpportunityV1,
@@ -186,7 +188,7 @@ async function completeWithPortableOpenAICompatibleRuntime(input: {
     input.providerScope,
   );
   const config = input.runtime === 'pi-agent-core'
-    ? resolvePiReviewConfig(env, input.model)
+    ? await resolvePiReviewConfig(env, input.model)
     : resolveOpenCodeReviewConfig(env, input.model);
   assertReviewCredentials(config);
   return completeWithOpenAICompatible({
@@ -277,14 +279,15 @@ function resolvePinnedRuntimeEnv(
   return mergeIsolatedProviderEnv(process.env, providerEnv);
 }
 
-function resolvePiReviewConfig(
+async function resolvePiReviewConfig(
   env: Record<string, string | undefined>,
   pinnedModel?: string,
-): OpenAICompatibleReviewConfig {
-  const modelJson = parseModelJson(
-    env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON,
-    'SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON',
-  );
+): Promise<OpenAICompatibleReviewConfig> {
+  const config = readPiAgentCoreModelConfig(env);
+  if (!config) throw new Error('external_issue_triage_pi_model_config_incomplete');
+  // One resolution path with the runtime; credential fields come from the parsed config.
+  const modelJson: Record<string, unknown> = {...await resolvePiModelRecord(config),
+    apiKey: config.apiKey, apiKeyEnv: config.apiKeyEnv};
   const api = readConfigString(modelJson.api);
   if (api !== 'openai-completions') {
     throw new Error(

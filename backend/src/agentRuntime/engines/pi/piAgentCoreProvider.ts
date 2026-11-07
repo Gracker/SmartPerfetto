@@ -40,6 +40,8 @@ interface PiAiProviderCatalogModule {
     headers?: Record<string, string | null>;
     auth: Parameters<PiAiModule['createProvider']>[0]['auth'];
   }>;
+  /** One generated catalog model (no network refresh); undefined when absent. */
+  getBuiltinModel(provider: string, modelId: string): Record<string, unknown> | undefined;
 }
 
 const importEsmModule = new Function(
@@ -391,12 +393,33 @@ export async function loadPiProviderRuntimeModules(
   return {piAi, catalog, providerStreams};
 }
 
+/** The installed builtin catalog entry a reference names, with the configured endpoint. */
+export async function resolvePiCatalogModel(
+  reference: NonNullable<PiAgentCoreModelConfig['catalog']>,
+  moduleLoader: (specifier: string) => Promise<unknown> = importEsmModule,
+): Promise<Record<string, unknown>> {
+  const catalog = await moduleLoader('@earendil-works/pi-ai/providers/all') as PiAiProviderCatalogModule;
+  for (const providerId of reference.providers) {
+    const found = catalog.getBuiltinModel(providerId, reference.id);
+    if (found) return {...found, ...(reference.baseUrl ? {baseUrl: reference.baseUrl} : {})};
+  }
+  throw new Error(`Pi catalog has no model ${reference.id} under ${reference.providers.join(', ')}`);
+}
+
+/** The configured model record: the full model, or a catalog reference resolved through the installed SDK. */
+export function resolvePiModelRecord(
+  config: PiAgentCoreModelConfig,
+  moduleLoader: (specifier: string) => Promise<unknown> = importEsmModule,
+): Promise<Record<string, unknown>> {
+  return config.catalog ? resolvePiCatalogModel(config.catalog, moduleLoader) : Promise.resolve(config.model);
+}
+
 export async function createPiAgentCoreProviderRuntime(
   config: PiAgentCoreModelConfig,
   env: EnvLike,
   moduleLoader: (specifier: string) => Promise<unknown> = importEsmModule,
 ): Promise<PiAgentCoreProviderRuntime> {
-  const model = asPiModel(config.model);
+  const model = asPiModel(await resolvePiModelRecord(config, moduleLoader));
   const api = model.api as SupportedPiApi;
   const providerId = model.provider;
   if (config.credential && (config.apiKey || config.apiKeyEnv)) {

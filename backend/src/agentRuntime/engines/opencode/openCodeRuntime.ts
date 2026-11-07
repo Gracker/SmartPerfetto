@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {installedPackageVersion} from '../../../utils/installedPackageVersion';
 import {resolveRuntimePerformanceRecorder} from '../../runtimePerformanceContext';
 
 import {collectSceneEvidenceForPrompt, collectSelectedEvidenceForPrompt, scenePerformanceFromSink} from '../../sceneEntryEvidence';
@@ -1577,10 +1578,7 @@ function openCodeSdkIdentity(localCli: boolean) {
   const identity = {packageName: localCli ? 'opencode-ai' : 'opencode-custom-host', version: 'unknown',
     adapterContractVersion: 'opencode-compatible-options@2'};
   if (!localCli) return identity;
-  try {
-    const installed = JSON.parse(fs.readFileSync(require.resolve('opencode-ai/package.json'), 'utf8'));
-    if (typeof installed.version === 'string' && /^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(installed.version)) identity.version = installed.version;
-  } catch { /* Missing installed identity stays unknown. */ }
+  identity.version = installedPackageVersion('opencode-ai');
   return identity;
 }
 

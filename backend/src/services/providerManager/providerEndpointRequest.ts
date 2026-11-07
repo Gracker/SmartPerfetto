@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {isCredentialFreeHttpUrl} from '../../utils/httpValue';
 import {lookup} from 'dns/promises';
 import http, {type IncomingMessage} from 'http';
 import https from 'https';
@@ -37,7 +38,7 @@ function configuredPrivateOrigins(env: NodeJS.ProcessEnv): Set<string> {
     if (!value) continue;
     try {
       const url = new URL(value);
-      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) continue;
+      if (!isCredentialFreeHttpUrl(url)) continue;
       origins.add(url.origin);
     } catch {
       // Invalid deployment entries never broaden the outbound policy.
@@ -51,7 +52,7 @@ export function assertProviderEndpointPolicy(
   resolvedAddresses: readonly string[],
   env: NodeJS.ProcessEnv = process.env,
 ): void {
-  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+  if (!isCredentialFreeHttpUrl(url)) {
     throw new ProviderEndpointRejectedError(
       'Provider endpoints must use credential-free http or https URLs',
     );

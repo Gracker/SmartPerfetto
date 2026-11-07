@@ -1,6 +1,7 @@
 // backend/src/services/providerManager/connectionTester.ts
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import {parsePiAgentCoreModelConfig} from '../../agentRuntime/engines/pi/piAgentCoreConfig';
 import type { OpenAIProtocol, ProviderConfig, TestResult } from './types';
 import {
   normalizeBedrockModelId,
@@ -94,12 +95,9 @@ function testPiAgentCore(provider: ProviderConfig): Omit<TestResult, 'latencyMs'
     return { success: false, error: 'Pi Agent Core model JSON is required' };
   }
   try {
-    const parsed = JSON.parse(rawModel);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return { success: false, error: 'Pi Agent Core model JSON must be an object' };
-    }
-  } catch {
-    return { success: false, error: 'Pi Agent Core model JSON is invalid' };
+    parsePiAgentCoreModelConfig(rawModel);
+  } catch (error) {
+    return { success: false, error: `Pi Agent Core model JSON is invalid: ${(error as Error).message}` };
   }
   return {
     success: true,

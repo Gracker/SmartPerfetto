@@ -146,6 +146,18 @@ const model = {
   maxTokens: 1024,
 };
 
+// A catalog reference resolves through the installed SDK catalog and keeps the configured endpoint.
+const catalogRuntime = await createPiAgentCoreProviderRuntime({
+  catalog: {providers: ['deepseek'], id: 'deepseek-flash', baseUrl: 'https://example.invalid/v1'},
+  apiKey: 'catalog-key',
+}, {});
+assert.equal(catalogRuntime.model.id, 'deepseek-flash');
+assert.equal(catalogRuntime.model.provider, 'deepseek');
+assert.equal(catalogRuntime.model.api, 'openai-completions');
+assert.equal(catalogRuntime.model.baseUrl, 'https://example.invalid/v1');
+await assert.rejects(createPiAgentCoreProviderRuntime({catalog: {providers: ['deepseek'], id: 'no-such-model'}}, {}),
+  /Pi catalog has no model no-such-model/);
+
 // Resolve the actual installed model capabilities; never substitute model names or a second catalog.
 const nativeGlm = zaiCodingCnProvider().getModels().find(value => value.id === 'glm-5.3-flash');
 const nativeDeepSeek = deepseekProvider().getModels().find(value => value.id === 'deepseek-flash');

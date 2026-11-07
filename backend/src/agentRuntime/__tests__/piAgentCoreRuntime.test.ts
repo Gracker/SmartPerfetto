@@ -26,6 +26,8 @@ import {
   type PiAgentCoreEvent,
 } from '../piAgentCoreRuntime';
 import * as piAgentCoreRuntimeModule from '../piAgentCoreRuntime';
+import {installedPiAiVersion, parsePiAgentCoreModelConfig, piRuntimeFingerprintInput} from '../engines/pi/piAgentCoreConfig';
+import {resolvePiCatalogModel} from '../engines/pi/piAgentCoreProvider';
 import * as analysisRunSpecModule from '../analysisRunSpec';
 import * as outputConfigModule from '../finalSubmissionConfig';
 import type { RuntimeToolResult, SharedToolSpec } from '../runtimeToolSpec';
@@ -4672,4 +4674,53 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(result.completion?.status).toBe('completed');
   });
 
+});
+
+describe('Pi catalog model references', () => {
+  const reference = {providers: ['zai-coding-cn', 'zai'], id: 'glm-5.3-flash', baseUrl: 'https://open.bigmodel.cn/api/paas/v4'};
+
+  it('parses a catalog reference into an attribution-only model and keeps credential fields', () => {
+    const config = parsePiAgentCoreModelConfig(JSON.stringify({catalog: reference, apiKeyEnv: 'ZAI_CODING_CN_API_KEY',
+      thinkingLevel: 'low'}));
+    expect(config.catalog).toEqual(reference);
+    expect(config.model).toEqual({id: 'glm-5.3-flash', baseUrl: reference.baseUrl});
+    expect(config).toMatchObject({apiKeyEnv: 'ZAI_CODING_CN_API_KEY', thinkingLevel: 'low'});
+  });
+
+  it.each([
+    [{catalog: reference, id: 'glm-5.3-flash'}, 'must not combine catalog'],
+    [{catalog: {...reference, providers: []}}, 'builtin provider ids'],
+    [{catalog: {...reference, providers: ['Bad Id']}}, 'builtin provider ids'],
+    [{catalog: {...reference, id: ''}}, 'non-empty'],
+    [{catalog: {...reference, baseUrl: 'ftp://x'}}, 'HTTP(S)'],
+    [{catalog: {...reference, baseUrl: 'https://user:pw@host'}}, 'credential-free'],
+    [{catalog: {...reference, extra: true}}, 'unknown fields'],
+  ])('rejects an invalid catalog reference %j', (json, message) => {
+    expect(() => parsePiAgentCoreModelConfig(JSON.stringify(json))).toThrow(message);
+  });
+
+  it('pins the key env, a rotated key and the installed SDK version in the runtime fingerprint', () => {
+    const modelJson = JSON.stringify({catalog: reference, apiKeyEnv: 'ZAI_CODING_CN_API_KEY'});
+    const first = piRuntimeFingerprintInput({SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON: modelJson, ZAI_CODING_CN_API_KEY: 'k1'});
+    const rotated = piRuntimeFingerprintInput({SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON: modelJson, ZAI_CODING_CN_API_KEY: 'k2'});
+    expect(first.entries).toContainEqual(['env:ZAI_CODING_CN_API_KEY', 'k1']);
+    expect(first.entries).toContainEqual(['sdk:@earendil-works/pi-ai', installedPiAiVersion()]);
+    expect(installedPiAiVersion()).toMatch(/^\d+\.\d+\.\d+/);
+    expect(rotated.entries).not.toEqual(first.entries);
+  });
+
+  it('resolves the first listed builtin provider that has the model and keeps the configured endpoint', async () => {
+    const models: Record<string, Record<string, Record<string, unknown>>> = {
+      zai: {'glm-5.3-flash': {id: 'glm-5.3-flash', provider: 'zai', baseUrl: 'https://api.z.ai'}},
+      'zai-coding-cn': {'glm-5.3-flash': {id: 'glm-5.3-flash', provider: 'zai-coding-cn', baseUrl: 'https://coding'}},
+    };
+    const loader = jest.fn(async (_specifier: string) => ({
+      getBuiltinModel: (provider: string, id: string) => models[provider]?.[id],
+    }));
+    await expect(resolvePiCatalogModel(reference, loader)).resolves.toEqual({id: 'glm-5.3-flash',
+      provider: 'zai-coding-cn', baseUrl: reference.baseUrl});
+    expect(loader).toHaveBeenCalledWith('@earendil-works/pi-ai/providers/all');
+    await expect(resolvePiCatalogModel({providers: ['zai'], id: 'glm-4.7-flash'}, loader))
+      .rejects.toThrow('Pi catalog has no model glm-4.7-flash under zai');
+  });
 });

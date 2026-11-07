@@ -21,3 +21,14 @@ export function toSingleString(value: unknown): string | undefined {
 
   return undefined;
 }
+
+/** An http(s) URL with no embedded credentials: the shared shape of a provider endpoint. */
+export function isCredentialFreeHttpUrl(value: string | URL): boolean {
+  let url: URL;
+  try {
+    url = value instanceof URL ? value : new URL(value);
+  } catch {
+    return false;
+  }
+  return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password;
+}

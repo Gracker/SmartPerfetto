@@ -4,11 +4,27 @@
 
 import type {Credential, ModelThinkingLevel} from '@earendil-works/pi-ai';
 import {parseStoredJson} from '../../../utils/storedData';
+import {isCredentialFreeHttpUrl} from '../../../utils/httpValue';
+import {installedPackageVersion} from '../../../utils/installedPackageVersion';
 
 export type PiAgentCoreEnv = Record<string, string | undefined>;
 
+/**
+ * A model named by reference into the installed pi-ai builtin catalog: the
+ * first listed provider that has `id` supplies the model's capabilities, and
+ * `baseUrl` (when set) keeps the user's endpoint. Resolved when the provider
+ * runtime is created; never fabricated.
+ */
+export interface PiCatalogModelReference {
+  providers: string[];
+  id: string;
+  baseUrl?: string;
+}
+
 export interface PiAgentCoreModelConfig {
+  /** The full model, or for a catalog reference only its `id`/`baseUrl` (for attribution). */
   model: Record<string, unknown>;
+  catalog?: PiCatalogModelReference;
   apiKey?: string;
   apiKeyEnv?: string;
   credential?: Credential;
@@ -205,10 +221,16 @@ export function parsePiAgentCoreModelConfig(rawModel: string): PiAgentCoreModelC
     transport,
     thinkingLevel: rawThinkingLevel,
     thinkingBudgets: rawThinkingBudgets,
+    catalog: rawCatalog,
     ...model
   } = parsed as Record<string, unknown>;
+  const catalog = rawCatalog === undefined ? undefined : piCatalogReference(rawCatalog);
+  if (catalog && Object.keys(model).length > 0) {
+    throw new Error('Pi model JSON must not combine catalog with model fields');
+  }
   return {
-    model,
+    model: catalog ? {id: catalog.id, ...(catalog.baseUrl ? {baseUrl: catalog.baseUrl} : {})} : model,
+    ...(catalog ? {catalog} : {}),
     apiKey: optionalString(apiKey),
     apiKeyEnv: optionalString(apiKeyEnv),
     credential: credential as Credential | undefined,
@@ -217,6 +239,28 @@ export function parsePiAgentCoreModelConfig(rawModel: string): PiAgentCoreModelC
     thinkingLevel: thinkingLevel(rawThinkingLevel),
     thinkingBudgets: thinkingBudgets(rawThinkingBudgets),
   };
+}
+
+function piCatalogReference(value: unknown): PiCatalogModelReference {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Pi catalog must be an object');
+  const {providers, id, baseUrl, ...rest} = value as Record<string, unknown>;
+  if (Object.keys(rest).length > 0) throw new Error('Pi catalog has unknown fields');
+  if (!Array.isArray(providers) || providers.length === 0 || providers.length > 8
+    || !providers.every(provider => typeof provider === 'string' && /^[a-z0-9][a-z0-9-]*$/.test(provider))) {
+    throw new Error('Pi catalog providers must be builtin provider ids');
+  }
+  const modelId = optionalString(id);
+  if (!modelId) throw new Error('Pi catalog id must be a non-empty string');
+  const endpoint = optionalString(baseUrl);
+  if (baseUrl !== undefined && (!endpoint || !isCredentialFreeHttpUrl(endpoint))) {
+    throw new Error('Pi catalog baseUrl must be a credential-free HTTP(S) URL');
+  }
+  return {providers: [...providers] as string[], id: modelId, ...(endpoint ? {baseUrl: endpoint} : {})};
+}
+
+/** The installed pi-ai version, which decides what a catalog reference resolves to. */
+export function installedPiAiVersion(): string {
+  return installedPackageVersion('@earendil-works/pi-ai');
 }
 
 function configuredModelString(model: Record<string, unknown>, field: string): string | undefined {
@@ -247,13 +291,20 @@ export function piRuntimeFingerprintInput(
     return {modelJson, entries};
   }
   const provider = configuredModelString(config.model, 'provider');
+  const providers = config.catalog?.providers ?? (provider ? [provider] : []);
+  // A catalog reference learns its api only when resolved: pin every api's stream env.
   const api = configuredModelString(config.model, 'api');
+  const streamKeys = config.catalog ? Object.keys(PI_STREAM_ENV_BY_API).flatMap(piStreamEnvKeys)
+    : api ? piStreamEnvKeys(api) : [];
   const selectedKeys = new Set<string>([
-    ...(provider ? piProviderApiKeyEnvNames(provider, config.apiKeyEnv) : []),
-    ...(api ? piStreamEnvKeys(api) : []),
+    ...providers.flatMap(id => piProviderApiKeyEnvNames(id)),
+    ...(config.apiKeyEnv ? [config.apiKeyEnv] : []),
+    ...streamKeys,
     ...Object.keys(config.credential?.type === 'api_key' ? config.credential.env ?? {} : {}),
     ...customKeys,
   ]);
+  // A catalog reference resolves through the installed SDK: pin its version.
+  if (config.catalog) entries.push(['sdk:@earendil-works/pi-ai', installedPiAiVersion()]);
   if (config.apiKey) entries.push(['config:apiKey', config.apiKey]);
   if (config.credential) entries.push(['config:credential', JSON.stringify(config.credential)]);
   addSelectedEnv(selectedKeys);

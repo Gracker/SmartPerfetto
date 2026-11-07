@@ -1347,7 +1347,9 @@ function createProviderE2eHarness(providerKind) {
       return {providerOrigin: originOf(env.QODER_BYOK_BASE_URL, 'qoder-default'), model: env.QODER_MODEL || 'qoder-runtime-default'};
     }
     if (runtimeKind === 'pi-agent-core' && env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON) {
-      const model = parseModelJson(env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON);
+      const config = parseModelJson(env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON);
+      // A catalog reference nests the model id and endpoint under `catalog`.
+      const model = config.catalog && typeof config.catalog === 'object' ? config.catalog : config;
       return {providerOrigin: originOf(model.baseUrl, 'pi-default'), model: model.id || 'pi-runtime-default'};
     }
     if (runtimeKind === 'opencode' && env.SMARTPERFETTO_OPENCODE_MODEL_JSON) {
