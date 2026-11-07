@@ -178,6 +178,19 @@ function thinkingLevel(value: unknown): ModelThinkingLevel | undefined {
   return value.trim() as ModelThinkingLevel;
 }
 
+export const PI_AGENT_CORE_MODEL_JSON_ENV = 'SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON';
+
+/** The configured Pi model from env, or undefined when Pi has no model configured. Throws on invalid JSON. */
+export function readPiAgentCoreModelConfig(env: PiAgentCoreEnv): PiAgentCoreModelConfig | undefined {
+  const rawModel = env[PI_AGENT_CORE_MODEL_JSON_ENV];
+  if (!rawModel) return undefined;
+  try {
+    return parsePiAgentCoreModelConfig(rawModel);
+  } catch (err) {
+    throw new Error(`${PI_AGENT_CORE_MODEL_JSON_ENV} must be valid JSON: ${(err as Error).message}`);
+  }
+}
+
 export function parsePiAgentCoreModelConfig(rawModel: string): PiAgentCoreModelConfig {
   // The model JSON can hold an API key; its author gets the position instead.
   const parsed = parseStoredJson(rawModel, 'Pi model JSON', {authored: true});

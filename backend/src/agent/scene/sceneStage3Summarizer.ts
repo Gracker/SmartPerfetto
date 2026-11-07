@@ -6,21 +6,17 @@
  * sceneStage3Summarizer — generates the cross-scene narrative summary that
  * lands on SceneReport.summary.
  *
- * Implementation note: a single non-streaming Haiku call. We deliberately
- * do not use the runtime's retry-wrapped sdkQuery: Stage 3 is best-effort,
- * a transient API error should fall through to summary=null rather than
- * delay the rest of the pipeline. The same SDK options as
- * claudeVerifier.ts:782 are used so this Haiku call is interchangeable
- * with the verification call from a quota / behaviour perspective.
+ * Implementation note: a single isolated one-shot call on the active
+ * provider's runtime (light model where the runtime has one), without the
+ * analysis runtime's retries: Stage 3 is best-effort, so a transient API error
+ * falls through to summary=null rather than delaying the rest of the pipeline.
  *
  * Returns null on any error so the caller can persist a partial report
  * without aborting the pipeline.
  */
 
-import { claudeSdkQuery as sdkQuery } from '../../agentRuntime/engines/claude/claudeSdkQuery';
-import {createSdkEnv, loadClaudeConfig} from '../../agentv3/claudeConfig';
 import {loadPromptTemplate, renderTemplate} from '../../agentv3/strategyLoader';
-import {isolatedClaudeOneShotOptions} from '../../services/oneShotModelCall';
+import {runResolvedOneShot} from '../../services/oneShotModelCall';
 import {
   DisplayedScene,
   SceneAnalysisJob,
@@ -36,7 +32,7 @@ export interface Stage3LocalizedSummaries {
   en: string;
 }
 
-const HAIKU_TIMEOUT_MS = 60_000;
+const STAGE3_TIMEOUT_MS = 60_000;
 const MAX_STAGE3_JSON_BYTES = 8 * 1024;
 const MAX_STAGE3_FIELD_BYTES = 4 * 1024;
 const MAX_STAGE3_ZH_CODE_POINTS = 200;
@@ -45,7 +41,7 @@ const MAX_STAGE3_EN_WORDS = 140;
 /**
  * Generate both locale projections in one call so a language-neutral cache
  * never reuses the first caller's narrative for another locale.
- * Returns null on any failure (Haiku error / timeout / empty response).
+ * Returns null on any failure (model error / timeout / empty response).
  */
 export async function runStage3Summary(
   input: Stage3SummaryInput,
@@ -55,48 +51,20 @@ export async function runStage3Summary(
   const prompt = buildStage3Prompt(input);
   if (!prompt) return null;
 
-  let stream: ReturnType<typeof sdkQuery> | undefined;
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    console.warn(`[SceneStage3Summarizer] Summary timed out after ${HAIKU_TIMEOUT_MS / 1000}s`);
-    try { stream?.close(); } catch { /* ignore */ }
-  }, HAIKU_TIMEOUT_MS);
-
-  try {
-    const sdkEnv = createSdkEnv();
-    stream = sdkQuery({
-      prompt,
-      // Trace-derived text is untrusted model input: the shared one-shot
-      // isolation (no tools, MCP, settings, skills, plugins or transcript).
-      options: isolatedClaudeOneShotOptions({
-        model: loadClaudeConfig().lightModel,
-        env: sdkEnv,
-        stderr: (data: string) => {
-          console.warn(`[SceneStage3Summarizer] SDK stderr: ${data.trimEnd()}`);
-        },
-      }),
-    });
-
-    let result = '';
-    for await (const msg of stream) {
-      if (timedOut) break;
-      if ((msg as any).type === 'result' && (msg as any).subtype === 'success') {
-        result = (msg as any).result || '';
-      }
-    }
-
-    return parseStage3Summaries(result);
-  } catch (err) {
-    console.warn(
-      '[SceneStage3Summarizer] Haiku summary failed (graceful degradation):',
-      (err as Error)?.message ?? err,
-    );
+  // Trace-derived text is untrusted model input: the shared isolated one-shot
+  // call (no tools, MCP, settings, skills, plugins or transcript) on the
+  // active provider's runtime.
+  const result = await runResolvedOneShot({
+    prompt,
+    tier: 'light',
+    timeoutMs: STAGE3_TIMEOUT_MS,
+    logLabel: 'SceneStage3Summarizer',
+  });
+  if (!result.ok) {
+    console.warn('[SceneStage3Summarizer] Summary unavailable (graceful degradation):', result.reason);
     return null;
-  } finally {
-    clearTimeout(timer);
-    try { stream?.close(); } catch { /* ignore */ }
   }
+  return parseStage3Summaries(result.text);
 }
 
 // ---------------------------------------------------------------------------

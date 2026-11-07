@@ -411,8 +411,8 @@ describe('AI policy and runtime routing of the comparison conclusion', () => {
     expect(client.complete).not.toHaveBeenCalled();
   });
 
-  test('a runtime other than Claude or OpenAI degrades instead of being sent to Claude', async () => {
-    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'pi-agent-core';
+  test('a runtime other than Claude, Pi or OpenAI degrades instead of being sent to Claude', async () => {
+    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'opencode';
     const conclusion = await generateAiComparisonConclusion({
       result: comparisonResult(),
       query: 'compare startup',
@@ -420,6 +420,19 @@ describe('AI policy and runtime routing of the comparison conclusion', () => {
     });
 
     expect(conclusion.source).toBe('deterministic');
-    expect(conclusion.uncertainty.join('\n')).toContain('pi-agent-core runtime');
+    expect(conclusion.uncertainty.join('\n')).toContain('opencode runtime');
+  });
+
+  test('a Pi runtime without a configured model degrades with the Pi reason, never Claude', async () => {
+    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'pi-agent-core';
+    delete process.env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON;
+    const conclusion = await generateAiComparisonConclusion({
+      result: comparisonResult(),
+      query: 'compare startup',
+      providerId: null,
+    });
+
+    expect(conclusion.source).toBe('deterministic');
+    expect(conclusion.uncertainty.join('\n')).toContain('Pi comparison conclusion credentials missing');
   });
 });

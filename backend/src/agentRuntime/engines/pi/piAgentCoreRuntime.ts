@@ -166,7 +166,8 @@ import {
   type PiAgentCoreProviderRuntimeLoader,
 } from './piAgentCoreProvider';
 import {
-  parsePiAgentCoreModelConfig,
+  PI_AGENT_CORE_MODEL_JSON_ENV,
+  readPiAgentCoreModelConfig,
   type PiAgentCoreModelConfig,
 } from './piAgentCoreConfig';
 import {analysisHasPrivateContext} from '../../../services/security/analysisPrivateContext';
@@ -190,7 +191,7 @@ export {
 
 export const PI_AGENT_CORE_MODULE_PATH_ENV = 'SMARTPERFETTO_PI_AGENT_CORE_MODULE_PATH';
 export const PI_AGENT_CORE_FAKE_STREAM_ENV = 'SMARTPERFETTO_PI_AGENT_CORE_FAKE_STREAM';
-export const PI_AGENT_CORE_MODEL_JSON_ENV = 'SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON';
+export {PI_AGENT_CORE_MODEL_JSON_ENV};
 export const PI_AGENT_CORE_SYSTEM_PROMPT_ENV = 'SMARTPERFETTO_PI_AGENT_CORE_SYSTEM_PROMPT';
 export const PI_AGENT_CORE_REQUEST_TIMEOUT_MS_ENV = 'SMARTPERFETTO_PI_AGENT_CORE_REQUEST_TIMEOUT_MS';
 export const PI_AGENT_CORE_STREAM_IDLE_TIMEOUT_MS_ENV = 'SMARTPERFETTO_PI_AGENT_CORE_STREAM_IDLE_TIMEOUT_MS';
@@ -1099,14 +1100,8 @@ function createFakePiStream(finalText: string) {
 }
 
 function resolvePiAgentCoreModel(env: EnvLike, fakeStream: boolean): PiAgentCoreModelConfig {
-  const rawModel = env[PI_AGENT_CORE_MODEL_JSON_ENV];
-  if (rawModel) {
-    try {
-      return parsePiAgentCoreModelConfig(rawModel);
-    } catch (err) {
-      throw new Error(`${PI_AGENT_CORE_MODEL_JSON_ENV} must be valid JSON: ${(err as Error).message}`);
-    }
-  }
+  const configured = readPiAgentCoreModelConfig(env);
+  if (configured) return configured;
   if (fakeStream) {
     return {
       model: {

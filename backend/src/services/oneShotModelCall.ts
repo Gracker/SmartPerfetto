@@ -3,8 +3,8 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 // One isolated, one-shot model call for the product's auxiliary summaries
-// (critical-path, comparison conclusion, flamegraph). This module owns every
-// safeguard they share:
+// (critical-path, comparison conclusion, flamegraph, scene stage 1/3), on the
+// Claude Agent SDK or Pi Agent Core. This module owns every safeguard they share:
 //   - the AI capability gate, the caller's permission and cancellation, all
 //     checked before the provider is read;
 //   - one provider read for the caller's scope: runtime, SDK env and config
@@ -12,6 +12,7 @@
 //   - credentials checked in the resolved profile env, never raw process env;
 //   - SDK options detached from user settings, tools, skills, plugins, MCP
 //     servers and resumable transcripts (the classifier transport's options);
+//     Pi uses the same tool-free transport as its classifier and review;
 //   - one AbortController for caller cancellation and the wall-clock deadline,
 //     `close()` on every exit, and a tool-use or refusal reply treated as a
 //     failed call.
@@ -42,6 +43,10 @@ import {
   isAiFeatureEnabled,
 } from './aiCapabilityPolicy';
 import {getProviderService, type ProviderScope} from './providerManager';
+import {mergeIsolatedProviderEnv} from './providerManager/envIsolation';
+import {readPiAgentCoreModelConfig} from '../agentRuntime/engines/pi/piAgentCoreConfig';
+import {createPiAgentCoreProviderRuntime} from '../agentRuntime/engines/pi/piAgentCoreProvider';
+import {runPiIntentTransport} from '../agentRuntime/engines/pi/piIntentTransport';
 
 /** Why a one-shot call produced no model answer. */
 export type OneShotFallbackReason = AiSummaryFallbackReason;
@@ -52,9 +57,23 @@ export interface ClaudeOneShotContext {
   config: ClaudeAgentConfig;
 }
 
-export type OneShotProvider =
-  | {kind: 'unavailable'}
-  | {kind: 'resolved'; runtime: ResolvedAgentRuntimeKind; claude?: ClaudeOneShotContext};
+/** The Pi runtime env of the resolved provider (process env with the provider's env applied), read once. */
+export interface PiOneShotContext {
+  env: Record<string, string | undefined>;
+}
+
+/** A provider whose runtime is known; only Claude and Pi carry a one-shot context. */
+export type ResolvedOneShotProvider =
+  | {kind: 'resolved'; runtime: 'claude-agent-sdk'; claude: ClaudeOneShotContext}
+  | {kind: 'resolved'; runtime: 'pi-agent-core'; pi: PiOneShotContext}
+  | {kind: 'resolved'; runtime: Exclude<ResolvedAgentRuntimeKind, 'claude-agent-sdk' | 'pi-agent-core'>};
+
+export type OneShotProvider = {kind: 'unavailable'} | ResolvedOneShotProvider;
+
+/** Whether the provider's runtime can answer a one-shot call at all. */
+export function oneShotRuntimeSupported(provider: ResolvedOneShotProvider): boolean {
+  return provider.runtime === 'claude-agent-sdk' || provider.runtime === 'pi-agent-core';
+}
 
 /**
  * The caller's provider, read from the store once: its runtime, and for the
@@ -75,8 +94,11 @@ export function resolveOneShotProvider(input: {
       : providerId === null ? undefined : svc.getRawEffectiveProvider(providerScope);
     if (typeof providerId === 'string' && !provider) throw new Error(`Provider not found: ${providerId}`);
     const runtime = selectRuntimeForProvider(provider).kind;
-    if (runtime !== 'claude-agent-sdk') return {kind: 'resolved', runtime};
+    if (runtime !== 'claude-agent-sdk' && runtime !== 'pi-agent-core') return {kind: 'resolved', runtime};
     const providerEnv = provider ? svc.getEnvForProviderConfig(provider) : null;
+    if (runtime === 'pi-agent-core') {
+      return {kind: 'resolved', runtime, pi: {env: mergeIsolatedProviderEnv(process.env, providerEnv)}};
+    }
     return {
       kind: 'resolved',
       runtime,
@@ -124,15 +146,14 @@ export function isolatedClaudeOneShotOptions(input: {
   };
 }
 
-export type OneShotClaudeResult =
+export type OneShotResult =
   | {ok: true; text: string; model: string}
   | {ok: false; reason: OneShotFallbackReason; model?: string};
 
-export interface OneShotClaudeInput {
+/** One call's request, independent of the runtime that answers it. */
+export interface OneShotCallInput {
   prompt: string;
-  /** From `resolveOneShotProvider`; no further provider reads happen here. */
-  claude: ClaudeOneShotContext;
-  /** `light` uses the profile's light model and falls back to the main one. */
+  /** `light` uses the profile's light model and falls back to the main one (Claude only; Pi has one model). */
   tier: 'main' | 'light';
   effort?: EffortLevel;
   timeoutMs: number;
@@ -140,11 +161,20 @@ export interface OneShotClaudeInput {
   logLabel: string;
 }
 
+export interface OneShotClaudeInput extends OneShotCallInput {
+  /** From `resolveOneShotProvider`; no further provider reads happen here. */
+  claude: ClaudeOneShotContext;
+}
+
+function effectiveTimeoutMs(timeoutMs: number): number {
+  return Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 60_000;
+}
+
 /**
  * One isolated Claude call with an already-resolved provider. Never throws for
  * model or cancellation failures; the reason says what happened.
  */
-export async function runIsolatedClaudeOneShot(input: OneShotClaudeInput): Promise<OneShotClaudeResult> {
+export async function runIsolatedClaudeOneShot(input: OneShotClaudeInput): Promise<OneShotResult> {
   if (input.signal?.aborted) return {ok: false, reason: 'client_disconnected'};
   const {env, config} = input.claude;
   const model = input.tier === 'light' ? (config.lightModel || config.model) : config.model;
@@ -167,7 +197,7 @@ export async function runIsolatedClaudeOneShot(input: OneShotClaudeInput): Promi
   const timer = setTimeout(() => {
     timedOut = true;
     stop();
-  }, Number.isFinite(input.timeoutMs) && input.timeoutMs > 0 ? input.timeoutMs : 60_000);
+  }, effectiveTimeoutMs(input.timeoutMs));
 
   let text = '';
   let failed = false;
@@ -227,6 +257,77 @@ export async function runIsolatedClaudeOneShot(input: OneShotClaudeInput): Promi
   return {ok: true, text: text.trim(), model};
 }
 
+/** Upper bound for a one-shot summary reply; summaries are short prose. */
+const PI_ONE_SHOT_OUTPUT_BYTES = 64 * 1024;
+
+export interface OneShotPiInput extends Omit<OneShotCallInput, 'tier' | 'effort'> {
+  /** From `resolveOneShotProvider`; no further provider reads happen here. */
+  pi: PiOneShotContext;
+}
+
+/**
+ * One isolated, tool-free Pi call through the pinned provider runtime: the same
+ * transport as Pi classification and review. The `review` purpose selects that
+ * no-tool, minimal-reasoning policy; a one-shot call outside an analysis run
+ * records no run telemetry. Pi has one configured model, so there is no light
+ * tier. Never throws; the reason says what happened.
+ */
+export async function runIsolatedPiOneShot(input: OneShotPiInput): Promise<OneShotResult> {
+  if (input.signal?.aborted) return {ok: false, reason: 'client_disconnected'};
+  let config: ReturnType<typeof readPiAgentCoreModelConfig>;
+  try {
+    config = readPiAgentCoreModelConfig(input.pi.env);
+  } catch (error: unknown) {
+    console.warn(`[${input.logLabel}] Pi model configuration invalid:`, error instanceof Error ? error.message : error);
+    return {ok: false, reason: 'failed'};
+  }
+  if (!config) return {ok: false, reason: 'credentials_missing'};
+  const model = typeof config.model.id === 'string' ? config.model.id : undefined;
+  const withModel = model ? {model} : {};
+  try {
+    const providerRuntime = await createPiAgentCoreProviderRuntime(config, input.pi.env);
+    const result = await runPiIntentTransport({
+      prompt: input.prompt,
+      systemPrompt: '',
+      signal: input.signal,
+      deadlineMs: Date.now() + effectiveTimeoutMs(input.timeoutMs),
+      outputByteLimit: PI_ONE_SHOT_OUTPUT_BYTES,
+      providerRuntime,
+      purpose: 'review',
+    });
+    if (result.status === 'ok') {
+      return {ok: true, text: result.text.trim(), model: result.actualModel ?? model ?? providerRuntime.model.id};
+    }
+    if (result.reason === 'timeout') return {ok: false, reason: 'timed_out', ...withModel};
+    console.warn(`[${input.logLabel}] Pi one-shot call unavailable: ${result.reason}`);
+    return {ok: false, reason: 'failed', ...withModel};
+  } catch (error: unknown) {
+    if (input.signal?.aborted) return {ok: false, reason: 'client_disconnected', ...withModel};
+    console.warn(`[${input.logLabel}] Pi one-shot call failed:`, error instanceof Error ? error.message : error);
+    return {ok: false, reason: 'failed', ...withModel};
+  }
+}
+
+/** One isolated call on whichever runtime the provider resolved to. */
+export async function runIsolatedOneShot(
+  input: OneShotCallInput & {provider: ResolvedOneShotProvider},
+): Promise<OneShotResult> {
+  const {provider, ...call} = input;
+  if (provider.runtime === 'claude-agent-sdk') return runIsolatedClaudeOneShot({...call, claude: provider.claude});
+  if (provider.runtime === 'pi-agent-core') return runIsolatedPiOneShot({...call, pi: provider.pi});
+  return {ok: false, reason: 'runtime_not_supported'};
+}
+
+/** Resolve the caller's provider once, then make one isolated call on its runtime. */
+export async function runResolvedOneShot(
+  input: OneShotCallInput & {providerScope?: ProviderScope},
+): Promise<OneShotResult & {runtime?: ResolvedAgentRuntimeKind}> {
+  const {providerScope, ...call} = input;
+  const provider = resolveOneShotProvider({providerScope, logLabel: input.logLabel});
+  if (provider.kind === 'unavailable') return {ok: false, reason: 'runtime_unavailable'};
+  return {...await runIsolatedOneShot({...call, provider}), runtime: provider.runtime};
+}
+
 /** What falls back, named in its own warnings (e.g. "critical-path AI diagnosis"). */
 export interface OneShotSummaryLabel {
   zh: string;
@@ -256,8 +357,8 @@ export function oneShotFallbackWarning(
     case 'runtime_not_supported':
       return localize(
         language,
-        `当前 Provider 使用 ${runtime} 运行时，${label.zh}只支持 Claude Agent SDK，已返回规则兜底总结。`,
-        `The active provider uses the ${runtime} runtime; the ${label.en} supports only the Claude Agent SDK, so a deterministic rule summary was returned.`,
+        `当前 Provider 使用 ${runtime} 运行时，${label.zh}只支持 Pi Agent Core 和 Claude Agent SDK，已返回规则兜底总结。`,
+        `The active provider uses the ${runtime} runtime; the ${label.en} supports only Pi Agent Core and the Claude Agent SDK, so a deterministic rule summary was returned.`,
       );
     case 'runtime_unavailable':
       return localize(
@@ -343,13 +444,13 @@ export async function runOneShotSummary(input: OneShotSummaryInput): Promise<AiS
   if (input.signal?.aborted) return degrade('client_disconnected');
   const provider = resolveOneShotProvider({providerScope: input.providerScope, logLabel: input.logLabel});
   if (provider.kind === 'unavailable') return degrade('runtime_unavailable');
-  if (!provider.claude) return degrade('runtime_not_supported', {}, provider.runtime);
+  if (!oneShotRuntimeSupported(provider)) return degrade('runtime_not_supported', {}, provider.runtime);
 
   const built = input.buildPrompt();
   if (!built) return degrade('failed');
-  const result = await runIsolatedClaudeOneShot({
+  const result = await runIsolatedOneShot({
     prompt: built.prompt,
-    claude: provider.claude,
+    provider,
     tier: input.tier ?? 'main',
     effort: input.effort,
     timeoutMs: input.timeoutMs,

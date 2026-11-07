@@ -11,11 +11,9 @@
  * reproducible while still giving us a hook for ambiguous vendor traces.
  */
 
-import { claudeSdkQuery as sdkQuery } from '../../agentRuntime/engines/claude/claudeSdkQuery';
 import { sceneStoryConfig } from '../../config';
-import {createSdkEnv, loadClaudeConfig} from '../../agentv3/claudeConfig';
 import { loadPromptTemplate, renderTemplate } from '../../agentv3/strategyLoader';
-import {isolatedClaudeOneShotOptions} from '../../services/oneShotModelCall';
+import {runResolvedOneShot} from '../../services/oneShotModelCall';
 import type {
   DisplayedScene,
   SceneReconstructionVerification,
@@ -244,55 +242,29 @@ async function runLlmVerifier(
       summary: 'LLM 复核模板未注册；已保留确定性复核结果。',
     };
   }
-  let stream: ReturnType<typeof sdkQuery> | undefined;
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    try { stream?.close(); } catch { /* ignore */ }
-  }, sceneStoryConfig.llmVerifyTimeoutMs);
-
-  try {
-    const sdkEnv = createSdkEnv();
-    stream = sdkQuery({
-      prompt,
-      // Trace-derived text is untrusted model input: the shared one-shot
-      // isolation (no tools, MCP, settings, skills, plugins or transcript).
-      options: isolatedClaudeOneShotOptions({
-        model: loadClaudeConfig().lightModel,
-        env: sdkEnv,
-        stderr: (data: string) => {
-          console.warn(`[SceneStage1Verifier] SDK stderr: ${data.trimEnd()}`);
-        },
-      }),
-    });
-
-    let raw = '';
-    for await (const msg of stream) {
-      if (timedOut) break;
-      if ((msg as any).type === 'result' && (msg as any).subtype === 'success') {
-        raw = (msg as any).result || '';
-      }
+  // Trace-derived text is untrusted model input: the shared isolated one-shot
+  // call (no tools, MCP, settings, skills, plugins or transcript) on the
+  // active provider's runtime.
+  const result = await runResolvedOneShot({
+    prompt,
+    tier: 'light',
+    timeoutMs: sceneStoryConfig.llmVerifyTimeoutMs,
+    logLabel: 'SceneStage1Verifier',
+  });
+  if (!result.ok) {
+    if (result.reason === 'runtime_not_supported') {
+      return {status: 'skipped', summary: `运行时 ${result.runtime} 不支持 LLM 复核；已保留确定性复核结果。`};
     }
-
-    const trimmed = raw.trim();
-    if (!trimmed) {
-      return { status: timedOut ? 'failed' : 'skipped', error: timedOut ? 'LLM verifier timed out' : 'LLM verifier returned empty output' };
-    }
-    const parsed = parseVerifierJson(trimmed);
-    return {
-      status: parsed.status,
-      summary: parsed.summary,
-      raw: trimmed,
-    };
-  } catch (error: any) {
-    return {
-      status: 'failed',
-      error: error?.message || String(error),
-    };
-  } finally {
-    clearTimeout(timer);
-    try { stream?.close(); } catch { /* ignore */ }
+    if (result.reason === 'empty_response') return {status: 'skipped', error: 'LLM verifier returned empty output'};
+    return {status: 'failed', error: result.reason === 'timed_out' ? 'LLM verifier timed out' : `LLM verifier ${result.reason}`};
   }
+  const trimmed = result.text.trim();
+  const parsed = parseVerifierJson(trimmed);
+  return {
+    status: parsed.status,
+    summary: parsed.summary,
+    raw: trimmed,
+  };
 }
 
 function buildVerifierPrompt(

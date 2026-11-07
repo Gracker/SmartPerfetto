@@ -7,13 +7,23 @@ import {query as sdkQuery} from '@anthropic-ai/claude-agent-sdk';
 import {selectRuntimeForProvider} from '../../agentRuntime/runtimeSelection';
 import {hasClaudeCredentials, runtimeConfigForProviderEnv, sdkEnvForProviderEnv} from '../../agentv3/claudeConfig';
 import {AI_CAPABILITY_ENV_KEY, resolveAiCapabilityPolicy} from '../aiCapabilityPolicy';
+import {createPiAgentCoreProviderRuntime} from '../../agentRuntime/engines/pi/piAgentCoreProvider';
+import {runPiIntentTransport} from '../../agentRuntime/engines/pi/piIntentTransport';
 import {
   isolatedClaudeOneShotOptions,
   oneShotFallbackWarning,
   resolveOneShotProvider,
   runIsolatedClaudeOneShot,
+  runIsolatedPiOneShot,
   runOneShotSummary,
 } from '../oneShotModelCall';
+
+jest.mock('../../agentRuntime/engines/pi/piAgentCoreProvider', () => ({
+  createPiAgentCoreProviderRuntime: jest.fn(),
+}));
+jest.mock('../../agentRuntime/engines/pi/piIntentTransport', () => ({
+  runPiIntentTransport: jest.fn(),
+}));
 
 jest.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: jest.fn(),
@@ -47,6 +57,13 @@ const mockSelection = selectRuntimeForProvider as unknown as jest.Mock<(...args:
 const mockSdkEnv = sdkEnvForProviderEnv as unknown as jest.Mock<(...args: any[]) => any>;
 const mockHasCredentials = hasClaudeCredentials as unknown as jest.Mock<(...args: any[]) => any>;
 const mockRuntimeConfig = runtimeConfigForProviderEnv as unknown as jest.Mock<(...args: any[]) => any>;
+
+const mockPiRuntime = createPiAgentCoreProviderRuntime as unknown as jest.Mock<(...args: any[]) => any>;
+const mockPiTransport = runPiIntentTransport as unknown as jest.Mock<(...args: any[]) => any>;
+const PI_MODEL_JSON = JSON.stringify({id: 'pi-model', provider: 'deepseek', api: 'openai-completions',
+  baseUrl: 'https://pi.example', reasoning: true, input: ['text'],
+  cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}, contextWindow: 8192, maxTokens: 1024,
+  apiKeyEnv: 'DEEPSEEK_API_KEY'});
 
 const SCOPE = {tenantId: 't', workspaceId: 'w', userId: 'u'};
 const CLAUDE = {
@@ -116,6 +133,74 @@ describe('resolveOneShotProvider', () => {
     expect(resolveOneShotProvider({providerId: 'deleted', providerScope: SCOPE, logLabel: 'Test'}))
       .toEqual({kind: 'unavailable'});
     warn.mockRestore();
+  });
+});
+
+describe('Pi one-shot', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockProviderService.getRawEffectiveProvider.mockReturnValue({id: 'provider-pi'});
+    mockProviderService.getEnvForProviderConfig.mockReturnValue({
+      SMARTPERFETTO_AGENT_RUNTIME: 'pi-agent-core', SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON: PI_MODEL_JSON,
+    });
+    mockSelection.mockReturnValue({kind: 'pi-agent-core', source: 'provider'});
+    mockPiRuntime.mockResolvedValue({model: {id: 'pi-model'}});
+  });
+
+  it('resolves the provider env for Pi from one store read and never builds a Claude context', () => {
+    const resolved = resolveOneShotProvider({providerScope: SCOPE, logLabel: 'Test'});
+
+    expect(resolved).toMatchObject({kind: 'resolved', runtime: 'pi-agent-core',
+      pi: {env: {SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON: PI_MODEL_JSON}}});
+    expect(resolved).not.toHaveProperty('claude');
+    expect(mockProviderService.getEnvForProviderConfig).toHaveBeenCalledTimes(1);
+    expect(mockSdkEnv).not.toHaveBeenCalled();
+  });
+
+  it('runs one tool-free review-purpose call through the pinned Pi runtime', async () => {
+    mockPiTransport.mockResolvedValue({status: 'ok', text: '  pi answer  ', actualModel: 'pi-model-actual'});
+    const env = {SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON: PI_MODEL_JSON};
+
+    const result = await runIsolatedPiOneShot({prompt: 'p', pi: {env}, timeoutMs: 5_000, logLabel: 'Test'});
+
+    expect(result).toEqual({ok: true, text: 'pi answer', model: 'pi-model-actual'});
+    expect(mockPiRuntime).toHaveBeenCalledWith(expect.objectContaining({model: expect.objectContaining({id: 'pi-model'}),
+      apiKeyEnv: 'DEEPSEEK_API_KEY'}), env);
+    expect(mockPiTransport).toHaveBeenCalledWith(expect.objectContaining({prompt: 'p', systemPrompt: '',
+      purpose: 'review', providerRuntime: {model: {id: 'pi-model'}}}));
+  });
+
+  it.each([
+    [{status: 'unavailable', reason: 'timeout'}, 'timed_out'],
+    [{status: 'unavailable', reason: 'tool_use'}, 'failed'],
+    [{status: 'unavailable', reason: 'incomplete_output'}, 'failed'],
+  ])('maps transport result %j to %s', async (transport, reason) => {
+    mockPiTransport.mockResolvedValue(transport);
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const result = await runIsolatedPiOneShot({prompt: 'p', pi: {env: {SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON: PI_MODEL_JSON}},
+      timeoutMs: 5_000, logLabel: 'Test'});
+    warn.mockRestore();
+    expect(result).toEqual({ok: false, reason, model: 'pi-model'});
+  });
+
+  it('reports a missing Pi model as missing configuration without dispatching', async () => {
+    const result = await runIsolatedPiOneShot({prompt: 'p', pi: {env: {}}, timeoutMs: 5_000, logLabel: 'Test'});
+
+    expect(result).toEqual({ok: false, reason: 'credentials_missing'});
+    expect(mockPiRuntime).not.toHaveBeenCalled();
+  });
+
+  it('answers a summary on the Pi runtime instead of degrading', async () => {
+    mockPiTransport.mockResolvedValue({status: 'ok', text: 'pi summary', actualModel: 'pi-model'});
+    const result = await runOneShotSummary({
+      feature: 'critical_path_ai_summary', label: {zh: '测试', en: 'test'}, outputLanguage: 'en',
+      aiPolicy: resolveAiCapabilityPolicy({[AI_CAPABILITY_ENV_KEY]: 'true'}), providerScope: SCOPE,
+      logLabel: 'Test', timeoutMs: 5_000, ruleSummary: () => 'rule summary',
+      buildPrompt: () => ({prompt: 'p', redactionApplied: false}),
+    } as any);
+
+    expect(result).toMatchObject({generated: true, summary: 'pi summary', model: 'pi-model'});
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 });
 

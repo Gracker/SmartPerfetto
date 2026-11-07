@@ -16,9 +16,10 @@ import {
   isAiFeatureEnabled,
 } from './aiCapabilityPolicy';
 import {
+  oneShotRuntimeSupported,
   resolveOneShotProvider,
-  runIsolatedClaudeOneShot,
-  type ClaudeOneShotContext,
+  runIsolatedOneShot,
+  type ResolvedOneShotProvider,
 } from './oneShotModelCall';
 import {
   buildOpenAIChatCompletionsTokenLimit,
@@ -233,27 +234,30 @@ async function completeWithOpenAI(input: ComparisonConclusionClientInput): Promi
   }
 }
 
-async function completeWithClaude(
+async function completeIsolated(
   input: ComparisonConclusionClientInput,
-  claude: ClaudeOneShotContext,
+  provider: ResolvedOneShotProvider,
 ): Promise<ComparisonConclusionClientOutput> {
-  // The comparison keeps its own choices: the light model, low effort, and
-  // the long generation deadline; everything else is the shared isolated call.
-  const result = await runIsolatedClaudeOneShot({
+  // The comparison keeps its own choices: the light model, low effort (Claude),
+  // and the long generation deadline; everything else is the shared isolated call.
+  const result = await runIsolatedOneShot({
     prompt: input.prompt,
-    claude,
+    provider,
     tier: 'light',
     effort: 'low',
     timeoutMs: COMPARISON_CONCLUSION_TIMEOUT_MS,
     signal: input.signal,
     logLabel: 'ComparisonConclusion',
   });
-  if (!result.ok) throw new Error(`Claude comparison conclusion ${result.reason.replace(/_/g, ' ')}`);
+  if (!result.ok) {
+    const runtime = provider.runtime === 'pi-agent-core' ? 'Pi' : 'Claude';
+    throw new Error(`${runtime} comparison conclusion ${result.reason.replace(/_/g, ' ')}`);
+  }
   return {text: result.text, model: result.model};
 }
 
 /**
- * Claude and OpenAI runtimes answer; any other runtime is reported, never
+ * Claude, Pi and OpenAI runtimes answer; any other runtime is reported, never
  * silently sent to Claude. The AI gate is the caller's
  * (`generateAiComparisonConclusion`); this only reads the provider, once.
  */
@@ -266,7 +270,7 @@ class DefaultComparisonConclusionClient implements ComparisonConclusionClient {
     });
     if (provider.kind === 'unavailable') throw new Error('the AI provider is unavailable');
     if (provider.runtime === 'openai-agents-sdk') return completeWithOpenAI(input);
-    if (provider.claude) return completeWithClaude(input, provider.claude);
+    if (oneShotRuntimeSupported(provider)) return completeIsolated(input, provider);
     throw new Error(`the active provider runs the ${provider.runtime} runtime, which the comparison conclusion does not support`);
   }
 }
