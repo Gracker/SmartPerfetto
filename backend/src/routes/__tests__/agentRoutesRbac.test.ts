@@ -467,6 +467,11 @@ afterEach(async () => {
 });
 
 describe('agent route RBAC', () => {
+  // These cases drive the Claude runtime (ClaudeRuntime spies); the env default is Pi without Claude credentials.
+  beforeEach(() => {
+    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'claude-agent-sdk';
+  });
+
   it('runs a no-Trace conversation through the lightweight contract and streams the answer', async () => {
     delete process.env.SMARTPERFETTO_API_KEY;
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
