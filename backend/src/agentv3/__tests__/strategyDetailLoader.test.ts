@@ -58,11 +58,21 @@ describe('entry_skill frontmatter', () => {
     expect(parseEntrySkill({id: 'scrolling_analysis', params: {package: 'focus_app', start_ts: 'trace_start'}}))
       .toEqual({id: 'scrolling_analysis', params: {package: 'focus_app', start_ts: 'trace_start'}});
     expect(parseEntrySkill({id: 'anr_analysis'})).toEqual({id: 'anr_analysis', params: {}});
+    expect(parseEntrySkill({id: 'anr_analysis', evidence_first: {scopes: ['bounded_question'], when_target_absent: 'omit'}}))
+      .toEqual({id: 'anr_analysis', params: {}, evidenceFirst: {scopes: ['bounded_question'], whenTargetAbsent: 'omit'}});
+  });
+
+  it('keeps evidence_first through the registry clone', () => {
+    const scene = getRegisteredScenes().find(definition => definition.scene === 'anr');
+    expect(scene?.entrySkill?.evidenceFirst).toEqual({scopes: ['bounded_question'], whenTargetAbsent: 'omit'});
   });
 
   it.each([
     ['a non-object', 'scrolling_analysis'],
     ['an unknown key', {id: 'scrolling_analysis', when: 'always'}],
+    ['an empty evidence_first', {id: 'anr_analysis', evidence_first: {}}],
+    ['an unknown evidence_first scope', {id: 'anr_analysis', evidence_first: {scopes: ['scene_wide']}}],
+    ['an unknown target fallback', {id: 'anr_analysis', evidence_first: {when_target_absent: 'focus'}}],
     ['a malformed id', {id: 'Scrolling Analysis'}],
     ['a literal value', {id: 'scrolling_analysis', params: {package: 'com.example'}}],
     ['two start bindings', {id: 'scrolling_analysis', params: {start_ts: 'trace_start', begin_ts: 'selection_start'}}],

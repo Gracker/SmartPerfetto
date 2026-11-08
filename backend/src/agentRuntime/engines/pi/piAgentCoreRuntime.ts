@@ -6,7 +6,7 @@ import {resolveRuntimePerformanceRecorder} from '../../runtimePerformanceContext
 import {ensureRuntimeAdmission} from '../../runtimeTaskDeadline';
 import {createModelRequestMetricsFetch} from '../../modelRequestMetrics';
 
-import {collectSceneEvidenceForPrompt, collectSelectedEvidenceForPrompt, scenePerformanceFromSink} from '../../sceneEntryEvidence';
+import {collectSceneEvidenceForPrompt, collectSelectedEvidenceForPrompt, evidenceFirstEnabled, scenePerformanceFromSink} from '../../sceneEntryEvidence';
 import {createSkillResultNoteMemory, skillResultFactsEnabled} from '../../../agentv3/skillResultSemanticNotes';
 import {shouldCollectSelectedEvidenceFoundation} from '../../selectedEvidenceFoundation';
 import {snapshotSceneCoverageRegistry} from '../../../agent/scene/sceneCoveragePlan';
@@ -2190,6 +2190,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const skillResultNotes = createSkillResultNoteMemory(this.env);
     // Product-owned scene entry evidence settles before any acquisition-capable MCP server exists.
     const sceneEvidence = selected.handled ? selected.data : await collectSceneEvidenceForPrompt({runId: executionLease.key.runId!, traceId, turnIntent, skillResultNotes,
+      evidenceFirst: evidenceFirstEnabled(this.env),
       referenceTraceId: options.referenceTraceId, tracePairContext: options.tracePairContext, conversationTraceAttached: conversationTraceAttachedOption(options),
       policy, strategyRegistry, skillRegistry: effectiveSkillRegistry, skillExecutor,
       traceProcessorService: this.traceProcessorService, artifactStore, focusTarget, userPackageName: options.packageName,

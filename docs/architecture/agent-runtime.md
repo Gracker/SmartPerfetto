@@ -310,6 +310,8 @@ artifact、capture 与 queryReview；但它不是模型工具调用：不进 Run
 `scene_evidence` 段给模型（≤24 单元格、≤2 KiB，超限先丢 summary 再丢 key 单元格），并记入
 `RuntimePerformance` 的 `scene_evidence` 阶段与闭合回执 `sceneEvidence`。`allowMemoryPrefetch` 只控制记忆层预取，
 与入口证据无关。
+
+策略可在 `entry_skill` 下声明 `evidence_first`（`scopes: [bounded_question]`、`when_target_absent: omit`）。只有 Pi 在 `SMARTPERFETTO_EVIDENCE_FIRST` 开启时读取它，默认关闭。开启后，声明了该 scope 的场景对无选区的 `bounded_question` investigation 也运行入口 Skill（`fact` 问题和带选区的问题不运行），并使用不含“展开分析”指引的 `prompt-scene-evidence-bounded` 模板，`scope` 决定运行哪些采集，不扩大回答范围。`when_target_absent: omit` 只允许用于进程选择器可选的 Skill：目标未解析时跨全部进程运行并在段内标记 `targetScope: all_processes`；用户指定过进程时不会退化为全部进程。其余守卫不变。
 字符串单元格若被上游截短，就不作为精确值交给模型；artifact 定位仍可用于读取原始证据。
 
 Pi 运行时另外按运行创建 Skill 结果注释记忆，并让执行器产出规则事实（`agentv3/skillResultSemanticNotes.ts`，

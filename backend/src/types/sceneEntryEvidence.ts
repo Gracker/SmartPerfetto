@@ -19,10 +19,25 @@ export const ENTRY_SKILL_PROCESS_BINDINGS: readonly EntrySkillBinding[] = ['focu
 export const ENTRY_SKILL_START_BINDINGS: readonly EntrySkillBinding[] = ['trace_start', 'selection_start'];
 export const ENTRY_SKILL_END_BINDINGS: readonly EntrySkillBinding[] = ['trace_end', 'selection_end'];
 
+/** Intent scopes an entry Skill may additionally run under, beyond scene-wide. */
+export const ENTRY_SKILL_EVIDENCE_FIRST_SCOPES = ['bounded_question'] as const;
+export type EntrySkillEvidenceFirstScope = typeof ENTRY_SKILL_EVIDENCE_FIRST_SCOPES[number];
+
+/**
+ * Evidence-first behaviour of an entry Skill, read only when the runtime
+ * enables it (`SMARTPERFETTO_EVIDENCE_FIRST`); `params` stay as they are.
+ */
+export interface StrategyEntrySkillEvidenceFirst {
+  scopes: readonly EntrySkillEvidenceFirstScope[];
+  /** `omit`: with no resolved target, run across all processes instead of skipping. */
+  whenTargetAbsent?: 'omit';
+}
+
 /** Strategy frontmatter `entry_skill`, parsed. */
 export interface StrategyEntrySkill {
   id: string;
   params: Readonly<Record<string, EntrySkillBinding>>;
+  evidenceFirst?: StrategyEntrySkillEvidenceFirst;
 }
 
 /** Why the entry Skill did not run. One closed set for the helper, prompt, receipt and tests. */

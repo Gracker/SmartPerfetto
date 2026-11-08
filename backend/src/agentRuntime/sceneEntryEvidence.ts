@@ -54,7 +54,9 @@ import {
   type EntrySkillBinding,
   type SceneEntryNotRunReason,
   type StrategyEntrySkill,
+  type StrategyEntrySkillEvidenceFirst,
 } from '../types/sceneEntryEvidence';
+import {parseFlagValue} from '../utils/envFlag';
 import type {AnalysisTurnIntent} from './analysisTurnIntent';
 import type {FocusAppTarget} from './focusAppTarget';
 import type {RunAuthorizationCheck} from './runAuthorizationFence';
@@ -77,6 +79,13 @@ const MAX_CANDIDATES = 5;
 /** `invoke_skill`'s registration: the request scope must admit it for the product to acquire. */
 export const ENTRY_SKILL_TOOL_ACCESS = {exposure: 'public', evidenceEffect: 'acquire'} as const;
 
+/** Lets a strategy's `evidence_first` widen when the entry Skill runs; off unless set to a true value. */
+const EVIDENCE_FIRST_ENV = 'SMARTPERFETTO_EVIDENCE_FIRST';
+
+export function evidenceFirstEnabled(env: Record<string, string | undefined>): boolean {
+  return parseFlagValue(env[EVIDENCE_FIRST_ENV]) === true;
+}
+
 export interface SceneEntryEvidenceInput {
   /** The run id the MCP registry would bind; observations and captures join under it. */
   runId?: string;
@@ -91,6 +100,8 @@ export interface SceneEntryEvidenceInput {
    */
   conversationTraceAttached?: boolean;
   turnIntent: AnalysisTurnIntent;
+  /** Honour the strategy's `evidence_first`; absent keeps the scene-wide, target-bound behaviour. */
+  evidenceFirst?: boolean;
   policy: Pick<RuntimeTurnPolicy, 'allowNewEvidence'>;
   strategyRegistry: ReadonlyStrategyRegistrySnapshot;
   skillRegistry: SkillRegistryView;
@@ -142,6 +153,8 @@ export interface SceneEntryEvidenceOutcome {
   /** The verified target the Skill ran for. */
   identity?: {packageName?: string; processName?: string; upid?: number};
   candidates?: SceneEvidenceCandidate[];
+  /** No target resolved, so the Skill covered every process. */
+  allProcesses?: true;
   /** Overview artifacts, in display order. */
   artifacts: SceneEvidenceArtifact[];
   /** Every artifact the run wrote; ids are contiguous because the commit is synchronous. */
@@ -164,6 +177,8 @@ export interface SceneWideEvidencePromptData {
   reason?: SceneEntryNotRunReason;
   identity?: SceneEntryEvidenceOutcome['identity'];
   candidates?: SceneEvidenceCandidate[];
+  /** Named in the data itself: either scene evidence template may carry it. */
+  targetScope?: 'all_processes';
   artifactIdRange?: {first: string; last: string};
   artifacts?: SceneEvidenceArtifact[];
   omittedArtifactCount?: number;
@@ -223,10 +238,12 @@ function identityRefusal(identity: IdentityResolutionV1 | undefined, processBoun
 }
 
 /** Resolve the declared bindings for this run; undefined means the target is unknown. */
-function boundParams(entry: StrategyEntrySkill, input: SceneEntryEvidenceInput):
-  {params: Record<string, string>; processBound: boolean} | undefined {
+function boundParams(entry: StrategyEntrySkill, input: SceneEntryEvidenceInput,
+  whenTargetAbsent?: StrategyEntrySkillEvidenceFirst['whenTargetAbsent']):
+  {params: Record<string, string>; processBound: boolean; allProcesses: boolean} | undefined {
   const params: Record<string, string> = {};
   let processBound = false;
+  let allProcesses = false;
   const area = input.selectionContext?.kind === 'area' ? input.selectionContext : undefined;
   for (const [name, binding] of Object.entries(entry.params) as Array<[string, EntrySkillBinding]>) {
     if (ENTRY_SKILL_PROCESS_BINDINGS.includes(binding)) {
@@ -236,7 +253,11 @@ function boundParams(entry: StrategyEntrySkill, input: SceneEntryEvidenceInput):
         // The same threshold that makes a detection citable (registerFocusAppEvidence).
         : target.packageName && (target.source === 'user' || target.confidence === 'high' || target.confidence === 'medium')
           ? target.packageName : undefined;
-      if (!packageName) return undefined;
+      if (!packageName) {
+        if (whenTargetAbsent !== 'omit') return undefined;
+        allProcesses = true;
+        continue;
+      }
       params[name] = packageName;
       processBound = true;
     } else if (ENTRY_SKILL_START_BINDINGS.includes(binding)) {
@@ -246,7 +267,7 @@ function boundParams(entry: StrategyEntrySkill, input: SceneEntryEvidenceInput):
       if (binding === 'selection_end' && area) params[name] = String(area.endNs);
     }
   }
-  return {params, processBound};
+  return {params, processBound, allProcesses};
 }
 
 function refusalReason(refusal: SkillRunRefusal): SceneEntryNotRunReason {
@@ -323,8 +344,11 @@ export async function acquireSceneEntryEvidence(input: SceneEntryEvidenceInput):
   const notRun = (reason: SceneEntryNotRunReason, extra: Partial<SceneEntryEvidenceOutcome> = {}) =>
     finish(emptyOutcome('not_run', {reason, ...extra}));
 
-  // 1. Request scope, decided as the registry decides it for invoke_skill.
-  if (intent.scope !== 'scene_wide') return notRun('not_scene_wide');
+  // 1. Request scope: scene-wide, or a bounded investigation its strategy declares.
+  const evidenceFirst = input.evidenceFirst ? entry.evidenceFirst : undefined;
+  // A bounded question acquires only as an investigation over the whole trace: a selection keeps its own path.
+  if (intent.scope !== 'scene_wide' && !(evidenceFirst?.scopes.includes(intent.scope)
+    && intent.taskKind === 'investigation' && !input.selectionContext)) return notRun('not_scene_wide');
   // The entry Skill reads the current trace only; a comparison reads both sides
   // through its own tools, and its prompt has no budget for one-sided overview
   // cells. A run with a reference trace carries that comparison context whatever
@@ -353,13 +377,14 @@ export async function acquireSceneEntryEvidence(input: SceneEntryEvidenceInput):
     if (entrySkillExecutabilityErrors(entry, input.skillRegistry.getSkill(entry.id)).length) {
       return notRun('capability_missing');
     }
-    const bound = boundParams(entry, input);
+    const bound = boundParams(entry, input, evidenceFirst?.whenTargetAbsent);
     if (!bound) return notRun('target_unresolved');
 
     const deps = {
       traceId: input.traceId, traceProcessorService: input.traceProcessorService, skillExecutor: input.skillExecutor,
       artifactStore: input.artifactStore, outputLanguage: input.outputLanguage,
-      packageName: input.focusTarget.packageName, focusTarget: input.focusTarget,
+      // Omitted means every process: the focus package must not come back as the Skill's default.
+      packageName: bound.allProcesses ? undefined : input.focusTarget.packageName, focusTarget: input.focusTarget,
     };
     const requested = {skillId: entry.id, params: bound.params};
     const toolCallId = `scene-entry:${entry.id}:${summarizeToolCallInput('invoke_skill', requested).paramsHash || evidenceHash(requested)}`;
@@ -487,6 +512,7 @@ export async function acquireSceneEntryEvidence(input: SceneEntryEvidenceInput):
     return finish({
       ...emptyOutcome('ran'),
       ...overview,
+      ...(bound.allProcesses ? {allProcesses: true as const} : {}),
       ...(outcome.facts ? {facts: outcome.facts} : {}),
       ...(resultNotes?.notes ? {resultNotes} : {}),
       ...counts,
@@ -528,6 +554,7 @@ export function buildSceneEvidencePromptData(outcome: SceneEntryEvidenceOutcome 
   let factRules = outcome.facts?.rules ?? [];
   const build = (): SceneWideEvidencePromptData => ({
     status: 'ran', skillId: outcome.skillId!,
+    ...(outcome.allProcesses ? {targetScope: 'all_processes' as const} : {}),
     ...(outcome.identity ? {identity: outcome.identity} : {}),
     ...(outcome.artifactIdRange ? {artifactIdRange: outcome.artifactIdRange} : {}),
     artifacts,

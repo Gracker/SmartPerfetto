@@ -32,7 +32,8 @@ import {INVESTIGATION_CONDITION_OPERATORS, INVESTIGATION_ENTRY_BINDINGS, type An
   type AnalysisInvestigationRequirement, type AnalysisInvestigationEntryAcquisition,
   type InvestigationEntryBinding} from '../types/analysisInvestigation';
 import {ENTRY_SKILL_BINDINGS, ENTRY_SKILL_END_BINDINGS, ENTRY_SKILL_PROCESS_BINDINGS, ENTRY_SKILL_START_BINDINGS,
-  type EntrySkillBinding, type StrategyEntrySkill} from '../types/sceneEntryEvidence';
+  type EntrySkillBinding, type EntrySkillEvidenceFirstScope, type StrategyEntrySkill, type StrategyEntrySkillEvidenceFirst,
+  ENTRY_SKILL_EVIDENCE_FIRST_SCOPES} from '../types/sceneEntryEvidence';
 
 /** On-demand strategy detail section parsed from Markdown comment blocks. */
 export interface StrategyDetailSection {
@@ -515,7 +516,7 @@ const ENTRY_SKILL_NAME_RE = /^[a-z][a-z0-9_]*$/;
  */
 export function parseEntrySkill(value: unknown): StrategyEntrySkill | undefined {
   if (value === undefined) return undefined;
-  if (!isRecord(value) || !hasOnlyKeys(value, ['id', 'params']) || !nonEmptyString(value.id)
+  if (!isRecord(value) || !hasOnlyKeys(value, ['id', 'params', 'evidence_first']) || !nonEmptyString(value.id)
     || !ENTRY_SKILL_NAME_RE.test(value.id.trim())) {
     throw new Error('strategy_invalid_entry_skill');
   }
@@ -533,7 +534,22 @@ export function parseEntrySkill(value: unknown): StrategyEntrySkill | undefined 
   for (const kind of [ENTRY_SKILL_PROCESS_BINDINGS, ENTRY_SKILL_START_BINDINGS, ENTRY_SKILL_END_BINDINGS]) {
     if (bound.filter(binding => kind.includes(binding)).length > 1) throw new Error('strategy_invalid_entry_skill');
   }
-  return {id: value.id.trim(), params};
+  const evidenceFirst = parseEntrySkillEvidenceFirst(value.evidence_first);
+  return {id: value.id.trim(), params, ...(evidenceFirst ? {evidenceFirst} : {})};
+}
+
+function parseEntrySkillEvidenceFirst(value: unknown): StrategyEntrySkillEvidenceFirst | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value) || !hasOnlyKeys(value, ['scopes', 'when_target_absent'])) throw new Error('strategy_invalid_entry_skill');
+  const scopes = value.scopes ?? [];
+  if (!Array.isArray(scopes) || new Set(scopes).size !== scopes.length
+    || !scopes.every(scope => (ENTRY_SKILL_EVIDENCE_FIRST_SCOPES as readonly unknown[]).includes(scope))) {
+    throw new Error('strategy_invalid_entry_skill');
+  }
+  const whenTargetAbsent = value.when_target_absent;
+  if (whenTargetAbsent !== undefined && whenTargetAbsent !== 'omit') throw new Error('strategy_invalid_entry_skill');
+  if (!scopes.length && whenTargetAbsent === undefined) throw new Error('strategy_invalid_entry_skill');
+  return {scopes: scopes as EntrySkillEvidenceFirstScope[], ...(whenTargetAbsent ? {whenTargetAbsent} : {})};
 }
 
 /** The author-designated default detail section, if any (the first one marked `default`). */
@@ -649,7 +665,9 @@ function cloneStrategyDefinition(definition: StrategyDefinition): StrategyDefini
       })),
     }} : {}),
     ...(definition.entrySkill
-      ? {entrySkill: {id: definition.entrySkill.id, params: {...definition.entrySkill.params}}} : {}),
+      ? {entrySkill: {id: definition.entrySkill.id, params: {...definition.entrySkill.params},
+        ...(definition.entrySkill.evidenceFirst ? {evidenceFirst: {...definition.entrySkill.evidenceFirst,
+          scopes: [...definition.entrySkill.evidenceFirst.scopes]}} : {})}} : {}),
     finalReportContract: definition.finalReportContract
       ? {
           requiredSections:

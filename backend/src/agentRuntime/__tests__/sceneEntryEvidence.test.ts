@@ -28,6 +28,7 @@ import {
   type SceneEntryEvidenceOutcome,
 } from '../sceneEntryEvidence';
 import type {StrategyEntrySkill} from '../../types/sceneEntryEvidence';
+import {entrySkillExecutabilityErrors} from '../../agentv3/entrySkillPolicy';
 
 const TRACE = 'trace-scene';
 const RUN = 'run-scene';
@@ -337,6 +338,61 @@ describe('product-owned scene entry evidence', () => {
       expect(h.store.get('art-1')).toBeUndefined();
       expect(ledger(h.store).records).toEqual([]);
     });
+  });
+});
+
+describe('evidence-first entry evidence', () => {
+  const declared: StrategyEntrySkill = {id: 'entry_fixture', params: {package: 'focus_app'},
+    evidenceFirst: {scopes: ['bounded_question'], whenTargetAbsent: 'omit'}};
+  const processSkill = entrySkillDefinition({inputs: [{name: 'package', type: 'string', required: false}]} as Partial<SkillDefinition>);
+  const noTarget = resolveFocusAppTarget({});
+  const on = (extra: Partial<SceneEntryEvidenceInput> = {}) => ({evidenceFirst: true, ...extra});
+  const bounded = {scope: 'bounded_question' as const};
+
+  it('changes nothing without the runtime enabling it', async () => {
+    expect(await harness({entry: declared, skill: processSkill, intent: bounded}).run())
+      .toMatchObject({status: 'not_run', reason: 'not_scene_wide'});
+    expect(await harness({entry: declared, skill: processSkill, focusTarget: noTarget}).run())
+      .toMatchObject({status: 'not_run', reason: 'target_unresolved'});
+  });
+
+  it('runs a declared bounded investigation across every process when no target resolved, and says so', async () => {
+    const h = harness({entry: declared, skill: processSkill, intent: bounded, focusTarget: noTarget, overrides: on()});
+    const execute = jest.spyOn(h.executor, 'execute');
+    const outcome = await h.run();
+    expect(outcome).toMatchObject({status: 'ran', allProcesses: true});
+    expect(execute.mock.calls[0][1]).not.toHaveProperty('package');
+    const data = buildSceneEvidencePromptData(outcome)!;
+    expect(data).toMatchObject({status: 'ran', targetScope: 'all_processes'});
+  });
+
+  it('never clears a detected target that the Skill would otherwise default to', async () => {
+    const focused = resolveFocusAppTarget({focusResult: {primaryApp: 'com.example.app', confidence: 'high', method: 'frame_timeline',
+      apps: [{packageName: 'com.example.app'}]}} as never);
+    const h = harness({entry: declared, skill: processSkill, intent: bounded, focusTarget: focused, overrides: on()});
+    const prepare = jest.spyOn(h.executor, 'prepareInvocation').mockResolvedValue({allowed: true, params: {package: 'com.example.app'}, inherited: {},
+      config: {policy: 'verify_if_present', scope: 'process'}, target: {requestedName: 'com.example.app'},
+      resolution: {status: 'verified', upids: [7], confidenceScore: 95, evidenceSources: [], warnings: [], candidates: []}} as any);
+    const outcome = await h.run();
+    expect(outcome).toMatchObject({status: 'ran', identity: {packageName: 'com.example.app'}});
+    expect(outcome.allProcesses).toBeUndefined();
+    expect(prepare.mock.calls[0][2]).toMatchObject({package: 'com.example.app'});
+  });
+
+  it.each([
+    ['a fact question', {intent: {...bounded, taskKind: 'fact' as const}}, 'not_scene_wide'],
+    ['a selection', {intent: bounded, overrides: on({selectionContext: {kind: 'area', startNs: 1, endNs: 2} as never})}, 'not_scene_wide'],
+    ['a strategy that declares no bounded scope', {entry: {...declared, evidenceFirst: {scopes: [], whenTargetAbsent: 'omit' as const}}, intent: bounded}, 'not_scene_wide'],
+    ['existing_only evidence access', {intent: {...bounded, evidenceAccess: 'existing_only' as const}}, 'existing_only'],
+  ] as Array<[string, Parameters<typeof harness>[0], string]>)('stays out of %s', async (_label, options, reason) => {
+    const h = harness({entry: declared, skill: processSkill, focusTarget: noTarget, ...options, overrides: {...on(), ...options!.overrides}});
+    expect(await h.run()).toMatchObject({status: 'not_run', reason});
+  });
+
+  it('refuses omission for a Skill that requires its process selector', () => {
+    const required = entrySkillDefinition({inputs: [{name: 'package', type: 'string', required: true}]} as Partial<SkillDefinition>);
+    expect(entrySkillExecutabilityErrors(declared, required).join()).toContain('cannot omit its target');
+    expect(entrySkillExecutabilityErrors(declared, processSkill)).toEqual([]);
   });
 });
 

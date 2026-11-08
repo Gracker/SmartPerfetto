@@ -274,7 +274,8 @@ function buildTypedTurnSystemPromptParts(
   // source (buildSceneEvidencePromptData) so it cannot evict other context.
   if (context.sceneEvidence) {
     const template = 'kind' in context.sceneEvidence && context.sceneEvidence.kind === 'selected_foundation'
-      ? 'prompt-selected-evidence' : 'prompt-scene-evidence';
+      ? 'prompt-selected-evidence'
+      : intent.scope === 'bounded_question' ? 'prompt-scene-evidence-bounded' : 'prompt-scene-evidence';
     push(2, 'scene_evidence', `${requiredAsset(template)}\n\n${promptDataEnvelope('scene_evidence', context.sceneEvidence)}`);
   }
   const focusApp = buildFocusAppPromptData(context.focusTarget);

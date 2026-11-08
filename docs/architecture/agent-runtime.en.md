@@ -487,6 +487,18 @@ summary cells go before key cells), and `RuntimePerformance` records a
 String cells shortened upstream are not offered to the model as exact values;
 artifact locators remain available for reading the original evidence.
 
+A strategy may declare `evidence_first` under `entry_skill` (`scopes:
+[bounded_question]`, `when_target_absent: omit`). Only Pi reads it, and only with
+`SMARTPERFETTO_EVIDENCE_FIRST` on (off by default). When on, a scene that declares
+the scope also runs its entry Skill for a `bounded_question` investigation with no
+selection (never for `fact` questions or selections), using the
+`prompt-scene-evidence-bounded` template, which omits the drill-down guidance:
+`scope` selects what is acquired and does not widen the answer.
+`when_target_absent: omit` is admitted only for a Skill whose process selector is
+optional: with no resolved target it runs across every process and marks the
+segment `targetScope: all_processes`; a process the user named never widens to all processes.
+All other guards are unchanged.
+
 Pi alone creates a per-run Skill result note memory and turns on the executor's
 rule facts (`agentv3/skillResultSemanticNotes.ts`; an off value of
 `SMARTPERFETTO_SKILL_RESULT_FACTS` disables both); the hidden fallback runtimes

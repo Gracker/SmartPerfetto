@@ -41,6 +41,9 @@ entry_skill:
   id: anr_analysis
   params:
     package: focus_app
+  evidence_first:
+    scopes: [bounded_question]
+    when_target_absent: omit
 classification_description: "Application unresponsiveness, ANR triggers, deadlocks and timeout-related blocking."
 priority: 1
 effort: medium

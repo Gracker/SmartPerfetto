@@ -94,6 +94,9 @@ export function entrySkillExecutabilityErrors(
   if (skillRequiresProcessSelector(skill) && !processBound) {
     errors.push(`entry_skill ${entry.id} requires a process binding (focus_app or user_target)`);
   }
+  if (entry.evidenceFirst?.whenTargetAbsent === 'omit' && skillRequiresProcessSelector(skill)) {
+    errors.push(`entry_skill ${entry.id} cannot omit its target: the Skill requires a process selector`);
+  }
   return errors;
 }
 

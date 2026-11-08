@@ -459,6 +459,17 @@ reviewed harness supplies them. Record missing real credentials/runtime as
 `NOT AVAILABLE` or missing harness/configuration as `NOT CONFIGURED`; never
 equate deterministic gates with authenticated E2E.
 
+## Accuracy Admission
+
+An accuracy candidate that is not a latency candidate is admitted by its own
+pre-registered rule, written before its measurement: the affected cases (selected
+by what actually ran, since classification can change between arms), the target
+gain, and the latency it may cost. Use three paired repetitions with the flag on
+and off on one commit, and tune only on non-holdout cases. Scorer output is a
+candidate: manually adjudicate wrong facts, forbidden claims and any widened
+answer, and none of those may increase. A candidate that misses its rule stays
+default off and is named in the release notes.
+
 ## Agent SSE E2E
 
 Run applicable authenticated E2E for startup/scrolling/Flutter/strategy/verifier/
