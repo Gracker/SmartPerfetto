@@ -88,13 +88,13 @@ npm run cli:dev -- run --format json \
 | `usedCodebaseIds` | 实际产生安全 `CodeRef` 的代码库；仅定位也可能出现在这里 |
 | `coverageComplete` / `incompleteReasons` | 检索覆盖是否完整；读取指定窗口不表示搜索不完整，不完整搜索不能证明源码不存在 |
 
-工具返回的 `sourceReferences[].id` 可直接用于 `sourceClaimBindings[].sourceReferenceIds`。引用只能来自本轮实际返回且属于本次选择的代码库；模型自造引用或歧义别名不被接受。达到引用容量时，工具明确返回限制，不会继续交付无法核验的引用。Web 回执区分定位、已提供片段和实际核验结果，不把模型的机制声明当作核验通过。
+工具为实际交付的位置返回 `sourceReferences[]`，回答通过写出这些位置（`path:L10-L20`）引用源码。引用只能来自本轮实际返回且属于本次选择的代码库。达到引用容量时，工具明确返回限制，不会继续交付本轮无法签发的引用。Web 回执区分定位和已提供片段，不把模型的机制说法当作检查通过。
 
 分析过程展示工具调用、结果摘要和模型提供的分析说明；结论可以引用源码。原始工具载荷不会直接灌入聊天或日志。
 
 引用源码会增加检索、读取和额外模型分析步骤，流程和耗时会相应增加。相关片段发送给当前配置的 AI 服务，包括公司内部服务；该服务是否留存内容取决于其配置与政策，SmartPerfetto 不承诺第三方零留存。
 
-“未通过检查”是结果可靠性与完整性状态，例如证据不足、源码引用与 Trace 不匹配、报告覆盖不完整或运行未完成。结果仍可阅读，并保留具体原因和质量标记；它不是隐私审查结论。
+质量标记反映结果的可靠性与完整性，例如运行未完成、双 Trace 身份不一致，或正文写出了本轮从未返回的源码位置。结果仍可阅读，并保留具体原因和质量标记；它不是隐私审查结论。
 
 ## 取证顺序与可选代码图
 
@@ -104,13 +104,13 @@ npm run cli:dev -- run --format json \
 2. 如果后端发现用户已经安装且当前可用的本地 GitNexus，AI 可以调用 `query_code_graph` / `inspect_code_symbol` 导航候选调用关系和 symbol。代码图只是可选定位加速，不是 trace 证据，也不是源码事实。
 3. 用无需索引的 `search_codebase`（结果按声明行、trace 调用点优先排序并带上下文）或按文件名查找的 `find_codebase_files` 缩小到相对文件与行号，并在当前 consent 允许时用有界的 `read_codebase_file` 核对实际源码。任何影响结论的图关系都必须完成这一步；若权限不允许读取，则保留 `verificationRequired`，不得把候选关系升级为已验证结论。
 
-结论使用双证据语义：Trace/Skill/SQL 证明现象在本次 trace 中发生，`CodeRef` 解释可能的实现机制。`CodeRef` 单独不能提高现象或根因的置信度。模型只声明 claim 绑定了哪些源码引用和同一 claim 的 Trace 证据；每个依赖源码的结论的状态由服务端根据本轮实际返回计算：`源码解释 + Trace 证据`（读过正文且有同一 claim 的已核验 Trace 证据）、`源码解释（未与 Trace 关联）`、`未读取实现`（只有搜索命中或元数据）、`未绑定引用`，以及使答案失败的 `引用无效`。回答中写出的 `path:L10-L20` 位置也逐个与本轮返回比对。`metadata_only` 只能定位。
+结论使用双证据语义：Trace/Skill/SQL 证明现象在本次 trace 中发生，`CodeRef` 解释可能的实现机制。`CodeRef` 单独不能提高现象或根因的置信度。服务端把回答中写出的每个 `path:L10-L20` 位置与本轮返回比对：全部匹配为 `passed`，任一位置未匹配或有歧义记为提示性的 `coverage_incomplete`，没有源码访问或没有写出引用时为 `not_applicable`（`Foo.java:N` 这类公开 AOSP 帧很常见）。匹配不证明机制或因果。旧版本保存的结果保留逐 claim 的源码状态。`metadata_only` 只能定位。
 
-源码深度决定一轮能检索和读取多少源码：`locate`（快速定位）只找到相关代码的位置，`mechanism`（机制分析）读够实现来解释现象。默认 `auto` 按问题判断（只需定位或不需源码时定位，要解释实现时机制分析），判断不出时按分析预算；也可用 CLI 的 `--source-depth` 或 API 的 `options.sourceDepth` 指定。仅元数据模式最多定位。每轮在分析过程中显示一行「本轮源码深度」及其来源；只有机制分析会提供补丁建议工具。两档都会对答案做语义复核。
+源码深度决定一轮能检索和读取多少源码：`locate`（快速定位）只找到相关代码的位置，`mechanism`（机制分析）读够实现来解释现象。默认 `auto` 按问题判断（只需定位或不需源码时定位，要解释实现时机制分析），判断不出时按分析预算；也可用 CLI 的 `--source-depth` 或 API 的 `options.sourceDepth` 指定。仅元数据模式最多定位。每轮在分析过程中显示一行「本轮源码深度」及其来源；只有机制分析会提供补丁建议工具。两档都会检查正文写出的源码位置。
 
 `code_pinpoint` Skill 可以先从 trace 中产生更稳定的源码候选锚点：`hot_slices` 只把符合保守规则的 App 主线程 Trace label 升级为 source query hint，其他 slice 只作 generic anchor；可选的 `native_symbols` 从 CPU profiling 样本提取 function/module/build-id。两者都只缩小查询范围，不代替当前 trace 证据或后续有界源码核对。
 
-索引、代码图和按需读取是不同能力。没有索引时仍可搜索和读取；代码图不可用时仍可根据 Trace 锚点定位源码。只有实际返回并通过核验的引用可用于机制绑定。
+索引、代码图和按需读取是不同能力。没有索引时仍可搜索和读取；代码图不可用时仍可根据 Trace 锚点定位源码。只有本轮实际返回的引用才能与正文写出的源码位置匹配。
 
 `query_code_graph` 和 `inspect_code_symbol` 只返回元数据：`codebaseId`、相对 `CodeRef`、脱敏后的 process/symbol 元数据、`graph.freshness` 与 `graph.verificationRequired`，不返回源码正文或绝对根目录。注册项配置了 `pathFilters` 或 `excludeGlobs` 时，SmartPerfetto 会省略无法证明路径范围的全仓 process 摘要，仍保留已通过授权过滤的相对 `CodeRef`。GitNexus 未安装、不可用、版本不兼容、超时或调用失败时，图工具会返回结构化不可用结果（`success=false` 与 `unsupportedReason`）；索引陈旧时只返回标有 `freshness="stale"` 的导航元数据。AI/策略在这两种情况下都会继续使用现有 `search_codebase` / `read_codebase_file` 路径，注册、选择和 trace 分析不会因此失败。SmartPerfetto 不会安装、打包、再分发 GitNexus，也不会自动创建或刷新它的索引。
 

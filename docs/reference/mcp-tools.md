@@ -51,12 +51,12 @@ Full mode 中，`execute_sql` 和 `invoke_skill` 仍要求先提交分析计划�
 | `invoke_skill` | 执行 YAML Skill 分析管线 | 首选证据收集路径，返回 DataEnvelope / artifacts |
 | `list_skills` | 列出可用 Skills | 可按 category 过滤；Skill 数量以文件树为准 |
 | `detect_architecture` | 检测当前 trace 的渲染架构 | 影响策略和渲染管线分析 |
-| `analyze_wait_chain` | 分析某线程在某区间的运行/可运行/睡眠/不可中断分布、最长等待、唤醒来源和递归唤醒链 | 复用 critical-path 引擎；`wake_source_class` 是候选标签不是根因。头部数字是 `attributableMs` / `attributablePercentage`（其他线程运行、可运行与不可中断等待）；`blockingMs` 是链路覆盖，含 `eventWaitMs`（链路末端其他线程的可中断睡眠，Perfetto 在此终止唤醒链，`topWaits[].terminal: true`）。`rootWait.context`（`in_slice` / `between_slices` / `no_slice_data`）配合异常 `idle_wait`（等待位于两个 slice 之间且可归因占比低：空闲，不是卡顿）和 `peer_event_wait`（链路终止于其他线程等待网络、定时器或设备：这就是阻塞点）解读；`longestAttributable`、`longestEventWait` 分别给出最长的可归因段和最长的链路末端等待，`anomalies[].id` 为稳定 id。`available: false` 时带 `unavailableReason`（`task_state_running`、`no_waiting_time`、缺 `sched_waking` 时的 `no_critical_path_stack`，或选中等待到 trace 结束都未结束的 `wait_open_at_trace_end`）。严格 schema 迫使模型填写的占位值（`""`、`"null"`、utid/tid/upid/pid 为 0、`main_thread: false`、0..0 区间）按未提供处理；`thread_state_id` 0 是合法行号。`thread_state_id` 与指定线程/进程或区间不一致时：若另给了线程和完整区间，忽略该行并带 `thread_state_id_ignored_conflict` 警告；否则拒绝 `selector_conflict`（附 `threadStateOwner`、`requestedThread`、`conflicts`）。线程在区间内没有任何 thread_state 行时拒绝 `no_thread_state_in_window`（`action_required: choose_thread_with_sched_data`，附 `processHasSchedData` 和至多 5 个有调度数据的候选线程）。拒绝都带 `action_required`，不计入工具失败率。默认值由引擎的 `CRITICAL_PATH_DEFAULTS.agent` 决定（展示 200 段、递归 1 层、子段预算 16），`max_segments` / `recursion_depth` 可覆盖；等待链本身已沿唤醒者逐级追溯，递归只在其他线程的最长段内重跑关键路径。除段表外还保存一行摘要表（`summaryArtifactId` / `summaryEvidenceRefId`），投影中的头部数字逐字取自该行（含 `attributable_ns` / `event_wait_ns`），`summaryRow` 以该行的列名给出可引用的单元格：纳秒精确值、线程自身各状态的 `sleeping_ns` / `uninterruptible_ns` / `runnable_ns` / `running_ns`，以及 `root_wait_*`（等待位置）和 `direct_waker_*`（唤醒者）；另保存异常表（`anomaliesEvidenceRefId`，每个异常一行 `id` / `severity`，无异常时为空表）；段表带 `path_role` 列；`*_ns`、`start_ts`、`dur_ns`、`utid` 带 native producer 语义，数值断言引用它们可被确定性验证，四舍五入的 `*_ms`、占比和计数不带语义 |
+| `analyze_wait_chain` | 分析某线程在某区间的运行/可运行/睡眠/不可中断分布、最长等待、唤醒来源和递归唤醒链 | 复用 critical-path 引擎；`wake_source_class` 是候选标签不是根因。头部数字是 `attributableMs` / `attributablePercentage`（其他线程运行、可运行与不可中断等待）；`blockingMs` 是链路覆盖，含 `eventWaitMs`（链路末端其他线程的可中断睡眠，Perfetto 在此终止唤醒链，`topWaits[].terminal: true`）。`rootWait.context`（`in_slice` / `between_slices` / `no_slice_data`）配合异常 `idle_wait`（等待位于两个 slice 之间且可归因占比低：空闲，不是卡顿）和 `peer_event_wait`（链路终止于其他线程等待网络、定时器或设备：这就是阻塞点）解读；`longestAttributable`、`longestEventWait` 分别给出最长的可归因段和最长的链路末端等待，`anomalies[].id` 为稳定 id。`available: false` 时带 `unavailableReason`（`task_state_running`、`no_waiting_time`、缺 `sched_waking` 时的 `no_critical_path_stack`，或选中等待到 trace 结束都未结束的 `wait_open_at_trace_end`）。严格 schema 迫使模型填写的占位值（`""`、`"null"`、utid/tid/upid/pid 为 0、`main_thread: false`、0..0 区间）按未提供处理；`thread_state_id` 0 是合法行号。`thread_state_id` 与指定线程/进程或区间不一致时：若另给了线程和完整区间，忽略该行并带 `thread_state_id_ignored_conflict` 警告；否则拒绝 `selector_conflict`（附 `threadStateOwner`、`requestedThread`、`conflicts`）。线程在区间内没有任何 thread_state 行时拒绝 `no_thread_state_in_window`（`action_required: choose_thread_with_sched_data`，附 `processHasSchedData` 和至多 5 个有调度数据的候选线程）。拒绝都带 `action_required`，不计入工具失败率。默认值由引擎的 `CRITICAL_PATH_DEFAULTS.agent` 决定（展示 200 段、递归 1 层、子段预算 16），`max_segments` / `recursion_depth` 可覆盖；等待链本身已沿唤醒者逐级追溯，递归只在其他线程的最长段内重跑关键路径。除段表外还保存一行摘要表（`summaryArtifactId` / `summaryEvidenceRefId`），投影中的头部数字逐字取自该行（含 `attributable_ns` / `event_wait_ns`），`summaryRow` 以该行的列名给出可引用的单元格：纳秒精确值、线程自身各状态的 `sleeping_ns` / `uninterruptible_ns` / `runnable_ns` / `running_ns`，以及 `root_wait_*`（等待位置）和 `direct_waker_*`（唤醒者）；另保存异常表（`anomaliesEvidenceRefId`，每个异常一行 `id` / `severity`，无异常时为空表）；段表带 `path_role` 列；`*_ns`、`start_ts`、`dur_ns`、`utid` 带 native producer 语义（回答应优先采用的精确单位），四舍五入的 `*_ms`、占比和计数不带语义 |
 | `lookup_sql_schema` | 搜索 Perfetto SQL schema / stdlib index | quick 和 full 都可用 |
 | `query_perfetto_source` | 搜索 Perfetto stdlib SQL 源码 | 源码缺失时依赖打包索引兜底 |
 | `list_stdlib_modules` | 列出 Perfetto stdlib modules | 避免把完整模块列表塞进系统 prompt |
 
-`execute_sql` 和 `invoke_skill` 是证据入口，不是最终报告入口。最终结论还要经过结果归一化、evidence/claim verification、报告生成、snapshot 和 frontend projection。
+`execute_sql` 和 `invoke_skill` 是证据入口，不是最终报告入口。最终结论还要经过结果归一化、finalization（交付保证与身份解析）、报告生成、snapshot 和 frontend projection。
 
 ## 知识、记忆与 baseline
 
@@ -86,7 +86,7 @@ informational（不满足证据阶段），结果不产生 DataEnvelope 或证�
 时检索全部所选文档库。`read_knowledge_section(reference_id, part?)` 返回整节的
 `lineRange`、`part` / `partCount` 和该段正文；本轮已下发的段再次请求返回
 `alreadyDelivered`，不重发、不扣额度。引用只在签发它的 run 内有效，未签发的 id 是策略拒绝
-（`action_required: use_reference_id_from_search_knowledge`）；`kref-` 引用不能作为结论声明的
+（`action_required: use_reference_id_from_search_knowledge`）；`kref-` 引用不能作为
 Trace 证据或源码引用。每次调用前后都复核授权上下文与固定的索引代次，变化即
 `analysis_context_changed_restart_required`。正文计入知识 token 池（超额截断并标 `truncated` 与 `budgetExhausted`，截断的段本轮不再补发），
 检索与读取次数和单段字符上限见 `source-depth-policy.yaml` 的 `knowledge`。下发正文登记回显保护，标题、
@@ -159,9 +159,9 @@ Trace 证据或源码引用。每次调用前后都复核授权上下文与固�
 图工具输出只包含 `codebaseId`、相对 `CodeRef`、脱敏后的 process/symbol 元数据、`graph.freshness` 和 `graph.verificationRequired`。注册项配置了 `pathFilters` 或 `excludeGlobs` 时，会省略无法证明路径范围的全仓 process 摘要，并保留已授权的相对 `CodeRef`。代码图元数据既不是当前 trace 证据，也不是已经核对的源码事实；任何影响结论的关系都必须再用有界 `read_codebase_file` 验证，当前权限不允许读取时必须保持未验证状态。绝对 root 始终留在后端信任边界内。Code-aware 输出会进入 report/export/snapshot 时，只能保留安全名称/ID 与相对 `CodeRef`，不能保留原始源码；处理隐私、路径和 patch 状态时不要只验证前端聊天窗口。
 
 源码结论使用双证据：Trace/Skill/SQL 证明本次发生，`CodeRef` 解释候选实现机制。
-`CodeRef` 单独不能提高发生/根因置信度。模型只声明绑定的引用 ID，claim 状态由服务端
-计算；最强的 `trace_linked` 要求读过正文（body/indexed）并有同一 claim 的已验证 trace
-发生证据。`metadata_only` 只能产生 locate-only 引用。
+`CodeRef` 单独不能提高发生/根因置信度。回答通过写出本轮返回的位置引用源码；服务端把
+每个写出的位置与本轮签发的引用比对（`passed`，未匹配或有歧义时为提示性的
+`coverage_incomplete`）。`metadata_only` 只能产生 locate-only 引用。
 
 GitNexus 是独立的第三方可选工具，其[官方项目](https://github.com/abhigyanpatwari/GitNexus)和 [npm 包](https://www.npmjs.com/package/gitnexus)目前声明使用 [PolyForm Noncommercial 1.0.0](https://github.com/abhigyanpatwari/GitNexus/blob/main/LICENSE)。使用前必须自行审阅上游条款；这不是法律建议。
 
@@ -182,7 +182,7 @@ Comparison 工具只在请求包含 `referenceTraceId` 且 comparison context �
 3. Trace/Skill/SQL 已经指向具体实现时，才把可选代码图用于候选导航；不能用图关系替代 trace evidence。
 4. 已选源码且有可查询锚点时，用无索引 `search_codebase` 缩小范围，并在 consent 允许时用有界 `read_codebase_file` 核对影响结论的候选关系；否则先记录结构化 source-use stop 决策。
 5. 大结果通过 artifact 分页，不要把完整表塞进 agent context。
-6. 结论必须能回到 trace evidence、Skill output、claim verification 或显式不确定性。
+6. 结论必须能回到 trace evidence、Skill output 或显式不确定性。
 7. Chat 可以简化展示，HTML report、CLI artifacts 和 snapshots 必须保留可审计证据。
 
 ## 维护清单

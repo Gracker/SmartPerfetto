@@ -415,8 +415,6 @@ export function formatToolCallNarration(
         ? localize(language, `标记不确定性：${reason}`, `Flag uncertainty: ${reason}`)
         : localize(language, '标记不确定性：说明当前结论还缺哪类证据', 'Flag uncertainty: note which evidence is still missing'));
     }
-    case 'check_conclusion_draft':
-      return localize(language, '检查草稿的数字与引用绑定', 'Check draft numeric and reference bindings');
     case 'fetch_artifact': {
       const artifactId = readString(args.artifactId || args.id) || '?';
       const detail = readString(args.detail || args.level) || 'rows';
@@ -1227,8 +1225,6 @@ export function formatToolResultNarration(input: ToolResultNarrationInput): stri
         ? localize(language, 'SQL 未查到匹配数据', 'SQL matched no rows')
         : '';
     }
-    case 'check_conclusion_draft':
-      return '';
     case 'fetch_artifact': {
       const rows = readCount(body.rows) ?? readCount(body.totalRows);
       return rows === 0

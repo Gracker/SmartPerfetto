@@ -39,27 +39,11 @@ path and actual line range beside each source finding, for example
 line numbers later is insufficient. Unread functions cannot establish behavior.
 Keep version/build correspondence explicit.
 
-`sourceClaimBindings` is a top-level declaration array, alongside `claims`, not
-inside a claim. Each source-based behavior, call-chain or recommendation proposition
-needs a unique claim ID and matching binding. Do not use a path, rendered CodeRef
-or source ID as the claim ID, reuse IDs, or declare only measurements while omitting
-the source mechanisms explained in the answer.
-
-This example shows only two fields of the complete declaration. Replace the locator
-with an actual current-run `sourceReferences[].id` and retain all other required
-fields. Hypothetical wording applies only to unestablished candidate mechanisms:
-```json
-{
-  "claims": [{"id":"source-mechanism-1","text":"This implementation might explain the observed wait.","kind":"inference","references":[],"semantics":{"schemaVersion":"claim_semantics@1","predicate":"source.mechanism","polarity":"affirmed","discourse":"hypothetical","quantifier":"one","modality":"possible","scope":{"population":"codebase"}}}],
-  "sourceClaimBindings": [{"claimId":"source-mechanism-1","sourceReferenceIds":["<current sourceReferences[].id>"],"traceEvidenceRefIds":[]}]
-}
-```
-Copy each tool-issued source ID verbatim; never reconstruct, shorten or splice
-its hash. Before delivering, check every binding ID against the returned list.
-A source-only implementation finding keeps both Trace `references` and
-`traceEvidenceRefIds` empty; it stays a source explanation, not linked to Trace.
-Do not borrow an artifact cited by a separate measurement claim to make a
-source-only claim look linked.
-Trace references in a mixed claim must belong to that same claim. Missing bindings
-or a source read alone never establish a verified connection. Preserve unknowns;
-this declaration example does not grant new evidence access or source permission.
+Every source-based behavior, call-chain or recommendation explained in the
+answer cites the location it was read from. Copy each tool-issued source ID
+verbatim when you cite it; never reconstruct, shorten or splice its hash.
+A source-only implementation finding stays a source explanation, not linked to
+Trace: do not borrow an artifact cited by a separate measurement to make it look
+linked. A source read alone never establishes a verified connection to an
+observed interval. Preserve unknowns; this guidance does not grant new evidence
+access or source permission.

@@ -5,11 +5,12 @@
 import {isPlainObject} from '../../../utils/llmJson';
 
 /**
- * Streamed replies for the one-shot intent and final-semantic requests.
+ * Streamed replies for the one-shot no-tool requests (intent classification,
+ * continuation).
  *
  * A non-streamed reply sends its headers only after generation ends, and a
  * reasoning model can think for longer than fetch's default five-minute
- * headers timeout: a measured GLM semantic review first emitted answer text at
+ * headers timeout: a measured GLM no-tool reply first emitted answer text at
  * 496 s. Streaming keeps bytes flowing, so the run deadline, not a transport
  * default, decides when the request stops. Each reply is folded back into the
  * non-streamed body shape, role, tool calls and refusal included, and judged by

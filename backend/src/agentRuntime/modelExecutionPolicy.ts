@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import type {RuntimeModelCallPurpose} from './runtimePerformance';
+import type {RuntimeModelCallPurpose, RuntimeModelDispatchPurpose} from './runtimePerformance';
 import type {ModelControlSurface, ModelExecutionFingerprint, ReasoningEffort, ReasoningSetting,
   ResolvedModelExecutionProfile} from '../services/providerManager/modelExecutionProfile';
 
@@ -36,7 +36,7 @@ export interface ModelExecutionPolicyReceipt {
 }
 export interface ResolveModelExecutionPolicyInput {
   readonly profile: ResolvedModelExecutionProfile;
-  readonly purpose: RuntimeModelCallPurpose;
+  readonly purpose: RuntimeModelDispatchPurpose;
   readonly outputOnly?: true;
   readonly selection: 'preserve' | 'minimum_legal_candidate';
 }
@@ -44,8 +44,8 @@ export type ModelExecutionPolicyResult =
   | Readonly<{status: 'ready'; controls: StageNativeControls; receipt: ModelExecutionPolicyReceipt}>
   | Readonly<{status: 'unsupported'; reason: ModelPolicyFailure; receipt: ModelExecutionPolicyReceipt}>;
 
-const STAGES: Readonly<Record<RuntimeModelCallPurpose, 'main' | 'bounded' | 'continuation'>> = {
-  answer_turn: 'main', classification: 'bounded', review: 'bounded', declaration_repair: 'bounded', continuation: 'continuation',
+const STAGES: Readonly<Record<RuntimeModelDispatchPurpose, 'main' | 'bounded' | 'continuation'>> = {
+  answer_turn: 'main', classification: 'bounded', review: 'bounded', continuation: 'continuation',
 };
 const NO_CONTROLS: StageNativeControls = Object.freeze({surface: 'none'});
 function surfaceMatches(profile: ResolvedModelExecutionProfile): boolean {

@@ -41,7 +41,6 @@ import {
 } from '../../services/selfEvolution/evaluationTelemetry';
 import { ClaudeRuntime, __testing } from '../claudeRuntime';
 import * as analysisRunSpecModule from '../../agentRuntime/analysisRunSpec';
-import * as outputConfigModule from '../../agentRuntime/finalSubmissionConfig';
 import {buildStrategyRegistrySnapshotFromDefinitions, getRegisteredScenes} from '../strategyLoader';
 import type {AnalysisTurnIntentDecision} from '../../agentRuntime/analysisTurnIntent';
 import {resolveRuntimeTurnPolicy} from '../../agentRuntime/runtimeTurnPolicy';
@@ -70,7 +69,7 @@ import type {RunManifestAttributionSink} from '../../types/selfEvolution';
 import {renderConclusionContractSidecar, wrapConclusionAuthoringPayload} from '../../agent/core/conclusionContract';
 import {inspectCandidateProtocol} from '../../services/canonicalAnalysisResult';
 import {createSceneRuntimeMatrixFixture} from '../../../tests/helpers/sceneRuntimeMatrixFixture';
-import {candidateWithPopulation, declaredCandidateWithClaims, declaredClaim} from '../../../tests/helpers/conclusionDeclarationFixture';
+import {declaredCandidateWithClaims, declaredClaim} from '../../../tests/helpers/conclusionDeclarationFixture';
 import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
 import {admitLearnedEntry, withDurableLearningPermission} from '../../services/security/durableLearning';
 import {analysisContextMemoryPartitionKey} from '../../services/resolvedAnalysisContext';
@@ -274,70 +273,46 @@ afterEach(async () => {
 
 describe('ClaudeRuntime runtime state and snapshots', () => {
   it.each([
-    ['authored_claim_document_v1', 'canonical_v1', 'unsupported_final_submission', 'runtime'],
-    ['authored_claim_document_v1', 'authoring_v1', 'invalid_configuration', 'declaration_syntax_conflict'],
-    ['authored_claim_document_v1', 'authoring_v2', 'invalid_configuration', 'declaration_syntax_conflict'],
-    ['MODE_CANARY', 'canonical_v1', 'invalid_configuration', 'mode'],
-    ['assistant_text', 'SYNTAX_CANARY', 'invalid_configuration', 'declaration_syntax'],
-  ])('rejects output config %s / %s before Claude classifier or SDK dispatch', async (mode, syntax, code, reason) => {
+    [undefined, undefined],
+    ['authored_claim_document_v1', 'canonical_v1'],
+    ['authored_claim_document_v2_dual', 'authoring_v2'],
+    ['MODE_CANARY', 'SYNTAX_CANARY'],
+  ])('ignores retired output config %s / %s and builds a plain-answer RunSpec once', async (mode, syntax) => {
     const previousMode = process.env.SMARTPERFETTO_FINAL_SUBMISSION;
     const previousSyntax = process.env.SMARTPERFETTO_CONCLUSION_AUTHORING;
+    restoreEnvValue('SMARTPERFETTO_FINAL_SUBMISSION', mode);
+    restoreEnvValue('SMARTPERFETTO_CONCLUSION_AUTHORING', syntax);
+    const createSpec = analysisRunSpecModule.createAnalysisRunSpec;
+    let spec: ReturnType<typeof createSpec> | undefined;
+    const specSpy = jest.spyOn(analysisRunSpecModule, 'createAnalysisRunSpec').mockImplementation(input => {
+      spec = createSpec(input);
+      throw new Error('test stopped after real RunSpec');
+    });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     const runtime = new ClaudeRuntime({query: jest.fn()} as any, {enableSubAgents: false});
-    process.env.SMARTPERFETTO_FINAL_SUBMISSION = mode;
-    process.env.SMARTPERFETTO_CONCLUSION_AUTHORING = syntax;
+    rawClaudeSdkMock.__setQueryImplementation(async function* (params: any) {
+      expect(isClassifierCall(params)).toBe(true);
+      process.env.SMARTPERFETTO_FINAL_SUBMISSION = 'authored_claim_document_v1';
+      process.env.SMARTPERFETTO_CONCLUSION_AUTHORING = 'LATE_SYNTAX_CANARY';
+      yield {type: 'result', subtype: 'success', is_error: false, stop_reason: null,
+        result: JSON.stringify(defaultIntent)};
+    });
     try {
-      await expect(runtime.analyze('Explain this trace', 'output-config-claude', 'trace')).rejects.toMatchObject({
-        name: 'FinalSubmissionConfigurationError', code, message: `${code}:final_submission:${reason}`,
-      });
-      expect(rawClaudeSdkMock.__getQueryCalls()).toHaveLength(0);
-      expect(mockClaudeVerifierVerifyConclusion).not.toHaveBeenCalled();
+      const result = await runtime.analyze('Explain this trace', 'output-config-claude-frozen', 'trace');
+      expect(result.success).toBe(false); // The test stops after the real RunSpec boundary.
+      expect(rawClaudeSdkMock.__getQueryCalls()).toHaveLength(1);
+      expect(specSpy).toHaveBeenCalledTimes(1);
+      expect(spec).not.toHaveProperty('declarationSyntax');
+      expect(spec).not.toHaveProperty('finalSubmission');
+      expect(JSON.stringify(warn.mock.calls)).not.toMatch(/CANARY/);
     } finally {
+      warn.mockRestore();
+      specSpy.mockRestore();
       restoreEnvValue('SMARTPERFETTO_FINAL_SUBMISSION', previousMode);
       restoreEnvValue('SMARTPERFETTO_CONCLUSION_AUTHORING', previousSyntax);
-      runtime.cleanupSession('output-config-claude');
+      runtime.cleanupSession('output-config-claude-frozen');
     }
   });
-
-  it.each(['canonical_v1', 'authoring_v1', 'authoring_v2'])(
-    'keeps the captured Claude output config %s through classification and real RunSpec', async syntax => {
-      const previousMode = process.env.SMARTPERFETTO_FINAL_SUBMISSION;
-      const previousSyntax = process.env.SMARTPERFETTO_CONCLUSION_AUTHORING;
-      delete process.env.SMARTPERFETTO_FINAL_SUBMISSION;
-      process.env.SMARTPERFETTO_CONCLUSION_AUTHORING = syntax;
-      const capture = jest.spyOn(outputConfigModule, 'captureAnalysisOutputConfig');
-      const createSpec = analysisRunSpecModule.createAnalysisRunSpec;
-      let spec: ReturnType<typeof createSpec> | undefined;
-      const specSpy = jest.spyOn(analysisRunSpecModule, 'createAnalysisRunSpec').mockImplementation(input => {
-        spec = createSpec(input);
-        throw new Error('test stopped after real RunSpec');
-      });
-      const runtime = new ClaudeRuntime({query: jest.fn()} as any, {enableSubAgents: false});
-      rawClaudeSdkMock.__setQueryImplementation(async function* (params: any) {
-        expect(isClassifierCall(params)).toBe(true);
-        process.env.SMARTPERFETTO_FINAL_SUBMISSION = 'authored_claim_document_v1';
-        process.env.SMARTPERFETTO_CONCLUSION_AUTHORING = 'LATE_SYNTAX_CANARY';
-        yield {type: 'result', subtype: 'success', is_error: false, stop_reason: null,
-          result: JSON.stringify(defaultIntent)};
-      });
-      try {
-        const result = await runtime.analyze('Explain this trace', 'output-config-claude-frozen', 'trace');
-        expect(result.success).toBe(false); // The test stops after the real RunSpec boundary.
-        expect(rawClaudeSdkMock.__getQueryCalls()).toHaveLength(1);
-        expect(specSpy).toHaveBeenCalledTimes(1);
-        expect(capture).toHaveBeenCalledTimes(1);
-        const captured = capture.mock.results[0].value;
-        expect(Object.isFrozen(captured)).toBe(true);
-        expect(specSpy.mock.calls[0][0].outputConfig).toBe(captured);
-        expect(spec).toMatchObject({finalSubmission: 'assistant_text', declarationSyntax: syntax});
-      } finally {
-        specSpy.mockRestore();
-        capture.mockRestore();
-        restoreEnvValue('SMARTPERFETTO_FINAL_SUBMISSION', previousMode);
-        restoreEnvValue('SMARTPERFETTO_CONCLUSION_AUTHORING', previousSyntax);
-        runtime.cleanupSession('output-config-claude-frozen');
-      }
-    },
-  );
 
   it('scene runtime matrix: runs the pinned Claude provider through shared proposal and private seal', async () => {
     const f = createSceneRuntimeMatrixFixture('claude');
@@ -391,12 +366,13 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       expect(result.terminationReason).not.toBe('timeout');
       expect(updates.some(update => update.content?.fallback === 'partial_result_after_timeout')).toBe(false);
       expect(f.seal().revision).toBe(1);
-      // The completed report will make its semantic review, so finalization keeps the budget up to hard.
+      // No semantic review follows the report, so finalization keeps only its own
+      // reserve: a live deadline that never reaches past the run's hard cap.
       expect(result.turnIntent).toMatchObject({status: 'resolved', deliverable: 'report'});
       const context = takeFinalizationContext(result);
       try {
-        expect(context!.deadlineMs).toBeGreaterThanOrEqual(startedAt + 6_000);
-        expect(context!.deadlineMs).toBeLessThanOrEqual(Date.now() + 6_000);
+        expect(context!.deadlineMs).toBeGreaterThan(Date.now());
+        expect(context!.deadlineMs).toBeLessThanOrEqual(startedAt + 6_000 + 50);
       } finally {context?.dispose();}
     } finally {runtime.cleanupSession(f.scope.sessionId); f.binding.release();}
   });
@@ -488,7 +464,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
         referenceTraceId: 'trace-b', tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'});
       expect(result.success).toBe(true);
       const calls = claudeSdkMock.__getQueryCalls();
-      expect(calls).toHaveLength(2);
+      expect(calls).toHaveLength(1);
       expect(calls[0].options.resume).toBeUndefined();
       expect(JSON.stringify(calls[0].options)).not.toContain('sdk-session-legacy');
 
@@ -596,7 +572,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     });
 
     const calls = claudeSdkMock.__getQueryCalls();
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(1);
     expect(calls[0].options.resume).toBeUndefined();
     expect(calls[0].prompt).toContain('上一轮回答：主要包名是 com.example.app。');
     expect(calls[0].options.persistSession).toBe(false);
@@ -670,7 +646,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     );
 
     expect(traceProcessor.query).not.toHaveBeenCalled();
-    expect(claudeSdkMock.__getQueryCalls()).toHaveLength(2);
+    expect(claudeSdkMock.__getQueryCalls()).toHaveLength(1);
   });
 
   it('enables and auto-allows the Agent tool only when sub-agents are defined', () => {
@@ -780,7 +756,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       expect(result.completion).toMatchObject({status: 'completed', conclusionFingerprint: analysisDeliveryFingerprint(result.conclusion)});
       expect(result.turnIntent).toMatchObject({scope: 'bounded_question', deliverable: 'answer'});
       expect(rawClaudeSdkMock.__getQueryCalls().filter(isClassifierCall)).toHaveLength(1);
-      expect(claudeSdkMock.__getQueryCalls()).toHaveLength(2);
+      expect(claudeSdkMock.__getQueryCalls()).toHaveLength(1);
       // A bounded question still gets the trace facts: which app is in focus
       // and what it renders with. What it skips is the scene-wide memory tier.
       expect(focus).toHaveBeenCalled(); expect(architecture).toHaveBeenCalled();
@@ -827,7 +803,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       expect(mcp).toHaveBeenCalledWith(expect.objectContaining({allowNewEvidence: false,
         referenceTraceId: 'reference', comparisonContext: expect.objectContaining({referenceTraceId: 'reference', capabilityProbeStatus: 'not_checked'})}));
       expect(traceProcessor.query).not.toHaveBeenCalled();
-      expect(claudeSdkMock.__getQueryCalls()).toHaveLength(2);
+      expect(claudeSdkMock.__getQueryCalls()).toHaveLength(1);
       expect(claudeSdkMock.__getQueryCalls()[0].options.allowedTools).toContain('mcp__smartperfetto__fetch_artifact');
     } finally {mcp.mockRestore();}
   });
@@ -1360,32 +1336,23 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       const turns = sessionContextManager.getOrCreate(sessionId, 'trace').getAllTurns();
       expect(turns).toHaveLength(1);
       expect(turns[0].result?.message).toBe(result.conclusion);
-      expect(claudeSdkMock.__getQueryCalls()).toHaveLength(2);
+      expect(claudeSdkMock.__getQueryCalls()).toHaveLength(1);
       context = takeFinalizationContext(result);
       expect(context?.deliveryContext).toMatchObject({entry: 'runtime_draft', completion: result.completion});
       expect(context?.sourceScope).toMatchObject({codeAwareMode: 'off', selectedCodebaseIds: [], hasCodebaseAccess: false});
     } finally {context?.dispose(); insights.mockRestore(); savePattern.mockRestore(); sessionContextManager.remove(sessionId);}
   });
 
-  it.each([undefined, '32768'])('attaches a pinned primary review with only the captured explicit output cap %s and the actual store view', async outputLimit => {
+  it('attaches the run finalization context with the actual store view and no model transport', async () => {
     intentDecision = {...defaultIntent, taskKind: 'fact', scope: 'bounded_question', deliverable: 'answer'};
     const sessionId = 'claude-finalization-context';
-    const outputBudgetBefore = process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS;
-    restoreEnvValue('CLAUDE_CODE_MAX_OUTPUT_TOKENS', outputLimit);
     const traceProcessor = {query: jest.fn(async () => ({columns: [], rows: []})), getTrace: () => undefined};
     const runtime = new ClaudeRuntime(traceProcessor as any,
       {model: 'pinned-primary-review', lightModel: 'pinned-light-answer', enableSubAgents: false});
     const readView = jest.spyOn(ArtifactStore.prototype, 'createEvidenceReadView');
     mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: true, heuristicIssues: [], durationMs: 0});
-    let reviewDirectory: string | undefined;
-    const reviewBody = 'x'.repeat(12_000);
-    claudeSdkMock.__setQueryImplementation(async function* (params: any) {
-      const finalReview = params.options.permissionMode === 'dontAsk';
-      if (finalReview) {
-        reviewDirectory = params.options.cwd;
-        expect((await fs.stat(reviewDirectory!)).isDirectory()).toBe(true);
-      }
-      yield {type: 'result', subtype: 'success', num_turns: 1, result: finalReview ? reviewBody : 'native answer'};
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      yield {type: 'result', subtype: 'success', num_turns: 1, result: 'native answer'};
     });
     let context: ReturnType<typeof takeFinalizationContext>;
     try {
@@ -1406,14 +1373,12 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       const providerQuery = context!.getProviderQuery(new AbortController().signal);
       expect(providerQuery).toEqual({text: 'Question', analysisContextFingerprint: pinnedFingerprint});
       expect(Object.isFrozen(providerQuery)).toBe(true);
-      expect(context!.getSelection(new AbortController().signal)).toEqual({present: true, kind: 'track_event',
-        context: options.selectionContext, sideResolution: {status: 'unknown'}});
+      expect(context).not.toHaveProperty('getSelection');
       expect(JSON.stringify(result)).not.toContain('"providerQuery"');
       expect(takeFinalizationContext(result)).toBeUndefined();
       expect(takeFinalizationContext({...result})).toBeUndefined();
       expect(context!.deliveryContext).toMatchObject({completion: result.completion});
       expect(context!.runId).toBe('actual-run');
-      expect(context!.deliveryCall?.model).toBe('pinned-primary-review');
       expect(context!.traceIdentity).toEqual({currentTraceId: 'current-trace', referenceTraceId: 'reference-trace'});
       expect(readView).toHaveBeenCalledTimes(1);
       expect(readView.mock.calls[0][0].currentRunId).toBe(context!.runId);
@@ -1424,23 +1389,9 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       const reads = await context!.resolveReferences([{key: 'missing-ref', reference: {artifactId: 'not-captured'}, requiredColumns: ['dur']}], new AbortController().signal);
       expect(reads).toEqual([{key: 'missing-ref', status: 'missing', reason: 'evidence_not_retained'}]);
       expect(traceProcessor.query.mock.calls).toHaveLength(preflightQueries);
-      const originalDeadline = context!.deadlineMs;
-      process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = '2048';
-      const review = await context!.dispatchText({prompt: 'Review current claim semantics', systemPrompt: 'Semantic review',
-        signal: new AbortController().signal, deadlineMs: originalDeadline + 60_000, outputByteLimit: 64 * 1024});
-      expect(review).toMatchObject({status: 'ok', text: reviewBody});
-      expect(context!.deadlineMs).toBe(originalDeadline);
-      const sdkCalls = claudeSdkMock.__getQueryCalls();
-      expect(sdkCalls).toHaveLength(3);
-      expect(sdkCalls[2].options).toMatchObject({model: 'pinned-primary-review', maxTurns: 1,
-        tools: [], allowedTools: [], mcpServers: {}, persistSession: false, effort: 'low'});
-      expect(sdkCalls[2].options.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe(outputLimit);
-      expect(sdkCalls[2].options.resume).toBeUndefined();
-      expect(sdkCalls[2].options.cwd).not.toBe(sdkCalls[0].options.cwd);
-      await expect(fs.stat(reviewDirectory!)).rejects.toMatchObject({code: 'ENOENT'});
-      expect(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe('2048');
+      // Finalization issues no model call of its own.
+      expect(claudeSdkMock.__getQueryCalls()).toHaveLength(1);
     } finally {
-      restoreEnvValue('CLAUDE_CODE_MAX_OUTPUT_TOKENS', outputBudgetBefore);
       context?.dispose(); readView.mockRestore(); sessionContextManager.remove(sessionId);
     }
   });
@@ -1464,13 +1415,10 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       const result = await pending;
       context = takeFinalizationContext(result);
       expect(context).toBeDefined();
-      expect(context!.hasSemanticTransport).toBe(false);
       expect(result).toMatchObject({success: false, partial: true, outputOrigin: 'assistant_stream',
         completion: {status: 'cancelled', reason: 'cancelled'}});
       expect(context!.deliveryContext).toMatchObject({completion: result.completion});
       expect(JSON.stringify(result)).not.toContain('CANCELLED_PRIVATE_CANARY');
-      expect(await context!.dispatchText({prompt: 'review', systemPrompt: '', signal: new AbortController().signal,
-        deadlineMs: context!.deadlineMs, outputByteLimit: 4096})).toMatchObject({status: 'unavailable'});
       expect(claudeSdkMock.__getQueryCalls()).toHaveLength(1);
     } finally {release.resolve(); context?.dispose(); clearCodeAwareOutputGuards(sessionId); sessionContextManager.remove(sessionId);}
   });
@@ -1903,17 +1851,14 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
 
       expect(result.success).toBe(true);
       expect(focusSpy).toHaveBeenCalledTimes(1);
-      expect(claudeSdkMock.__getQueryCalls()).toHaveLength(2);
+      expect(claudeSdkMock.__getQueryCalls()).toHaveLength(1);
       const receipt = runtimePerformanceRecorder.seal();
       const focusPhases = receipt.phases.filter(phase => phase.name === 'focus');
       const providerPhases = receipt.phases.filter(phase => phase.name === 'provider');
       const finalizationPhases = receipt.phases.filter(phase => phase.name === 'finalization');
       expect(focusPhases).toHaveLength(1);
       expect(focusPhases[0]).toEqual(expect.objectContaining({outcome: 'error'}));
-      expect(providerPhases).toHaveLength(2);
-      expect(providerPhases).toEqual(expect.arrayContaining([
-        expect.objectContaining({outcome: 'ok'}), expect.objectContaining({outcome: 'ok'}),
-      ]));
+      expect(providerPhases).toEqual([expect.objectContaining({outcome: 'ok'})]);
       expect(finalizationPhases).toHaveLength(1);
       expect(finalizationPhases[0]).toEqual(expect.objectContaining({outcome: 'ok'}));
     } finally {
@@ -2722,7 +2667,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       }));
       const context = takeFinalizationContext(terminal)!;
       try {
-        expect(context.getNativeDeclaration(terminal, new AbortController().signal)).toMatchObject({raw: SOURCE_FINALIZATION_RAW_SOURCE});
+        expect(context).not.toHaveProperty('getNativeDeclaration');
         expect(JSON.stringify(terminal)).not.toContain('conclusion_protocol_projection');
       } finally {context.dispose();}
       const next = await runtime.analyze('public second run', sessionId, traceId, admitted({
@@ -3214,83 +3159,11 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     expect(result.completion).toMatchObject({status: 'completed'});
     expect(inspectCandidateProtocol(result.conclusion).status).toBe('invalid');
     const context = takeFinalizationContext(result)!;
-    try {expect(context.getNativeDeclaration(result, new AbortController().signal)).toMatchObject({raw: native});}
+    try {expect(context).not.toHaveProperty('getNativeDeclaration');}
     finally {context.dispose();}
   });
 
-  it('uses the same delivery turn to repair a rejected declaration, keeping the body and every claim', async () => {
-    const body = 'Frame 12 missed its deadline.';
-    const runtime = new ClaudeRuntime({
-      query: async () => ({columns: [], rows: []}),
-      getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
-    } as any, {enableSubAgents: false, maxTurns: 4, maxBudgetUsd: 1});
-    (runtime as any).architectureCache.set('trace-invalid-declaration', {type: 'STANDARD', confidence: 0.9, evidence: []});
-    mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: true, heuristicIssues: [], llmIssues: [], durationMs: 1});
-    let sdkCallCount = 0;
-    claudeSdkMock.__setQueryImplementation(async function* () {
-      sdkCallCount += 1;
-      yield {type: 'result', subtype: 'success', session_id: 'sdk-invalid-declaration', num_turns: 1,
-        total_cost_usd: 0.1, result: candidateWithPopulation(body, sdkCallCount === 1 ? 'everywhere' : 'cited_rows', 'miss')};
-    });
-    const result = await runtime.analyze('分析当前证据', 'session-invalid-declaration', 'trace-invalid-declaration', {
-      analysisMode: 'full', runId: 'claude-invalid-declaration', packageName: 'com.example.app',
-    });
-    const calls = claudeSdkMock.__getQueryCalls();
-    expect(calls).toHaveLength(2);
-    expect(calls[1].options).toMatchObject({maxTurns: 1, tools: [], allowedTools: []});
-    expect(calls[1].prompt).toContain('invalid_declaration');
-    expect(calls[1].prompt).toContain('"field":"semantics.scope.population"');
-    expect(inspectCandidateProtocol(result.conclusion).status).toBe('valid');
-    expect(result.completion).toMatchObject({status: 'completed', attemptId: expect.stringContaining(':correction:1')});
-    takeFinalizationContext(result)?.dispose();
-  });
-
-  it('lets a slow declaration repair finish inside the run deadline and records the call', async () => {
-    // A declaration for dozens of claims took GLM over two minutes; a fixed 120 s cap discarded every one.
-    jest.useFakeTimers({doNotFake: ['nextTick', 'setImmediate']});
-    let repairStarted = false;
-    const body = 'Frame 12 missed its deadline.';
-    const runtime = new ClaudeRuntime({
-      query: async () => ({columns: [], rows: []}),
-      getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
-    } as any, {enableSubAgents: false, maxTurns: 4, maxBudgetUsd: 1,
-      fullPathPerTurnMs: 600_000, fullRequestTimeoutMs: 2_400_000, streamIdleTimeoutMs: 600_000});
-    (runtime as any).architectureCache.set('trace-slow-declaration', {type: 'STANDARD', confidence: 0.9, evidence: []});
-    mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: true, heuristicIssues: [], llmIssues: [], durationMs: 1});
-    let sdkCallCount = 0;
-    claudeSdkMock.__setQueryImplementation(async function* () {
-      sdkCallCount += 1;
-      if (sdkCallCount === 2) {
-        repairStarted = true;
-        await new Promise(resolve => setTimeout(resolve, 150_000));
-      }
-      yield {type: 'result', subtype: 'success', session_id: 'sdk-slow-declaration', num_turns: 1,
-        total_cost_usd: 0.1, result: candidateWithPopulation(body, sdkCallCount === 1 ? 'everywhere' : 'cited_rows', 'miss')};
-    });
-    const recorder = createRuntimePerformanceRecorder();
-    try {
-      const pending = withEffectiveRuntimeRegistrySnapshot(createEffectiveRuntimeRegistrySnapshot(),
-        () => runtime.analyze('分析当前证据', 'session-slow-declaration', 'trace-slow-declaration', {
-          analysisMode: 'full', runId: 'claude-slow-declaration', packageName: 'com.example.app',
-          runManifestAttributionSink: createNoopAttributionSink(recorder),
-        }));
-      let settled = false;
-      void pending.finally(() => {settled = true;}).catch(() => undefined);
-      // Step the clock: earlier stages wait on their own timers before the repair starts.
-      for (let step = 0; step < 400 && !settled; step++) await jest.advanceTimersByTimeAsync(1_000);
-      expect(repairStarted).toBe(true);
-      const result = await pending;
-      expect(inspectCandidateProtocol(result.conclusion).status).toBe('valid');
-      expect(result.completion).toMatchObject({status: 'completed', attemptId: expect.stringContaining(':correction:1')});
-      expect(recorder.seal().modelCalls).toContainEqual(expect.objectContaining({
-        purpose: 'declaration_repair', trigger: 'invalid_declaration', outcome: 'ok'}));
-      takeFinalizationContext(result)?.dispose();
-    } finally {
-      jest.useRealTimers();
-    }
-  });
-
-  it('keeps the issue-based correction when a rejected declaration is too large to repair', async () => {
+  it('keeps the issue-based correction for an answer whose stray declaration is invalid', async () => {
     const body = `${'Frame 12 missed its deadline. '.repeat(4700)}`.trimEnd();
     expect(Buffer.byteLength(body, 'utf8')).toBeGreaterThan(128 * 1024);
     const invalid = declaredCandidateWithClaims(body, [declaredClaim('miss', {semantics: {schemaVersion: 'other'}})]);
@@ -3314,45 +3187,34 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     takeFinalizationContext(result)?.dispose();
   });
 
-  it('uses one no-tools delivery turn to attach declarations without truncating the native body', async () => {
+  it('issues no declaration repair call when a completed answer carries no declaration', async () => {
     const body = `${'启动正文保持完整。'.repeat(850)}\n${'Native body remains unchanged. '.repeat(170)}`.trimEnd();
-    expect(Buffer.byteLength(body, 'utf8')).toBeGreaterThan(8 * 1024);
-    const runtime = new ClaudeRuntime({
-      query: async () => ({columns: [], rows: []}),
-      getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
-    } as any, {enableSubAgents: false, maxTurns: 4, maxBudgetUsd: 1});
-    (runtime as any).architectureCache.set('trace-missing-declaration', {
-      type: 'STANDARD', confidence: 0.9, evidence: [],
-    });
-    mockClaudeVerifierVerifyConclusion.mockResolvedValue({
-      passed: true, heuristicIssues: [], llmIssues: [], durationMs: 1,
-    });
-    let sdkCallCount = 0;
+    const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
+      {enableSubAgents: false, maxTurns: 4, maxBudgetUsd: 1});
+    mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: true, heuristicIssues: [], llmIssues: [], durationMs: 1});
     claudeSdkMock.__setQueryImplementation(async function* () {
-      sdkCallCount += 1;
-      yield {type: 'result', subtype: 'success', session_id: 'sdk-missing-declaration', num_turns: 1,
-        total_cost_usd: sdkCallCount === 1 ? 0.25 : 0.1,
-        result: sdkCallCount === 1 ? body : declaredCandidate(body)};
+      yield {type: 'result', subtype: 'success', session_id: 'sdk-no-declaration', num_turns: 1, total_cost_usd: 0.25, result: body};
     });
-
-    const result = await runtime.analyze('分析当前证据', 'session-missing-declaration', 'trace-missing-declaration', {
-      analysisMode: 'full', runId: 'claude-missing-declaration', packageName: 'com.example.app',
-    });
-
-    const calls = claudeSdkMock.__getQueryCalls();
-    expect(calls).toHaveLength(2);
-    expect(calls[1].options).toMatchObject({maxTurns: 1, maxBudgetUsd: 0.75, tools: [], allowedTools: []});
-    expect(calls[1].prompt).toContain('missing_declaration');
-    const candidateLine = calls[1].prompt.split('\n').find((line: string) => line.startsWith('{"schemaVersion":1,"kind":"original_native_candidate"'));
-    expect(JSON.parse(candidateLine ?? '{}')).toEqual({schemaVersion: 1, kind: 'original_native_candidate', body});
-    expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
-    expect(result.completion).toMatchObject({status: 'completed', attemptId: expect.stringContaining(':correction:1')});
+    const recorder = createRuntimePerformanceRecorder();
+    const result = await withEffectiveRuntimeRegistrySnapshot(createEffectiveRuntimeRegistrySnapshot(),
+      () => runtime.analyze('分析当前证据', 'session-no-declaration', 'trace-no-declaration', {
+        analysisMode: 'full', runId: 'claude-no-declaration', packageName: 'com.example.app',
+        runManifestAttributionSink: createNoopAttributionSink(recorder),
+      }));
+    expect(claudeSdkMock.__getQueryCalls()).toHaveLength(1);
+    expect(result.conclusion).toBe(body);
+    expect(result.completion).toMatchObject({status: 'completed'});
+    expect(result.completion?.attemptId).not.toContain(':correction:1');
+    const receipt = recorder.seal();
+    expect((receipt.modelCalls ?? []).some(call => call.purpose === 'declaration_repair')).toBe(false);
+    expect((receipt.deliveryBudgets ?? []).some(budget => budget.purpose === 'declaration_repair')).toBe(false);
+    takeFinalizationContext(result)?.dispose();
   });
 
   it.each([
     {name: 'exhausted cost budget', body: 'Completed candidate without declaration.', maxBudgetUsd: 1, totalCostUsd: 1},
     {name: '128 KiB output cap', body: 'x'.repeat(128 * 1024), maxBudgetUsd: undefined, totalCostUsd: undefined},
-  ])('does not dispatch declaration completion past the $name', async ({body, maxBudgetUsd, totalCostUsd}) => {
+  ])('dispatches no delivery call for a completed plain answer at the $name', async ({body, maxBudgetUsd, totalCostUsd}) => {
     const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
       {enableSubAgents: false, maxTurns: 4, ...(maxBudgetUsd === undefined ? {} : {maxBudgetUsd})});
     mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: true, heuristicIssues: [], llmIssues: [], durationMs: 1});
@@ -3368,35 +3230,14 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     expect(result.completion).toMatchObject({status: 'completed'});
   });
 
-  it('rejects an unchanged Claude repair when the declaration pushes the candidate over the output cap', async () => {
-    const body = 'x'.repeat(128 * 1024 - 100);
-    const repaired = declaredCandidate(body);
-    expect(Buffer.byteLength(body, 'utf8')).toBeLessThan(128 * 1024);
-    expect(Buffer.byteLength(repaired, 'utf8')).toBeGreaterThan(128 * 1024);
-    const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
-      {enableSubAgents: false, maxTurns: 4});
-    mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: true, heuristicIssues: [], llmIssues: [], durationMs: 1});
-    let sdkCallCount = 0;
-    claudeSdkMock.__setQueryImplementation(async function* () {
-      sdkCallCount += 1;
-      yield {type: 'result', subtype: 'success', session_id: 'sdk-declaration-overflow', num_turns: 1,
-        result: sdkCallCount === 1 ? body : repaired};
-    });
-    const result = await runtime.analyze('分析当前证据', 'session-claude-declaration-overflow', 'trace-declaration-overflow', {
-      analysisMode: 'full', packageName: 'com.example.app',
-    });
-    expect(claudeSdkMock.__getQueryCalls()).toHaveLength(2);
-    expect(result.conclusion).toBe(body);
-    expect(result.completion?.attemptId).not.toContain(':correction:1');
-  });
-
   it('counts one turn per model response, not per streamed content block, so the delivery turn survives', async () => {
     // The SDK emits one assistant message per content block, all with the response id.
     // Counting messages spent the reserved delivery turn of a 1-response run (claude glm-5.3 E2E).
     const body = 'One response answer.';
     const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
       {enableSubAgents: false, maxTurns: 4});
-    mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: true, heuristicIssues: [], llmIssues: [], durationMs: 1});
+    mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: false, durationMs: 1, llmIssues: [], heuristicIssues: [
+      {type: 'missing_evidence', severity: 'error', message: 'Needs evidence', recoveryKind: 'correct_evidence'}]});
     let sdkCallCount = 0;
     claudeSdkMock.__setQueryImplementation(async function* () {
       sdkCallCount += 1;
@@ -3407,56 +3248,29 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
         }
       }
       yield {type: 'result', subtype: 'success', session_id: 'sdk-one-response', num_turns: 1,
-        result: sdkCallCount === 1 ? body : declaredCandidate(body)};
+        result: sdkCallCount === 1 ? body : 'One corrected response answer.'};
     });
 
     const result = await runtime.analyze('分析当前证据', 'session-claude-one-response', 'trace-one-response',
       {analysisMode: 'full', runId: 'claude-one-response', packageName: 'com.example.app'});
 
     expect(claudeSdkMock.__getQueryCalls()).toHaveLength(2);
-    expect(inspectCandidateProtocol(result.conclusion)).toMatchObject({status: 'valid'});
-    // Classification and the declaration repair ask for low effort; the answer keeps the run's own.
+    expect(result.conclusion).toBe('One corrected response answer.');
+    // Classification asks for low effort; the answer and its correction keep the run's own.
     const classifierCalls = rawClaudeSdkMock.__getQueryCalls().filter(isClassifierCall);
     expect(classifierCalls.map((call: any) => call.options.effort)).toEqual(['low']);
-    const [answerCall, repairCall] = claudeSdkMock.__getQueryCalls();
+    const [answerCall, correctionCall] = claudeSdkMock.__getQueryCalls();
     expect((answerCall as any).options.effort).not.toBe('low');
-    expect((repairCall as any).options.effort).toBe('low');
+    expect((correctionCall as any).options.effort).toBe((answerCall as any).options.effort);
   });
 
-  it('keeps the original Claude body and takes the declaration when a completion changes the body', async () => {
-    const body = 'Original bounded answer.';
-    const changed = declaredCandidate('Changed bounded answer.');
-    const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
-      {enableSubAgents: false, maxTurns: 4});
-    mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: true, heuristicIssues: [], llmIssues: [], durationMs: 1});
-    let sdkCallCount = 0;
-    claudeSdkMock.__setQueryImplementation(async function* () {
-      sdkCallCount += 1;
-      yield {type: 'result', subtype: 'success', session_id: 'sdk-declaration-changed-body', num_turns: 1,
-        result: sdkCallCount === 1 ? body : changed};
-    });
-    const updates: unknown[] = [];
-    runtime.on('update', update => updates.push(update));
-
-    const result = await runtime.analyze('分析当前证据', 'session-claude-declaration-changed-body',
-      'trace-declaration-changed-body', {analysisMode: 'full', runId: 'claude-declaration-changed-body',
-        packageName: 'com.example.app'});
-
-    expect(claudeSdkMock.__getQueryCalls()).toHaveLength(2);
-    // The completion's declaration is delivered; its edited prose never is.
-    expect(inspectCandidateProtocol(result.conclusion)).toMatchObject({status: 'valid'});
-    expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
-    expect(result.completion).toMatchObject({status: 'completed', runId: 'claude-declaration-changed-body'});
-    expect(result.completion?.attemptId).toContain(':correction:1');
-    expect(JSON.stringify(updates)).not.toContain('Changed bounded answer');
-  });
-
-  it('ends the run when authorization changes during a declaration repair', async () => {
+  it('ends the run when authorization changes during a same-run correction', async () => {
     const body = 'Authorized candidate body.';
-    const repaired = declaredCandidate(body);
+    const repaired = 'Corrected candidate body.';
     const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
       {enableSubAgents: false, maxTurns: 4});
-    mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: true, heuristicIssues: [], llmIssues: [], durationMs: 1});
+    mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: false, durationMs: 1, llmIssues: [], heuristicIssues: [
+      {type: 'missing_evidence', severity: 'error', message: 'Needs evidence', recoveryKind: 'correct_evidence'}]});
     let sdkCallCount = 0;
     let revoked = false;
     claudeSdkMock.__setQueryImplementation(async function* () {
@@ -3892,13 +3706,14 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
           },
         ),
       );
-      expect(result).toMatchObject({success: true, rounds: 2});
+      expect(result).toMatchObject({success: true, rounds: 1});
       if (analysisMode === 'fast') {
-        expect(result.quickRun).toMatchObject({actualTurns: 2, enforcement: 'turn_cap'});
+        expect(result.quickRun).toMatchObject({actualTurns: 1, enforcement: 'turn_cap'});
       }
 
-      expect(providerAttempts).toBe(3);
-      expect(claudeSdkMock.__getQueryCalls()).toHaveLength(3);
+      // One failed pre-work attempt and one retried answer; no declaration repair follows.
+      expect(providerAttempts).toBe(2);
+      expect(claudeSdkMock.__getQueryCalls()).toHaveLength(2);
       expect(focusSpy).toHaveBeenCalledTimes(1);
       expect(architectureSpy).toHaveBeenCalledTimes(1);
       expect(completenessSpy).toHaveBeenCalledTimes(1);
@@ -3922,7 +3737,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       }
       expect(phases.filter(phase => phase.name === 'provider')).toEqual([
         expect.objectContaining({ name: 'provider', outcome: 'error' }),
-        expect.objectContaining({ name: 'provider', outcome: 'ok' }),
         expect.objectContaining({ name: 'provider', outcome: 'ok' }),
       ]);
       expect(phases).toEqual(expect.arrayContaining([

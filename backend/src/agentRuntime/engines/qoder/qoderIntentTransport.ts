@@ -7,7 +7,7 @@ import {QODER_BYOK_API_KEY_ENV, type QoderRuntimeConfig} from './qoderConfig';
 import type {QoderSdkModule} from './qoderSdkLoader';
 import {resolveModelExecutionProfile, type ModelEffectiveSettings, type ResolveModelExecutionProfileInput} from '../../../services/providerManager/modelExecutionProfile';
 import {resolveModelExecutionPolicy, type ModelExecutionPolicyReceipt} from '../../modelExecutionPolicy';
-import type {RuntimeModelCallPurpose} from '../../runtimePerformance';
+import type {RuntimeModelDispatchPurpose} from '../../runtimePerformance';
 import {
   INTENT_TRANSPORT_CLEANUP_TIMEOUT_MS,
   intentTransportTextResult,
@@ -29,7 +29,7 @@ export interface QoderIntentTransportInput extends IntentTransportInput {
   isolatedClassifierDirectory: string;
   /** The run's authorization, checked after the SDK and auth resolved, right before `query`. */
   beforeQuery?: () => void;
-  purpose?: RuntimeModelCallPurpose;
+  purpose?: RuntimeModelDispatchPurpose;
   authoredReasoning?: ModelEffectiveSettings['authoredReasoning'];
   effectiveSettings?: ModelEffectiveSettings;
   sdkIdentity?: ResolveModelExecutionProfileInput['sdk'];

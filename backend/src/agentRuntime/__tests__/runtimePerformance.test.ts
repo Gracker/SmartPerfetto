@@ -14,9 +14,6 @@ import {
   createRuntimePerformanceRun,
   normalizeModelCallUsage,
   recordRuntimeDeliveryBudget,
-  recordRuntimeFinalReview,
-  recordRuntimeDeclarationRepair,
-  recordRuntimeFinalDeclaration,
   runtimeModelCallInputBytesBucket,
   runtimeProviderOrigin,
   startRuntimeModelCall,
@@ -24,15 +21,10 @@ import {
   recordRuntimeModelExecutionPolicy,
   buildRuntimeConfigCommitments,
   runtimeConfigCommitmentsFingerprint,
-  runtimeConfigControlsFingerprint,
-  alignRuntimeConfigCommitments,
-  parseRuntimeBenchmarkConfigCommitments,
   buildRuntimeCommonModelConfig,
   buildRuntimeAppliedModelControls,
   buildRuntimeExecutionProfileObservation,
   recordRuntimeFinalTransportEvent,
-  dropRuntimeFinalTransportObservation,
-  findRuntimeRetainedTransportEvent,
   projectRuntimeFinalTransportObservation,
   runtimeCandidateObservationKey,
   runtimeObservationHash,
@@ -536,7 +528,7 @@ describe('runtime performance receipt', () => {
     const recorder = createRuntimePerformanceRecorder({now: () => now});
     const run = createRuntimePerformanceRun({runtimePerformanceRecorder: recorder});
     now = 10;
-    const call = run.startModelCall({purpose: 'declaration_repair', trigger: 'invalid_declaration',
+    const call = run.startModelCall({purpose: 'continuation', trigger: 'output_limit',
       model: 'requested-model', reasoning: 'provider_default'});
     now = 25;
     call.recordFirstOutput();
@@ -549,7 +541,7 @@ describe('runtime performance receipt', () => {
     call.end({model: 'provider-model', output: {bodyChars: 12, sidecarChars: 300}});
     call.end({outcome: 'error'});
 
-    expect(recorder.seal().modelCalls).toEqual([{purpose: 'declaration_repair', trigger: 'invalid_declaration',
+    expect(recorder.seal().modelCalls).toEqual([{purpose: 'continuation', trigger: 'output_limit',
       model: 'provider-model', reasoning: 'provider_default', startOffsetMs: 10, durationMs: 30, firstOutputMs: 15,
       outcome: 'ok', output: {bodyChars: 12, sidecarChars: 300},
       usage: {inputTokens: 100, outputTokens: 20, reasoningTokens: 5, cachedInputTokens: 64}}]);
@@ -607,13 +599,9 @@ describe('runtime performance receipt', () => {
     expect(JSON.stringify(receipt)).not.toContain(canary);
   });
 
-  it('records the first final review decision once and never throws once sealed', () => {
+  it('never throws for a model call started once sealed', () => {
     const recorder = createRuntimePerformanceRecorder();
-    recordRuntimeFinalReview(recorder, {necessity: 'not_required',
-      triggers: ['report', 'report'], declaredClaimCount: 2});
-    recordRuntimeFinalReview(recorder, {necessity: 'required', triggers: ['source'], declaredClaimCount: 5});
-    expect(recorder.seal().finalReview).toEqual({necessity: 'not_required', triggers: ['report'], declaredClaimCount: 2});
-    expect(() => recordRuntimeFinalReview(recorder, {necessity: 'required', triggers: [], declaredClaimCount: 0})).not.toThrow();
+    expect(recorder.seal()).not.toHaveProperty('finalReview');
     const late = startRuntimeModelCall(recorder, {purpose: 'review'});
     expect(() => {late.recordFirstOutput(); late.markDone(); late.end();}).not.toThrow();
     expect(recorder.seal().modelCalls).toBeUndefined();
@@ -688,112 +676,17 @@ describe('runtime performance receipt', () => {
   });
 });
 
-describe('canonical declaration receipt', () => {
-  it.each(['absent', 'valid', 'partially_valid', 'invalid'] as const)(
-    'retains a declaration-only %s receipt with no model or provider content', status => {
-      const recorder = createRuntimePerformanceRecorder();
-      expect(recorder.hasRecordedData).toBe(false);
-      const declaredClaimCount = status === 'absent' ? 0 : 2;
-      recordRuntimeFinalDeclaration(recorder, {status, declaredClaimCount});
-      expect(recorder.hasRecordedData).toBe(true);
-      expect(recorder.seal()).toEqual({schemaVersion: 1, phases: [], tools: [], sql: [],
-        declaration: {status, declaredClaimCount, repair: 'not_requested'}});
-      expect(Object.isFrozen(recorder.seal().declaration)).toBe(true);
-    });
-
-  it.each(['not_completed', 'cancelled', 'error'] as const)(
-    'records a dispatched repair as %s without inferring acceptance from native success', outcome => {
-      const recorder = createRuntimePerformanceRecorder();
-      startRuntimeModelCall(recorder, {purpose: 'declaration_repair'}).end({outcome: outcome === 'not_completed' ? 'ok' : outcome});
-      recordRuntimeFinalDeclaration(recorder, {status: 'absent', declaredClaimCount: 0});
-      expect(recorder.seal().declaration).toEqual({status: 'absent', declaredClaimCount: 0, repair: outcome});
-    });
-
-  it.each(['started', 'dispatch_budget'] as const)('keeps a %s repair without a terminal decision explicitly incomplete', mode => {
+describe('retired declaration receipt', () => {
+  it('records no declaration or final review for current runs; absence is the current state', () => {
     const recorder = createRuntimePerformanceRecorder();
-    if (mode === 'started') startRuntimeModelCall(recorder, {purpose: 'declaration_repair'});
-    else recordRuntimeDeliveryBudget(recorder, {purpose: 'declaration_repair', decision: 'dispatch', source: 'default',
-      estimateMs: 180_000, remainingMs: 40_000});
-    recordRuntimeFinalDeclaration(recorder, {status: 'absent', declaredClaimCount: 0});
-    expect(recorder.seal().declaration?.repair).toBe('not_completed');
-  });
-
-  it.each(['accepted', 'rejected'] as const)('requires an explicit %s decision and preserves it across late transport facts', outcome => {
-    const recorder = createRuntimePerformanceRecorder();
-    const call = startRuntimeModelCall(recorder, {purpose: 'declaration_repair'});
-    recordRuntimeDeclarationRepair(recorder, outcome);
-    call.end({outcome: 'ok'});
-    recordRuntimeFinalDeclaration(recorder, {status: outcome === 'accepted' ? 'valid' : 'invalid', declaredClaimCount: 1});
-    expect(recorder.seal().declaration?.repair).toBe(outcome);
-  });
-
-  it('preserves repair cancellation even when the timing array is truncated', () => {
-    const recorder = createRuntimePerformanceRecorder({maxModelCalls: 1});
-    startRuntimeModelCall(recorder, {purpose: 'answer_turn'}).end();
-    startRuntimeModelCall(recorder, {purpose: 'declaration_repair'}).end({outcome: 'cancelled'});
-    recordRuntimeFinalDeclaration(recorder, {status: 'absent', declaredClaimCount: 0});
-    const receipt = recorder.seal();
-    expect(receipt.modelCalls).toHaveLength(1);
-    expect(receipt.modelCalls![0].purpose).toBe('answer_turn');
-    expect(receipt.truncated?.modelCalls).toBe(1);
-    expect(receipt.declaration?.repair).toBe('cancelled');
-  });
-
-  it('preserves the repair skip even when earlier budget records fill the array', () => {
-    const recorder = createRuntimePerformanceRecorder();
-    for (let index = 0; index < 600; index++) recordRuntimeDeliveryBudget(recorder, {
-      purpose: 'review', decision: 'dispatch', source: 'default', estimateMs: 1, remainingMs: 2});
-    recordRuntimeDeliveryBudget(recorder, {purpose: 'declaration_repair', decision: 'skip', source: 'default',
-      estimateMs: 180_000, remainingMs: 40_000});
-    recordRuntimeFinalDeclaration(recorder, {status: 'absent', declaredClaimCount: 0});
-    const receipt = recorder.seal();
-    expect(receipt.deliveryBudgets!.length).toBeLessThan(600);
-    expect(receipt.deliveryBudgets!.some(item => item.purpose === 'declaration_repair')).toBe(false);
-    expect(receipt.declaration?.repair).toBe('budget_skipped');
-  });
-
-  it('freezes both declaration and repair at the first canonical result before seal', () => {
-    const recorder = createRuntimePerformanceRecorder();
-    const pending = startRuntimeModelCall(recorder, {purpose: 'declaration_repair'});
-    recordRuntimeFinalDeclaration(recorder, {status: 'absent', declaredClaimCount: 0});
-    pending.end({outcome: 'cancelled'});
-    recordRuntimeDeclarationRepair(recorder, 'accepted');
-    recordRuntimeDeliveryBudget(recorder, {purpose: 'declaration_repair', decision: 'skip', source: 'default',
+    startRuntimeModelCall(recorder, {purpose: 'continuation'}).end({outcome: 'cancelled'});
+    recordRuntimeDeliveryBudget(recorder, {purpose: 'continuation', decision: 'skip', source: 'default',
       estimateMs: 1, remainingMs: 0});
-    startRuntimeModelCall(recorder, {purpose: 'declaration_repair'}).end({outcome: 'error'});
-    recordRuntimeFinalDeclaration(recorder, {status: 'valid', declaredClaimCount: 9});
-    expect(recorder.seal().declaration).toEqual({status: 'absent', declaredClaimCount: 0, repair: 'not_completed'});
-  });
-
-  it.each([
-    {status: 'SECRET_PROVIDER_TEXT', declaredClaimCount: 0},
-    {status: 'valid', declaredClaimCount: -1},
-    {status: 'valid', declaredClaimCount: 1.5},
-    {status: 'valid', declaredClaimCount: Number.MAX_SAFE_INTEGER + 1},
-    {status: 'valid', declaredClaimCount: 1, prompt: 'SECRET_PROVIDER_TEXT'},
-    {status: 'valid', declaredClaimCount: 1, repair: 'accepted'},
-  ])('rejects invalid or open declaration facts without persisting them: %#', input => {
-    const recorder = createRuntimePerformanceRecorder();
-    expect(() => recorder.recordFinalDeclaration(input as any)).toThrow();
-    expect(() => recordRuntimeFinalDeclaration(recorder, input as any)).not.toThrow();
-    expect(recorder.hasRecordedData).toBe(false);
-    expect(recorder.seal().declaration).toBeUndefined();
-    expect(JSON.stringify(recorder.seal())).not.toContain('SECRET_PROVIDER_TEXT');
-  });
-
-  it('ignores invalid repair decisions and remains inert without a recorder or after seal', () => {
-    const recorder = createRuntimePerformanceRecorder();
-    expect(() => recorder.recordDeclarationRepair('SECRET_PROVIDER_TEXT' as never)).toThrow();
-    expect(() => recordRuntimeDeclarationRepair(recorder, 'SECRET_PROVIDER_TEXT' as never)).not.toThrow();
-    recordRuntimeFinalDeclaration(recorder, {status: 'absent', declaredClaimCount: 0});
     const receipt = recorder.seal();
-    expect(receipt.declaration?.repair).toBe('not_requested');
-    for (const target of [undefined, recorder]) {
-      expect(() => recordRuntimeDeclarationRepair(target, 'accepted')).not.toThrow();
-      expect(() => recordRuntimeFinalDeclaration(target, {status: 'valid', declaredClaimCount: 1})).not.toThrow();
-    }
-    expect(recorder.seal()).toBe(receipt);
-    expect(JSON.stringify(receipt)).not.toContain('SECRET_PROVIDER_TEXT');
+    expect(receipt).not.toHaveProperty('declaration');
+    expect(receipt).not.toHaveProperty('finalReview');
+    expect(recorder).not.toHaveProperty('recordFinalDeclaration');
+    expect(recorder).not.toHaveProperty('recordFinalReview');
   });
 });
 
@@ -889,7 +782,6 @@ describe('run activity observation', () => {
       run.finishClassification();
       const model = startRuntimeModelCall(undefined, {purpose: 'answer_turn'});
       model.end();
-      recordRuntimeFinalReview(undefined, {necessity: 'not_required', triggers: [], declaredClaimCount: 0});
       pending = recorder.startToolActivity('tool', {});
       phase = run.startPhase('provider');
     });
@@ -901,7 +793,7 @@ describe('run activity observation', () => {
     expect(recorder.seal()).toBe(sealed);
     expect(sealed.activity).toMatchObject({observation: 'partial', inFlight: 1});
     expect(sealed.modelCalls).toHaveLength(1);
-    expect(sealed.finalReview?.necessity).toBe('not_required');
+    expect(sealed.finalReview).toBeUndefined();
     expect(sealed.phases.map(item => item.name)).toEqual(['classification']);
     expect(scope.run(() => resolveRuntimePerformanceRecorder())).toBeUndefined();
   });
@@ -969,38 +861,14 @@ describe('W0 actual transport observations and private configuration commitments
   const hash = (value: string) => runtimeObservationHash(value);
   const rows = (value: unknown) => buildRuntimeConfigCommitments(value)!;
 
-  it('masks only the two treatment leaves after side alignment, without descendant values in parent commitments', () => {
-    const base = rows({environment: {SMARTPERFETTO_FINAL_SUBMISSION: 'assistant_text',
-      SMARTPERFETTO_CONCLUSION_AUTHORING: 'canonical_v1', OPENAI_MAX_TURNS: '100'}, settings: [0, false]});
-    const candidate = rows({environment: {SMARTPERFETTO_FINAL_SUBMISSION: 'authored_claim_document_v2',
-      SMARTPERFETTO_CONCLUSION_AUTHORING: 'authoring_v2', OPENAI_MAX_TURNS: '100'}, settings: [0, false]});
-    const aligned = alignRuntimeConfigCommitments(base, candidate)!;
-    expect(runtimeConfigCommitmentsFingerprint(aligned[0])).not.toBe(runtimeConfigCommitmentsFingerprint(aligned[1]));
-    expect(runtimeConfigControlsFingerprint(aligned[0])).toBe(runtimeConfigControlsFingerprint(aligned[1]));
-    expect(aligned[0].find(row => row.field === '/environment')).toEqual(aligned[1].find(row => row.field === '/environment'));
-    const artifact = {schemaVersion: 'benchmark_config_commitments@2', fields: aligned[0],
-      fullFingerprint: runtimeConfigCommitmentsFingerprint(aligned[0]), controlsFingerprint: runtimeConfigControlsFingerprint(aligned[0]),
-      legacyConfigFingerprint: 'a'.repeat(64)};
-    expect(parseRuntimeBenchmarkConfigCommitments(artifact)).toEqual(artifact);
-    expect(parseRuntimeBenchmarkConfigCommitments({...artifact, fullFingerprint: 'b'.repeat(64)})).toBeUndefined();
-  });
-
-  it.each([{settings: [false, 0]}, {settings: [0, false, null]}, {newControl: true}, {effort: 'low'}])(
-    'retains array order/structure and every non-treatment control: %j', mutation => {
-      const original = rows({settings: [0, false], effort: 'high'});
-      const changed = rows({settings: [0, false], effort: 'high', ...mutation});
-      const [left, right] = alignRuntimeConfigCommitments(original, changed)!;
-      expect(runtimeConfigControlsFingerprint(left)).not.toBe(runtimeConfigControlsFingerprint(right));
-    });
 
   it('uses collision-free JSON Pointer paths and explicit absent/undefined/number types', () => {
     const result = rows({'a/b': {'~': 0}, a: {b: -0}, '0': false, undefinedValue: undefined, values: [0]});
     expect(result.map(row => row.field)).toEqual(expect.arrayContaining(['/a~1b/~0', '/a/b', '/0', '/values/0']));
     expect(result.find(row => row.field === '/a~1b/~0')!.valueCommitment).not.toBe(result.find(row => row.field === '/a/b')!.valueCommitment);
-    const [left, right] = alignRuntimeConfigCommitments(rows({}), rows({extra: undefined}))!;
-    expect(left.find(row => row.field === '/extra')).toMatchObject({presence: 'absent', type: 'absent'});
+    const right = rows({extra: undefined});
     expect(right.find(row => row.field === '/extra')).toMatchObject({presence: 'present', type: 'undefined'});
-    expect(runtimeConfigCommitmentsFingerprint(left)).not.toBe(runtimeConfigCommitmentsFingerprint(right));
+    expect(runtimeConfigCommitmentsFingerprint(rows({}))).not.toBe(runtimeConfigCommitmentsFingerprint(right));
   });
 
   it('does not inspect proxies or getters and never exposes committed private values', () => {
@@ -1054,14 +922,12 @@ describe('W0 actual transport observations and private configuration commitments
     const retained = recordRuntimeFinalTransportEvent(source, {kind: 'candidate_retained', nativeCandidateKey: candidate,
       carrier: 'assistant_text', transform: 'native', authors: [{role: 'body_and_declaration', terminalEventKey: terminal}],
       declaredBody: 'present', declaredClaims: 'absent', productStatus: 'completed'})!;
-    expect(findRuntimeRetainedTransportEvent(source, candidate)).toEqual({eventKey: retained, nativeCandidateKey: candidate});
-    expect(findRuntimeRetainedTransportEvent(source, hash('other'))).toBeUndefined();
+    expect(retained).toMatch(/^[a-f0-9]{64}$/);
     const receipt = recorder.seal().finalTransportObservation!;
     expect(receipt.events.map(event => event.sequence)).toEqual([1, 2]);
     expect(projectRuntimeFinalTransportObservation(receipt)).toEqual(receipt);
     expect(Object.isFrozen(receipt.events[0])).toBe(true);
     expect(recordRuntimeFinalTransportEvent(source, {kind: 'not_exercised', reason: 'program_ack'})).toBeUndefined();
-    expect(findRuntimeRetainedTransportEvent(source, candidate)).toBeUndefined();
   });
 
   it('keeps malformed/dropped observations incomplete and never echoes unknown private event fields', () => {
@@ -1155,7 +1021,6 @@ describe('R11 closed typed output material observations', () => {
     expect(receipt.finalTransportObservation?.events).toEqual([expect.objectContaining(event())]);
     expect(projectRuntimeFinalTransportObservation(receipt.finalTransportObservation)).toEqual(receipt.finalTransportObservation);
     expect(receipt.finalTransportObservation?.events[0]).not.toHaveProperty('nativeStatus');
-    expect(findRuntimeRetainedTransportEvent({runtimePerformanceRecorder: recorder}, 'a'.repeat(64))).toBeUndefined();
     expect(Object.isFrozen(receipt.finalTransportObservation?.events[0])).toBe(true);
   });
 
@@ -1412,16 +1277,6 @@ describe('R11 closed typed output material observations', () => {
     dropped(new Proxy({}, {ownKeys: () => {trap(); return [];}})); expect(trap).not.toHaveBeenCalled();
   });
 
-  it('counts explicit unbound/conflicting observation drops only while collecting, leaving sealed receipts unchanged', () => {
-    const drop = dropRuntimeFinalTransportObservation;
-    const recorder = createRuntimePerformanceRecorder(); const source = {runtimePerformanceRecorder: recorder};
-    drop(source); drop(source);
-    expect(recorder.seal().finalTransportObservation).toEqual({schemaVersion: 'final_transport_observation@1', events: [], truncated: 2});
-    const before = JSON.stringify(recorder.seal());
-    expect(() => drop(source)).not.toThrow();
-    expect(recordRuntimeFinalTransportEvent(source, event())).toBeUndefined();
-    expect(JSON.stringify(recorder.seal())).toBe(before);
-  });
 });
 
 

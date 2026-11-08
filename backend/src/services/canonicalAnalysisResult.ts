@@ -4,12 +4,11 @@
 
 import {randomUUID} from 'node:crypto';
 import type {AnalysisResult} from '../agent/core/orchestratorTypes';
-import type {AuthoredFinalSubmissionSnapshot} from '../agentRuntime/authoredFinalSubmission';
 import {CONCLUSION_AUTHORING_LIMITS} from '../agent/core/conclusionAuthoring';
 import {deriveConclusionContract} from '../agent/core/conclusionGenerator';
-import {parseConclusionContractSidecar, parseTypedConclusionContractJson, parseConclusionDeclarationPayload,
-  declaredFields, declaredContractForResult, type ConclusionContract, type ConclusionBindingEligibility,
-  type ConclusionContractDeclarationParseResult, type ConclusionContractSidecarParseResult,
+import {parseConclusionContractSidecar, parseTypedConclusionContractJson,
+  declaredFields, declaredContractForResult, conclusionMachineSegments, withoutConclusionDeclarations,
+  type ConclusionContract, type ConclusionContractSidecarParseResult,
   MAX_CONCLUSION_STRUCTURE_DETAILS, isConclusionContractStructureDetail,
   MAX_RELATION_PROPOSAL_DIAGNOSTICS, isConclusionRelationProposalDiagnostic, CONCLUSION_PARSE_ISSUE_CODES,
   MAX_CLAIM_DIAGNOSTICS, isConclusionClaimDiagnostic, copyConclusionClaimDiagnostic,
@@ -19,29 +18,17 @@ import {parseConclusionContractSidecar, parseTypedConclusionContractJson, parseC
   type ConclusionContractStructureDetail, type ConclusionContractParseIssue,
   type ConclusionRelationProposalDiagnostic, type ConclusionClaimDiagnostic} from '../agent/core/conclusionContract';
 import {parseConversationResponseWithProjection, type ConversationEvidenceRef,
-  type ConversationResponseProjection, type ConversationRuntimeOutcome} from '../assistant/contracts/conversationContract';
+  type ConversationRuntimeOutcome} from '../assistant/contracts/conversationContract';
 import {analysisDeliveryFingerprint, sameAnalysisCandidate,
   type AnalysisDeliveryContext} from '../types/analysisDelivery';
-import {isIssuedNativeConclusionDeclaration, projectConclusionContractForDisplay, bindAuthoredFinalDelivery,
-  type NativeConclusionDeclaration} from './security/conclusionProtocolProjection';
 import {issueCanonicalAnalysisProjection, type CanonicalAnalysisProjection} from './canonicalAnalysisProjection';
 export {isIssuedCanonicalAnalysisProjection, type CanonicalAnalysisProjection} from './canonicalAnalysisProjection';
 
 export interface CanonicalAnalysisResult {
   result: AnalysisResult;
-  /** Exact selected declaration, including invalid originals; never serialize this sidecar. */
-  validationContract?: ConclusionContract;
-  /** Server parser qualification survives invalid declarations that have no typed shell. */
-  bindingEligibility: ConclusionBindingEligibility;
   deliveryContext?: AnalysisDeliveryContext;
   projection: CanonicalAnalysisProjection;
   conversationOutcome?: ConversationRuntimeOutcome;
-  /** Private parser records preserve original declarations for finalization diagnostics. */
-  protocolDiagnostics?: {
-    sidecar: ConclusionContractSidecarParseResult;
-    typedJson?: ConclusionContractDeclarationParseResult;
-    conversation?: ConversationResponseProjection;
-  };
 }
 
 function removeMachineSegments(raw: string, segments: Array<{start: number; end: number}>): string {
@@ -57,22 +44,21 @@ function removeMachineSegments(raw: string, segments: Array<{start: number; end:
   return narrative;
 }
 
-/** Private inspection: callers must publish only the bounded diagnostic projection below. */
-export function inspectCandidateProtocol(raw: string, conversationInput?: {
-  fallbackQuestion: string; evidence?: ConversationEvidenceRef[];
-}) {
+/**
+ * Runtime telemetry only: classify a native candidate's stray declaration so
+ * callers can publish the bounded diagnostic projection below. Finalization
+ * never reads it; new answers strip machine segments without parsing them.
+ */
+export function inspectCandidateProtocol(raw: string) {
   const sidecar = parseConclusionContractSidecar(raw);
-  const conversation = conversationInput ? parseConversationResponseWithProjection(
-    raw, conversationInput.fallbackQuestion, conversationInput.evidence,
-  ) : undefined;
-  const canonicalBody = removeMachineSegments(raw, [...sidecar.machineSegments, ...(conversation?.machineSegments ?? [])]);
+  const canonicalBody = removeMachineSegments(raw, sidecar.machineSegments);
   const typedJson = sidecar.status === 'absent' ? parseTypedConclusionContractJson(canonicalBody) : undefined;
   const invalid = sidecar.status === 'invalid' || typedJson?.status === 'invalid';
   const valid = sidecar.status === 'valid' || typedJson?.status === 'valid';
   const partiallyValid = !invalid && !valid &&
     (sidecar.status === 'partially_valid' || typedJson?.status === 'partially_valid');
   const status = invalid ? 'invalid' : valid ? 'valid' : partiallyValid ? 'partially_valid' : 'absent';
-  return {rawChars: raw.length, canonicalBody, sidecar, typedJson, conversation, status} as const;
+  return {rawChars: raw.length, canonicalBody, sidecar, typedJson, status} as const;
 }
 
 export interface CandidateProtocolDiagnostic {
@@ -290,40 +276,10 @@ export function buildCandidateProtocolDiagnostic(
   });
 }
 
-/** Observation of an already issued document, not a parser or an admission boundary. */
-export function buildAuthoredCandidateProtocolDiagnostic(snapshot: AuthoredFinalSubmissionSnapshot): CandidateProtocolDiagnostic {
-  const {compiled} = snapshot;
-  const payload = compiled.rawCanonicalPayload;
-  const claims = payload.claims, sourceBindings = payload.sourceClaimBindings;
-  const diagnostic = projectCandidateProtocolDiagnostic({
-    base: {stage: 'native', candidateIndex: 1, status: compiled.canonicalParse.status,
-      sidecarStatus: 'absent', typedJsonStatus: compiled.canonicalParse.status,
-      rawChars: 'sourceKind' in snapshot ? snapshot.rawAssistantText.length : 'documentJson' in snapshot ? snapshot.documentJson.length : snapshot.rawArguments.length, canonicalChars: compiled.body.trim().length, projectionKind: 'preserved'},
-    issues: compiled.canonicalParse.issues, payload,
-    // Keep the existing linked-count contract. Missing/malformed containers
-    // are unknown, never a fabricated empty collection or a parsed valid subset.
-    ...(Array.isArray(claims) && Array.isArray(sourceBindings) ? {counts: {claimCount: claims.length,
-      semanticClaimCount: claims.filter(claim => record(claim) && Object.prototype.hasOwnProperty.call(claim, 'semantics')).length,
-      sourceBindingCount: sourceBindings.length}} : {}),
-  });
-  if ('sourceKind' in snapshot) return diagnostic;
-  return {...diagnostic, authoredMaterial: 'documentJson' in snapshot ? {
-    rawArgumentsUtf8Bytes: Buffer.byteLength(snapshot.rawArguments, 'utf8'),
-    documentInputUtf8Bytes: snapshot.compiled.material.rawInputUtf8Bytes,
-    bodyUtf8Bytes: compiled.material.bodyUtf8Bytes, bodyUtf16Length: compiled.material.bodyUtf16Length,
-    normalizedDocument: {...snapshot.compiled.material.raw}, normalizedExpanded: {...compiled.material.expanded},
-  } : {
-    representationVersion: 'authored_claim_document@2',
-    rawArgumentsUtf8Bytes: Buffer.byteLength(snapshot.rawArguments, 'utf8'),
-    bodyUtf8Bytes: compiled.material.bodyUtf8Bytes, bodyUtf16Length: compiled.material.bodyUtf16Length,
-    normalizedNativeDocument: {...snapshot.compiled.material.nativeDocument}, normalizedExpanded: {...compiled.material.expanded},
-  }};
-}
-
 function projectCandidateProtocolDiagnostic(input: {
   base: Pick<CandidateProtocolDiagnostic, 'stage' | 'candidateIndex' | 'status' | 'sidecarStatus' |
     'typedJsonStatus' | 'rawChars' | 'canonicalChars' | 'projectionKind'>;
-  issues: AuthoredFinalSubmissionSnapshot['compiled']['canonicalParse']['issues'];
+  issues: readonly ConclusionContractParseIssue[];
   payload?: {readonly claims?: unknown; readonly sourceClaimBindings?: unknown; readonly relationProposals?: unknown};
   framing?: CandidateFramingDiagnostic;
   counts?: Pick<CandidateProtocolDiagnostic, 'claimCount' | 'semanticClaimCount' | 'sourceBindingCount'>;
@@ -414,61 +370,40 @@ function withoutCaseRecommendations(contract: ConclusionContract | undefined): C
 }
 
 /**
- * Select canonical declarations and remove only protocol spans identified by the
- * actual parsers. No caller-supplied renderer or text replacement can mint proof.
+ * Select the canonical body of a new answer: strip any stray machine segment
+ * the model still wrote (found by framing alone, never parsed) and derive the
+ * server-owned structure from that body. A stray declaration is neither stored
+ * nor read; no caller-supplied renderer or text replacement can mint proof.
  */
 export function canonicalizeAnalysisResult(
   source: AnalysisResult,
-  options: {context?: AnalysisDeliveryContext; nativeDeclaration?: NativeConclusionDeclaration; conversation?: {
+  options: {context?: AnalysisDeliveryContext; conversation?: {
     fallbackQuestion: string; evidence?: ConversationEvidenceRef[];
   }} = {},
 ): CanonicalAnalysisResult {
   const raw = source.conclusion;
   if (options.context?.entry === 'historical_restore') {
-    return {result: source, validationContract: source.conclusionContract,
-      bindingEligibility: source.conclusionContract?.bindingEligibility ?? 'legacy_unchecked',
-      deliveryContext: options.context, projection: issueCanonicalAnalysisProjection({
+    return {result: source, deliveryContext: options.context, projection: issueCanonicalAnalysisProjection({
       disposition: 'preserved', inputFingerprint: analysisDeliveryFingerprint(raw), outputFingerprint: analysisDeliveryFingerprint(raw),
     })};
   }
-  // Sidecar presence is decided from the original body, before any display projection.
-  if (options.nativeDeclaration && !isIssuedNativeConclusionDeclaration(options.nativeDeclaration)) {
-    throw new Error('unissued_native_conclusion_declaration');
-  }
-  const authored = options.nativeDeclaration?.inputKind === 'model_tool_arguments' || options.nativeDeclaration?.inputKind === 'assistant_json'
-    ? options.nativeDeclaration : undefined;
-  // An authored document's body is literal prose, including any protocol-looking examples.
-  const display = authored ? {canonicalBody: raw,
-    sidecar: {status: 'absent' as const, raw: '', bindingEligibility: 'legacy_unchecked' as const,
-      narrative: raw, machineSegments: [], issues: []},
-    typedJson: parseConclusionDeclarationPayload(authored.rawCanonicalPayload, 'canonical_v1'),
-    conversation: options.conversation ? {status: 'absent' as const, narrative: raw, machineSegments: [], issues: [],
-      outcome: {kind: 'answered' as const, message: raw, evidence: options.conversation.evidence ?? []}} : undefined}
-    : inspectCandidateProtocol(raw, options.conversation);
-  const {sidecar, conversation, typedJson} = options.nativeDeclaration && !authored && options.nativeDeclaration.inputKind !== 'model_tool_arguments' && options.nativeDeclaration.inputKind !== 'assistant_json'
-    ? inspectCandidateProtocol(options.nativeDeclaration.raw, options.conversation) : display;
-  const narrative = display.canonicalBody;
+  const conversation = options.conversation ? parseConversationResponseWithProjection(
+    raw, options.conversation.fallbackQuestion, options.conversation.evidence,
+  ) : undefined;
+  const narrative = removeMachineSegments(raw, [...conclusionMachineSegments(raw), ...(conversation?.machineSegments ?? [])]);
   const intent = options.context?.turnIntent;
-  // Whichever source a new result's contract comes from, the finalizer, the
-  // review and every delivered projection read it without case recommendations:
-  // only the server's retrieval supplies them, and finalization adds those.
-  const validationContract = withoutCaseRecommendations(sidecar.status !== 'absent'
-    ? sidecar.contract
-    : typedJson && typedJson.status !== 'absent' ? typedJson.contract : authored ? undefined
-    : options.nativeDeclaration?.contract ?? source.conclusionContract ?? deriveConclusionContract(narrative, {
-      mode: intent?.status === 'resolved' && intent.deliverable === 'answer' ? 'focused_answer' : 'initial_report',
-      ...(intent?.status === 'resolved' ? {sceneId: intent.sceneId} : {}),
-    }) ?? undefined);
-  const bindingEligibility: ConclusionBindingEligibility = sidecar.status === 'invalid' || typedJson?.status === 'invalid' ||
-    conversation?.status === 'invalid' ? 'ineligible' : validationContract?.bindingEligibility ?? 'legacy_unchecked';
-  const conclusionContract = options.nativeDeclaration
-    ? projectConclusionContractForDisplay(source.sessionId, validationContract) : declaredContractForResult(validationContract);
-  if (conclusionContract && bindingEligibility === 'ineligible') conclusionContract.bindingEligibility = 'ineligible';
+  // Only the server's retrieval supplies case recommendations; finalization adds those.
+  const derived = deriveConclusionContract(narrative, {
+    mode: intent?.status === 'resolved' && intent.deliverable === 'answer' ? 'focused_answer' : 'initial_report',
+    ...(intent?.status === 'resolved' ? {sceneId: intent.sceneId} : {}),
+  }) ?? undefined;
+  const conclusionContract = declaredContractForResult(withoutConclusionDeclarations(withoutCaseRecommendations(derived)));
   const bodyChanged = narrative !== raw;
-  const contractChanged = sidecar.status !== 'absent' || (typedJson !== undefined && typedJson.status !== 'absent') ||
-    validationContract !== source.conclusionContract ||
-    analysisDeliveryFingerprint(conclusionContract) !== analysisDeliveryFingerprint(source.conclusionContract);
+  const contractChanged = analysisDeliveryFingerprint(conclusionContract) !== analysisDeliveryFingerprint(source.conclusionContract);
   const result: AnalysisResult = {...source, conclusion: narrative, conclusionContract};
+  // The single place that guarantees a new result carries no declaration-derived verdict.
+  delete result.claimSupport;
+  delete result.claimVerificationResult;
   let deliveryContext = options.context;
   const sourceCandidate = deliveryContext?.acceptedCandidate;
   const sourceMatches = sameAnalysisCandidate(sourceCandidate, sourceCandidate, raw);
@@ -480,9 +415,7 @@ export function canonicalizeAnalysisResult(
     disposition: bodyChanged ? 'protocol_projection' : 'preserved',
     inputFingerprint: analysisDeliveryFingerprint(raw), outputFingerprint: analysisDeliveryFingerprint(narrative),
     ...(sourceMatches ? {sourceCandidate} : {}), ...(candidate ? {candidate} : {}),
-  }, options.nativeDeclaration && bindingEligibility === 'eligible' && sourceMatches && candidate && validationContract
-    ? {sessionId: source.sessionId, nativeDeclaration: options.nativeDeclaration, canonicalBody: narrative,
-      contract: validationContract} : undefined);
+  });
   if (deliveryContext) {
     const nativeCompletion = deliveryContext.completion;
     const completionCurrent = nativeCompletion?.schemaVersion === 1 &&
@@ -497,23 +430,15 @@ export function canonicalizeAnalysisResult(
   if (sourceMatches) result.outputOrigin = deliveryContext?.outputOrigin;
   else if (result.outputOrigin !== 'runtime_fallback') delete result.outputOrigin;
   if (bodyChanged || contractChanged) {
-    delete result.claimSupport;
-    delete result.claimVerificationResult;
     delete result.sourceClaimVerificationResult;
     // Its citations were graded against the earlier body.
     delete result.knowledgeUse;
     delete result.reportAssessment;
     delete result.investigationAssessment;
     delete result.deliveryAssurance;
-    if (deliveryContext) deliveryContext = {...deliveryContext,
-      claimVerificationBinding: undefined, sourceVerificationBinding: undefined,
-      reportAssessment: undefined, investigationAssessment: undefined, evidenceRenderedProof: undefined,
-    };
+    if (deliveryContext) deliveryContext = {...deliveryContext, investigationAssessment: undefined};
   }
-  if (authored && deliveryContext) bindAuthoredFinalDelivery({context: deliveryContext, result, nativeDeclaration: authored});
-  return {result, projection, bindingEligibility, ...(validationContract ? {validationContract} : {}), ...(deliveryContext ? {deliveryContext} : {}),
+  return {result, projection, ...(deliveryContext ? {deliveryContext} : {}),
     ...(conversation ? {conversationOutcome: {...conversation.outcome, message: narrative}} : {}),
-    ...(sidecar.status !== 'absent' || (typedJson && typedJson.status !== 'absent') || (conversation && conversation.status !== 'absent')
-      ? {protocolDiagnostics: {sidecar, ...(typedJson ? {typedJson} : {}), ...(conversation ? {conversation} : {})}} : {}),
   };
 }

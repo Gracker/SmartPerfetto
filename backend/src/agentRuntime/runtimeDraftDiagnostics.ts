@@ -4,7 +4,7 @@
 
 /**
  * What a runtime may ask about its own draft before it hands the candidate
- * to the product: does a same-run continuation or declaration repair apply?
+ * to the product: does a same-run correction apply?
  *
  * The answer steers only that repair. A draft diagnostic never writes the
  * terminal state: it does not set `partial`, `terminationReason` or
@@ -20,7 +20,6 @@ import type {AnalysisPlanV3, Hypothesis, VerificationIssue} from '../agentv3/typ
 import type {OutputLanguage} from '../agentv3/outputLanguage';
 import type {AnalysisDeliveryContext} from '../types/analysisDelivery';
 import {verifyConclusion} from './engines/claude/claudeVerifier';
-import {INVALID_NATIVE_DECLARATION, type NativeDeclarationCompletionRequest} from './runtimeConclusionProtocol';
 
 export interface RuntimeDraftDiagnostics {
   /** Errors about the delivered candidate itself, not about plan or hypothesis bookkeeping. */
@@ -46,29 +45,4 @@ export async function assessRuntimeDraft(input: {
   });
   const deliveryErrors = heuristicIssues.filter(issue => issue.severity === 'error' && !OBLIGATION_ISSUE_TYPES.has(issue.type));
   return {deliveryErrors, recoverableIssues: deliveryErrors.filter(issue => issue.recoveryKind !== undefined)};
-}
-
-export type RuntimeDraftRecovery =
-  | {readonly kind: 'declaration'; readonly request: NativeDeclarationCompletionRequest}
-  | {readonly kind: 'correction'; readonly issues: readonly VerificationIssue[]};
-
-/**
- * One delivery turn, one repair. A declaration repair that can run wins; one
- * that was needed but cannot run (it does not fit, or the budget is gone)
- * leaves the issue-based correction available, as before repairs existed,
- * except when the declaration is merely missing: a correction cannot supply it.
- */
-export function chooseRuntimeDraftRecovery(input: {
-  /** What `requestNativeDeclarationCompletion` asked for. */
-  declarationNeed?: NativeDeclarationCompletionRequest;
-  /** The same request once the runtime's output and budget checks admitted it. */
-  declarationRequest?: NativeDeclarationCompletionRequest;
-  recoverableIssues: readonly VerificationIssue[];
-}): RuntimeDraftRecovery | undefined {
-  if (input.declarationRequest) return {kind: 'declaration', request: input.declarationRequest};
-  const correctionAllowed = input.declarationNeed === undefined ||
-    input.declarationNeed.reason === INVALID_NATIVE_DECLARATION;
-  return correctionAllowed && input.recoverableIssues.length > 0
-    ? {kind: 'correction', issues: input.recoverableIssues}
-    : undefined;
 }

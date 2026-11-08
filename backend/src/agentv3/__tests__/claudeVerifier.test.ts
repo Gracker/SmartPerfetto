@@ -9,7 +9,7 @@ import type {Finding} from '../../agent/types';
 import type {AnalysisPlanV3, Hypothesis, VerificationIssue} from '../types';
 import {summarizeToolCallInput} from '../toolCallSummary';
 import {
-  analysisDeliveryFingerprint, reportRequirementsFingerprint,
+  analysisDeliveryFingerprint,
   type AnalysisCompletion, type AnalysisDeliveryContext,
 } from '../../types/analysisDelivery';
 
@@ -155,7 +155,6 @@ describe('submitted runtime state boundaries', () => {
 describe('generateCorrectionPrompt', () => {
   function correctionContext(prompt: string): {
     recoveryKinds: string[];
-    missingSections: Array<{id: string; label: string; description?: string}>;
     issues: unknown[];
   } {
     return JSON.parse(prompt.split('```json\n')[1].split('\n```')[0]);
@@ -166,7 +165,7 @@ describe('generateCorrectionPrompt', () => {
     const issues: VerificationIssue[] = [{type: 'missing_evidence', severity: 'error',
       message: 'Diagnostic text', recoveryKind: 'correct_evidence'}];
     const prompt = generateCorrectionPrompt(issues, body, language);
-    expect(correctionContext(prompt)).toEqual({recoveryKinds: ['correct_evidence'], missingSections: [], issues});
+    expect(correctionContext(prompt)).toEqual({recoveryKinds: ['correct_evidence'], issues});
     expect(prompt).toContain(body);
   });
 
@@ -175,27 +174,24 @@ describe('generateCorrectionPrompt', () => {
       for (const message of ['Final Report Contract required structure missing: representative frames', '结论文本被截断', '其他']) {
         const prompt = generateCorrectionPrompt([{type: 'missing_reasoning', severity: 'error', message}], body, 'en');
         expect(correctionContext(prompt).recoveryKinds).toEqual([]);
-        expect(correctionContext(prompt).missingSections).toEqual([]);
       }
     }
   });
 
-  it('keeps requested missing content independent of localized issue messages', () => {
-    const missingSections = [{id: 'scope', label: 'Scope', description: 'State the measured population'}];
+  it('keeps the requested recovery independent of localized issue messages', () => {
     for (const message of ['缺少内容', 'Falta contenido', 'arbitrary diagnostic']) {
-      const prompt = generateCorrectionPrompt([{type: 'missing_reasoning', severity: 'error', message,
-        recoveryKind: 'complete_report_content', missingSections}], 'Original', 'en');
-      expect(correctionContext(prompt).missingSections).toEqual(missingSections);
-      expect(correctionContext(prompt).recoveryKinds).toEqual(['complete_report_content']);
+      const prompt = generateCorrectionPrompt([{type: 'truncation', severity: 'error', message,
+        recoveryKind: 'continue_output'}], 'Original', 'en');
+      expect(correctionContext(prompt).recoveryKinds).toEqual(['continue_output']);
+      expect(correctionContext(prompt)).not.toHaveProperty('missingSections');
     }
   });
 
   it('keeps warning-only diagnostics from authorizing recovery and preserves long bodies', () => {
     const body = 'Body ending without punctuation '.repeat(600);
     const prompt = generateCorrectionPrompt([{type: 'missing_reasoning', severity: 'warning', message: 'note',
-      recoveryKind: 'complete_report_content', missingSections: [{id: 'a', label: 'A'}]}], body);
+      recoveryKind: 'continue_output'}], body);
     expect(correctionContext(prompt).recoveryKinds).toEqual([]);
-    expect(correctionContext(prompt).missingSections).toEqual([]);
     expect(prompt).toContain(body);
   });
 });
@@ -312,45 +308,20 @@ describe('verifyConclusion runtime-only diagnostics', () => {
     expect(result.heuristicIssues.every(issue => issue.recoveryKind === undefined)).toBe(true);
   });
 
-  it('only consumes current bound report coverage from the shared assessment', async () => {
-    const body = 'Measured startup latency';
-    const context = makeDeliveryContext(body, 'completed');
-    addReportAssessment(context, 'missing');
-    const missing = await verifyConclusion([], body, {deliveryContext: context});
-    expect(missing.heuristicIssues).toEqual([expect.objectContaining({
-      type: 'missing_reasoning', recoveryKind: 'complete_report_content',
-      missingSections: [{id: 'measurement', label: 'Measurement semantics', description: 'State units and scope'}],
-    })]);
-    context.reportAssessment!.binding.attemptId = 'previous-attempt';
-    expect((await verifyConclusion([], body, {deliveryContext: context})).heuristicIssues).toEqual([]);
-    addReportAssessment(context, 'missing');
-    context.completion = undefined;
-    const unconfirmed = await verifyConclusion([], body, {deliveryContext: context});
-    expect(unconfirmed.heuristicIssues.every(issue => issue.recoveryKind === undefined)).toBe(true);
-  });
-
-  const typedMainMarkers = [undefined,
-    ...(['authored_claim_document_v1', 'authored_claim_document_v2', 'authored_claim_document_v2_dual'] as const).flatMap(mode =>
-      (['submitted', 'missing_submission', 'transport_failure'] as const).map(outcome => ({mode, outcome}))),
-  ];
   it.each((['incomplete', 'completed'] as const).flatMap(status =>
-    (['sdk_final', 'assistant_stream'] as const).flatMap(origin =>
-      typedMainMarkers.map(marker => [status, origin, marker] as const))))
-  ('gates recovery after actual typed main: status=%s origin=%s marker=%j', async (status, origin, marker) => {
+    (['sdk_final', 'assistant_stream'] as const).map(origin => [status, origin] as const)))
+  ('allows continuation only for an incomplete native model body: status=%s origin=%s', async (status, origin) => {
     const body = 'Measured duration in this window.';
     const context = makeDeliveryContext(body, status);
     context.outputOrigin = origin;
-    if (status === 'completed') addReportAssessment(context, 'missing');
-    if (marker) context.finalSubmission = marker;
     const completion = structuredClone(context.completion);
     const result = await verifyConclusion([], body, {deliveryContext: context});
     expect(result.heuristicIssues.some(issue => issue.type === 'missing_check')).toBe(false);
-    expect(result.heuristicIssues.some(issue => issue.type === (status === 'incomplete' ? 'truncation' : 'missing_reasoning'))).toBe(true);
     expect(context.completion).toEqual(completion);
     expect(context.outputOrigin).toBe(origin);
-    if (marker) expect(result.heuristicIssues.every(issue => issue.recoveryKind === undefined)).toBe(true);
-    else expect(result.heuristicIssues.some(issue => issue.recoveryKind ===
-      (status === 'incomplete' ? 'continue_output' : 'complete_report_content'))).toBe(true);
+    if (status === 'incomplete') {
+      expect(result.heuristicIssues).toEqual([expect.objectContaining({type: 'truncation', recoveryKind: 'continue_output'})]);
+    } else expect(result.heuristicIssues).toEqual([]);
   });
 
   it('never calls an auxiliary model or writes learned keywords', async () => {
@@ -387,19 +358,6 @@ function makeDeliveryContext(body: string, status: AnalysisCompletion['status'])
       ...(status === 'incomplete' ? {reason: 'output_limit'} : {})},
     turnIntent: {schemaVersion: 1, status: 'resolved', source: 'semantic', registryFingerprint: 'registry',
       taskKind: 'investigation', sceneId: 'general', scope: 'scene_wide', recommendedComplexity: 'full',
-      deliverable: 'report', evidenceAccess: 'existing_only'}, evidenceFingerprint: 'evidence-v1',
+      deliverable: 'report', evidenceAccess: 'existing_only'},
   };
-}
-
-function addReportAssessment(context: CurrentDeliveryContext, coverage: 'covered' | 'missing'): void {
-  context.reportRequirements = {sceneId: 'general', registryFingerprint: 'registry', requirements: [
-    {id: 'measurement', label: 'Measurement semantics', description: 'State units and scope', required: true},
-  ]};
-  context.reportAssessment = {schemaVersion: 1, status: 'checked', binding: {
-    ...context.acceptedCandidate!, registryFingerprint: 'registry',
-    intentFingerprint: analysisDeliveryFingerprint(context.turnIntent),
-    conclusionContractFingerprint: analysisDeliveryFingerprint(undefined), evidenceFingerprint: 'evidence-v1',
-    requirementsFingerprint: reportRequirementsFingerprint(context.reportRequirements),
-  }, requirements: [{requirementId: 'measurement', applicability: 'applicable', coverage,
-    ...(coverage === 'covered' ? {contentLocations: [{start: 0, end: 1}]} : {})}]};
 }

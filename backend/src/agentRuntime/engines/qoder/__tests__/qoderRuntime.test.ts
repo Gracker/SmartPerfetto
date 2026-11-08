@@ -4,7 +4,6 @@
 
 import { describe, expect, it, jest, beforeEach, afterEach } from '@jest/globals';
 import * as analysisRunSpecModule from '../../../analysisRunSpec';
-import * as outputConfigModule from '../../../finalSubmissionConfig';
 import type {CodeAwareTextProjectionReceipt} from '../../../../services/security/codeAwareOutputRegistry';
 import {expectRuntimeVendorHintParity} from '../../../__tests__/vendorHintParityFixture';
 
@@ -306,54 +305,40 @@ describe('QoderRuntime', () => {
   });
 
   it.each([
-    ['authored_claim_document_v1', 'canonical_v1', 'unsupported_final_submission', 'runtime'],
-    ['authored_claim_document_v1', 'authoring_v1', 'invalid_configuration', 'declaration_syntax_conflict'],
-    ['authored_claim_document_v1', 'authoring_v2', 'invalid_configuration', 'declaration_syntax_conflict'],
-    ['MODE_CANARY', 'canonical_v1', 'invalid_configuration', 'mode'],
-    ['assistant_text', 'SYNTAX_CANARY', 'invalid_configuration', 'declaration_syntax'],
-  ])('rejects output config %s / %s before Qoder classifier or SDK dispatch', async (mode, syntax, code, reason) => {
-    const runtime = createRuntime({SMARTPERFETTO_FINAL_SUBMISSION: mode, SMARTPERFETTO_CONCLUSION_AUTHORING: syntax});
-    await expect(runtime.analyze('Explain this trace', 'output-config-qoder', 'trace-1')).rejects.toMatchObject({
-      name: 'FinalSubmissionConfigurationError', code, message: `${code}:final_submission:${reason}`,
+    [undefined, undefined],
+    ['authored_claim_document_v1', 'canonical_v1'],
+    ['authored_claim_document_v2_dual', 'authoring_v2'],
+    ['MODE_CANARY', 'SYNTAX_CANARY'],
+  ])('ignores retired output config %s / %s and builds a plain-answer RunSpec once', async (mode, syntax) => {
+    const createSpec = analysisRunSpecModule.createAnalysisRunSpec;
+    let spec: ReturnType<typeof createSpec> | undefined;
+    const specSpy = jest.spyOn(analysisRunSpecModule, 'createAnalysisRunSpec').mockImplementation(input => {
+      spec = createSpec(input);
+      throw new Error('test stopped after real RunSpec');
     });
-    expect(mockIntentTransport).not.toHaveBeenCalled();
-    expect(mockLoadQoderSdkModule).not.toHaveBeenCalled();
-    expect(mockQuery).not.toHaveBeenCalled();
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const runtime = createRuntime({...(mode ? {SMARTPERFETTO_FINAL_SUBMISSION: mode} : {}),
+      ...(syntax ? {SMARTPERFETTO_CONCLUSION_AUTHORING: syntax} : {})});
+    mockIntentTransport.mockImplementationOnce(async () => {
+      (runtime as any).env.SMARTPERFETTO_FINAL_SUBMISSION = 'authored_claim_document_v1';
+      (runtime as any).env.SMARTPERFETTO_CONCLUSION_AUTHORING = 'LATE_SYNTAX_CANARY';
+      return {status: 'ok', text: JSON.stringify(defaultIntentDecision)};
+    });
+    try {
+      const result = await runtime.analyze('Explain this trace', 'output-config-qoder-frozen', 'trace-1');
+      expect(result.success).toBe(false); // The test stops after the real RunSpec boundary.
+      expect(mockIntentTransport).toHaveBeenCalledTimes(1);
+      expect(mockQuery).not.toHaveBeenCalled();
+      expect(specSpy).toHaveBeenCalledTimes(1);
+      expect(spec).not.toHaveProperty('declarationSyntax');
+      expect(spec).not.toHaveProperty('finalSubmission');
+      expect(JSON.stringify(warn.mock.calls)).not.toMatch(/CANARY/);
+    } finally {
+      warn.mockRestore();
+      specSpy.mockRestore();
+      runtime.cleanupSession('output-config-qoder-frozen');
+    }
   });
-
-  it.each(['canonical_v1', 'authoring_v1', 'authoring_v2'])(
-    'keeps the captured Qoder output config %s through classification and real RunSpec', async syntax => {
-      const capture = jest.spyOn(outputConfigModule, 'captureAnalysisOutputConfig');
-      const createSpec = analysisRunSpecModule.createAnalysisRunSpec;
-      let spec: ReturnType<typeof createSpec> | undefined;
-      const specSpy = jest.spyOn(analysisRunSpecModule, 'createAnalysisRunSpec').mockImplementation(input => {
-        spec = createSpec(input);
-        throw new Error('test stopped after real RunSpec');
-      });
-      const runtime = createRuntime({SMARTPERFETTO_CONCLUSION_AUTHORING: syntax});
-      mockIntentTransport.mockImplementationOnce(async () => {
-        (runtime as any).env.SMARTPERFETTO_FINAL_SUBMISSION = 'authored_claim_document_v1';
-        (runtime as any).env.SMARTPERFETTO_CONCLUSION_AUTHORING = 'LATE_SYNTAX_CANARY';
-        return {status: 'ok', text: JSON.stringify(defaultIntentDecision)};
-      });
-      try {
-        const result = await runtime.analyze('Explain this trace', 'output-config-qoder-frozen', 'trace-1');
-        expect(result.success).toBe(false); // The test stops after the real RunSpec boundary.
-        expect(mockIntentTransport).toHaveBeenCalledTimes(1);
-        expect(mockQuery).not.toHaveBeenCalled();
-        expect(specSpy).toHaveBeenCalledTimes(1);
-        expect(capture).toHaveBeenCalledTimes(1);
-        const captured = capture.mock.results[0].value;
-        expect(Object.isFrozen(captured)).toBe(true);
-        expect(specSpy.mock.calls[0][0].outputConfig).toBe(captured);
-        expect(spec).toMatchObject({finalSubmission: 'assistant_text', declarationSyntax: syntax});
-      } finally {
-        specSpy.mockRestore();
-        capture.mockRestore();
-        runtime.cleanupSession('output-config-qoder-frozen');
-      }
-    },
-  );
 
   it('scene runtime matrix: runs the pinned Qoder provider through shared proposal and private seal', async () => {
     const f = createSceneRuntimeMatrixFixture('qoder');
@@ -537,40 +522,6 @@ describe('QoderRuntime', () => {
         runtime.cleanupSession(sessionId); sessionContextManager.remove(sessionId);
       }
     });
-
-    it('retains completed native body and completion when the original task expires during declaration repair', async () => {
-      jest.useFakeTimers({now: 1000, doNotFake: ['nextTick', 'setImmediate']});
-      const entered = createDeferred<void>();
-      const repair = createDeferred<any>();
-      const owner = new AbortController();
-      const sessionId = 'qoder-repair-expiry';
-      const scope = createRuntimeAdmissionScope({runId: 'qoder-repair-expiry-run', admittedAt: 1000, taskTimeoutMs: 120_000,
-        ownerSignal: owner.signal, assertCurrent() {}});
-      const body = 'The captured marker exists; causality is not established.';
-      mockQuery.mockReturnValue(createMockSdkStream([{type: 'result', subtype: 'success', is_error: false,
-        result: body, num_turns: 1}]));
-      mockIntentTransport.mockResolvedValueOnce({status: 'ok', text: JSON.stringify(defaultIntentDecision)})
-        .mockImplementationOnce(async input => {expect(input.purpose).toBe('declaration_repair'); entered.resolve(); return repair.promise;});
-      const runtime = createRuntime({QODER_MODEL: 'pinned-main'});
-      try {
-        const pending = runtime.analyze('question', sessionId, 'trace-1', scope.bind({}, sessionId));
-        await entered.promise;
-        await jest.advanceTimersByTimeAsync(121_000);
-        const result = await pending;
-        expect(result).toMatchObject({success: true, conclusion: body, completion: {status: 'completed', attemptId: 'main'}});
-        expect(owner.signal.aborted).toBe(false);
-        const context = takeFinalizationContext(result)!;
-        try {
-          expect(context.deadlineMs).toBe(121_000);
-          await expect(context.dispatchText({prompt: 'review', systemPrompt: '', deadlineMs: 250_000,
-            outputByteLimit: 8192, signal: owner.signal})).resolves.toMatchObject({status: 'unavailable', reason: 'timeout'});
-        } finally {context.dispose();}
-        repair.resolve({status: 'ok', text: 'LATE_REPAIR_MUST_NOT_REPLACE_BODY'});
-        await jest.advanceTimersByTimeAsync(0);
-        expect(result.conclusion).toBe(body);
-        expect(sessionContextManager.getOrCreate(sessionId, 'trace-1').getAllTurns()).toHaveLength(1);
-      } finally {repair.resolve({status: 'unavailable', reason: 'timeout'}); scope.dispose(); runtime.cleanupSession(sessionId);}
-    });
   });
 
   describe('shared tool observation', () => {
@@ -690,7 +641,7 @@ describe('QoderRuntime', () => {
       expect(results.map(update => update.content.taskId)).toEqual(starts.map(update => update.content.taskId));
       expect(results.map(update => update.content.isError)).toEqual([false, true, false, true]);
       expect(results[0].content.result).toContain('[truncated external tool result;');
-      expect(result.rounds).toBe(1);
+      expect(result.rounds).toBe(0);
     });
 
     it.each(['execute_sql', 'write_analysis_note'])('deduplicates real SDK IDs for %s before counting or publishing outcomes', async toolName => {
@@ -727,7 +678,7 @@ describe('QoderRuntime', () => {
       runtime.on('update', update => updates.push(update));
       const result = await runtime.analyze('test query', 'session-1', 'trace-1', {analysisMode: 'full'});
 
-      expect(result).toMatchObject({success: true, rounds: 1});
+      expect(result).toMatchObject({success: true, rounds: 0});
       expect(handler).toHaveBeenCalledTimes(8);
       const starts = updates.filter(update => update.type === 'agent_task_dispatched');
       const results = updates.filter(update => update.type === 'agent_response');
@@ -1282,7 +1233,8 @@ describe('QoderRuntime', () => {
         QODER_BYOK_PROVIDER: 'glm', QODER_BYOK_API_KEY: 'provider-key',
         QODER_BYOK_BASE_URL: 'https://provider.example/coding',
       }).analyze('An arbitrary request', 'intent-shared', 'trace-1', {runId: 'intent-run'});
-      expect(mockIntentTransport).toHaveBeenCalledTimes(2);
+      // Classification only: the completed answer needs no declaration repair call.
+      expect(mockIntentTransport).toHaveBeenCalledTimes(1);
       expect(mockLoadQoderSdkModule).toHaveBeenCalledTimes(1);
       expect(mockSdkModule.accessTokenFromEnv).toHaveBeenCalledTimes(1);
       expect(mockQuery).toHaveBeenCalledTimes(1);
@@ -1390,7 +1342,7 @@ describe('QoderRuntime', () => {
         codebaseIds: ['source-1'], knowledgeSourceIds: ['knowledge-1'],
       }));
       expect((mockQuery.mock.calls[0][0] as any).options.maxTurns).toBe(2);
-      expect(result.quickRun).toMatchObject({hardCapTurns: 3, actualTurns: 3, enforcement: 'turn_cap'});
+      expect(result.quickRun).toMatchObject({hardCapTurns: 3, actualTurns: 2, enforcement: 'turn_cap'});
     });
 
     it('keeps artifact-capable MCP with existing_only and performs no automatic new evidence reads', async () => {
@@ -1566,14 +1518,12 @@ describe('QoderRuntime', () => {
       const providerQuery = context.getProviderQuery(new AbortController().signal);
       expect(providerQuery).toEqual({text: 'any request', analysisContextFingerprint: pinnedFingerprint});
       expect(Object.isFrozen(providerQuery)).toBe(true);
-      expect(context.getSelection(new AbortController().signal)).toEqual({present: true, kind: 'track_event',
-        context: options.selectionContext, sideResolution: {status: 'unknown'}});
+      expect(context).not.toHaveProperty('getSelection');
       expect(JSON.stringify(result)).not.toContain('"providerQuery"');
       expect(takeFinalizationContext(result)).toBeUndefined();
       expect(takeFinalizationContext({...result})).toBeUndefined();
       expect(context).toMatchObject({runId: 'final-context-run', sessionId: 'final-context',
-        traceIdentity: {currentTraceId: 'trace-1', referenceTraceId: 'trace-2'}, hasSemanticTransport: true});
-      expect(context.deliveryCall?.model).toEqual(expect.any(String));
+        traceIdentity: {currentTraceId: 'trace-1', referenceTraceId: 'trace-2'}});
       expect(context.deliveryContext).toMatchObject({completion: result.completion,
         acceptedCandidate: {conclusionFingerprint: analysisDeliveryFingerprint(result.conclusion)}});
       expect(context.deadlineMs).toBeGreaterThanOrEqual(startedAt + 2000);
@@ -1585,58 +1535,18 @@ describe('QoderRuntime', () => {
           runtime: 'qoder-agent-sdk', tenantId: 'tenant-1', workspaceId: 'workspace-1', userId: 'user-1',
           providerId: 'provider-1', analysisContextFingerprint: pinnedFingerprint}),
       });
-      expect(JSON.stringify(result)).not.toContain('hasSemanticTransport');
       context.dispose();
       readerSpy.mockRestore();
     });
 
-    it('uses the established primary model and auth in a fresh no-tools transport after the runtime lease settles', async () => {
-      respondWithIntent({taskKind: 'fact', scope: 'bounded_question'});
-      mockQuery.mockReturnValue(createMockSdkStream([
-        {type: 'result', subtype: 'success', is_error: false, result: 'Native main answer', num_turns: 1},
-      ]));
-      const runtime = createRuntime({QODER_MODEL: 'main-model', QODER_LIGHT_MODEL: 'classifier-model',
-        QODER_BYOK_PROVIDER: 'glm', QODER_BYOK_API_KEY: 'same-key', QODER_BYOK_BASE_URL: 'https://provider.example/coding'});
-      const result = await runtime.analyze('any request', 'fresh-final-review', 'trace-1');
-      const context = takeFinalizationContext(result)!;
-      const classifierCall = mockIntentTransport.mock.calls[0][0] as any;
-      let reviewDirectory = '';
-      mockIntentTransport.mockImplementationOnce(async (input: any) => {
-        reviewDirectory = input.isolatedClassifierDirectory;
-        expect(reviewDirectory).not.toBe(classifierCall.isolatedClassifierDirectory);
-        expect(input.config).toMatchObject({model: 'main-model', lightModel: undefined,
-          byok: {provider: 'glm', apiKey: 'same-key', baseUrl: 'https://provider.example/coding'}});
-        expect(input.deadlineMs).toBe(context.deadlineMs);
-        expect(input.outputByteLimit).toBe(8192);
-        expect(input.signal.aborted).toBe(false);
-        const sdk = await input.loadSdk();
-        expect(sdk).toBe(mockSdkModule);
-        expect(await input.resolveAuth(sdk)).toBe((mockQuery.mock.calls[0][0] as any).options.auth);
-        expect(input).not.toHaveProperty('resume');
-        return {status: 'ok', text: 'Semantic assessment response'};
-      });
-      await runtime.abortSession('fresh-final-review');
-      const response = await context.dispatchText({prompt: 'Review current evidence', systemPrompt: '',
-        deadlineMs: context.deadlineMs + 1000, outputByteLimit: 8192, signal: new AbortController().signal});
-      expect(response).toEqual({status: 'ok', text: 'Semantic assessment response'});
-      expect(mockLoadQoderSdkModule).toHaveBeenCalledTimes(1);
-      expect(mockSdkModule.accessTokenFromEnv).toHaveBeenCalledTimes(1);
-      expect(mockQuery).toHaveBeenCalledTimes(1);
-      await expect(access(reviewDirectory)).rejects.toMatchObject({code: 'ENOENT'});
-      context.dispose();
-    });
 
-    it('attaches known failed native state without granting semantic dispatch', async () => {
+    it('attaches known failed native state', async () => {
       mockQuery.mockReturnValue(createMockSdkStream([
         {type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['Native failure']},
       ]));
       const result = await createRuntime({QODER_MODEL: 'main-model'}).analyze('any request', 'failed-final-context', 'trace-1');
       const context = takeFinalizationContext(result)!;
-      expect(context.hasSemanticTransport).toBe(false);
       expect(context.deliveryContext).toMatchObject({completion: {status: 'failed', reason: 'provider_error'}});
-      await expect(context.dispatchText({prompt: 'No retry', systemPrompt: '', deadlineMs: context.deadlineMs,
-        outputByteLimit: 1024, signal: new AbortController().signal}))
-        .resolves.toEqual({status: 'unavailable', reason: 'invalid_configuration'});
       context.dispose();
     });
 
@@ -1656,7 +1566,6 @@ describe('QoderRuntime', () => {
       await runtime.abortSession('cancel-final-context');
       const result = await analysis;
       const context = takeFinalizationContext(result)!;
-      expect(context.hasSemanticTransport).toBe(false);
       expect(context.sourceScope).toEqual(current ? scope : undefined);
       // What was delivered before the stop stays with the cancelled result.
       expect(context.knowledgeUse).toEqual(knowledgeUse);
@@ -1665,15 +1574,6 @@ describe('QoderRuntime', () => {
       context.dispose();
     });
 
-    it('does not invent a primary-model pin when the native SDK used an unspecified default', async () => {
-      mockQuery.mockReturnValue(createMockSdkStream([
-        {type: 'result', subtype: 'success', is_error: false, result: 'Native answer'},
-      ]));
-      const result = await createRuntime().analyze('any request', 'default-model-context', 'trace-1');
-      const context = takeFinalizationContext(result)!;
-      expect(context.hasSemanticTransport).toBe(false);
-      context.dispose();
-    });
   });
 
   describe('MCP context passing', () => {
@@ -1922,22 +1822,6 @@ describe('QoderRuntime', () => {
       });
     });
 
-    it('uses the same delivery turn to repair a rejected declaration around the unchanged body', async () => {
-      const body = 'Frame 12 missed its deadline.';
-      mockIntentTransport
-        .mockResolvedValueOnce({status: 'ok', text: JSON.stringify(defaultIntentDecision)})
-        .mockResolvedValueOnce({status: 'ok', text: candidateWithPopulation(body, 'cited_rows'), finishReason: 'end_turn'});
-      mockQuery.mockReturnValue(createMockSdkStream([
-        {type: 'result', subtype: 'success', is_error: false, result: candidateWithPopulation(body, 'everywhere'), num_turns: 1},
-      ]));
-      const result = await createRuntime().analyze('test', 'qoder-invalid-declaration', 'trace-1', {runId: 'qoder-invalid-declaration'});
-      expect(mockIntentTransport).toHaveBeenCalledTimes(2);
-      expect((mockIntentTransport.mock.calls[1][0] as any).prompt).toContain('invalid_declaration');
-      expect(inspectCandidateProtocol(result.conclusion)).toMatchObject({status: 'valid'});
-      expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
-      takeFinalizationContext(result)?.dispose();
-    });
-
     describe('empty answer body', () => {
       const declarationOnly = renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1',
         mode: 'focused_answer', conclusions: [], clusters: [], evidenceChain: [], claims: [],
@@ -1954,7 +1838,7 @@ describe('QoderRuntime', () => {
         }, interrupt: mockInterrupt, close: mockClose,
       }));
 
-      it('retires acquisition and spends the delivery call on the body, with no declaration repair after it', async () => {
+      it('retires acquisition and spends the delivery call on the body', async () => {
         mockIntentTransport
           .mockResolvedValueOnce({status: 'ok', text: JSON.stringify(defaultIntentDecision)})
           .mockResolvedValueOnce({status: 'ok', text: 'The input ANR is recorded.', finishReason: 'end_turn'});
@@ -1962,7 +1846,6 @@ describe('QoderRuntime', () => {
         mockClose.mockClear();
         const result = await createRuntime({QODER_MAX_TURNS: '4'}).analyze('Any ANR here?', 'qoder-empty-body', 'trace-1',
           {analysisMode: 'full', runId: 'qoder-empty-body'});
-        // Its declaration is missing, which alone would ask for a repair; the call is already spent.
         expect(mockIntentTransport).toHaveBeenCalledTimes(2);
         const continuation = mockIntentTransport.mock.calls[1][0] as any;
         expect(continuation.prompt).toContain('Any ANR here?');
@@ -2013,99 +1896,26 @@ describe('QoderRuntime', () => {
       expect(result.completion).toMatchObject({status: 'completed'});
       expect(inspectCandidateProtocol(result.conclusion).status).toBe('invalid');
       const context = takeFinalizationContext(result)!;
-      try {expect(context.getNativeDeclaration(result, new AbortController().signal)).toMatchObject({raw: native});}
+      try {expect(context).not.toHaveProperty('getNativeDeclaration');}
       finally {context.dispose();}
     });
 
-    it('uses one no-tools delivery turn for an unchanged full native declaration candidate', async () => {
-      const body = `${'启动正文保持完整。'.repeat(850)}\n${'Native body remains unchanged. '.repeat(170)}`.trimEnd();
-      expect(Buffer.byteLength(body, 'utf8')).toBeGreaterThan(8 * 1024);
-      const sidecar = renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
-        conclusions: [{rank: 1, statement: 'The authored body is preserved.'}], clusters: [], evidenceChain: [],
-        claims: [], uncertainties: [], nextSteps: []} as ConclusionContract);
-      const repaired = `${body}\n${sidecar}`;
-      mockIntentTransport
-        .mockResolvedValueOnce({status: 'ok', text: JSON.stringify(defaultIntentDecision)})
-        .mockResolvedValueOnce({status: 'ok', text: repaired, finishReason: 'end_turn'});
-      mockQuery.mockReturnValue(createMockSdkStream([
-        {type: 'result', subtype: 'success', is_error: false, result: body, num_turns: 1},
-      ]));
-
-      const result = await createRuntime().analyze('test', 'qoder-missing-declaration', 'trace-1', {
-        runId: 'qoder-missing-declaration',
-      });
-
-      expect(mockIntentTransport).toHaveBeenCalledTimes(2);
-      expect(mockIntentTransport.mock.calls[1][0]).toMatchObject({outputByteLimit: 128 * 1024});
-      expect((mockIntentTransport.mock.calls[1][0] as any).prompt).toContain('missing_declaration');
-      expect(inspectCandidateProtocol(repaired).canonicalBody.trim()).toBe(body);
-      expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
-      expect(result.completion).toMatchObject({status: 'completed', attemptId: 'declaration-completion:1'});
-      const context = takeFinalizationContext(result)!;
-      try {expect(context.getNativeDeclaration(result, new AbortController().signal)).toMatchObject({raw: repaired});}
-      finally {context.dispose();}
-    });
-
-    it('records the declaration completion as a declaration_repair model call', async () => {
+    it('issues no declaration repair call when a completed answer carries no declaration', async () => {
       const body = 'Native body remains unchanged.';
-      const sidecar = renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
-        conclusions: [{rank: 1, statement: 'The authored body is preserved.'}], clusters: [], evidenceChain: [],
-        claims: [], uncertainties: [], nextSteps: []} as ConclusionContract);
-      mockIntentTransport
-        .mockResolvedValueOnce({status: 'ok', text: JSON.stringify(defaultIntentDecision)})
-        .mockResolvedValueOnce({status: 'ok', text: `${body}\n${sidecar}`, finishReason: 'end_turn'});
+      mockIntentTransport.mockResolvedValueOnce({status: 'ok', text: JSON.stringify(defaultIntentDecision)});
       mockQuery.mockReturnValue(createMockSdkStream([
         {type: 'result', subtype: 'success', is_error: false, result: body, num_turns: 1},
       ]));
       const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
-      await createRuntime().analyze('test', 'qoder-repair-record', 'trace-1', {
-        runId: 'qoder-repair-record', runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder),
+      const result = await createRuntime().analyze('test', 'qoder-no-declaration', 'trace-1', {
+        runId: 'qoder-no-declaration', runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder),
       });
-      expect(mockIntentTransport).toHaveBeenCalledTimes(2);
-      const calls = runtimePerformanceRecorder.seal().modelCalls ?? [];
-      expect(calls.filter(call => call.purpose === 'declaration_repair'))
-        .toEqual([expect.objectContaining({trigger: 'missing_declaration', outcome: 'ok'})]);
-    });
-
-    it('does not dispatch declaration completion when the original body cannot fit the Qoder output cap', async () => {
-      const body = 'x'.repeat(128 * 1024);
-      mockQuery.mockReturnValue(createMockSdkStream([
-        {type: 'result', subtype: 'success', is_error: false, result: body, num_turns: 1},
-      ]));
-      const result = await createRuntime().analyze('test', 'qoder-declaration-output-cap', 'trace-1');
+      expect(result).toMatchObject({success: true, conclusion: body, completion: {status: 'completed', attemptId: 'main'}});
       expect(mockIntentTransport).toHaveBeenCalledTimes(1);
-      expect(result.conclusion).toBe(body);
-      expect(result.completion).toMatchObject({status: 'completed', attemptId: 'main'});
-    });
-
-    it('keeps the original Qoder body and takes the declaration when a completion changes the body', async () => {
-      const body = 'Original bounded answer.';
-      const changed = `Changed bounded answer.\n${renderConclusionContractSidecar({
-        schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [],
-        evidenceChain: [], claims: [], uncertainties: [], nextSteps: [],
-      } as ConclusionContract)}`;
-      mockIntentTransport
-        .mockResolvedValueOnce({status: 'ok', text: JSON.stringify(defaultIntentDecision)})
-        .mockResolvedValueOnce({status: 'ok', text: changed, finishReason: 'end_turn'});
-      mockQuery.mockReturnValue(createMockSdkStream([
-        {type: 'system', subtype: 'init', session_id: 'sdk-original-session'},
-        {type: 'result', subtype: 'success', is_error: false, result: body, num_turns: 1},
-      ]));
-      const updates: unknown[] = [];
-      const runtime = createRuntime();
-      runtime.on('update', update => updates.push(update));
-
-      const result = await runtime.analyze('test', 'qoder-declaration-rejected', 'trace-1', {
-        runId: 'qoder-declaration-rejected',
-      });
-
-      expect(mockQuery).toHaveBeenCalledTimes(1);
-      expect(mockIntentTransport).toHaveBeenCalledTimes(2);
-      // The completion's declaration is delivered; its edited prose never is.
-      expect(inspectCandidateProtocol(result.conclusion)).toMatchObject({status: 'valid'});
-      expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
-      expect(result.completion).toMatchObject({status: 'completed', attemptId: 'declaration-completion:1'});
-      expect(JSON.stringify(updates)).not.toContain('Changed bounded answer');
+      const receipt = runtimePerformanceRecorder.seal();
+      expect((receipt.modelCalls ?? []).some(call => call.purpose === 'declaration_repair')).toBe(false);
+      expect((receipt.deliveryBudgets ?? []).some(budget => budget.purpose === 'declaration_repair')).toBe(false);
+      takeFinalizationContext(result)?.dispose();
     });
 
     it('returns success: true for success result', async () => {
@@ -2119,7 +1929,7 @@ describe('QoderRuntime', () => {
       const result = await runtime.analyze('test', 'session-1', 'trace-1');
 
       expect(result.success).toBe(true);
-      expect(result.rounds).toBe(6);
+      expect(result.rounds).toBe(5);
       expect(result.conclusion).toBe('## Final Report\nAnalysis complete');
     });
 
@@ -2188,7 +1998,7 @@ describe('QoderRuntime', () => {
         }));
         const context = takeFinalizationContext(terminal)!;
         try {
-          expect(context.getNativeDeclaration(terminal, new AbortController().signal)).toMatchObject({raw: SOURCE_FINALIZATION_RAW_SOURCE});
+          expect(context).not.toHaveProperty('getNativeDeclaration');
           expect(JSON.stringify(terminal)).not.toContain('conclusion_protocol_projection');
         } finally {context.dispose();}
         const next = await runtime.analyze('public run', 'session-1', 'trace-1', admitted({
@@ -2530,7 +2340,7 @@ describe('QoderRuntime', () => {
           {type: 'result', subtype: 'success', is_error: false, stop_reason: null, result: conclusion, num_turns: 1},
         ]));
         const result = await createRuntime().analyze('arbitrary request', 'truthful-completion', 'trace-1');
-        expect(result).toMatchObject({success: true, partial: false, conclusion, rounds: 2, outputOrigin: 'sdk_final'});
+        expect(result).toMatchObject({success: true, partial: false, conclusion, rounds: 1, outputOrigin: 'sdk_final'});
         expect(result.completion).toMatchObject({status: 'completed', conclusionFingerprint: analysisDeliveryFingerprint(conclusion)});
         expect(result.confidence).toBe(0.35);
         expect(result.terminationReason).toBeUndefined();
@@ -2552,7 +2362,6 @@ describe('QoderRuntime', () => {
       expect(result).toMatchObject({success: false, partial: true, confidence: 0,
         conclusion: body, outputOrigin: 'sdk_final', completion: {status: 'unknown', sdkFinishReason: 'end_turn'}});
       const context = takeFinalizationContext(result)!;
-      expect(context.hasSemanticTransport).toBe(false);
       expect(context.deliveryContext).toMatchObject({completion: result.completion});
       context.dispose();
     });
@@ -2712,7 +2521,7 @@ describe('QoderRuntime', () => {
         {type: 'result', subtype: 'success', is_error: false, result: 'Late different body', num_turns: 8},
       ]));
       const result = await createRuntime().analyze('any request', 'one-terminal', 'trace-1', {runId: 'one-terminal-run'});
-      expect(result).toMatchObject({conclusion: 'Current final', rounds: 2, completion: {
+      expect(result).toMatchObject({conclusion: 'Current final', rounds: 1, completion: {
         status: 'completed', runId: 'one-terminal-run', conclusionFingerprint: analysisDeliveryFingerprint('Current final'),
       }});
     });
@@ -2906,9 +2715,7 @@ describe('QoderRuntime', () => {
         terminationReason: 'timeout',
       });
       const finalization = takeFinalizationContext(result);
-      expect(finalization?.getSelection(new AbortController().signal)).toEqual({present: true, kind: 'track_event',
-        context: {kind: 'track_event', eventId: 7, ts: 42},
-        sideResolution: {status: 'resolved', traceSide: 'current', traceId: 'trace-1'}});
+      expect(finalization).not.toHaveProperty('getSelection');
       finalization?.dispose();
       expect(mockClose).toHaveBeenCalledTimes(1);
       expect(mockProjectionFlush).toHaveBeenCalledTimes(1);

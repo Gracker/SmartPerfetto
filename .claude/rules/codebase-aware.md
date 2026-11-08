@@ -60,14 +60,18 @@ They own the detailed request matrix, consent, continuity, references and lifecy
   are run-bound background context, not source/trace proof. Preserve Unicode and
   spaced relative paths consistently across readers, citations and outputs.
 - `SourceUseDecisionV1` and knowledge-use receipts reflect actual current-run
-  deliveries; missing recording is unknown, not zero. Source-claim verification
-  is server-owned: invalid/out-of-selection bindings fail, while unbound,
-  location-only, source-only and trace-linked remain short of proof. Every Trace
-  reference belongs to the same claim. Models cannot declare mechanism proof.
-- Parse native declarations before display replacement and keep exact originals
-  in private finalization context bound to run, attempt and candidate by issued
-  receipt. Never verify rewritten display values or recreate authority from JSON.
-  Source/RAG metadata lacking registered codebase identity fails closed.
+  deliveries; missing recording is unknown, not zero. The server-owned source
+  check is citation-only and a quality annotation, not a privacy control: each
+  source location the answer writes is matched against the run's issued
+  references. No source access, or access with no written citation, is
+  `not_applicable` (public AOSP frames such as `Foo.java:N` are normal); all
+  matched is `passed`; any unmatched or ambiguous citation is advisory
+  `coverage_incomplete`. Models cannot declare mechanism proof; new runs carry
+  no per-claim source bindings. Stored results keep their per-claim statuses.
+- Privacy stays with `sanitizeCodeAwareText` and the private projection. A
+  model-written declaration is stripped from the body and never stored. Never
+  recreate authority from JSON. Source/RAG metadata lacking registered codebase
+  identity fails closed.
 - Lookup handlers use the shared indexed/on-demand response filters and owner or
   strict projector on all SSE/replay/report/CLI/snapshot/API paths. Preserve native
   completion and verification state even when success is false. Source-tool

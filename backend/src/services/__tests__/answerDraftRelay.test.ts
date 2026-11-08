@@ -23,7 +23,7 @@ import {
   revokeCodeAwareOutputGuards,
 } from '../security/codeAwareOutputRegistry';
 import {projectOwnerCodeAwareStreamingUpdate} from '../security/codeAwareStreamingUpdateProjection';
-import {projectOwnerProvisionalConclusion} from '../security/privateAnalysisProjection';
+import {projectOwnerAnswerConclusion} from '../security/privateAnalysisProjection';
 
 const token = (text: string, attempt = 0, runId = 'run-1'): StreamingUpdate =>
   ({type: 'answer_token', content: {token: text, runId, attempt}, timestamp: 1});
@@ -217,7 +217,7 @@ describe('AnswerDraftRelay', () => {
     expect(projectOwnerCodeAwareStreamingUpdate(sessionId, first, false, 'en')).toBe(first);
     expect(projectOwnerCodeAwareStreamingUpdate(sessionId, second, false, 'en')).toBe(second);
     const body = 'Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789';
-    expect(projectOwnerProvisionalConclusion(false, sessionId, body, 'en')).toBe(body);
+    expect(projectOwnerAnswerConclusion(false, sessionId, body, 'en')).toBe(body);
   });
 
   it('creates no relay for a runtime without the draft reset contract', () => {

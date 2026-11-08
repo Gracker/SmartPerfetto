@@ -3,7 +3,6 @@
 
 import {readRuntimeToolResultFacts} from '../../agentRuntime/runtimeToolResult';
 import type {RuntimeToolInvocationEvent} from '../../agentRuntime/runtimeToolObserver';
-import {FINAL_SEMANTIC_INPUT_BYTE_LIMIT} from '../finalSemanticLimits';
 import type {EvidenceReadRecord, EvidenceReadViewOptions} from './evidenceReadView';
 import {capturedEvidenceTable, capturedRawSqlContext, evidenceCaptureHash, freezeEvidenceValue,
   type CapturedFieldSemantics, type EvidenceScalar, type EvidenceTableWitness} from './evidenceCapture';
@@ -320,41 +319,6 @@ function compactInvestigationEvidenceWithin(snapshot: InvestigationEvidenceSnaps
 export function compactInvestigationEvidence(snapshot: InvestigationEvidenceSnapshot,
   maxBytes = 64 * 1024): CompactInvestigationEvidenceSnapshot | undefined {
   return compactInvestigationEvidenceWithin(snapshot, maxBytes, 64 * 1024);
-}
-
-/** Semantic review may use the shared total-input ceiling; final prompt sizing remains authoritative. */
-export function compactInvestigationEvidenceForSemantic(snapshot: InvestigationEvidenceSnapshot,
-  maxBytes: number): CompactInvestigationEvidenceSnapshot | undefined {
-  return compactInvestigationEvidenceWithin(snapshot, maxBytes, FINAL_SEMANTIC_INPUT_BYTE_LIMIT);
-}
-
-/**
- * The only budgets at which the semantic projection changes: entry k is the
- * least budget whose view keeps the first k cohorts, up to the shared ceiling.
- * Sizing the final prompt over these instead of over every byte count visits
- * each distinct ledger view at most once.
- */
-export function investigationEvidenceSemanticBudgets(snapshot: InvestigationEvidenceSnapshot): number[] {
-  const {cohorts, viewBytes} = compactCohorts(snapshot);
-  const budgets: number[] = [];
-  // The view states its own budget, so take the least budget at least as large as
-  // the view naming it, and never below an earlier entry: a view that drops its
-  // omission issue shrinks, yet the greedy selection must still admit every prefix.
-  const admit = (kept: number, recordBytes: number): boolean => {
-    let budget = Math.max(viewBytes(kept, recordBytes, 0), budgets[budgets.length - 1] ?? 0);
-    while (viewBytes(kept, recordBytes, budget) > budget) budget++;
-    if (budget > FINAL_SEMANTIC_INPUT_BYTE_LIMIT) return false;
-    budgets.push(budget);
-    return true;
-  };
-  if (!admit(0, 0)) return budgets;
-  let kept = 0, recordBytes = 0;
-  for (const cohort of cohorts) {
-    kept += cohort.records.length;
-    recordBytes += cohort.bytes;
-    if (!admit(kept, recordBytes)) break;
-  }
-  return budgets;
 }
 
 /** Independent from metric presence/identity: an empty successful sibling is meaningful for a scan. */

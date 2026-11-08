@@ -8,7 +8,6 @@ import type {OpenAIAgentConfig} from '../../src/agentRuntime/engines/openai/open
 
 export function createOpenAiConfigForTest(overrides: Partial<OpenAIAgentConfig> = {}): OpenAIAgentConfig {
   return {model: 'pinned-primary', lightModel: 'pinned-light', apiKey: 'test-only',
-    outputConfig: Object.freeze({finalSubmission: 'assistant_text', declarationSyntax: 'canonical_v1'}),
     baseURL: 'https://provider.invalid/v1', protocol: 'responses', cwd: process.cwd(),
     maxOutputTokens: 1024, maxTurns: 3, quickMaxTurns: 2, quickTargetTurns: 1,
     fullPathPerTurnMs: 60_000, fullRequestTimeoutMs: 60_000, streamIdleTimeoutMs: 60_000,

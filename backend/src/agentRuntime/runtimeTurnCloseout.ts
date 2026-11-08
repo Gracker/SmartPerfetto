@@ -9,7 +9,6 @@ import {decodeRuntimeToolResult, readRuntimeToolResultFacts} from './runtimeTool
 import type {RuntimeToolObserver} from './runtimeToolObserver';
 import type {AnalysisTurnIntent} from './analysisTurnIntent';
 import {buildNativeOutputCompletionPrompt} from './runtimeConclusionProtocol';
-import {buildCandidateProtocolDiagnostic, inspectCandidateProtocol} from '../services/canonicalAnalysisResult';
 
 /** The last model call belongs to delivery; one-turn configurations cannot add a call. */
 export function resolveRuntimeTurnBudget(maxTurns: number) {
@@ -129,7 +128,7 @@ export function createRuntimeTurnCloseoutTape(options: {maxBytes?: number} = {})
   }): string | undefined => render('prompt-runtime-turn-closeout', input,
     {budget_exhausted: input.budgetExhausted ?? 'turn_limit'});
   /**
-   * A completed run whose final reply had no answer body (only a declaration,
+   * A completed run whose final reply had no answer body (only a stray machine segment,
    * or nothing): the one delivery call writes the body from the same returned
    * data. Without returned data there is nothing to answer from, so no prompt.
    */
@@ -138,7 +137,6 @@ export function createRuntimeTurnCloseoutTape(options: {maxBytes?: number} = {})
   const buildOutputLimitPrompt = (input: DeliveryPromptInput & {intent: AnalysisTurnIntent}): string | undefined => {
     if (!hasReturnedData() || input.priorConclusion.trim()) return undefined;
     return buildNativeOutputCompletionPrompt({candidate: input.priorConclusion, intent: input.intent,
-      diagnostic: buildCandidateProtocolDiagnostic(inspectCandidateProtocol(input.priorConclusion), 'native', 1),
       outputLanguage: input.outputLanguage ?? 'zh-CN',
       issues: [{type: 'missing_check', severity: 'error', recoveryKind: 'continue_output',
         message: JSON.stringify({nativeCompletion: {status: 'incomplete', reason: 'output_limit'},

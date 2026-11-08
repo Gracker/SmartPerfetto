@@ -7,7 +7,6 @@ import {
   dispatchWithModelCallRecord,
   intentTransportErrorReason,
   intentTransportTextResult,
-  openAiTextRequestPurposeFor,
   runIntentTransport,
   sdkResultFailureReason,
   type IntentTransportInput,
@@ -101,15 +100,7 @@ describe('intent transport deadline and cleanup', () => {
   });
 });
 
-describe('intent transport purpose mapping and failure reasons', () => {
-  it('maps every model-call purpose to one closed request purpose; an answer turn has none', () => {
-    expect(openAiTextRequestPurposeFor('classification')).toBe('classification');
-    expect(openAiTextRequestPurposeFor('review')).toBe('final_semantic');
-    expect(openAiTextRequestPurposeFor('declaration_repair')).toBe('declaration_repair');
-    expect(openAiTextRequestPurposeFor('continuation')).toBe('continuation');
-    expect(openAiTextRequestPurposeFor('answer_turn')).toBeUndefined();
-  });
-
+describe('intent transport failure reasons', () => {
   it('reads a timeout only from structured error names and codes along the cause chain', () => {
     expect(intentTransportErrorReason(Object.assign(new TypeError('fetch failed'),
       {cause: {code: 'UND_ERR_HEADERS_TIMEOUT'}}))).toBe('timeout');

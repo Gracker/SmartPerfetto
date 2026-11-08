@@ -2,8 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 
 import {describe, expect, it, jest} from '@jest/globals';
-import {CONCLUSION_AUTHORING_LIMITS, CONCLUSION_AUTHORING_VERSION, CONCLUSION_AUTHORING_VERSION_V2, decodeConclusionAuthoring,
-  resolveConclusionDeclarationSyntax} from '../conclusionAuthoring';
+import {CONCLUSION_AUTHORING_LIMITS, CONCLUSION_AUTHORING_VERSION, CONCLUSION_AUTHORING_VERSION_V2, decodeConclusionAuthoring} from '../conclusionAuthoring';
 import {CONCLUSION_PROTOCOL_VALUES, parseConclusionContractDeclaration, parseConclusionDeclarationPayload,
   conclusionDeclarationValidationPayload, conclusionDeclarationAuthoring,
   parseConclusionContractSidecar, wrapConclusionAuthoringPayload, renderConclusionContractSidecar,
@@ -102,15 +101,6 @@ const corpus = [
 ];
 
 describe('pure conclusion authoring input', () => {
-  it('selects only explicit internal configuration and never silently falls back on unknown values', () => {
-    expect(resolveConclusionDeclarationSyntax(undefined)).toBe('canonical_v1');
-    expect(resolveConclusionDeclarationSyntax('canonical_v1')).toBe('canonical_v1');
-    expect(resolveConclusionDeclarationSyntax('authoring_v1')).toBe('authoring_v1');
-    expect(resolveConclusionDeclarationSyntax('authoring_v2')).toBe('authoring_v2');
-    for (const value of ['', ' authoring_v1', 'AUTHORING_V1', 'PRIVATE_VALUE']) {
-      expect(() => resolveConclusionDeclarationSyntax(value)).toThrow('invalid_configuration:conclusion_authoring');
-    }
-  });
   it('has independent controls for all eight canonical kinds', () => {
     expect(corpus.map(item => item.kind)).toEqual(CONCLUSION_PROTOCOL_VALUES.claimKind);
   });

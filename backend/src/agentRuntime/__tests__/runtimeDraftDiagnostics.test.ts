@@ -6,15 +6,10 @@ import fs from 'fs';
 import path from 'path';
 import {describe, expect, it} from '@jest/globals';
 
-import type {AnalysisPlanV3, VerificationIssue} from '../../agentv3/types';
+import type {AnalysisPlanV3} from '../../agentv3/types';
 import {analysisDeliveryFingerprint, type AnalysisDeliveryContext} from '../../types/analysisDelivery';
 import {renderConclusionContractSidecar} from '../../agent/core/conclusionContract';
-import {assessRuntimeDraft, chooseRuntimeDraftRecovery} from '../runtimeDraftDiagnostics';
-import {
-  INVALID_NATIVE_DECLARATION,
-  MISSING_NATIVE_DECLARATION,
-  type NativeDeclarationCompletionRequest,
-} from '../runtimeConclusionProtocol';
+import {assessRuntimeDraft} from '../runtimeDraftDiagnostics';
 
 const SRC = path.resolve(__dirname, '../..');
 
@@ -28,12 +23,6 @@ function pendingPlan(): AnalysisPlanV3 {
   return {phases: [{id: 'p1', name: 'Explore', goal: 'Optional exploration', expectedTools: ['execute_sql'], status: 'pending'}],
     successCriteria: 'Explore', submittedAt: 1, toolCallLog: []} as AnalysisPlanV3;
 }
-
-function request(reason: NativeDeclarationCompletionRequest['reason']): NativeDeclarationCompletionRequest {
-  return {reason, originalBody: 'Body.', diagnostic: {} as NativeDeclarationCompletionRequest['diagnostic']};
-}
-
-const correctable: VerificationIssue = {type: 'truncation', severity: 'error', message: 'cut off', recoveryKind: 'continue_output'};
 
 describe('assessRuntimeDraft', () => {
   it('separates submitted obligations from delivery errors and keeps only repairable ones recoverable', async () => {
@@ -68,21 +57,11 @@ describe('assessRuntimeDraft on a reply without an answer body', () => {
   });
 });
 
-describe('chooseRuntimeDraftRecovery', () => {
-  it('prefers an admitted declaration repair', () => {
-    const admitted = request(MISSING_NATIVE_DECLARATION);
-    expect(chooseRuntimeDraftRecovery({declarationNeed: admitted, declarationRequest: admitted, recoverableIssues: [correctable]}))
-      .toEqual({kind: 'declaration', request: admitted});
-  });
-
-  it('falls back to the issue correction only when the declaration was valid or rejected', () => {
-    expect(chooseRuntimeDraftRecovery({recoverableIssues: [correctable]})).toEqual({kind: 'correction', issues: [correctable]});
-    expect(chooseRuntimeDraftRecovery({declarationNeed: request(INVALID_NATIVE_DECLARATION), recoverableIssues: [correctable]}))
-      .toEqual({kind: 'correction', issues: [correctable]});
-    // A missing declaration that cannot be repaired is not something a correction supplies.
-    expect(chooseRuntimeDraftRecovery({declarationNeed: request(MISSING_NATIVE_DECLARATION), recoverableIssues: [correctable]}))
-      .toBeUndefined();
-    expect(chooseRuntimeDraftRecovery({recoverableIssues: []})).toBeUndefined();
+describe('assessRuntimeDraft without a declaration', () => {
+  it('does not let an answer without a declaration block the correction', async () => {
+    const body = 'Frame 12 missed its deadline.';
+    const draft = await assessRuntimeDraft({conclusion: body, deliveryContext: draftContext(body, 'incomplete'), outputLanguage: 'en'});
+    expect(draft.recoverableIssues).toEqual([expect.objectContaining({type: 'truncation', recoveryKind: 'continue_output'})]);
   });
 });
 

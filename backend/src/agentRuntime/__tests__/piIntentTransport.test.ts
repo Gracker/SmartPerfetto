@@ -79,7 +79,7 @@ describe('Pi intent transport', () => {
     expect(piOutputTokensForByteLimit(1024, 65_536)).toBe(320);
   });
 
-  it.each(['classification', 'declaration_repair', 'continuation', 'review'] as const)(
+  it.each(['classification', 'continuation', 'review'] as const)(
     'selects the pinned %s stream without changing the no-tool budget', async purpose => {
       const {input, streamFn} = fixture();
       const streamFnForPurpose = jest.fn<NonNullable<PiAgentCoreProviderRuntime['streamFnForPurpose']>>()

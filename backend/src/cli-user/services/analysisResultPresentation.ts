@@ -135,14 +135,23 @@ export function renderCliAnalysisEvidence(
   const lines = [
     localize(language, '## 证据详情', '## Evidence details'), '',
     `- schema: \`${loaded.bundle.schemaVersion}\``,
-    `- binding: \`${evidence.conclusionBindingEligibility ?? 'not_checked'}\``,
-    `- verification: \`${evidence.claimVerificationResult?.status ?? 'not_checked'}\``,
+    // Declaration binding and claim verification exist only on stored results that carried declarations.
+    ...(evidence.conclusionBindingEligibility ? [`- binding: \`${evidence.conclusionBindingEligibility}\``] : []),
+    ...(evidence.claimVerificationResult ? [`- verification: \`${evidence.claimVerificationResult.status}\``] : []),
     `- delivery: \`${evidence.deliveryAssurance?.claims ?? 'not_checked'}\``,
     `- source: \`${evidence.sourceUseDecision?.status ?? 'not_used'}\``,
   ];
-  appendJsonSection(lines, localize(language, '声明的结论与引用', 'Declared claims and references'), evidence.claims);
-  appendJsonSection(lines, localize(language, '证据支持', 'Claim support'), evidence.claimSupport);
-  appendJsonSection(lines, localize(language, '声明核验', 'Claim verification'), evidence.claimVerificationResult);
+  // Declared claims, their support and their verdict exist only on stored
+  // results that carried model declarations; a new answer has none to show.
+  if (evidence.claims.length) {
+    appendJsonSection(lines, localize(language, '声明的结论与引用', 'Declared claims and references'), evidence.claims);
+  }
+  if (evidence.claimSupport.length) {
+    appendJsonSection(lines, localize(language, '证据支持', 'Claim support'), evidence.claimSupport);
+  }
+  if (evidence.claimVerificationResult) {
+    appendJsonSection(lines, localize(language, '声明核验', 'Claim verification'), evidence.claimVerificationResult);
+  }
   appendJsonSection(lines, localize(language, '身份解析', 'Identity resolutions'), evidence.identityResolutions);
   appendJsonSection(lines, localize(language, '调查覆盖', 'Investigation assessment'), evidence.investigationAssessment);
   appendJsonSection(lines, localize(language, '交付状态', 'Delivery assurance'), evidence.deliveryAssurance);

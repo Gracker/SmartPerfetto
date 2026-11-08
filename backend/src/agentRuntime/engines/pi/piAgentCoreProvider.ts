@@ -27,7 +27,7 @@ import {
   type PiAgentCoreModelConfig,
 } from './piAgentCoreConfig';
 import {isRuntimeCandidateAdmitted} from '../../runtimeCandidateAdmission';
-import type {RuntimeModelCallPurpose} from '../../runtimePerformance';
+import type {RuntimeModelDispatchPurpose} from '../../runtimePerformance';
 
 type EnvLike = Record<string, string | undefined>;
 
@@ -84,7 +84,7 @@ export interface PiAgentCoreProviderRuntime {
   model: Model<Api>;
   models: PiAgentCoreProviderModels;
   streamFn: PiStreamFunction;
-  streamFnForPurpose?: (purpose: RuntimeModelCallPurpose, policy?: PiStreamPurposePolicy) => PiStreamFunction;
+  streamFnForPurpose?: (purpose: RuntimeModelDispatchPurpose, policy?: PiStreamPurposePolicy) => PiStreamFunction;
   /** The authored reasoning level, including a catalog reference's resolved default; undefined: provider default. */
   thinkingLevel: ModelThinkingLevel | undefined;
 }
@@ -503,7 +503,7 @@ export async function createPiAgentCoreProviderRuntime(
   const capturedIdentity = structuredClone(identity(model));
   const asSetting = (level: ModelThinkingLevel | undefined): ReasoningSetting | undefined => level === undefined
     ? undefined : level === 'off' ? {mode: 'disabled'} : {mode: 'enabled', effort: level};
-  const streamFnForPurpose = (purpose: RuntimeModelCallPurpose, policy?: PiStreamPurposePolicy): PiStreamFunction => {
+  const streamFnForPurpose = (purpose: RuntimeModelDispatchPurpose, policy?: PiStreamPurposePolicy): PiStreamFunction => {
     // Per-invocation selection: cached provider runtimes must never retain a run's observer or output cap.
     return (sentModel, context, options) => {
       let requestedLevel: ModelThinkingLevel | undefined;
@@ -516,7 +516,7 @@ export async function createPiAgentCoreProviderRuntime(
         const protocol = sentModel.api === 'openai-completions' ? 'chat_completions'
           : sentModel.api === 'openai-responses' || sentModel.api === 'azure-openai-responses' ? 'responses'
           : sentModel.api === 'anthropic-messages' ? 'anthropic_messages' : 'unknown';
-        const stageCandidate = purpose === 'classification' || purpose === 'review' || purpose === 'declaration_repair' ||
+        const stageCandidate = purpose === 'classification' || purpose === 'review' ||
           purpose === 'continuation' && policy?.outputOnly === true;
         const sdkLevel = (options as SimpleStreamOptions | undefined)?.reasoning ?? authoredLevel;
         const profileInput: ResolveModelExecutionProfileInput = {runtimeKind: 'pi-agent-core', protocol, modelId: sentModel.id,

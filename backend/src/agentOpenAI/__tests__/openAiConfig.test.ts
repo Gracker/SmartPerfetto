@@ -8,8 +8,9 @@ import os from 'os';
 import path from 'path';
 import { createOpenAIEnv, getOpenAIRuntimeDiagnostics, loadOpenAIConfig } from '../openAiConfig';
 import { getProviderService, resetProviderService } from '../../services/providerManager';
-import {SMARTPERFETTO_FINAL_SUBMISSION_ENV, FinalSubmissionConfigurationError} from '../../agentRuntime/finalSubmissionConfig';
-import {CONCLUSION_AUTHORING_ENV} from '../../agent/core/conclusionAuthoring';
+
+const SMARTPERFETTO_FINAL_SUBMISSION_ENV = 'SMARTPERFETTO_FINAL_SUBMISSION';
+const CONCLUSION_AUTHORING_ENV = 'SMARTPERFETTO_CONCLUSION_AUTHORING';
 
 const ORIGINAL_ENV = {
   [SMARTPERFETTO_FINAL_SUBMISSION_ENV]: process.env[SMARTPERFETTO_FINAL_SUBMISSION_ENV],
@@ -73,42 +74,17 @@ describe('createOpenAIEnv', () => {
     expect(loadOpenAIConfig(null).analysisReasoningEffort).toBeUndefined();
   });
 
-  it('captures immutable output configuration once with the selected provider config', () => {
-    const legacy = loadOpenAIConfig(null);
-    expect(legacy.outputConfig).toEqual({finalSubmission: 'assistant_text', declarationSyntax: 'canonical_v1'});
-    process.env[SMARTPERFETTO_FINAL_SUBMISSION_ENV] = 'authored_claim_document_v1';
-    const typed = loadOpenAIConfig(null);
-    process.env[SMARTPERFETTO_FINAL_SUBMISSION_ENV] = 'assistant_text';
-    process.env[CONCLUSION_AUTHORING_ENV] = 'authoring_v2';
-    expect(Object.isFrozen(typed.outputConfig)).toBe(true);
-    expect(typed.outputConfig).toEqual({finalSubmission: 'authored_claim_document_v1', declarationSyntax: 'canonical_v1'});
-    expect(legacy.outputConfig.declarationSyntax).toBe('canonical_v1');
-  });
-
-  it.each(['authored_claim_document_v2', 'authored_claim_document_v2_dual'] as const)(
-  'captures %s once and preserves each independently selected rollback', mode => {
-    process.env[SMARTPERFETTO_FINAL_SUBMISSION_ENV] = mode;
-    process.env[CONCLUSION_AUTHORING_ENV] = 'authoring_v2';
-    const native = loadOpenAIConfig(null);
-    process.env[SMARTPERFETTO_FINAL_SUBMISSION_ENV] = 'authored_claim_document_v1';
-    process.env[CONCLUSION_AUTHORING_ENV] = 'canonical_v1';
-    expect(loadOpenAIConfig(null).outputConfig).toEqual({finalSubmission: 'authored_claim_document_v1', declarationSyntax: 'canonical_v1'});
-    delete process.env[SMARTPERFETTO_FINAL_SUBMISSION_ENV];
-    expect(loadOpenAIConfig(null).outputConfig).toEqual({finalSubmission: 'assistant_text', declarationSyntax: 'canonical_v1'});
-    expect(native.outputConfig).toEqual({finalSubmission: mode, declarationSyntax: 'authoring_v2'});
-    expect(Object.isFrozen(native.outputConfig)).toBe(true);
-  });
-
-  it('rejects invalid or conflicting output configuration through a typed, value-free error', () => {
-    process.env[SMARTPERFETTO_FINAL_SUBMISSION_ENV] = 'PRIVATE_FINAL_MODE_CANARY';
-    expect(() => loadOpenAIConfig(null)).toThrow('invalid_configuration:final_submission:mode');
-    process.env[SMARTPERFETTO_FINAL_SUBMISSION_ENV] = 'authored_claim_document_v1';
-    process.env[CONCLUSION_AUTHORING_ENV] = 'authoring_v2';
-    expect(() => loadOpenAIConfig(null)).toThrow('declaration_syntax_conflict');
-    delete process.env[SMARTPERFETTO_FINAL_SUBMISSION_ENV];
-    process.env[CONCLUSION_AUTHORING_ENV] = 'PRIVATE_SYNTAX_CANARY';
-    expect(() => loadOpenAIConfig(null)).toThrow(FinalSubmissionConfigurationError);
-    expect(() => loadOpenAIConfig(null)).toThrow('invalid_configuration:final_submission:declaration_syntax');
+  it.each([
+    [SMARTPERFETTO_FINAL_SUBMISSION_ENV, 'authored_claim_document_v1'],
+    [SMARTPERFETTO_FINAL_SUBMISSION_ENV, 'authored_claim_document_v2_dual'],
+    [SMARTPERFETTO_FINAL_SUBMISSION_ENV, 'PRIVATE_FINAL_MODE_CANARY'],
+    [CONCLUSION_AUTHORING_ENV, 'authoring_v2'],
+    [CONCLUSION_AUTHORING_ENV, 'PRIVATE_SYNTAX_CANARY'],
+  ])('ignores retired output selector %s=%s instead of failing the run', (name, value) => {
+    process.env[name] = value;
+    const config = loadOpenAIConfig(null);
+    expect(config).not.toHaveProperty('outputConfig');
+    expect(JSON.stringify(config)).not.toContain(value);
   });
 
   it.each(['', ' low', 'low ', 'LOW', 'PRIVATE_EFFORT_CANARY', 'ultra'])(

@@ -1013,7 +1013,7 @@ tenant/workspace 上下文支持。
 
 场景 Strategy 的 `investigation_contract` 引用 `backend/strategies/investigation-profiles.yaml` 中的版本化 profile；`evidence_metrics` 使用生产者声明的 metric ID，不从显示列名推断语义。普通回答的调查义务与 `final_report_contract` 分开。
 
-需求的 `condition` 决定义务何时适用。`kind: semantic` 由最终语义复核判断；`kind: evidence` 带 `metric_id`、`operator`（`gt`/`gte`/`lt`/`lte`）和数值 `value`，只读生产者绑定的证据账本判定，不依赖模型，因此语义复核不可用时仍会产出 `ledgerAcquisition` 行。只有 `observed` 记录参与比较，账本里缺失的指标保持未知，不视为条件不成立。
+需求的 `condition` 决定义务何时适用。调查义务用于指导采集，不再有复核按义务评判回答，因此 `kind: semantic` 条件在记录的账本中保持未知。`kind: evidence` 带 `metric_id`、`operator`（`gt`/`gte`/`lt`/`lte`）和数值 `value`，只读生产者绑定的证据账本判定，不依赖模型，产出仅供展示的 `ledgerAcquisition` 行。只有 `observed` 记录参与比较，账本里缺失的指标保持未知，不视为条件不成立。新的 finalization 把调查保证记为 `not_applicable`。
 
 系统 SQL 必须对请求窗口、调度片段和频率样本做区间交集，保留原始时间及裁剪时间、UTID/UPID、CPU/ucpu 和拓扑来源。线程状态区分 Running、R/R+、S/I、D/DK 与未知覆盖。CPU 驻留保留 medium 和 unknown；精确同 ucpu 的 next-task handoff 仅证明切换观测，不证明抢占动机或全部等待归因。priority 观测不等于 FIFO/RR/OTHER 等策略。
 

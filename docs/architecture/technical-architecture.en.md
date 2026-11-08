@@ -74,9 +74,9 @@ POST /api/agent/v1/analyze
   -> product acquires strategy-declared scene entry evidence when eligible
   -> use the shared MCP registry for SQL, Skills, knowledge, and planning
   -> selected source: bounded lookup or structured SourceUseDecision stop
-  -> DataEnvelope + evidence/claim/identity sidecars
+  -> DataEnvelope + evidence/identity data
   -> exact runtime result + private finalization context
-  -> product-owned finalizeAnalysisResult: finite proof, at most one no-tool review, terminal state
+  -> product-owned finalizeAnalysisResult: canonical body, delivery assurance, terminal state (no model call)
   -> SSE chat projection + HTML report + snapshot + CLI artifact
 ```
 
@@ -216,7 +216,7 @@ is removed by the next backend start's orphan sweep.
 DataEnvelope output feeds:
 
 - the evidence contract;
-- deterministic claim verification;
+- Skill-reported units and totals the answer relies on;
 - process/thread identity resolution;
 - report provenance;
 - analysis-result snapshots;
@@ -261,12 +261,13 @@ acquisition. `SourceUseDecisionV1` records actual selected/queried/used IDs,
 status, and coverage.
 
 Trace/Skill/SQL supports observations, source bodies support mechanism analysis,
-and `CodeRef` metadata only locates source. `SourceClaimBindingV1` declares a
-claim's source/trace references; `source_claim_verifier@2` computes status from
-the actual ledger. `invalid` rejects the binding; `unbound`, `location_only`,
-and `source_only` remain partial. `trace_linked` means this run read the body
-and linked it to verified same-claim trace evidence; it does not independently
-prove a general mechanism or causal relation. One canonical projector provides safe
+and `CodeRef` metadata only locates source. New answers carry no model-authored
+source binding: `source_claim_verifier@2` matches each source location the
+answer writes against this run's issued references. All matched is `passed`; an
+unmatched or ambiguous citation is an advisory `coverage_incomplete`; no source
+access or no written citation is `not_applicable`. A match does not prove a
+general mechanism or causal relation. Historical results keep their per-claim
+`SourceClaimBindingV1` statuses. One canonical projector provides safe
 provenance for SSE, reports, CLI, snapshots, and APIs; Web further reduces it
 to the current-run receipt.
 
@@ -342,7 +343,7 @@ The final result is not one Markdown string:
 | Surface | Retained content |
 |---|---|
 | SSE / AI chat | Readable conclusion, necessary evidence summary, and progress |
-| HTML report | Evidence, claims, identity, background references, and appendix |
+| HTML report | Evidence, delivery assurance, identity, background references, and appendix |
 | CLI artifact | Turn, report, resume state, and machine-readable output |
 | Analysis-result snapshot | Standard metrics, evidence references, comparison input |
 | Logical session snapshot | Provider/runtime pin and product history; no native SDK session restoration across turns |
@@ -350,9 +351,10 @@ The final result is not one Markdown string:
 
 The product takes the private context from the exact runtime result and invokes
 `finalizeAnalysisResult` once. It preserves the original propositions and capture
-provenance, with independent completion, declaration, evidence, source, identity,
-and report assessments. Declarations are checked per entry; delivery model calls
-are admitted against the time left. See [Agent Runtime](agent-runtime.en.md#final-result-and-quality-artifacts).
+provenance and makes no model call. It checks native completion and dual-trace
+comparison identity, annotates source citations, and records claim, report and
+investigation assurance as `not_applicable`; data accuracy comes from Skills and
+SQL. Delivery model calls are admitted against the time left. See [Agent Runtime](agent-runtime.en.md#final-result-and-quality-artifacts).
 
 ## 12. Release Assets
 

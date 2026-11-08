@@ -235,7 +235,7 @@ SmartPerfetto has these runtime paths:
 
 - `claude-agent-sdk`: the default runtime when env carries Claude credentials. Use it for Anthropic, Bedrock, Vertex, and Anthropic/Claude Code-compatible providers.
 - `openai-agents-sdk`: the OpenAI runtime. Use it for OpenAI Responses API, Ollama, and OpenAI-compatible gateways that support streaming function/tool calling.
-- `pi-agent-core`: optional public runtime. With a real model config it reuses SmartPerfetto's shared prompt, SQL/Skill, planning/hypothesis, and report/claim-verification pipeline. It dynamically loads `@earendil-works/pi-agent-core` and does not enable `.pi` project discovery, package extensions, shell tools, or file tools.
+- `pi-agent-core`: optional public runtime. With a real model config it reuses SmartPerfetto's shared prompt, SQL/Skill, planning/hypothesis, and finalization/report pipeline. It dynamically loads `@earendil-works/pi-agent-core` and does not enable `.pi` project discovery, package extensions, shell tools, or file tools.
 - `opencode`: optional public runtime. It runs a hardened isolated OpenCode server, feeds it explicit OpenAI-compatible or OpenCode model configuration, and exposes only request-scoped SmartPerfetto MCP tools. It does not read the user's OpenCode CLI login, project config, extensions, or built-in file/shell/web/edit tools.
 - `qoder-agent-sdk`: optional public runtime. It exposes only request-scoped SmartPerfetto MCP tools, supports a local `qodercli` login or PAT, and starts a fresh provider session every turn without durable opaque state. Its SDK/CLI terms are separate, so the SDK is an opt-in optional peer and is not installed by default.
 
@@ -329,7 +329,7 @@ OPENAI_LIGHT_MODEL=gpt-5.4-mini
 
 Keep official OpenAI direct connections on `OPENAI_AGENTS_PROTOCOL=responses`. `chat_completions` is a compatibility fallback for gateways, not the recommended official OpenAI path. Neither protocol resumes an earlier provider response: every question starts from fresh model context plus SmartPerfetto's bounded typed history.
 
-Optionally set `OPENAI_ANALYSIS_REASONING_EFFORT=low` for main analysis; omitting it preserves provider defaults. Accepted configuration values are `none/minimal/low/medium/high/xhigh/max`; legal combinations depend on the selected model, API and current SDK. GLM 5.3 Flash requires thinking and rejects `none`; recognized DeepSeek Chat maps `none` to disabled thinking. This adapter currently supports explicit `max` only on recognized supported Chat interfaces; `max` on unknown gateways or Responses is not yet supported by this adapter. The variable applies only to main analysis and ordinary continuation, leaving classification, declaration repair, timeout closeout and semantic review purpose policies intact. Start a new session after changing it; active Provider Manager isolation takes precedence over ambient env. Lower effort may change accuracy and needs workload validation; a Flash model name does not establish latency.
+Optionally set `OPENAI_ANALYSIS_REASONING_EFFORT=low` for main analysis; omitting it preserves provider defaults. Accepted configuration values are `none/minimal/low/medium/high/xhigh/max`; legal combinations depend on the selected model, API and current SDK. GLM 5.3 Flash requires thinking and rejects `none`; recognized DeepSeek Chat maps `none` to disabled thinking. This adapter currently supports explicit `max` only on recognized supported Chat interfaces; `max` on unknown gateways or Responses is not yet supported by this adapter. The variable applies only to main analysis and ordinary continuation, leaving classification and timeout closeout purpose policies intact. Start a new session after changing it; active Provider Manager isolation takes precedence over ambient env. Lower effort may change accuracy and needs workload validation; a Flash model name does not establish latency.
 
 Ollama or OpenAI-compatible gateways:
 
@@ -376,7 +376,7 @@ SmartPerfetto does not start an interactive login during an analysis request;
 near-expiry credentials are refreshed serially through that provider's Pi OAuth
 contract in the instance-private credential store. The real model path uses
 SmartPerfetto's shared prompt, SQL/Skill,
-planning/hypothesis, and report/claim-verification pipeline.
+planning/hypothesis, and finalization/report pipeline.
 `SMARTPERFETTO_PI_AGENT_CORE_FAKE_STREAM=1` is smoke/test-only and does not
 represent real analysis quality.
 
@@ -603,12 +603,12 @@ call also times out, the run ends without a deliverable conclusion.
 transcript a recovery or continuation call may resend; a larger transcript is never resent in full. It does not truncate Artifacts,
 DataEnvelopes, reports, or evidence provenance.
 
-`SMARTPERFETTO_REVIEW_STOP_WATCHDOG_MS` (default 15000, never below 10000, above
-the 5 s SQLite busy timeout) bounds how long a run may take to save its answer
-after the user stops its verification (Web, conversation, or CLI Ctrl-C). It
-starts only at such a stop. When it elapses, the answer the user read is kept as
-an unverified, incomplete turn (except for private knowledge or revoked
-authorization) and the run is stopped; the CLI stops the turn without saving.
+`SMARTPERFETTO_REVIEW_STOP_WATCHDOG_MS`, `SMARTPERFETTO_FINAL_SUBMISSION` and
+`SMARTPERFETTO_CONCLUSION_AUTHORING` are obsolete. Analyses deliver the plain
+assistant answer with no review step after it, and Stop cancels the run. The
+watchdog value is no longer read; a final-submission or declaration-syntax value
+logs one warning and falls back to `assistant_text`. None of them fails startup
+or a run; remove them from `.env`.
 
 | Mode | Behavior | Use case |
 |---|---|---|

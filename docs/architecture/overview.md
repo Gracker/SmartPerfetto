@@ -75,7 +75,7 @@ backend 与 frontend。
 | Document knowledge bases | `backend/src/services/knowledge/`, `externalKnowledgeSourceRegistry.ts` | 文档目录注册/预览、FTS5/BM25 分代索引、`search_knowledge`/`read_knowledge_section`、`kb:` 引用与 `knowledge_use@1`、许可/同意/scope、退役 kind 与私有内容投影 |
 | Trace processor | `backend/src/services/traceProcessorService.ts` | trace 加载、RPC 管理、SQL 查询 |
 | Reports | `backend/src/services/htmlReportGenerator.ts` | HTML 报告生成 |
-| Result quality pipeline | `backend/src/services/canonicalAnalysisResult.ts`, `finalizeAnalysisResult.ts`, `finalSemanticAssessment.ts`, `evidence/`, `verifier/`, `analysisResultSnapshotPipeline.ts` | 原命题、原始采集、有限证明与最多一次语义审核，统一 finalization 后投影/持久化 |
+| Result quality pipeline | `backend/src/services/canonicalAnalysisResult.ts`, `finalizeAnalysisResult.ts`, `finalResultQualityGate.ts`, `evidence/`, `analysisResultSnapshotPipeline.ts` | canonical 正文、身份解析与交付保证（完成状态、对比身份、源码引用），统一 finalization 后投影/持久化 |
 | CLI | `backend/src/cli-user/` | `smp` / `smartperfetto` 命令、session/history/report export |
 | Comparison services | `backend/src/services/comparison*Service.ts` | Raw trace 与 analysis-result 对比共享证据/报告 contract |
 
@@ -107,7 +107,7 @@ Web UI 的两个 AI 入口共享同一鉴权边界，但不共享 trace 前置�
   普通多轮对话，附加 Trace 后才进入 trace-aware 对话。
 - 已授权源码与本轮实际使用源码是两个状态。当前显式选择使共享源码工具可用于主分析，
   模型根据问题与 Trace 锚点决定是否调用；注册和选择均不要求先建索引。实际调用持续更新
-  运行账本，模型可见引用须先完成容量准入并可用于同一轮核验，不能从模型声明推断读取事实。
+  运行账本，模型可见引用须先完成容量准入并可用于同一轮引用检查，不能从模型正文推断读取事实。
 - 已加载 Trace 的 `AIPanel`、侧边栏和浮窗共享当前页面、当前 Trace 的
   `AnalysisBackendConnection`。后台上传完成只产生连接候选；只有 scoped lease 对应的
   native processor 状态为 ready，AI 分析才可使用该后端。
@@ -150,7 +150,7 @@ cookie credentials，也不会把非 OIDC 401 当作 OIDC authority 失效。本
 
 策略 frontmatter 的 `entry_skill` 声明场景入口 Skill：已解析的 `scene_wide`、`read_new` investigation，挂载单条 Trace 且无 reference/comparison 时，在模型首轮之前由产品运行它（身份门 `verified` 才运行）。结果以不可整体丢弃、有界的 `scene_evidence` 提示段交给模型；它与 `invoke_skill` 共用 `skillRunCore`，但不是模型工具调用，不进入 `toolResults` 或计划调用记录，采集进入调查账本，性能阶段与回执由 `RuntimePerformance` 记录。`default` 标记的策略 detail 正文作为最先让位的提示段随首轮下发，标题仍列在 detail 清单里。详见 [Agent Runtime 架构](agent-runtime.md)。
 
-所有运行时只使用这套固定上下文的提示构造器；缺失 intent 或策略快照会明确失败，不回退到旧 quick/full 模板。最终结论是主要交付记录，预算与中间表格预览不限制发现、声明或正文数量。输入提示词纪律预算为 16,000 个估算 token，身份和证据义务不可裁剪；实际输出或核验容量不足仍须显式保留不完整状态。
+所有运行时只使用这套固定上下文的提示构造器；缺失 intent 或策略快照会明确失败，不回退到旧 quick/full 模板。最终结论是主要交付记录，预算与中间表格预览不限制发现或正文数量。输入提示词纪律预算为 16,000 个估算 token，身份和证据义务不可裁剪；实际输出容量不足仍须显式保留不完整状态。
 
 OIDC 模式下，静态入口先通过 `/api/auth/session` 完成门禁，未就绪时不加载 Perfetto
 bundle。回调建立后端 Session 后，所有浏览器请求的 tenant、user 和 workspace 都以后端
@@ -194,10 +194,9 @@ Session 和数据库所有权为准；前端请求头只是传输上下文，不
 
 4. 产品层唯一 finalization
    exact runtime result + private context -> finalizeAnalysisResult
-      -> canonical body + original claims + retained execution capture
-      -> finite proof + at most one no-tool semantic review
-      -> completion / report / claim / identity assessments
-      -> SourceUseDecision + source claim binding verification
+      -> canonical body（剥离模型残留声明）+ identity resolution
+      -> completion / identity assessments（不调用模型）
+      -> SourceUseDecision + 仅引用的源码检查
       -> QueryReviewV1（查询可审查元数据，不是独立证据）
 
 5. 后端流式输出
@@ -205,11 +204,8 @@ Session 和数据库所有权为准；前端请求头只是传输上下文，不
       -> frontend renders progress, tables, thought
    draftAnswerStreaming runtime（Claude/OpenAI）-> answer_token 草稿 + answer_segment_reset
       -> owner 投影 + narrative 投影 + 合并 -> 仅实时发送（不重放、不持久化），由 conclusion 替换
-   finalizeAnalysisResult 发出语义复核时 -> provisional conclusion（正文定稿，核验待定）
-   无需复核时 -> 最终化后、报告/快照生成前发送普通 conclusion（无待核验提示）
-   provisional conclusion 之后停止 -> 只停复核（立即应答），run 照常提交 `~` 回合；
-      第二次停止 -> 在复核停止看门狗时限内等待提交再中止；到时未提交 ->
-      把已读正文存为未核验的不完整回合（私有知识或授权撤销时不存）
+   finalizeAnalysisResult -> 最终化后、报告/快照生成前发送 conclusion
+   停止 -> 取消本次 run
 
 6. 结束与报告
    finalized result -> analysis_completed -> canonical safe source/CodeRef/patch metadata
@@ -290,8 +286,8 @@ SmartPerfetto 的最终回答不是单一 Markdown 字符串，而是一组共�
 | 产物 | 消费者 | 边界 |
 |---|---|---|
 | visible chat conclusion | 前端 AI panel | 投影 canonical 正文与真实 machine sidecar；runtime appendix 单列，不机械删改正文 |
-| HTML report | 浏览器、导出、分享 | 保留 evidence、claim verification、identity resolution 和 appendix |
-| CLI artifacts | `smp run` / `smp ask` / `smp capture --analyze` / `smp report` | 持久化 turn、report、claim verification 和 identity files |
+| HTML report | 浏览器、导出、分享 | 保留 evidence、交付保证、identity resolution 和 appendix（历史结果保留已存的 claim verification） |
+| CLI artifacts | `smp run` / `smp ask` / `smp capture --analyze` / `smp report` | 持久化 turn、report、交付保证和 identity files |
 | analysis-result snapshot | 多结果对比、历史回看 | 保存 conclusion contract、claim support、verification 和 identity metadata |
 | Query Review | AI panel、HTML report、Artifact | 说明实际查询的读取、过滤、输出和限制；固定为 review metadata，不能单独支撑诊断结论 |
 | Analysis Receipt | AI panel、HTML report、CLI、snapshot | 绑定 run/session/trace/runtime，汇总证据计数、claim audit、质量门禁和实际输出 |
@@ -304,17 +300,15 @@ SmartPerfetto 的最终回答不是单一 Markdown 字符串，而是一组共�
 
 修复结论质量时先确认是哪一层出了问题：runtime 产物、contract/gate、evidence/verification、report 生成、snapshot，还是 frontend projection。不要为了让聊天更干净而删除报告或 snapshot 需要的来源信息。
 
-typed intent 的预算、范围、交付物和证据访问彼此独立，声明有效不等于真实或已授权。
-`existing_only` 严禁新采集，`read_new` 仍受原请求权限限制；计划和源码访问按需进行。
-finalizer 保留原命题，在原 deadline、pinned provider 和 owner/授权约束内最多执行一次
-无工具语义审核，且只在 `✓` 仍可达或有义务需要时才发出：报告、选区、源码访问或源码声明、
-未被证据台账排除的调查要求、“完美审核”假设下仍可达 `✓` 的断言，或零断言的纯确认回合；
-其余回答记为未核验原因 `not_required`，终态 `~`（接受的残余：只有审核能发现的矛盾不会被发现，
-有限证明的 `unsupported` 仍给出 `!`）。有限证明目录以源码为准，不能把一般因果关系或未知字段解释成已证明。
+typed intent 的预算、范围、交付物和证据访问彼此独立。`existing_only` 严禁新采集，
+`read_new` 仍受原请求权限限制；计划和源码访问按需进行。数据准确性来自 Skill 与 SQL：
+回答是普通文本，finalizer 不调用模型，也不逐条核验断言。新的 finalization 检查 `completion`
+与双 Trace `identity`，用仅引用的检查标注 `source`，并把 `claims`、`report`、`investigation`
+和 `investigationEvidence` 记为 `not_applicable`。completion 通过时 CLI 显示 `✓`；
+`~` 只用于 `failed` 或 `coverage_incomplete` 的维度。
 
-审核、声明修复和续写在派发前检查剩余时间与预计时长；不足时保留原回答，跳过的审核记为
-`budget_insufficient`，报告和缺正文续写仍受原 deadline 约束。声明按条目校验：根错误使
-整份声明无效，条目错误保留 `partially_valid`，其他有效断言仍可核验。详见
+收尾和续写调用在派发前检查剩余时间与预计时长；不足时保留原回答，报告和缺正文续写仍受
+原 deadline 约束。历史结果保留已存的声明与 claim 核验结论。详见
 [Agent Runtime 架构](agent-runtime.md#final-result-与质量产物)。
 
 Conversation 可以在同一逻辑 session 的精确 trace/授权/owner scope 内保留原始采集，
@@ -359,6 +353,6 @@ catalog 中的 pipeline 条目定义 trace 检测子路径或 feature。只有 c
 
 ## 系统调查合同
 
-`investigation-profiles.yaml` 与场景 Strategy 声明调查义务，解析后随 registry fingerprint 固定到本轮。共享 Skill 或受信任的等价 SQL 产生范围绑定的原始证据，运行记录与最终正文解释分别核验。`investigationAssessment` 随结果进入 SSE、报告、快照和比较摘要；`deliveryAssurance.investigation` 与 `investigationEvidence` 独立于 completion、report 和 claims。
+`investigation-profiles.yaml` 与场景 Strategy 声明调查义务，解析后随 registry fingerprint 固定到本轮，用于指导采集：共享 Skill 或受信任的等价 SQL 产生范围绑定的原始证据。`investigationAssessment` 记录采集账本，随结果进入 SSE、报告、快照和比较摘要，仅供展示；由于没有机制判定回答覆盖，新的 finalization 把 `deliveryAssurance.investigation` 与 `investigationEvidence` 记为 `not_applicable`。
 
-只保存声明不会创建采集权威。私有投影或正文、声明、身份、intent、证据改变后，原正向调查核验失效并清除旧引用。历史恢复不会自动取证；旧结果保留未知状态。
+只保存模型正文不会创建采集权威。私有投影或正文、身份、intent、证据改变后，原正向调查结果失效并清除旧引用。历史恢复不会自动取证；旧结果保留未知状态。

@@ -1543,48 +1543,6 @@ strategies:
   backend/strategies/prompt-analysis-turn-intent-source-need.template.md:
     disposition: product-only
     reason: SmartPerfetto intent classification of the source depth a codebase-aware run needs
-  backend/strategies/prompt-conclusion-contract-schema.template.md:
-    disposition: product-only
-    reason: SmartPerfetto conclusion declarations and captured evidence identifiers
-  backend/strategies/prompt-conclusion-delivery.template.md:
-    disposition: product-only
-    reason: SmartPerfetto canonical and authoring declaration delivery protocol
-  backend/strategies/prompt-conclusion-ack-rule.template.md:
-    disposition: product-only
-    reason: SmartPerfetto assistant-text acknowledgement declaration exemption
-  backend/strategies/prompt-authored-final-submission-delivery.template.md:
-    disposition: product-only
-    reason: SmartPerfetto private typed final submission tool transport
-  backend/strategies/prompt-authored-final-submission-framing.template.md:
-    disposition: product-only
-    reason: SmartPerfetto private authored document representation and captured evidence references
-  backend/strategies/prompt-submit-final-document-tool-description.template.md:
-    disposition: product-only
-    reason: SmartPerfetto experimental authored final submission tool transport and pending acknowledgement contract
-  backend/strategies/prompt-authored-final-submission-v2-delivery.template.md:
-    disposition: product-only
-    reason: SmartPerfetto private native object final submission transport
-  backend/strategies/prompt-authored-final-submission-v2-framing.template.md:
-    disposition: product-only
-    reason: SmartPerfetto native authored document grammar and private deterministic projection
-  backend/strategies/prompt-submit-final-document-v2-tool-description.template.md:
-    disposition: product-only
-    reason: SmartPerfetto native object final tool and pending acknowledgement contract
-  backend/strategies/prompt-authored-final-submission-v2-dual-delivery.template.md:
-    disposition: product-only
-    reason: SmartPerfetto private dual-carrier native document submission contract
-  backend/strategies/prompt-submit-final-document-v2-dual-tool-description.template.md:
-    disposition: product-only
-    reason: SmartPerfetto private final tool and exclusive assistant document carrier contract
-  backend/strategies/prompt-conclusion-authoring-framing.template.md:
-    disposition: product-only
-    reason: SmartPerfetto private declaration authoring transport and captured evidence references
-  backend/strategies/prompt-conclusion-authoring-v2-framing.template.md:
-    disposition: product-only
-    reason: SmartPerfetto private declaration authoring compiler and transport
-  backend/strategies/prompt-conclusion-full-framing.template.md:
-    disposition: product-only
-    reason: SmartPerfetto canonical conclusion declaration transport
   backend/strategies/prompt-lookup-sql-schema-tool-description.template.md:
     disposition: product-only
     reason: SmartPerfetto SQL schema discovery tool response and pagination contract
@@ -1597,12 +1555,12 @@ strategies:
   backend/strategies/prompt-conversation-supplement-zh.template.md:
     disposition: product-only
     reason: SmartPerfetto next-turn supplemental input and authorization
-  backend/strategies/prompt-final-semantic-assessment.template.md:
-    disposition: product-only
-    reason: SmartPerfetto finalization semantic assessment protocol
   backend/strategies/prompt-turn-policy.template.md:
     disposition: product-only
     reason: SmartPerfetto resolved turn policy and source authorization
+  backend/strategies/prompt-answer-guidance.template.md:
+    disposition: product-only
+    reason: SmartPerfetto runtime answer writing guidance for plain assistant answers
   backend/strategies/source-anchor-normalization.yaml:
     disposition: product-only
     reason: SmartPerfetto trace-anchor normalization and ranking for its source locate tool
@@ -1790,12 +1748,6 @@ strategies:
   backend/strategies/prompt-reasoning-nudge-zh.template.md:
     disposition: product-only
     reason: SmartPerfetto MCP data-tool result reasoning reminder (Chinese)
-  backend/strategies/prompt-draft-declaration-diagnostics-tool-description.template.md:
-    disposition: product-only
-    reason: SmartPerfetto draft diagnostic MCP tool over authorized product evidence captures
-  backend/strategies/prompt-draft-declaration-diagnostics-feedback.template.md:
-    disposition: product-only
-    reason: SmartPerfetto draft diagnostic result guidance over authorized product evidence captures
   backend/strategies/prompt-invoke-skill-tool-description.template.md:
     disposition: product-only
     reason: SmartPerfetto MCP artifact projection and exact process handoff guidance
@@ -1841,30 +1793,6 @@ strategies:
   backend/strategies/prompt-final-report-correction-system-zh.template.md:
     disposition: product-only
     reason: SmartPerfetto final-report runtime orchestration
-  backend/strategies/prompt-native-declaration-completion-en.template.md:
-    disposition: product-only
-    reason: SmartPerfetto native conclusion declaration delivery orchestration
-  backend/strategies/prompt-native-declaration-completion-zh.template.md:
-    disposition: product-only
-    reason: SmartPerfetto native conclusion declaration delivery orchestration
-  backend/strategies/prompt-native-declaration-transport-full-en.template.md:
-    disposition: product-only
-    reason: SmartPerfetto canonical native declaration recovery transport
-  backend/strategies/prompt-native-declaration-transport-full-zh.template.md:
-    disposition: product-only
-    reason: SmartPerfetto canonical native declaration recovery transport
-  backend/strategies/prompt-native-declaration-transport-authoring-en.template.md:
-    disposition: product-only
-    reason: SmartPerfetto private authoring declaration recovery transport
-  backend/strategies/prompt-native-declaration-transport-authoring-zh.template.md:
-    disposition: product-only
-    reason: SmartPerfetto private authoring declaration recovery transport
-  backend/strategies/prompt-native-declaration-transport-authoring-v2-en.template.md:
-    disposition: product-only
-    reason: SmartPerfetto private authoring-v2 declaration recovery transport
-  backend/strategies/prompt-native-declaration-transport-authoring-v2-zh.template.md:
-    disposition: product-only
-    reason: SmartPerfetto private authoring-v2 declaration recovery transport
   backend/strategies/prompt-native-output-completion-en.template.md:
     disposition: product-only
     reason: SmartPerfetto native output-limit delivery recovery orchestration
@@ -1886,12 +1814,6 @@ strategies:
   backend/strategies/prompt-find-codebase-files-tool-description.template.md:
     disposition: product-only
     reason: SmartPerfetto on-demand codebase file-find MCP tool contract
-  backend/strategies/prompt-relation-proposal-recovery-en.template.md:
-    disposition: product-only
-    reason: SmartPerfetto native evidence relation candidate recovery protocol
-  backend/strategies/prompt-relation-proposal-recovery-zh.template.md:
-    disposition: product-only
-    reason: SmartPerfetto native evidence relation candidate recovery protocol
   backend/strategies/prompt-final-report-missing-sections-en.template.md:
     disposition: product-only
     reason: SmartPerfetto runtime, session, case, language, or codebase orchestration

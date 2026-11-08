@@ -15,7 +15,7 @@ import type {CodeAwareStreamingTextProjection} from '../services/security/codeAw
  * to so a consumer can drop a late event from a revoked segment.
  *
  * The draft is never the answer. The answer reaches clients only from
- * finalization (provisional or final conclusion, then the verdict), which
+ * finalization (the final conclusion with its delivery assurance), which
  * replaces the draft; drafts are live-only and never persisted or replayed.
  */
 interface AnswerDraftIdentity {

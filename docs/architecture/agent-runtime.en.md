@@ -77,13 +77,13 @@ Provider connection fields map to runtime-specific env:
 
 `modelExecutionProfile.ts` separates documented server capabilities, actual SDK expression capabilities and captured authored settings; `modelExecutionPolicy.ts` selects controls by call purpose. Matching uses the actual endpoint, exact model ID and protocol. Unknown gateways or unmodeled protocols remain unknown, and native configurations already validated by their SDK remain intact. Provider names, latency and model self-descriptions do not establish capabilities or authorize switching the pinned provider/model.
 
-Main analysis and ordinary continuation preserve native settings. Classification, declaration repair, the single no-tool semantic review and explicit output-only delivery select the minimum legal thinking setting only when both server and adapter support it. Known GLM 5.3 Flash requires enabled thinking and uses low; known DeepSeek Flash interfaces may disable it. Authored settings take precedence; a known illegal setting is a configuration error before dispatch, not a transient network failure. Unknown capability does not authorize guessed parameters.
+Main analysis and ordinary continuation preserve native settings. Classification and explicit output-only delivery select the minimum legal thinking setting only when both server and adapter support it. Known GLM 5.3 Flash requires enabled thinking and uses low; known DeepSeek Flash interfaces may disable it. Authored settings take precedence; a known illegal setting is a configuration error before dispatch, not a transient network failure. Unknown capability does not authorize guessed parameters.
 
 Pi model JSON may explicitly set `thinkingLevel` (`off/minimal/low/medium/high/xhigh/max`); unsupported levels fail before dispatch. `thinkingLevelMap` preserves native mappings. Official GLM without an authored setting does not inherit disabled thinking solely from Pi Agent's off default; explicit off is rejected for known forced-thinking models. OpenCode uses actual host options, such as `reasoningEffort` mapped to wire `reasoning_effort`. Missing temperature/tool/cost capabilities remain unknown; a separate light model does not inherit the primary model's capabilities or limits.
 
 `model_execution_fingerprint@1` is separate from the existing provider snapshot and binds actual model/API, effective settings and known SDK/adapter facts. Unknown versions stay unknown. Internal `policyObservations` describe policy selection with `wireObservation: not_observed`; they are not actual dispatch or server execution facts. Maintainer commands `test:pi-provider-runtime` and `test:opencode-provider-runtime` verify native wire contracts against local fake providers, not real-model accuracy or latency.
 
-`OPENAI_ANALYSIS_REASONING_EFFORT` explicitly configures OpenAI runtime main analysis and ordinary continuation; omitting it preserves provider defaults. It does not override classification, declaration repair, timeout output-only closeout or semantic review purpose policies. Validation uses the actual selected model, endpoint, protocol and installed SDK. Generic effort uses native SDK fields and never injects vendor `thinking` into unknown gateways. Recognized DeepSeek Chat maps `none` to disabled thinking; forced-thinking GLM rejects it. This adapter currently expresses `max` through passthrough only on recognized supported Chat interfaces; explicit `max` on unknown gateways or Responses is not yet supported by this adapter. The same isolated provider environment binds the setting into its snapshot; invalid values cannot enter public snapshots. Lower effort still needs real accuracy validation.
+`OPENAI_ANALYSIS_REASONING_EFFORT` explicitly configures OpenAI runtime main analysis and ordinary continuation; omitting it preserves provider defaults. It does not override classification or timeout output-only closeout purpose policies. Validation uses the actual selected model, endpoint, protocol and installed SDK. Generic effort uses native SDK fields and never injects vendor `thinking` into unknown gateways. Recognized DeepSeek Chat maps `none` to disabled thinking; forced-thinking GLM rejects it. This adapter currently expresses `max` through passthrough only on recognized supported Chat interfaces; explicit `max` on unknown gateways or Responses is not yet supported by this adapter. The same isolated provider environment binds the setting into its snapshot; invalid values cannot enter public snapshots. Lower effort still needs real accuracy validation.
 
 `server.outputTokens` records sourced output-parameter bounds and conditional
 defaults only. Currently, official DeepSeek Chat with `deepseek-flash` or
@@ -97,110 +97,20 @@ SDK path. Actual requests, native terminal facts and usage require separate
 observation; output count alone cannot establish truncation. See the
 [DeepSeek Chat API](https://api-docs.deepseek.com/api/create-chat-completion/).
 
-`SMARTPERFETTO_FINAL_SUBMISSION` selects the main analysis output transport and
-defaults to `assistant_text`. Explicit experimental modes `authored_claim_document_v1`
-and `authored_claim_document_v2` require `canonical_v1` and `authoring_v2`, respectively.
-`authored_claim_document_v2_dual` also requires `authoring_v2` and explicitly enables
-two mutually exclusive carriers.
-Transport and declaration syntax are captured together before classification.
-Eligibility separately checks the actual SDK
-contract, Chat Completions protocol and function-tool primitive facts for every
-possible main model. Unknown or incompatible configurations fail before paid
-dispatch. Observed tool calls do not establish document adoption, accuracy or
-performance acceptance.
-
-The experiment discovers the tool name from the registry's unique
-`final_candidate_submission` role. V1 submits body parts and original canonical
-declarations in `documentJson`. Tool-schema strictness constrains the outer string
-field. JSON inside it still requires independent parsing and validation. V2 submits
-text parts, reference dictionaries, claims and explicit semantic frames as a native
-`document` object. Its schema covers the full object. Server-side strict guarantees
-depend on the actual endpoint. Reference indices expand only authored values. The
-deterministic compiler concatenates authored text and retains original declarations
-and invalid entries for independent canonical validation. Original wire arguments,
-actual SDK parsed values and actual handler arguments must match strictly.
-JSON-looking body text remains literal. Actual handler success, native final state and background drain jointly
-admit a submission. The shared finalizer still performs evidence, semantic,
-source and report checks. Authorship is `model_tool_arguments`. A missing submission
-or transport failure is a separate product issue: it does not rewrite actual SDK
-completion or start legacy declaration repair or continuation. Program ACK and
-direct-evidence paths without a main call retain their delivery. Transport
-observations record `not_exercised`.
-
-Transport versions are checked as exact combinations.
-
-| Document submission | representation / compiler | admission / wire |
-| --- | --- | --- |
-| V1 | `@1` / `@1` | `@1` / `@1` |
-| Historical V2 | `@2` / `@2` | `@2` / `@1` |
-| Current V2 | `@2` / `@2` | `@3` / `@2` |
-| Explicit V2 dual | `@2` / `@2` | `@4` / `@3` |
-
-Current V2 accepts bounded assistant companion text alongside the unique final
-document function call in the same response. The text must match the SDK's
-completed assistant message exactly and belong to that response. The submitted
-complete document supplies the final body. Nonempty refusal, additional pending
-work and incomplete transport block admission. Contract versions come from the
-actual SDK adapter implementation and private attempt. Historical records retain
-their original versions.
-
-Dual retains the complete Zod final tool and the same document grammar. Any actual,
-unknown or malformed action in the terminal response selects the function carrier;
-a failed function cannot fall back to assistant text. Only a response with zero
-actions may submit its whole assistant text as one `{document}` JSON envelope,
-without fence extraction or JSON repair. It requires natural `stop`, complete
-SSE/DONE/EOF, stable provider response identity, and exact agreement with the SDK
-completed message and finalOutput. Original input and prior tool work must be
-complete. After the SDK and original consumer drain, ownership, cancellation and
-authorization are checked again. The function carrier retains
-`model_tool_arguments/tool_calls`; the assistant carrier uses `sdk_final/stop`
-with a separate private `assistant_json` source and live submission binding.
-Public origin alone grants neither verification nor completion. Both deliver the
-same compiler's body through the existing quality gates, without extra retries,
-calls, caps or budgets.
-
-The current typed envelope delivers Conversation text as `answered`, with existing
-evidence. Control-looking body text remains literal. Explicit `needs_user_input`
-and `recommend_full` actions use the `assistant_text` control protocol. The typed
-envelope currently has no corresponding control field.
-
-V2 part quotes bind original claim ordinals and exact UTF-16 body locations during
-compilation. The shared finalizer reads those bindings from private material issued
-for the current run. Missing bindings, changed declarations or privacy-induced body
-changes leave the quote unchecked with empty locations. Issued global quotes
-continue through existing matching. Raw objects and private bindings remain in run
-memory. Reports, history and public events consume canonical product results.
-
-An actually issued, drained typed submission retains its original canonical
-validation status, closed issues and available original entry counts through the existing
-`candidate_protocol` diagnostic. Successful compilation does not imply valid
-declarations. Optional `authoredMaterial` separately measures original arguments,
-the body and compiler-normalized material. V1 also measures the original documentJson.
-V2 measures the native object and expanded material with distinct versions and
-measurement boundaries. It exposes no
-content, IDs or dynamic field names; nested measurements cannot be added together
-or converted to tokens. Failure-log `wireFinishReason` projects only observed
-closed native terminal facts; missing facts stay absent. Diagnostic failure never
-changes adoption, authorization, completion, repair or budgets. New diagnostics
-cannot fill missing causes in historical failures.
-Request `toolArguments` metrics count historical arguments sent in that request,
-excluding its subsequently generated response. Without a later dispatch, the final
-submission never enters that input counter. Missing material diagnostics do not
-mean zero output size.
-
-Internal `typed_output_observed` events bind requests to actual authorized
-dispatches and can retain closed material counts before final document issuance.
-Decoded UTF-8/UTF-16, retained material, DONE/EOF, JSON completeness and structure
-are measured separately. Saturated counts carry explicit lower bounds. Structure
-counts retain original invalid entries and distinguish null from missing.
-Normalized JSON partitions and original argument bytes use distinct measures.
-These counts support cost diagnosis. Admission and the finalizer establish
-submission and verification.
+Every runtime delivers the model's plain assistant answer (`assistant_text`):
+there is no model-authored declaration sidecar, typed final submission or
+final-document tool. `SMARTPERFETTO_FINAL_SUBMISSION` and
+`SMARTPERFETTO_CONCLUSION_AUTHORING` are retired; a value left in the
+environment logs one process-wide warning and is ignored, and never fails a
+run. Historical manifests and receipts may still carry older mode labels or a
+`declarationSyntax`; they are read unchanged. A declaration a model still writes
+is stripped from the body at finalization and not stored.
 
 Internal performance observations distinguish actual main, classification and
-semantic-review dispatches, linking native termination, tool drain, candidate
-selection and finalization. Configuration commitments, applied request settings
-and explicitly reported server model identity are separate facts. Missing facts
+continuation dispatches, linking native termination, tool drain, candidate
+selection and finalization; the final review is recorded as `not_required`.
+Configuration commitments, applied request settings and explicitly reported
+server model identity are separate facts. Missing facts
 remain unknown. Normalized request JSON bytes and original wire-body size are
 measured separately. Transport comparisons require common observer source, fixed
 controls and per-sample quality gates, including complete tool-schema and prompt
@@ -243,9 +153,6 @@ for the user-visible contract.
 | `backend/src/agentRuntime/analysisFinalizationContext.ts`, `runtimeEvidenceContext.ts` | Private finalization context, original deadline, authorized capture reads and cross-turn leases |
 | `backend/src/services/providerManager/modelExecutionProfile.ts`, `backend/src/agentRuntime/modelExecutionPolicy.ts` | Actual model/SDK capabilities, independent execution fingerprint and legal purpose controls |
 | `backend/src/agentRuntime/runtimeTaskDeadline.ts` | Private per-turn admission identity and explicit work deadline; separate from cancellation and authorization |
-| `backend/src/agent/core/conclusionAuthoring.ts` | Bounded declaration-reference expansion preserving raw input and independent proposition verification |
-| `backend/src/agent/core/authoredClaimDocument.ts`, `backend/src/agentRuntime/authoredFinalSubmission.ts` | Literal body compilation, current-run private submissions and revocation |
-| `backend/src/agentRuntime/engines/openai/openAiTypedFinalAdmission.ts` | Experimental raw-argument, SDK-state and actual-drain admission |
 | `backend/src/agentRuntime/runtimeCandidateAdmission.ts` | Maintainer-owned concurrency-candidate admission boundary |
 | `backend/src/agentRuntime/runtimePerformance.ts` | Internal RunManifest phase, tool, and SQL queue/execution timing receipt |
 | `backend/src/agentRuntime/runtimeActivity.ts`, `runtimePerformanceContext.ts` | Bounded invocation and capture activity, private run ownership, and late-callback isolation |
@@ -253,9 +160,8 @@ for the user-visible contract.
 | `backend/src/agentRuntime/runtimeToolConcurrency.ts` | Request-scoped fair read/write scheduling with an exclusive default |
 | `backend/src/agentv3/claudeMcpServer.ts` | SmartPerfetto tool implementation and composition |
 | `backend/src/agentv3/mcpToolRegistry.ts` | Tool descriptors, exposure levels, and allowlists |
-| `backend/src/services/canonicalAnalysisResult.ts`, `finalizeAnalysisResult.ts` | Original-proposition canonical results and the single product-owned asynchronous finalizer |
-| `backend/src/services/finalSemanticAssessment.ts`, `evidence/evidenceReadView.ts` | Bounded no-tool semantic review and original execution-capture reads |
-| `backend/src/services/finalReportContractGate.ts` | Strategy-owned `final_report_contract` validation |
+| `backend/src/services/canonicalAnalysisResult.ts`, `finalizeAnalysisResult.ts` | Canonical body (a stray model declaration is stripped) and the single product-owned asynchronous finalizer |
+| `backend/src/services/finalResultQualityGate.ts`, `evidence/evidenceReadView.ts` | Delivery assurance (completion, comparison identity, source citations) and original execution-capture reads |
 | `backend/src/services/providerManager/` | Provider configuration and runtime/protocol/env mapping |
 | `backend/src/agentv3/sessionStateSnapshot.ts` | Shared snapshot: every runtime's provider pin, product state and its own `engineState` |
 | `backend/src/services/externalIssueReporting/providerPin.ts` | M10 source-run provider snapshot validation |
@@ -266,8 +172,7 @@ for the user-visible contract.
 MCP, strategy and planning remain canonical shared layers. The `claudeVerifier`
 compatibility entry points to shared structured delivery diagnostics, which
 runtimes read through `agentRuntime/runtimeDraftDiagnostics.ts` only to choose a
-same-run repair; the finalizer owns content meaning, claim support and the
-terminal state.
+same-run correction; the finalizer owns the terminal state.
 
 ## Tool Layer
 
@@ -276,14 +181,14 @@ SmartPerfetto analysis capability is registered through
 execution, Skill invocation, SQL schema lookup, planning/hypothesis tools,
 artifacts, memory, code-aware lookup, baselines, and comparison tools.
 
-`list_skills(metricId, offset)` discovers actual metric producers, inputs, identity selectors and scope limits from this run's pinned Skill definitions and SQL fragments. Discovery neither executes a tool nor issues evidence. Raw SQL column names or model declarations cannot replace a private producer binding; an unknown metric returns no match rather than silently falling back to the whole catalog.
+`list_skills(metricId, offset)` discovers actual metric producers, inputs, identity selectors and scope limits from this run's pinned Skill definitions and SQL fragments. Discovery neither executes a tool nor issues evidence. Raw SQL column names or model prose cannot replace a private producer binding; an unknown metric returns no match rather than silently falling back to the whole catalog.
 
 Claude runtime exposes these tools as an in-process MCP server. OpenAI runtime
 does not duplicate tool logic; it reads the same `McpToolRegistry` and adapts
 tool descriptors into OpenAI Agents SDK function tools. Pi Agent Core uses
 request-scoped native tools built from the same shared descriptors, the shared
 system prompt, planning/hypothesis tools, and the same route-owned
-finalization/claim-verification/report pipeline without turning SmartPerfetto
+finalization/report pipeline without turning SmartPerfetto
 into a Pi coding-agent harness. OpenCode runs a hardened isolated server and
 bridges request-scoped SmartPerfetto tools through a per-analysis MCP bridge;
 its built-in project discovery, file, shell, web, and edit tools are disabled
@@ -462,14 +367,17 @@ only locates code. `SourceUseDecision.status: corroborated` only audits an
 authorized body lookup with references in this run. It does not prove a Trace
 occurrence, mechanism or causal relationship.
 
-A model's claim binding declares only `claimId`, `sourceReferenceIds` and
-optional same-claim `traceEvidenceRefIds`; it no longer declares a mechanism
-status (the legacy field is accepted and dropped). The shared finalizer's
-`source_claim_verifier@2` computes each source-dependent claim's standing from
-the actual ledger: `invalid` fails the answer; `unbound`, `location_only` and
-`source_only` stay partial; `trace_linked` means a read body linked to verified
-same-claim Trace evidence. No native proof establishes a general mechanism, and
-a lookup-audit status cannot replace proof.
+New answers carry no model-authored claim or source binding. The shared
+finalizer's `source_claim_verifier@2` runs a citation-only check: each source
+location the answer writes is matched against the references this run issued.
+Without source access, or with access but no written citation, source assurance
+is `not_applicable` (public AOSP frames such as `Foo.java:N` are normal); all
+matched is `passed`; any unmatched or ambiguous citation is an advisory
+`coverage_incomplete`. This is a quality annotation, not a privacy control:
+`sanitizeCodeAwareText` and the private projection still enforce privacy. No
+check establishes a general mechanism, and a lookup-audit status cannot replace
+evidence. Stored results keep their historical per-claim statuses
+(`trace_linked`, `source_only` and similar) and render them unchanged.
 
 One canonical safe projector carries the same decision and binding through
 initial and replayed SSE, HTML reports, CLI JSON/Markdown/HTML,
@@ -574,8 +482,8 @@ Native capture and metric execution have separate status axes; `captured` and
 native capture survives a later metric failure. All work shares at most 20 s of
 acquisition within the original deadline; cancellation waits for started work to
 settle and permits no further acquisition or commits. The prompt retains locators
-and gaps within the same 24-cell/2-KiB budget. The original ledger, finite proof
-and semantic review still assess completeness, units, quantifiers and causality.
+and gaps within the same 24-cell/2-KiB budget. Skill results and producer units
+remain the authority for values; the finalizer does not re-derive them.
 
 Tool-result `modelEvidence` reports only backing-capture row availability, whether
 any trusted column units exist, and whether a private registered metric binding
@@ -587,33 +495,28 @@ a metric was observed. Restored data cannot recreate authority or witnesses.
 HTTP, CLI, conversation and direct runtime entry points share a private `RuntimeAdmission` identity. Budgets start when authorized work for the turn begins, including classification and preparation, and never restart on entering the native SDK. An explicit task cap and work-stop signal remain separate from user cancellation and authorization. Without an explicit cap, no new hard timer is added before configuration parsing; already-started preparation queries may drain. A timeout preserves an already completed candidate. The guard waits for actual native work, tools and cleanup before releasing ownership, and late results cannot affect a successor run.
 
 Full mode defaults to 100 turns and quick mode to 50; the five-turn quick target
-is advisory. A budget above one reserves one no-tool delivery call. Native length/output_limit may use that same reserved call within the original deadline to complete its body and declaration. A new candidate needs its own completed/stop receipt and valid protocol; failed, cancelled, unknown or pending tool/deferred states cannot use this recovery. Failure retains the first incomplete receipt. Early normal
-completion adds no call when it carries the required valid declaration, or when
-typed intent is an acknowledgement. A completed non-acknowledgement candidate
-without a declaration may use that reserved call so the same author can attach
-the declaration to the complete native body. Acceptance requires an unchanged
-visible body and a valid declaration; edited, truncated, failed or invalid replies
-retain the original candidate. Tools and duplicate visible-body streaming stay
-disabled during this completion. At investigation exhaustion, closeout uses the selected
-model, pinned provider, current authorization and original deadline to explain
-the supported findings, missing evidence and useful follow-up questions.
-Declaration authoring is input syntax, never evidence or permission to invent missing propositions. `SMARTPERFETTO_CONCLUSION_AUTHORING` defaults to `canonical_v1`; explicit `authoring_v1` / `authoring_v2` select alternative input grammars, and invalid values fail during run configuration. Dictionary references expand only at defined schema positions; every use counts toward expanded byte/node/depth limits, and full inline references remain available. @2 only compiles omitted collections inside `$.contract` to empty collections and items with only a string `text` key in its uncertainties/nextSteps to the original string. It does not repair claims, units, quantifiers, source bindings or references. Raw input, compiled material and independent verification remain separate. Undecodable authoring has no preservation baseline for declaration repair. JSON failures log only closed format facts and confirmed UTF-16 positions/lengths, never raw input or parser messages quoting it.
-
-The authoring envelope has only `authoringVersion/referenceDictionary/contract`; canonical fields belong inside `contract`. Main answers use the selected framing, while product full-answer continuations retain their explicitly specified existing format. Declaration-only repair returns bare JSON in its frozen syntax, and the server adds the frame. This does not establish a separate model context for repair.
-
-`check_conclusion_draft` with `diagnosticMode=claims_only` checks selected declarations without repeating the full body and records presentation as `not_checked`. The default `presentation` mode still requires the complete body. Its character guard and 64 KiB UTF-8 execution limit are distinct; final delivery always checks the complete body, declarations, presentation and evidence.
-
-Declaration JSON alone is not readable delivery. A completed Pi declaration-only candidate uses the same reserved delivery call to add a body, retaining existing claim count and IDs. Readable unheaded answers need no rewrite. A single completely closed malformed declaration may be isolated for repair; interrupted frames and duplicate markers cannot use declaration-only repair. Repaired output still requires strict parsing and independent verification.
+is advisory. A budget above one reserves one no-tool delivery call. Native
+length/output_limit may use that reserved call within the original deadline to
+complete its body, and a completed candidate with no answer body may use it for
+an empty-body continuation. A completed candidate whose structured delivery
+diagnostics report a recoverable gap may use it for one same-run correction. A
+new candidate needs its own completed/stop receipt; failed, cancelled, unknown or
+pending tool/deferred states cannot use this recovery. Failure retains the first
+incomplete receipt, and an acknowledgement adds no call. Tools and duplicate
+visible-body streaming stay disabled during this completion. No call completes or
+repairs a declaration: answers carry none. At investigation exhaustion, closeout
+uses the selected model, pinned provider, current authorization and original
+deadline to explain the supported findings, missing evidence and useful
+follow-up questions.
 
 It cannot query again or certify completion: `partial`, `turn_limit` completion
-and `max_turns` termination remain. No model semantic review follows this closeout;
-deterministic evidence checks can still run.
+and `max_turns` termination remain. No review call follows this closeout.
 
 OpenAI's acquisition deadline may advance with actual progress without consuming
 the reserved delivery and finalization budgets. An acquisition timeout with
 returned data may use one no-tool closeout inside the delivery reserve, retaining
-`partial/timeout` and adding no semantic model review. A failed closeout or
-declaration completion retains the original candidate. Cancellation, an expired
+`partial/timeout` and adding no review call. A failed closeout retains the
+original candidate. Cancellation, an expired
 hard deadline, revoked authorization or an exhausted explicit cost budget cannot
 start another call.
 A one-turn configuration has no extra delivery allowance. OpenCode stops acquisition
@@ -621,12 +524,12 @@ after observing native messages and can overshoot between observations. It recor
 actual turns and skips the summary when no allowance remains; this is not a strict
 model-call cap.
 
-Before dispatch, review, declaration repair and continuation use
+Before dispatch, closeout and continuation calls use
 `services/runtimeCallStats.ts` to estimate duration from successful calls' p75
 for the same provider origin, model, purpose and input-size bucket. Insufficient
 samples use the current provider defaults (GLM 180 s, DeepSeek 120 s, others
-90 s). A call that does not fit the time left is skipped; review records
-`not_checked/budget_insufficient` and preserves the body. Report delivery and
+90 s). A call that does not fit the time left is skipped and the body is
+preserved. Report delivery and
 continuation when the body is missing may still dispatch, bounded by the original
 deadline. An estimate cannot extend the deadline or bypass cancellation,
 authorization or cost limits. Server samples come from successful calls in sealed
@@ -646,13 +549,15 @@ route layer:
 | `agent_task_dispatched` | Tool invocation started |
 | `agent_response` | Tool result |
 | `answer_token` | Final-answer token |
-| `conclusion` | SDK conclusion arrived |
+| `conclusion` | Finalized, owner-projected answer body, sent before report and snapshot generation |
 | `analysis_completed` | Product-finalized terminal metadata and actual report outcome |
 | `error` | Failure |
 
 The product emits `analysis_completed` after finalization and report handling.
-Native completion, evidence/claims and report coverage retain separate states;
-a successful chat projection cannot hide report failure.
+Native completion, delivery assurance and report generation retain separate
+states; a successful chat projection cannot hide report failure. The current
+backend emits no provisional answer, `provisional_answer`,
+`review_stop_requested` or `final_review` progress.
 
 ## Final Result And Quality Artifacts
 
@@ -661,13 +566,21 @@ context for the same run:
 
 ```text
 exact runtime result + private RuntimeFinalizationContext
-  -> product-owned finalizeAnalysisResult (once)
-  -> canonical body / original claim semantics
-  -> retained execution capture / finite proof / at most one no-tool semantic review
-  -> independent completion / claim / report / source / identity assessments
+  -> product-owned finalizeAnalysisResult (once, no model call)
+  -> canonical body (a stray model declaration is stripped, never stored)
+  -> identity resolution from the run's own data envelopes / source citation check
+  -> delivery assurance: completion / identity / source
   -> HTML report / CLI turn files / analysis-result snapshot
   -> frontend visible projection
 ```
+
+Data accuracy comes from Skills and SQL. The answer is plain text written from
+this run's tool and Skill results, guided by the shared tier-1 `answer_guidance`
+prompt segment: stay in scope, judge "abnormal" only against a stated metric,
+scope and threshold, check unit arithmetic, treat missing data as unknown, and
+prefer the units and totals a Skill reports over values re-derived from raw rows.
+The finalizer does not verify each number or sentence; a wrong value is fixed in
+data acquisition (Skill, SQL or producer units).
 
 A runtime records only native facts on its result and on the turn it adds to
 the session (completion status, turn limit, timeout, provider failure,
@@ -675,88 +588,27 @@ cancellation, an empty body, a privacy replacement). It never applies the
 quality gate, never marks a result `quality_gate_failed` and emits no draft
 `degraded` update. The finalizer records a quality termination only for a missing
 body or actual native delivery failure; the route and CLI annotate that turn.
-Claim, report, source and identity verification remain independent annotations.
-They never make a completed body partial, lower finding confidence or mark
-flagged claims verified. The Web flow completes with a verification notice and
-expandable details; CLI `~` denotes delivered output with unresolved checks or
-flagged contradictions.
+
+New finalizations record `deliveryAssurance` as follows. `completion` (native
+completion facts) and `identity` (dual-trace comparison identity) are checked.
+`source` is the citation-only annotation described in
+[Source-Aware Runtime Parity](#source-aware-runtime-parity). `claims`, `report`,
+`investigation` and `investigationEvidence` are `not_applicable`: no checking
+mechanism exists for them. The investigation evidence ledger is still recorded
+for display only. New results carry no `claimVerificationResult` or
+`claimSupport`, and the internal performance receipt records the final review as
+`not_required`. Annotations never make a completed body partial or lower finding
+confidence. The Web flow shows no verification-incomplete notice for these
+runs; CLI prints `✓` when completion passes and `~` only when an assurance axis
+failed or is `coverage_incomplete`.
 
 The product takes the context from the exact result before copying it. The
 context fixes the provider, original absolute deadline, trace identity and
 evidence-read scope. The owner checks current-run identity, cancellation and
-authorization across awaits. Semantic review runs at most once, has no tools,
-and uses the original absolute run deadline. Starting or rereading the review
-does not reset or extend that budget. User cancellation or context disposal
-aborts the review. A timeout records unavailable assurance while preserving the body
-and native completion; review does not rewrite the body or reduce causal
-propositions to numeric ones. Unknown or failed review does not block answer or
-report delivery; report-contract gaps remain visible annotations. The body, native completion and original claims
-are independent inputs; valid JSON and model agreement alone are not proof.
+authorization across awaits; user cancellation or context disposal aborts
+finalization's evidence reads. A privacy projection that alters checked inputs
+downgrades `passed` to `not_checked` and keeps `not_applicable`.
 
-A malformed review location cannot establish that the body is wrong: an
-unresolvable claim or required issue location leaves that judgment unknown.
-Duplicate claim judgments retain the exact validated locations of their
-contradictions, without creating enclosing spans. Report requirements parse
-independently: a bad reference or missing row leaves only its pinned requirement
-unresolved; other judgments remain available, and required report gaps still
-block complete acceptance. Within one evidence-read batch, the same immutable
-registration, row and fields reuse metadata and cell budget already spent.
-Every reference still checks identity, authorization, cancellation and deadline;
-new registrations, rows or fields remain charged, with no credit across batches.
-
-Raw numeric equality remains separate from prose display precision. The optional
-`numeric.presentation` declaration (`numeric_presentation@1`) binds body literals,
-occurrences, units and decimal places. Before semantic review,
-`numericPresentationAssessment.ts` checks fixed-decimal rounding with exact
-rationals, complete finite proof, immutable captures and producer units.
-Chinese time labels `纳秒/微秒/毫秒/秒` also resolve to their standard display
-units; these spellings never confer unit authority on a producer. Each
-claim's separate `numericPresentation` records `matched/mismatch/not_checked`,
-bound to the canonical candidate, original declaration fingerprint and captured
-cell. It changes neither the body nor the machine proposition. Identifiers are
-not rounded, counts stay integral, and nonzero displayed as zero remains unchecked.
-Unsupported or missing display protocols supply no proof.
-`final_semantics@3` receives these results but still checks subject, scope,
-aggregation, negation, comparison and causality. Model agreement cannot override
-a deterministic display mismatch. A numeric dispute located entirely within a
-matched literal becomes `numeric_presentation_review_disagreement` and stays
-partial; other semantic errors retain their standing. Every bound literal must
-also lie inside the semantic review's claim locations before joint verification.
-Declaration recovery retains the complete semantics. Reports, CLI and owner
-snapshots retain separate outcomes; strict privacy projections omit display
-locations and binding receipts, as they do semantic locations. Frontend types
-are generated from the backend contracts.
-
-Older declarations without explicit display bindings keep their existing path. When the
-single semantic review reports a faithful rounding as `numeric_mismatch`, the
-finalizer may retain a display warning. A `numeric.cell` path requires complete
-finite proof and unique immutable cell identity through its private reference
-binding, original row, column and proof anchor, with the captured producer unit.
-Each exact claim and issue location must select one faithful display candidate;
-separately located repetitions must all pass, while broad spans with competing
-values do not qualify. This checks display arithmetic, not subject or scope
-agreement, and the numeric display must actually lose precision. Exact repetitions, other semantic
-errors, wrong values and components used as totals do not qualify. The claim
-stays partial: no original proposition, body or review is rewritten and the
-display rule grants no verified standing. Reports, CLI and snapshots share it.
-
-The same context binds the frozen input selection to semantic review. Review
-checks the answer against the question, intent and selected event or range;
-an explicit request for another target or the whole trace takes precedence over
-a persistent UI selection. Selection metadata is lookup context, not execution
-evidence or proof of process identity. Missing legacy or pre-preparation context
-remains distinct from explicit no selection; malformed selection is rejected. In paired traces,
-workspace focus does not establish which trace supplied the selection, so its
-origin remains unknown. A privacy projection that cannot preserve the admitted
-selection exactly leaves review incomplete rather than silently changing scope.
-
-Semantic review output limits are mapped by each adapter. OpenAI sends only an
-explicit `maxOutputTokens` captured for this run; Claude preserves the captured
-SDK environment; without an explicit cap, Pi derives a token allowance from
-the response byte limit, bounded by the pinned model's `maxTokens`. Classifiers
-retain their separate small-protocol
-budgets. Provider and SDK output limits still apply, as do complete-terminal-state
-checks and the 64 KiB guard on the completed review JSON.
 The shared OpenCode model configuration does not invent context/output capacity:
 omitted capacity uses SDK defaults, unknown context does not trigger proactive
 capacity-threshold compaction, and actual context overflow still uses native
@@ -765,51 +617,22 @@ a model with known capacity or add capacity fields to the model JSON interface.
 
 `final_report_contract` remains strategy frontmatter in the pinned registry.
 `claudeVerifier` supplies structured delivery diagnostics without an additional
-semantic LLM or misdiagnosis-word matching. The finite catalog is authoritative
-in `SUPPORTED_DETERMINISTIC_CLAIM_RULES`. Each rule proves only its explicitly
-covered proposition. Missing original witnesses, trusted
-units/field semantics or coverage retain candidate/unknown states. Equal values
-or endpoints do not establish general causality. Complete claim status joins
-captured evidence with semantic review of the current proposition. Reports, CLI
-artifacts and snapshots keep provenance. Chat projects the body, machine
-sidecars and structured runtime appendix separately without mechanically editing
-natural-language conclusions.
+semantic LLM or misdiagnosis-word matching; runtimes use them only to choose a
+same-run correction. Reports, CLI artifacts and snapshots keep provenance. Chat
+projects the body and structured runtime appendix separately without
+mechanically editing natural-language conclusions.
 
-Declaration validity is per entry. Framing, root schema, duplicate IDs, an invalid
-proposal collection and `sourceClaimBindings` reference failures still make the
-whole declaration `ineligible`. An individual claim or proposal failure affects
-only that entry: the declaration is `partially_valid` and its root remains
-`eligible`. Invalid claims retain their positions with parser-owned `valid: false`
-and closed `invalidCodes`; they create no evidence anchors, receive no semantic
-review, and retain a `not_checked/invalid_claim` verifier row. Other valid claims
-can complete review and proof independently. Repair targets only invalid claims
-with a usable ID and joins the returned declaration to the original body.
-Acceptance preserves the claim ID set, the position and semantics of valid items,
-and corresponding relation proposals, while reducing invalid items. A repair may
-remain `partially_valid`; unresolved entries stay visible rather than disappearing
-or changing the body to obtain a pass.
+Conclusion presentation retains the complete body rather than removing sections
+by headings. Web stores server delivery details separately with the candidate
+identity; replacing a body clears stale details, and metadata backfill updates
+only the current run's message with the same candidate. CLI display files bind
+to the session, turn and body. Display data cannot issue witnesses, raise
+assurance status or restore authority.
 
-A semantic location defect keeps only that judgment unknown. Other claims may
-still be verified when their current candidate binding, complete body review,
-finite proof, proposition coverage and located agreement are intact. Whole-answer
-acceptance still requires complete body and declaration coverage. An inconsistent
-judgment needs valid body locations and nonempty locations for every issue;
-unlocated non-expression or unclear semantics stay unknown, including during
-duplicate merging. OpenAI retains the body when declaration completion fails or
-is not admitted by the budget, and explicitly reports incomplete claim verification
-through progress messages without changing native completion or making another call.
-The parser privately separates reviewed body scope from omission coverage: an
-unusable omission location still blocks whole-answer acceptance without revoking
-other claims reviewed over the complete body. Models cannot submit this receipt.
-
-Conclusion presentation retains the complete body rather than removing semantic
-sections by headings such as “Evidence Index” or “Claim Verification”. Web stores
-server verification details separately with the candidate identity; replacing a
-body clears stale details, and metadata backfill updates only the current run's
-message with the same candidate. CLI display files bind to the session, turn and
-body. HTML reports list every claim, reference family and verification issue.
-Source-table matching is labelled separately from proposition verification.
-Display data cannot issue witnesses, raise verification status or restore authority.
+Historical results are read unchanged: stored declarations, claim verification
+verdicts, numeric presentation outcomes and per-claim source citations still
+render in reports, CLI artifacts and snapshots. An HTML report shows no claim
+verification section when a result has none.
 
 ## Sessions And Resume
 
@@ -849,12 +672,13 @@ match with its original authorization fingerprint; missing or changed scope is
 not resent to the model. History and locators cannot restore current execution
 witnesses or expand the current selection or proof scope.
 
-Snapshots also carry final-result quality fields such as conclusion contracts,
-claim verification results, and identity resolutions so resume, report export,
-and analysis-result comparison can reuse them.
+Snapshots also carry final-result quality fields such as delivery assurance,
+identity resolutions and, for historical results, conclusion contracts and claim
+verification results, so resume, report export and analysis-result comparison
+can reuse them.
 
 Historical GET, report and snapshot replay only read/project stored state. They
-do not run a new finalizer, semantic review or evidence attestation; normal
+do not run a new finalizer or evidence attestation; normal
 access authorization still applies. Restored display rows cannot recreate
 in-process execution witnesses.
 
@@ -899,7 +723,7 @@ comparison identity.
 - Source runs and the npm CLI require Node.js `>=24 <25`.
 - Portable packages bundle Node.js 24, backend runtime files, committed
   `frontend/`, and the pinned trace processor.
-- Typed-intent, claim-schema, semantic-review and Conversation evidence-context
+- Typed-intent, answer-guidance and Conversation evidence-context
   templates are runtime assets. Changes require checking existing public Skill
   export, npm CLI and Docker/portable bundled paths so distribution does not omit
   templates available in source. Documentation cannot substitute for those gates.
@@ -934,6 +758,6 @@ execute analysis.
 
 ## System investigation acquisition and delivery boundaries
 
-Scene investigation obligations are pinned separately from report formatting. Ordinary answers and comparisons may also require system investigation. The shared tool observer and original execution captures provide trusted acquisition records; tool names, model declarations and truncated summaries cannot establish that a dimension was checked. Observer failure preserves the tool outcome, and absent records remain unknown / not_checked.
+Scene investigation obligations are pinned separately from report formatting. Ordinary answers and comparisons may also require system investigation. The shared tool observer and original execution captures provide trusted acquisition records; tool names, model prose and truncated summaries cannot establish that a dimension was checked. Observer failure preserves the tool outcome, and absent records remain unknown / not_checked.
 
-Investigation interpretation reuses the same bounded no-tool semantic assessment at the product boundary. Acquisition and content coverage are separate and bound to the body, contract, intent, registry and ledger fingerprints. Coverage gaps cannot rewrite the conclusion, start a new acquisition loop or alter native SDK completion. Historical snapshots remain historical records and do not reissue current-run evidence authority.
+Investigation obligations guide acquisition; the finalizer does not judge answer coverage against them. New finalizations record `investigation` and `investigationEvidence` assurance as `not_applicable`, and the acquisition ledger is kept for display only. Coverage gaps cannot rewrite the conclusion, start a new acquisition loop or alter native SDK completion. Historical snapshots remain historical records and do not reissue current-run evidence authority.

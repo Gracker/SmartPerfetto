@@ -192,7 +192,7 @@ SmartPerfetto 后端支持这些 runtime path：
 
 - `claude-agent-sdk`：env 已有 Claude 凭据时的默认 runtime。适合 Anthropic、Bedrock、Vertex，以及 Anthropic/Claude Code-compatible provider。
 - `openai-agents-sdk`：OpenAI runtime。适合 OpenAI Responses API、Ollama 和支持流式 function/tool calling 的 OpenAI-compatible gateway。
-- `pi-agent-core`：可选 public runtime。真实模型配置下复用 SmartPerfetto 共享 prompt、SQL/Skill、plan/hypothesis 和 report/claim-verification 管线；后端只在选择这个 runtime 时动态加载 `@earendil-works/pi-agent-core`，不会启用 `.pi` project discovery、package extension、shell tool 或 file tool。
+- `pi-agent-core`：可选 public runtime。真实模型配置下复用 SmartPerfetto 共享 prompt、SQL/Skill、plan/hypothesis 和 finalization/report 管线；后端只在选择这个 runtime 时动态加载 `@earendil-works/pi-agent-core`，不会启用 `.pi` project discovery、package extension、shell tool 或 file tool。
 - `opencode`：可选 public runtime。它会启动加固隔离的 OpenCode server，使用显式 OpenAI-compatible 或 OpenCode model 配置，只暴露 request-scoped SmartPerfetto MCP 工具；不会读取用户自己的 OpenCode CLI 登录态、project config、extension，也不会启用内建 file/shell/web/edit tools。
 - `qoder-agent-sdk`：可选 public runtime。它只暴露 request-scoped SmartPerfetto MCP 工具，支持本机 `qodercli` 登录态或 PAT；每轮都开启新的 provider session，不持久化 opaque state。SDK/CLI 有独立条款，因此 SDK 是显式启用的 optional peer，默认不会安装。
 
@@ -285,7 +285,7 @@ OPENAI_LIGHT_MODEL=gpt-5.4-mini
 
 官方 OpenAI 直连应保持 `OPENAI_AGENTS_PROTOCOL=responses`。`chat_completions` 是兼容网关兜底，不是官方 OpenAI 的推荐路径。两种协议都不会续接之前的 provider response：每个问题都从新的模型上下文加 SmartPerfetto 有界的 typed history 开始。
 
-主分析可选 `OPENAI_ANALYSIS_REASONING_EFFORT=low`；省略时保留服务商默认。可配置 `none/minimal/low/medium/high/xhigh/max`，实际合法组合由所选模型、接口和当前 SDK 决定。GLM 5.3 Flash 强制思考，不能设置 `none`；已识别的 DeepSeek Chat 将 `none` 映射为关闭思考。当前 adapter 仅在已识别且支持的 Chat 接口支持显式 `max`，未知网关和 Responses 的 `max` 暂不支持。此变量只作用于主分析和普通续写，不覆盖分类、声明修复、超时收尾或语义审核。切换后新建会话；active Provider Manager 的隔离配置优先于 ambient env。较低强度可能改变准确性，应按实际任务验证，不能凭 Flash 型号推断时延。
+主分析可选 `OPENAI_ANALYSIS_REASONING_EFFORT=low`；省略时保留服务商默认。可配置 `none/minimal/low/medium/high/xhigh/max`，实际合法组合由所选模型、接口和当前 SDK 决定。GLM 5.3 Flash 强制思考，不能设置 `none`；已识别的 DeepSeek Chat 将 `none` 映射为关闭思考。当前 adapter 仅在已识别且支持的 Chat 接口支持显式 `max`，未知网关和 Responses 的 `max` 暂不支持。此变量只作用于主分析和普通续写，不覆盖分类或超时收尾。切换后新建会话；active Provider Manager 的隔离配置优先于 ambient env。较低强度可能改变准确性，应按实际任务验证，不能凭 Flash 型号推断时延。
 
 Ollama 或 OpenAI-compatible gateway 走 Chat Completions 协议：
 
@@ -325,7 +325,7 @@ OAuth 使用 `credential:{"type":"oauth","refresh":"...","access":"...","expires
 只对 Pi 内建且声明 OAuth 的 provider 生效；SmartPerfetto 不在分析请求中启动交互式登录，
 临近过期时由该 provider 的 Pi OAuth refresh 契约在实例私有 credential store 中串行刷新。
 真实模型路径会使用 SmartPerfetto 共享 prompt、SQL/Skill、
-plan/hypothesis 和 report/claim-verification 管线。`SMARTPERFETTO_PI_AGENT_CORE_FAKE_STREAM=1`
+plan/hypothesis 和 finalization/report 管线。`SMARTPERFETTO_PI_AGENT_CORE_FAKE_STREAM=1`
 仅用于 smoke/test，不能代表真实分析效果。
 
 上面的 `openai-responses` 示例适合官方 OpenAI Responses API。接入只兼容
@@ -522,10 +522,10 @@ OpenAI runtime 的 `maxTurns × per-turn timeout`（full 模式再受上面的�
 `AGENT_MAX_HISTORY_BYTES` / `OPENAI_MAX_HISTORY_BYTES` 默认 4 MiB，只限制本轮续写/恢复调用可重发的
 当前 run transcript，超出时不会完整重发；Artifact、DataEnvelope、报告和证据来源不会因此被截断。
 
-`SMARTPERFETTO_REVIEW_STOP_WATCHDOG_MS`（默认 15000，不低于 10000，高于 SQLite 5 秒 busy
-timeout）限制用户停止核验（Web、对话或 CLI Ctrl-C）之后 run 保存结论可用的时间，只在这类停止时
-启动。到时仍未保存时，用户读到的结论作为未核验、不完整的回合保留（私有知识或授权已撤销时除外），
-然后停止 run；CLI 则停止本轮且不保存。
+`SMARTPERFETTO_REVIEW_STOP_WATCHDOG_MS`、`SMARTPERFETTO_FINAL_SUBMISSION` 和
+`SMARTPERFETTO_CONCLUSION_AUTHORING` 已废弃。分析交付普通 assistant 回答，之后不再有复核步骤，
+停止即取消 run。看门狗变量不再读取；final submission 或声明语法变量只告警一次并回退到
+`assistant_text`。它们都不会导致启动或运行失败，可从 `.env` 中删除。
 
 分析模式由请求体 `options.analysisMode` 控制：
 

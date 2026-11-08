@@ -436,7 +436,7 @@ Workspace-scoped agent base 为 `/api/workspaces/:workspaceId/agent`，其子路
 
 `/conversation` 接口都要求 `agent:run`，并在每次访问时重验 tenant、workspace、
 user owner。`POST /conversation` 返回 `sessionId` 和精确 `runId`；同一 session 的新消息
-会先停止旧 run 并至多等待一个复核停止看门狗时长（见下文）让它提交，再占用新 run。没有 `traceId` 时 runtime 不暴露 Trace 工具；传入
+会先停止旧 run 并等待它完成终态提交，再占用新 run。没有 `traceId` 时 runtime 不暴露 Trace 工具；传入
 codebase/knowledge source 仍须通过与 `/analyze` 相同的权限、注册根目录、权利确认和
 provider 发送同意。私有 query、工具正文和错误在进入 SSE 重放或持久化前完成投影。
 
@@ -456,8 +456,8 @@ provider 发送同意。私有 query、工具正文和错误在进入 SSE 重放
 优先打开精确运行的 snapshot，回退内容明确标为会话历史，不冒充所选运行的结果。
 
 `GET /conversation/:sessionId/status` 返回 `work` 和 `context` 元数据。它不恢复 runtime、
-加载完整历史、执行 Trace SQL、调用模型或延长会话活跃时间。`work.phase` 区分分析、复核、
-等待输入、可查看结果、已结束但没有可查看结果，以及中断等状态；`hasResult` 与执行终态
+加载完整历史、执行 Trace SQL、调用模型或延长会话活跃时间。`work.phase` 区分分析、
+等待输入、可查看结果、已结束但没有可查看结果，以及中断等状态（`reviewing` 是当前后端不再报告的旧值）；`hasResult` 与执行终态
 保持独立。工具活动与 capture 注册数仅作诊断，不能推断核验通过；未观察到的计数不补零。
 无进程内会话时，补充队列为 `availability: unavailable`，不能解释为已经消费。
 
@@ -468,7 +468,7 @@ provider 发送同意。私有 query、工具正文和错误在进入 SSE 重放
 
 回执的 `accepted` 表示已暂存，`appliesTo: next_user_turn`、`durability: process_memory`
 明确其生效时机与存储性质；当前运行继续执行，不会因补充自动启动下一轮。下一次用户问题
-成功接纳时，补充与原问题组成同一冻结请求，供意图判断、分析、核验和授权历史共同使用。
+成功接纳时，补充与原问题组成同一冻结请求，供意图判断、分析、finalization 和授权历史共同使用。
 启动回执的 `context.consumedContextIds` 列出本轮使用的补充。接纳失败保留待用内容；
 接纳后执行失败不自动重放。后端重启或会话清理后须重新提交，状态读取不返回补充正文。
 
@@ -480,28 +480,18 @@ provider 发送同意。私有 query、工具正文和错误在进入 SSE 重放
 用它核对当前来源选择，恢复活跃会话的补充能力；它不进入状态列表或浏览器 locator，
 也不会自动改变用户的来源设置。
 
-语义复核一旦发出，流先发送一次 `provisional_answer`（`message` 为经 owner 投影的最终正文，
-`verification: "pending"`）：正文已定稿、可以阅读，但核验结论尚未产生；客户端应保持 run
-活跃，不写入历史，等 `run_completed` 用同一条消息补上结论。答案出现后的第一次取消只停止
-复核并立即返回 `{success: true, sessionId, runId, status: "review_stop_requested"}`；随后
-run 带着 `cancelled_by_user` 未核验原因提交本轮，流以 `run_completed` 送达，历史与用户读到
-的正文一致。第二次取消是强制停止：在同一看门狗时限内等待该提交，然后返回已落定的结果类型
-（`status: "answered"` 等，或 `"cancelled"`）。答案出现前的取消是完整取消，返回
-`status: "cancelled"`，除取消标记外不保存任何内容。看门狗
-（`SMARTPERFETTO_REVIEW_STOP_WATCHDOG_MS`，默认 15000，不低于 10000）只在这类停止时启动；
-到时 run 仍未提交时，把用户读到的正文存为不完整回合（`completion.status: incomplete`、
-`terminationReason: "review_not_finished"`、断言核验 `not_checked`），沿用该 run 自己的来源
-分区，然后中止 run。私有知识 run、授权已被撤销或已失去 session 的 run 不保存该正文，直接取消。
-历史读取与预览把这种回合呈现为不完整。每个 run 只有一次终态写入：descriptor 与本轮记录在同一个
-SQLite 事务中提交，已是终态的回合不会被再次写入。
-只有 `✓` 仍可达或有义务需要复核时才会发出复核（见下文 `/analyze` 的说明）；不需要复核时不发送
-`provisional_answer`，也没有复核进度，答案直接随 `run_completed` 出现。
+答案随 `run_completed` 出现；当前后端不发送 `provisional_answer`，也没有复核进度或“只停复核”。
+取消会先让 run 落定再返回已落定的结果类型（`status: "answered"` 等，或 `"cancelled"`）；取消生效时
+除取消标记外不保存任何内容。每个 run 只有一次终态写入：descriptor 与本轮记录在同一个 SQLite
+事务中提交，已是终态的回合不会被再次写入。旧版本保存的回合可能带有
+`terminationReason: "review_not_finished"`，历史读取与预览把它呈现为不完整。客户端可继续为旧服务端
+处理 `provisional_answer` 与 `status: "review_stop_requested"`。
 
 runtime 声明 `draftAnswerStreaming` 能力（当前为 Claude 与 OpenAI）时，定稿前模型正在写的答案
 会以 `runtime_update` 形式实时发送：`update.type` 为 `answer_token`（`content` 为
 `{token, runId, attempt}`，已剥离声明 sidecar、经 owner 投影、按约 200 ms / 256 字合并）或
 `answer_segment_reset`（`{runId, attempt}`，撤回此前显示的草稿，例如模型随后调用了工具、
-续写或重试）。草稿只供显示：客户端丢弃 `attempt` 更旧的事件，`provisional_answer` 或
+续写或重试）。草稿只供显示：客户端丢弃 `attempt` 更旧的事件，
 `run_completed` 在同一条消息上替换它，停止时草稿换成取消提示；它不进入重放缓冲、历史或
 任何持久化，断线重连不会重放。其他 runtime 不发送草稿。进度标签只来自 `progress` 类型的
 `runtime_update`。
@@ -568,20 +558,20 @@ curl -X POST http://127.0.0.1:3000/api/agent/v1/<sessionId>/cancel \
 取消终态可以先返回给客户端，但同一 session 的下一轮会在被取消的 runtime 真正退出前返回
 `409 CANCELLATION_IN_PROGRESS`，避免旧 run 的清理或会话状态污染新 run。
 
-先交付、后核验：语义复核发出时，流发送一次 `conclusion`，`data` 为
-`{conclusion, provisional: true, verification: "pending"}`。正文与之后
-`analysis_completed` 的正文一致（复核不能改写正文，终态只会追加完整性提示），但核验
-结论和 `!`/`~` 等终态标记只来自 `analysis_completed`。客户端应保持 run 活跃（加载态、
-停止按钮、会话锁），在收到 `analysis_completed` 时替换同一条消息；若在此之前收到
-`error`、`analysis_cancelled` 或断流，保留正文并标为未完成核验。runtime 自身的
-`conclusion` 不再转发。私有知识 session 的这条事件只进内存重放缓冲，不写入
-持久化事件库。scene 运行不发送它。
+最终化完成后、报告与快照生成前，流发送一次 `conclusion`，`data` 只有 `conclusion`（最终化并经
+owner 投影的正文）。正文与之后 `analysis_completed` 的正文一致，但交付保证和 `!`/`~` 等终态标记
+只来自 `analysis_completed`。客户端立即按最终答案显示它，并保持 run 活跃（加载态、停止按钮、
+会话锁）直到 `analysis_completed`；若在此之前收到 `error`、`analysis_cancelled` 或断流，保留正文并
+标为未完成。runtime 自身的 `conclusion` 不再转发。私有知识 session 的这条事件只进内存重放缓冲，
+不写入持久化事件库。scene 运行不发送它。当前后端不再发送带 `provisional: true` /
+`verification: "pending"` 的 `conclusion`，也不发送 `final_review` 进度；客户端可继续为旧服务端
+处理它们。
 
 答案草稿：runtime 具备 `draftAnswerStreaming` 能力（当前为 Claude 与 OpenAI）时，定稿前
 流会发送只供显示的 `answer_token`（`data` 为 `{token, runId, attempt}`，已剥离声明 sidecar、
 经 owner 投影、按约 200 ms / 256 字合并）和 `answer_segment_reset`（`{runId, attempt}`：
 撤回已显示的草稿，发生在模型响应开始、同一响应里已写出文字后又调用工具、以及续写/重试之前）。
-客户端丢弃 `attempt` 更旧或属于其他 run 的事件，收到 reset 时清空草稿；临时或最终
+客户端丢弃 `attempt` 更旧或属于其他 run 的事件，收到 reset 时清空草稿；最终
 `conclusion` 在同一条消息上替换草稿，停止、错误或断流时草稿被丢弃（停止时换成取消提示），
 草稿本身从不写入浏览器存储。所有 session 的草稿事件都不带 SSE `id`、不进内存重放缓冲，也不
 写入持久化事件库，重连不会重放。使用注册源码或知识库的 session 只向本人发送草稿，并且经过
@@ -589,41 +579,26 @@ owner 投影；被拆在多个 token 或多行里的凭据，会一直扣住到�
 任何内容，本次 run 的草稿就用 `answer_segment_reset` 撤回，之后不再发送草稿，最终化时收到
 投影后的正文。其他 runtime 不发送草稿。
 
-复核只在 `✓` 仍可达或有义务需要它时才发出：报告型交付、存在选区、有源码访问或声明里
-有源码字段、调查要求已解析且至少一条不能由证据台账直接判为不适用、至少一条声明断言在
-"复核完美通过"的假设下能得到 `passed`（即 `✓` 仍可达），或零断言的纯确认回合。其余回答
-（包括没有声明、零断言的事实回答、断言无法得到有限证明的回答）不发复核：断言核验记为
-`partial`，未核验原因为 `not_required`，终态为 `~`，不会是 `✓`。这是接受的残余风险：只有复核
-才能发现的矛盾此时不会被发现（答案保持 `~` 而不是 `!`）；有限证明得出的 `unsupported` 仍给出 `!`。此时流不发送临时
-`conclusion` 和复核进度，而是在最终化完成后、报告与快照生成前发送一次普通 `conclusion`
-（`data` 只有 `conclusion`，没有 `provisional`/`verification`），结论判定仍只随
-`analysis_completed` 到达；客户端立即按最终答案显示它（没有待核验标记），但同样保持 run
-活跃直到 `analysis_completed`；私有知识 session 同样只进内存重放缓冲。声明不合格时复核同样
-不发送，未核验原因保持 `invalid_declarations`。
+finalizer 不调用模型，也不逐条核验断言：数据准确性来自 Skill 与 SQL。新结果不携带
+`claimVerificationResult` 或 `claimSupport`。`deliveryAssurance` 检查 `completion`（原生完成事实）
+和 `identity`（双 Trace 对比身份），用下文的引用检查标注 `source`，并把 `claims`、`report`、
+`investigation` 和 `investigationEvidence` 记为 `not_applicable`。completion 通过时终态标记为 `✓`；
+`~` 只用于 `failed` 或 `coverage_incomplete` 的维度，`!` 表示 partial run。已保存的结果保留历史
+断言核验并原样展示。
 
-`conclusion` 之后对同一 `runId` 的取消只停止复核：返回 `200`，`status` 为非终态的
-`review_stop_requested`，`runStatus: "running"`；run 继续完成，复核记为
-`not_checked` / `cancelled_by_user`（非报告回合为 `~`，报告回合因
-`report_assessment_not_checked` 为 `!`），并照常发送 `analysis_completed` 与持久化。
-"停止并改问"应等待该 `analysis_completed` 后再发送新问题。临时答案之后的第一次取消总是只停核验
-（复核已结束时为空操作，结论照常保留）；对同一 `runId` 的第二次取消视为强制停止：先在第一次
-取消启动的复核停止看门狗时限内等待 run 提交，再走完整取消（`analysis_cancelled`）。若 run 在
-这段时间内提交，强制停止返回 `200`、`status: "completed"`、`outcome: "committed"`；
-若未提交，非私有且授权仍有效的 run 把用户读到的正文存为未核验的不完整回合
-（`terminationReason: "review_not_finished"`，随 `analysis_completed` 及报告发布），取消返回
-`200`、`status: "completed"`、`outcome: "review_not_finished"`；否则完整取消。两种 `completed`
-情况下该回合都随 `analysis_completed` 送达。没有第二次取消时
-看门狗同样生效。
+对同一 run 的取消即完整取消（`analysis_cancelled`），没有“只停复核”。当前后端不再返回
+`status: "review_stop_requested"`，也不再返回强制停止结果 `committed` / `review_not_finished`。
 
 终态 `analysis_completed` 事件可能携带 `analysisReceipt`、
-`uiActionProposals` 和经安全投影的 `conclusionContract.sourceUseDecision` /
-`sourceClaimBindings` 与 `sourceClaimVerificationResult`。`sourceUseDecision` 区分
-selected / queried / used codebase、status / reason code 和搜索 coverage；
-`sourceClaimBindings` 把 claim 关联到本轮源码引用和同一 claim 的 Trace 证据。
-`sourceClaimVerificationResult`（`source_claim_verifier@2`）的 `claims[].status` 为
-`invalid|unbound|location_only|source_only|trace_linked`，`citations[]` 记录正文
-写出的源码位置与本轮引用的比对（`verified_body|located|unmatched|ambiguous`）；
-历史结果可能仍是带 `mechanismStatus` 的 `@1`。`CodeRef` 只能解释机制，不能单独
+`uiActionProposals` 和经安全投影的 `conclusionContract.sourceUseDecision` 与
+`sourceClaimVerificationResult`。`sourceUseDecision` 区分 selected / queried / used
+codebase、status / reason code 和搜索 coverage。`sourceClaimVerificationResult`
+（`source_claim_verifier@2`）只在本轮有源码访问且正文写出源码位置时出现：`citations[]`
+记录每个位置与本轮引用的比对（`verified_body|located|unmatched|ambiguous`）。全部匹配时
+源码为 `passed`；未匹配或有歧义的引用记为提示性的 `coverage_incomplete`；没有访问或没有
+引用时为 `not_applicable`。新结果不再携带 `sourceClaimBindings` 或逐 claim 的
+`claims[].status`；历史结果保留它们（`invalid|unbound|location_only|source_only|trace_linked`），
+也可能仍是带 `mechanismStatus` 的 `@1`。`CodeRef` 只能解释机制，不能单独
 提高现象或根因置信度；`metadata_only` 为 locate-only。投影不包含绝对 root、
 snippet、检索 query 或模型自由文本 binding reason。
 

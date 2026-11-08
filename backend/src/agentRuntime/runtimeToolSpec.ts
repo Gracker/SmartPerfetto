@@ -635,19 +635,11 @@ function parseJsonContainerString(value: string): unknown {
  * handler sees them; required fields and nested values are left to the handler.
  */
 const literalRuntimeStringFields = new WeakSet<object>();
-const literalRuntimeJsonFields = new WeakSet<object>();
 
 /** Opt a text-data field out of selector placeholder coercion. Apply after
  * optional()/describe(); the marker stays private and never enters JSON schema. */
 export function preserveRuntimeLiteralStrings<T extends z.ZodType>(field: T): T {
   literalRuntimeStringFields.add(field);
-  return field;
-}
-
-/** Keep this schema-owned JSON subtree literal. The handler still validates its
- * original shape and material limits; neither this marker nor the value grants authority. */
-export function preserveRuntimeLiteralJson<T extends z.ZodType>(field: T): T {
-  literalRuntimeJsonFields.add(field);
   return field;
 }
 
@@ -658,7 +650,6 @@ function dropOptionalPlaceholders(
   return Object.fromEntries(Object.entries(args).filter(([key, value]) => {
     const field = inputSchema[key];
     if (!field || (value !== null && !isPlaceholderToolString(value))) return true;
-    if (literalRuntimeJsonFields.has(field)) return true;
     if (typeof value === 'string' && literalRuntimeStringFields.has(field)) return true;
     return !z.safeParse(field, undefined).success;
   }));
@@ -702,8 +693,7 @@ function normalizeRuntimeToolArgValue(value: unknown, inputSchema?: z.ZodRawShap
   return Object.fromEntries(
     Object.entries(value).map(([key, nested]) => {
       const field = inputSchema?.[key];
-      const literal = (field && literalRuntimeJsonFields.has(field)) ||
-        (typeof nested === 'string' && requiresStringInput(field));
+      const literal = typeof nested === 'string' && requiresStringInput(field);
       return [key, literal ? nested : normalizeRuntimeToolArgValue(nested)];
     }),
   );

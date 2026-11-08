@@ -10,10 +10,6 @@
     {
       "id": "total_frames",
       "kind": "numeric",
-      "columns": [
-        "total_frames"
-      ],
-      "verification": "proved",
       "unit": "frames",
       "oracle": {
         "sql": "INCLUDE PERFETTO MODULE android.frames.timeline; WITH frames AS (SELECT upid, COALESCE(NULLIF(name, ''), CAST(surface_frame_token AS TEXT), CAST(display_frame_token AS TEXT), CAST(id AS TEXT)) AS frame_id FROM actual_frame_timeline_slice WHERE ts IS NOT NULL AND dur IS NOT NULL AND dur >= 0 GROUP BY upid, frame_id) SELECT COUNT(*) AS total_frames, (SELECT start_ts FROM trace_bounds) AS start_ts, (SELECT end_ts FROM trace_bounds) AS end_ts FROM frames",
@@ -23,17 +19,11 @@
     }
   ],
   "investigation": {
-    "contentAssurance": "passed",
-    "evidenceAssurance": "passed",
-    "assessmentStatus": "checked",
     "requirements": [
       {
         "id": "cpu_capacity",
         "domain": "cpu_capacity",
-        "applicability": "applicable",
-        "coverage": "covered",
         "acquisition": "observed",
-        "scopeMatch": "matched",
         "records": [
           {
             "metricId": "system.cpu.busy.duration",

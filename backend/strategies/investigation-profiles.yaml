@@ -80,7 +80,7 @@ profiles:
           requested scope. Each finding has adjacent readable evidence (interval,
           identity, measurement/unit/denominator and operation/state), mechanism or
           explicit uncertainty, and performance impact. Include actual source-based
-          explanations when available; hidden declarations or aggregate tables alone
+          explanations when available; aggregate tables alone
           do not fulfill this obligation. Preserve unresolved findings and explain
           rejected/superseded ones. Do not inflate alerts into causes or require an
           arbitrary finding count, fixed format or unrelated scene-wide investigation.

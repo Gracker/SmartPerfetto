@@ -4,7 +4,7 @@
 import {currentRunManifestAttributionSink} from '../services/selfEvolution/runManifestLifecycle';
 import {bindRuntimePerformanceContext, currentModelRequestPurpose, resolveRuntimePerformanceRecorder,
   type RuntimePerformanceSource} from './runtimePerformanceContext';
-import {MODEL_REQUEST_COMPONENTS, type ModelRequestBodyMetrics, type RuntimeModelCallPurpose,
+import {MODEL_REQUEST_COMPONENTS, type ModelRequestBodyMetrics, type RuntimeModelDispatchPurpose,
   type RuntimeModelCallTrigger, type RuntimeModelRequestSpan} from './runtimePerformance';
 
 type Component = typeof MODEL_REQUEST_COMPONENTS[number];
@@ -87,7 +87,7 @@ export function measureModelRequestBody(body: unknown): ModelRequestBodyMetrics 
 const observedFetches = new WeakSet<typeof fetch>();
 export function createModelRequestMetricsFetch(baseFetch: typeof fetch, options: {
   source?: RuntimePerformanceSource;
-  purpose?: () => {purpose?: RuntimeModelCallPurpose; trigger?: RuntimeModelCallTrigger};
+  purpose?: () => {purpose?: RuntimeModelDispatchPurpose; trigger?: RuntimeModelCallTrigger};
 } = {}): typeof fetch {
   if (observedFetches.has(baseFetch)) return baseFetch;
   const wrapped: typeof fetch = bindRuntimePerformanceContext((input, init) => {

@@ -133,12 +133,6 @@ async function finalizeCurrentSurfaceFixture(draft: AnalysisResult, envelope: Da
       completion: {...candidate, schemaVersion: 1, status: 'completed', runtimeKind: 'openai-agents-sdk'}},
     evidenceReadView: store.createEvidenceReadView({ownerKey: runId,
       allowedTraces: [{traceId, traceSide: 'current'}]}),
-    // Deterministic semantic transport fixture; the real finalizer still requires captured proof.
-    dispatchText: async () => ({status: 'ok', text: JSON.stringify({schemaVersion: 'final_semantic_response@1',
-      bodyCoverage: {status: 'complete', reviewedSpans: [{start: 0, end: draft.conclusion.length}]},
-      claims: [{claimId: 'claim-1', consistency: 'consistent',
-        contentLocations: [{start: 0, end: draft.conclusion.length, text: draft.conclusion}], issues: []}],
-      omissions: [], requirements: []})}),
   });
   return finalizeAnalysisResult({result: draft, context: takeFinalizationContext(draft),
     owner: {runId, signal: new AbortController().signal, isCurrent: () => true, assertAuthorized: () => {}},
@@ -257,16 +251,14 @@ describe('source provenance output surface matrix', () => {
       const actualSourceUse = sanitizeSourceUseDecision(sourceUseDecision)!;
       const finalized = await finalizeCurrentSurfaceFixture(draft, envelope, actualSourceUse);
       const result = finalized.result;
-      const contract = result.conclusionContract!;
-      expect(finalized.semanticAssessment?.coverage).toMatchObject({body: 'complete', claims: 'complete'});
+      const contract = result.conclusionContract;
       expect(result.completion).toMatchObject({status: 'completed', candidateRef: 'source-surfaces:1',
         conclusionFingerprint: analysisDeliveryFingerprint(body)});
-      expect(result.claimVerificationResult).toMatchObject({schemaVersion: 'claim_verifier@2', status: 'passed', passed: true,
-        claimResults: [{claimId: 'claim-1', status: 'verified', deterministicProof: {status: 'proved'}}]});
+      // Declared claims are retired: no claim verdict, and the source check is citation-only.
+      expect(result).not.toHaveProperty('claimVerificationResult');
       expect(result.sourceClaimVerificationResult).toMatchObject({schemaVersion: 'source_claim_verifier@2', status: 'passed',
-        claims: [{claimId: 'claim-1', status: 'trace_linked', sourceReferenceIds: [reference.id],
-          traceEvidenceRefIds: ['trace-evidence-1']}],
-        citations: [{filePath, status: 'verified_body', sourceReferenceId: reference.id}]});
+        claims: [], bindings: [], citations: [{filePath, status: 'verified_body', sourceReferenceId: reference.id}]});
+      expect(result.deliveryAssurance).toMatchObject({source: 'passed', claims: 'not_applicable'});
       expect(result.conclusion).toBe(body);
       expect(JSON.stringify(result)).not.toContain('SECRET_');
       expect(JSON.stringify(result)).not.toContain('/Users/chris/private-source');
@@ -300,8 +292,8 @@ describe('source provenance output surface matrix', () => {
       );
       const sseResult = JSON.parse(sseEvent.eventData).data;
       const sseContract = sseResult.conclusionContract;
-      expect(sseResult).toMatchObject({success: true, conclusion: body,
-        completion: wireResult.completion, claimVerificationResult: wireResult.claimVerificationResult});
+      expect(sseResult).toMatchObject({success: true, conclusion: body, completion: wireResult.completion});
+      expect(sseResult.claimVerificationResult).toBeUndefined();
       expect(JSON.stringify(initialSseData)).not.toContain('/Users/chris/private-source');
       expect(JSON.stringify(initialSseData)).not.toContain('SECRET_');
 
@@ -341,7 +333,7 @@ describe('source provenance output surface matrix', () => {
       expect(reportData.result.claimVerificationResult).toEqual(result.claimVerificationResult);
       const html = new HTMLReportGenerator().generateAgentDrivenHTML(reportData);
       expect(html).toContain(filePath);
-      expect(sseContract.sourceUseDecision.references[0]).toMatchObject({filePath, lineRange: {start: 10, end: 12}});
+      expect(sseResult.sourceUseDecision.references[0]).toMatchObject({filePath, lineRange: {start: 10, end: 12}});
       persistReport(reportId, {
         html,
         generatedAt: 1,
@@ -401,7 +393,7 @@ describe('source provenance output surface matrix', () => {
         'utf8',
       ));
       const cliVerification = JSON.parse(fs.readFileSync(path.join(sp.turnsDir, '001.claim-verification.json'), 'utf8'));
-      expect(cliVerification).toEqual(wireResult.claimVerificationResult);
+      expect(cliVerification).toBeNull();
       const cliEvidence = JSON.parse(fs.readFileSync(path.join(sp.turnsDir, '001.analysis-evidence.json'), 'utf8'));
       expect(cliEvidence.evidence).not.toBeNull();
       const canonicalTurnBody = '# Turn 1\n\n## Conclusion\n\n' + body + '\n';
@@ -422,8 +414,6 @@ describe('source provenance output surface matrix', () => {
         expect(rendered).toContain('source_use_decision@1');
         expect(rendered).toContain(reference.id);
         expect(rendered).toContain(filePath);
-        expect(rendered).toContain('claim-1');
-        expect(rendered).toContain('trace_linked');
         expect(rendered).not.toContain('/Users/chris/private-source');
         expect(rendered).not.toContain('SECRET_');
       }
@@ -498,16 +488,11 @@ describe('source provenance output surface matrix', () => {
       const cliJson = JSON.parse(fs.readFileSync(cliJsonExport, 'utf8'));
       const clientDecisions = {
         'sse-live': liveData.sourceUseDecision,
-        'sse-live-contract': liveData.conclusionContract.sourceUseDecision,
         'sse-replay': sseResult.sourceUseDecision,
-        'sse-replay-contract': sseContract.sourceUseDecision,
         status: statusResponse.body.result.sourceUseDecision,
-        'status-contract': statusResponse.body.result.conclusionContract.sourceUseDecision,
         'turn-detail': turnDetail.result?.sourceUseDecision,
-        'turn-detail-contract': (turnDetail.result as any)?.conclusionContract.sourceUseDecision,
         report: reportRouteResponse.body.report.sourceUseDecision,
-        'report-contract': reportRouteResponse.body.report.conclusionContract.sourceUseDecision,
-        'snapshot-api-contract': apiContract.sourceUseDecision,
+        'snapshot-api': snapshotResponse.body.snapshot.summary.sourceUseDecision,
         'cli-json': cliJson.sourceUseDecision,
       };
       for (const [name, decision] of Object.entries(clientDecisions)) {
@@ -518,11 +503,16 @@ describe('source provenance output surface matrix', () => {
       for (const rendered of [cliShow, cliMarkdown]) expect(rendered).toContain(renderedCounts);
       const storedDecisions = {
         result: result.sourceUseDecision,
-        'result-contract': contract.sourceUseDecision,
         'cli-file': cliDecision,
         'cli-evidence': cliEvidence.evidence.sourceUseDecision,
-        snapshot: snapshotContract.sourceUseDecision,
+        snapshot: snapshot!.summary.sourceUseDecision,
       };
+      // The source ledger is a result field; a new answer's derived contract carries no copy of it.
+      for (const [name, copy] of Object.entries({result: contract, sse: sseContract, live: liveData.conclusionContract,
+        status: statusResponse.body.result.conclusionContract, report: reportRouteResponse.body.report.conclusionContract,
+        snapshot: snapshotContract, 'snapshot-api': apiContract})) {
+        expect({name, sourceUseDecision: (copy as any)?.sourceUseDecision}).toEqual({name, sourceUseDecision: undefined});
+      }
       for (const [name, decision] of Object.entries(storedDecisions)) {
         expect({name, stored: decision !== undefined, counts: (decision as any)?.referenceCounts})
           .toEqual({name, stored: true, counts: undefined});
@@ -532,10 +522,9 @@ describe('source provenance output surface matrix', () => {
 
       const expectedDecision = normalizedDecision(wireResult.sourceUseDecision);
       const expectedBindings = normalizedBindings(wireResult.conclusionContract?.sourceClaimBindings);
-      expect(expectedBindings).toEqual([{claimId: 'claim-1',
-        sourceReferenceIds: [reference.id], traceEvidenceRefIds: ['trace-evidence-1']}]);
+      expect(expectedBindings).toEqual([]);
       const surfaces = [
-        {name: 'sse', decision: sseContract.sourceUseDecision, bindings: sseContract.sourceClaimBindings},
+        {name: 'sse', decision: sseResult.sourceUseDecision, bindings: sseContract?.sourceClaimBindings},
         {
           name: 'report-data',
           decision: reportData.sourceContext?.sourceUseDecision,
@@ -544,10 +533,11 @@ describe('source provenance output surface matrix', () => {
         {name: 'cli', decision: cliDecision, bindings: cliBindings},
         {
           name: 'snapshot',
-          decision: snapshotContract.sourceUseDecision,
-          bindings: snapshotContract.sourceClaimBindings,
+          decision: snapshot!.summary.sourceUseDecision,
+          bindings: snapshotContract?.sourceClaimBindings,
         },
-        {name: 'snapshot-api', decision: apiContract.sourceUseDecision, bindings: apiContract.sourceClaimBindings},
+        {name: 'snapshot-api', decision: snapshotResponse.body.snapshot.summary.sourceUseDecision,
+          bindings: apiContract?.sourceClaimBindings},
       ];
       for (const surface of surfaces) {
         expect({name: surface.name, value: normalizedDecision(surface.decision)})

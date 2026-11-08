@@ -62,54 +62,20 @@ describe('progress-aware run deadline', () => {
 
   it('keeps a finalization reserve that a delivery call cannot consume', () => {
     const deadline = createProgressAwareRunDeadline(budget);
-    expect(deadline.finalizationReserveMs).toBe(40 * S);
-    // investigation stopped at 3000 s: delivery may use 600 − 40 s, finalization the rest
-    expect(deadline.deliveryWindowMs(3000 * S)).toBe(560 * S);
-    expect(deadline.finalizationDeadlineAt(3100 * S, 3560 * S)).toBe(3600 * S);
+    // Finalization makes no model call: one bounded evidence read (1.5 s) plus a 1 s margin,
+    // independent of the per-turn model estimate.
+    expect(deadline.finalizationReserveMs).toBe(2500);
+    expect(createProgressAwareRunDeadline({...budget, perTurnMs: 400 * S}).finalizationReserveMs).toBe(2500);
+    // investigation stopped at 3000 s: delivery may use 600 − 2.5 s, finalization the rest
+    expect(deadline.deliveryWindowMs(3000 * S)).toBe(600 * S - 2500);
+    expect(deadline.finalizationDeadlineAt(3100 * S, 3600 * S - 2500)).toBe(3600 * S);
     // Without a delivery call the unspent delivery reserve funds finalization, bounded from now:
     // an early finish keeps the longer of its own deadline and that window, and nothing passes hard.
     expect(deadline.finalizationDeadlineAt(100 * S)).toBe(2000 * S);
     expect(deadline.finalizationDeadlineAt(1995 * S)).toBe(2595 * S);
     expect(deadline.finalizationDeadlineAt(3590 * S)).toBe(3600 * S);
     // a delivery call that ran keeps only the fixed finalization reserve after its own window
-    expect(deadline.finalizationDeadlineAt(3100 * S, 3200 * S)).toBe(3240 * S);
-  });
-
-  it.each([
-    // Captured acceptance-20261013 receipts: fault / low-memory / ANR repairs
-    // cancelled against investigation time; scroll-r2 completed in 205.973 s.
-    {sample: 'fault-a1', remaining: 39_610, duration: 153_144},
-    {sample: 'low-memory', remaining: 37_401, duration: 37_405},
-    {sample: 'scroll-r2', remaining: 25_068, duration: 205_973},
-    {sample: 'anr-extended-invalid-protocol', remaining: 22_793, duration: 332_508},
-  ])('keeps $sample completed-answer repair inside existing delivery and finalization reserves', ({remaining, duration}) => {
-    // Replay captured remaining time/duration at the tightest investigation
-    // cap, keeping the real CLI budget. Performance offsets include earlier
-    // classification and must not be substituted for this clock or base budget.
-    const deadline = createProgressAwareRunDeadline(budget);
-    deadline.recordProgress(2000 * S);
-    const investigationDeadline = deadline.current();
-    const now = investigationDeadline - remaining;
-    const repairDeadline = deadline.completedOutputRepairDeadlineAt(now);
-    expect(deadline.deliveryReserveMs).toBe(600 * S);
-    expect(deadline.finalizationReserveMs).toBe(40 * S);
-    expect(investigationDeadline - now).toBe(remaining);
-    expect(investigationDeadline).toBeLessThan(now + duration);
-    expect(repairDeadline).toBeGreaterThan(now + duration);
-    expect(repairDeadline - now).toBe(560 * S);
-    expect(repairDeadline).toBeLessThanOrEqual(deadline.hardDeadlineAt - deadline.finalizationReserveMs);
-    expect(deadline.current()).toBe(investigationDeadline);
-    expect(deadline.hardDeadlineAt).toBe(3600 * S);
-  });
-
-  it('does not shorten an existing longer window or restart an exhausted protocol-repair budget', () => {
-    const deadline = createProgressAwareRunDeadline(budget);
-    expect(deadline.completedOutputRepairDeadlineAt(100 * S)).toBe(2000 * S);
-    expect(deadline.completedOutputRepairDeadlineAt(3590 * S)).toBe(3560 * S);
-    expect(deadline.completedOutputRepairDeadlineAt(4000 * S)).toBe(3560 * S);
-    const fixedDeadline = createProgressAwareRunDeadline({...budget, maxRunMs: budget.baseBudgetMs});
-    expect(fixedDeadline.completedOutputRepairDeadlineAt(1990 * S)).toBe(2000 * S);
-    expect(fixedDeadline.completedOutputRepairDeadlineAt(3000 * S)).toBe(2000 * S);
+    expect(deadline.finalizationDeadlineAt(3100 * S, 3200 * S)).toBe(3200 * S + 2500);
   });
 
   it('bounds the unused-reserve window by the reserve itself, never by the whole hard budget', () => {
@@ -117,15 +83,6 @@ describe('progress-aware run deadline', () => {
     // investigation ended at 1800 s with 1800 s left before hard: finalization gets 600 s, not 1800 s
     expect(deadline.finalizationDeadlineAt(1800 * S)).toBe(2400 * S);
     expect(deadline.investigationLimitAt).toBe(3000 * S);
-  });
-
-  it('lets a report that will make its semantic review spend the remaining budget, never a delivery window', () => {
-    const deadline = createProgressAwareRunDeadline(budget);
-    // The review of a 176 KB report outlasted 600 s on a slow reasoning provider; hard still had 1157 s.
-    expect(deadline.finalizationDeadlineAt(1800 * S, undefined, {useRemainingBudget: true})).toBe(3600 * S);
-    expect(deadline.finalizationDeadlineAt(3590 * S, undefined, {useRemainingBudget: true})).toBe(3600 * S);
-    // A delivery call already spent the reserve: the option cannot reopen it.
-    expect(deadline.finalizationDeadlineAt(3100 * S, 3200 * S, {useRemainingBudget: true})).toBe(3240 * S);
   });
 
   it('treats a maximum below the base budget as the base budget and keeps no reserve', () => {
@@ -143,13 +100,12 @@ describe('progress-aware run deadline', () => {
     expect(deadline.hardDeadlineAt).toBe(60 * S);
     expect(deadline.snapshot(35 * S).maxRunMs).toBe(25 * S);
     expect(deadline.deliveryReserveMs).toBe(4166);
-    expect(deadline.finalizationReserveMs).toBe(277);
+    expect(deadline.finalizationReserveMs).toBe(17);
     deadline.recordProgress(58 * S);
     deadline.recordOutput(58 * S);
     expect(deadline.current()).toBe(60 * S - 4166);
     expect(deadline.extendIfStreaming(60 * S)).toBe(false);
-    expect(deadline.completedOutputRepairDeadlineAt(59 * S)).toBe(60 * S - 277);
-    expect(deadline.finalizationDeadlineAt(59 * S, undefined, {useRemainingBudget: true})).toBe(60 * S);
+    expect(deadline.finalizationDeadlineAt(59 * S)).toBe(60 * S);
     expect(deadline.deliveryWindowMs(60 * S)).toBe(0);
   });
 
@@ -160,7 +116,6 @@ describe('progress-aware run deadline', () => {
     expect(deadline.deliveryReserveMs).toBe(0);
     expect(deadline.finalizationReserveMs).toBe(0);
     expect(deadline.deliveryWindowMs(70 * S)).toBe(0);
-    expect(deadline.completedOutputRepairDeadlineAt(70 * S)).toBe(60 * S);
     expect(deadline.finalizationDeadlineAt(70 * S)).toBe(60 * S);
     deadline.recordProgress(70 * S);
     expect(deadline.current()).toBe(60 * S);

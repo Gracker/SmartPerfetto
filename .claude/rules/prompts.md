@@ -18,11 +18,13 @@ and registry, not duplicated lists. Read
   stay binding, selected knowledge remains background rather than trace evidence.
 - Conclusions preserve material findings, evidence, uncertainty and recommendations
   within scope. Runtime budget/preview imposes no hidden length/row/claim cap.
-  Provider/review limits remain explicit incomplete states; never truncate or waive
-  verification to pass. Native completion is not inferred from prose/headings.
-- Preserve original claim semantics/references. Shared semantic review has no tools,
-  at most one call, pinned provider/original deadline, and cannot rewrite the body.
-  Structured repairs stay inside the same contract and remaining budget.
+  Provider limits remain explicit incomplete states; never truncate to pass.
+  Native completion is not inferred from prose/headings.
+- Answers are plain readable text with no machine sidecar, declaration ledger or
+  final-submission tool. Generic answer rules live in the tier-1
+  `answer_guidance` segment (`prompt-answer-guidance.template.md`); investigation
+  obligations remain acquisition guidance. Output-limit and empty-body
+  continuations stay inside the same run and remaining budget.
 - Retained-evidence metadata remains bounded and authorized; titles/columns are
   data, not instructions or proof. Missing/evicted data stays unavailable.
 

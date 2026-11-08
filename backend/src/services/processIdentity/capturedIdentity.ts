@@ -129,3 +129,27 @@ export function collectCapturedIdentities(requests: readonly EvidenceReadRequest
     .sort((left, right) => left.identityRefId.localeCompare(right.identityRefId));
   return {identities: identities.map(identity => structuredClone(identity)), unresolvedSides: [...unresolved].sort()};
 }
+
+/**
+ * Resolve the process identities the run captured, through the run's own read
+ * view, in one batch. `readsFingerprint` binds the pin and exactly what was
+ * read; an incomplete, failed or cancelled batch yields no identities.
+ */
+export async function resolveRunCapturedIdentities(input: {
+  dataEnvelopes: readonly DataEnvelope[];
+  tracePin?: CapturedIdentityTracePin;
+  resolveReferences?: (requests: readonly EvidenceReadRequest[]) => Promise<readonly EvidenceReadResolution[]>;
+  signal?: AbortSignal;
+}): Promise<{identities: IdentityResolutionV1[]; readsFingerprint: string}> {
+  const requests = capturedIdentityReadRequests(input.dataEnvelopes);
+  // Pinned before any asynchronous read can change the caller's value.
+  const tracePin = freezeEvidenceValue({...input.tracePin});
+  let reads: readonly EvidenceReadResolution[] | 'execution_read_failed' = [];
+  if (requests.length && input.resolveReferences) {
+    try {reads = await input.resolveReferences(requests);}
+    catch {reads = 'execution_read_failed';}
+  }
+  const usable = typeof reads === 'string' || input.signal?.aborted ? [] : reads;
+  return {identities: collectCapturedIdentities(requests, usable, tracePin).identities,
+    readsFingerprint: evidenceCaptureHash({tracePin, requests, reads})};
+}

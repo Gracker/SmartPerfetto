@@ -2,13 +2,12 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { describe, expect, it, jest } from '@jest/globals';
+import { describe, expect, it } from '@jest/globals';
 import {
   buildAnalysisReceipt,
   buildLegacyAnalysisReceipt,
 } from '../analysisReceiptBuilder';
 import type { AgentRuntimeAnalysisResult, QuickRunReceipt } from '../../agent/core/orchestratorTypes';
-import * as finalReportContractGate from '../finalReportContractGate';
 import type { ClaimVerificationResult } from '../../types/claimVerification';
 import type { ClaimSupportV1 } from '../../types/evidenceContract';
 import type { DataEnvelope } from '../../types/dataContract';
@@ -214,9 +213,7 @@ describe('buildAnalysisReceipt', () => {
 
   it.each(['current', 'legacy'] as const)(
     'projects supplied assurance for %s receipts without re-running report interpretation', kind => {
-      const applicability = jest.spyOn(finalReportContractGate, 'assessFinalReportContractApplicability');
-      const completeness = jest.spyOn(finalReportContractGate, 'assessFinalReportContractCompleteness');
-      try {
+      {
         const result: AgentRuntimeAnalysisResult = {
           sessionId: 'assured-run', success: true, conclusion: 'The answer does not use standard report headings.',
           findings: [], hypotheses: [], confidence: 0.8, rounds: 1, totalDurationMs: 10,
@@ -226,19 +223,14 @@ describe('buildAnalysisReceipt', () => {
             completion: 'passed', claims: 'not_checked', source: 'unavailable', identity: 'not_applicable', report: 'passed'},
         };
         const before = structuredClone(result);
-        const input = {runManifestId: 'assured-manifest', result, sceneType: 'startup' as const,
+        const input = {runManifestId: 'assured-manifest', result,
           session: {sessionId: 'assured-session', traceId: 'trace-1', query: 'debug cold start first frame', analysisMode: 'full' as const}};
         const receipt = kind === 'legacy' ? buildLegacyAnalysisReceipt(input) : buildAnalysisReceipt(input);
         expect(receipt.qualityGates).toEqual({
           finalReportContract: 'passed', claimVerification: 'partial', identityResolution: 'not_applicable',
         });
-        expect(applicability).not.toHaveBeenCalled();
-        expect(completeness).not.toHaveBeenCalled();
         expect(result).toEqual(before);
         expect(result.partial).toBeUndefined();
-      } finally {
-        applicability.mockRestore();
-        completeness.mockRestore();
       }
     },
   );

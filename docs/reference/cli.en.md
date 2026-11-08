@@ -101,20 +101,15 @@ For parallel regression jobs, give each case a different
 seconds for locks; separate directories isolate test state and do not replace
 investigation of persistent contention.
 
-Session markers: `✓` delivered with checks passed or not applicable; `~`
-delivered with outstanding verification (for example an invalid declaration,
-review timeout or flagged contradiction) — inspect the details before relying
-on those claims; `!` the analysis did not finish; `✗` failed. Verification issues
-do not block the body or report, and never become a passing check merely because
-delivery finished. The claim-verification line under the conclusion separates
-claims whose references matched the captured evidence, propositions a finite
-proof established, claims the whole review verified, contradicted claims and
-values rounded without an approximation marker (unverified, not contradicted);
-whole-answer issues such as undeclared assertions, which leave the answer
-unverified (`~`) rather than contradicted, follow `also:`, and the
-review's not-checked reason is kept in every status. The HTML report and the
-receipt's claim audit use the same counts. While the final semantic review runs,
-a `final_review` progress line shows its start (with its deadline) and outcome.
+Session markers: `✓` delivered and native completion passed (axes with no
+checking mechanism are `not_applicable`); `~` delivered with an assurance axis
+that `failed` or is `coverage_incomplete` (for example a dual-trace identity
+mismatch or a written source location this run never returned), so inspect the
+details first; `!` the analysis did not finish; `✗` failed. Assurance issues do
+not block the body or report. New answers carry no declared claims, so no
+claim-verification line or `final_review` progress appears; numbers come from
+Skill and SQL results. Results saved by earlier versions still print their
+stored claim-verification line and counts.
 Without findings, confidence is a fixed baseline and
 the text output omits it. JSON/NDJSON `complete` events carry `deliveryVerdict`
 (`completed`/`unverified`/`partial`/`failed`).
@@ -547,10 +542,11 @@ CLI files are stored under:
 
 The root defaults to `~/.smartperfetto`; move it with `--session-dir` or the
 `SMARTPERFETTO_HOME` environment variable (the flag takes priority).
-`claim-support`, `claim-verification`, and `identity-resolutions` hold claim
-support, verification results, and identity resolution;
+`claim-support` and `claim-verification` keep stored claim support and verdicts
+(an empty list and `null` for new answers, which carry no declared claims);
+`identity-resolutions` holds identity resolution;
 `investigation-assessment` and `delivery-assurance` hold the investigation
-obligation assessment and delivery verification state; `analysis-receipt` is
+acquisition ledger and the delivery assurance state; `analysis-receipt` is
 the analysis receipt; `scene-report.json` points at the report only for a scene
 reconstruction turn and records an explicit none otherwise.
 `runtime-performance.json` records timing only and `tool-results.json` only the
@@ -562,16 +558,16 @@ The source sidecars exist only when the turn has canonical safe source
 provenance. Latest files are replaced by later turns; a source-free turn clears
 stale latest sidecars but preserves historical per-turn files. JSON, Markdown,
 and HTML can retain authorized `provider_send` source quotations in the analysis
-body and formal claims. The two source metadata sidecars contain only safe
-decisions, relative `CodeRef` values and mechanism bindings, without absolute
+body. The two source metadata sidecars contain only safe decisions, relative
+`CodeRef` values, citation checks and (for historical turns) mechanism bindings, without absolute
 roots, snippets, search queries or free-text binding reasons. Output projection
 continues to protect credentials, private canaries and absolute roots.
 
 `conclusion.md` and `turns/NNN.md` retain the body records. Separate
 `analysis-evidence.json` and `turns/NNN.analysis-evidence.json` files bind display
 data to the same session, turn and candidate body. Terminal output, `show` and
-Markdown export show all claims, references, verification issues and source
-bindings; JSON/NDJSON also carry structured details. A malformed or mismatched
+Markdown export show references, source citations and, for historical turns,
+stored claims and verification issues; JSON/NDJSON also carry structured details. A malformed or mismatched
 bundle is reported as unavailable without borrowing verification from another
 turn. These files are for display and do not issue evidence or rerun verification.
 
@@ -742,13 +738,11 @@ REPL commands:
 | `/clear` | Clear the terminal |
 | `/exit` | Exit |
 
-While a turn runs, Ctrl-C belongs to that turn: the first press after a printed
-answer stops only its verification and the turn is saved; the next press, or
-the first one before the answer, aborts the turn without saving and returns to
-the prompt; a further press exits with 130. With no turn running, press Ctrl-C twice within 1.5 s to exit.
+While a turn runs, Ctrl-C belongs to that turn: the first press aborts the turn
+without saving and returns to the prompt; a further press exits with 130. With no turn running, press Ctrl-C twice within 1.5 s to exit.
 
 ## System investigation output
 
-The CLI reports system investigation coverage separately from system evidence coverage, with Not checked for missing historical fields. Machine-readable conclusion records include `investigationAssurance` without changing the original conclusion or native completion. Each turn also saves `NNN.investigation-assessment.json` and `NNN.delivery-assurance.json` with dimension statuses and evidence references. The HTML report shows the same investigation scope. Restoring historical results does not automatically acquire missing evidence.
+New turns record investigation and investigation-evidence assurance as `not_applicable`, so the CLI prints no coverage lines for them; historical results keep their stored coverage lines, with Not checked for missing fields. Machine-readable conclusion records include `investigationAssurance` without changing the original conclusion or native completion. Each turn also saves `NNN.investigation-assessment.json` (the acquisition ledger, for display) and `NNN.delivery-assurance.json`. The HTML report shows the same investigation scope. Restoring historical results does not automatically acquire missing evidence.
 
 Tool results in `stream.jsonl` are transport-truncated copies. Each turn also saves `NNN.tool-results.json`, which records what every call handed to its runtime: tool name, call id (when the runtime supplies one), outcome, text characters and bytes, and whether audited fields such as `vendorOverride` appear verbatim in the text handed to the model. The file contains no payload values; private-knowledge runs also drop Skill ids.

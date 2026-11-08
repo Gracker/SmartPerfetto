@@ -3,11 +3,8 @@
 
 import type {ConclusionBindingEligibility, ConclusionContract, ConclusionContractClaimReference} from '../../agent/core/conclusionContract';
 import type {EvidenceRelationCandidateV1} from '../../types/evidenceContract';
-import type {DataEnvelope} from '../../types/dataContract';
-import type {IdentityResolutionV1} from '../../types/identityContract';
 import {evidenceCaptureHash, freezeEvidenceValue} from './evidenceCapture';
 import {isIssuedEvidenceReadResolution, type EvidenceReadRequest, type EvidenceReadResolution, type EvidenceReadView} from './evidenceReadView';
-import {capturedIdentityReadRequests, collectCapturedIdentities, type CapturedIdentityTracePin} from '../processIdentity/capturedIdentity';
 
 export interface PreparedClaimEvidence {readonly kind: 'prepared_claim_evidence'; readonly fingerprint: string}
 export interface PrepareClaimEvidenceInput {
@@ -15,9 +12,6 @@ export interface PrepareClaimEvidenceInput {
   relationCandidates?: readonly EvidenceRelationCandidateV1[];
   bindingEligibility?: ConclusionBindingEligibility;
   evidenceReadView?: EvidenceReadView;
-  /** Display metadata contributes locators only; claim eligibility is separate. */
-  identityDataEnvelopes?: readonly DataEnvelope[];
-  identityTracePin?: CapturedIdentityTracePin;
   signal?: AbortSignal;
 }
 export interface PreparedClaimEvidenceSnapshot {
@@ -29,9 +23,6 @@ export interface PreparedClaimEvidenceSnapshot {
 interface PreparedState {
   inputFingerprint: string;
   resolutions: ReadonlyMap<string, EvidenceReadResolution>;
-  identityRequests: readonly EvidenceReadRequest[];
-  identityResolutions: readonly EvidenceReadResolution[];
-  identityTracePin: CapturedIdentityTracePin;
   snapshot: PreparedClaimEvidenceSnapshot;
 }
 const preparedStates = new WeakMap<PreparedClaimEvidence, PreparedState>();
@@ -77,11 +68,8 @@ export async function prepareClaimEvidence(input: PrepareClaimEvidenceInput): Pr
   }
   const requests: EvidenceReadRequest[] = [...refs].map(([key, value]) => freezeEvidenceValue({key,
     reference: value.reference, requiredColumns: [...value.columns].sort()}));
-  const identityRequests = capturedIdentityReadRequests(input.identityDataEnvelopes ?? []);
-  const identityTracePin = freezeEvidenceValue({...input.identityTracePin});
-  // Claims consume the shared read budget first. Identity-only reads cannot
-  // supply the claim map, including when the declaration is ineligible.
-  const activeRequests = [...(eligibility === 'eligible' ? requests : []), ...identityRequests];
+  // An ineligible declaration reads nothing: its references cannot supply the claim map.
+  const activeRequests = eligibility === 'eligible' ? requests : [];
   let received: readonly EvidenceReadResolution[] = [];
   let readFailure: string | undefined;
   if (activeRequests.length && input.evidenceReadView) {
@@ -95,29 +83,14 @@ export async function prepareClaimEvidence(input: PrepareClaimEvidenceInput): Pr
     map.set(request.key, result || Object.freeze({key: request.key, status: 'missing', reason:
       eligibility !== 'eligible' ? 'binding_ineligible' : readFailure || (input.signal?.aborted ? 'read_cancelled' : 'execution_read_unavailable')}));
   }
-  const activeKeys = new Set(activeRequests.map(request => request.key));
-  const batchComplete = !input.signal?.aborted && Array.isArray(received) && received.length === activeRequests.length &&
-    new Set(received.map(result => result?.key)).size === activeRequests.length &&
-    received.every(result => result && activeKeys.has(result.key));
-  const identityResolutions: EvidenceReadResolution[] = identityRequests.map(request => {
-    const resolution = batchComplete ? received.find(result => result.key === request.key) : undefined;
-    return resolution && isIssuedEvidenceReadResolution(resolution) ? resolution : Object.freeze({key: request.key,
-      status: 'incomplete', reason: readFailure || 'identity_read_incomplete'});
-  });
-  const reads = freezeEvidenceValue(JSON.parse(JSON.stringify([...map.values(), ...identityResolutions])) as unknown[]);
-  const fingerprint = evidenceCaptureHash({input: fingerprintInput, eligibility, identityTracePin, reads});
+  const reads = freezeEvidenceValue(JSON.parse(JSON.stringify([...map.values()])) as unknown[]);
+  const fingerprint = evidenceCaptureHash({input: fingerprintInput, eligibility, reads});
   const prepared: PreparedClaimEvidence = Object.freeze({kind: 'prepared_claim_evidence', fingerprint});
   preparedStates.set(prepared, {inputFingerprint: fingerprintInput, resolutions: map,
-    identityRequests, identityResolutions: Object.freeze(identityResolutions), identityTracePin,
     snapshot: freezeEvidenceValue({schemaVersion: 'prepared_claim_evidence@1', fingerprint, bindingEligibility: eligibility, reads})});
   return prepared;
 }
 
-export function preparedClaimEvidenceSnapshot(prepared: PreparedClaimEvidence): PreparedClaimEvidenceSnapshot {
-  const state = preparedStates.get(prepared);
-  if (!state) throw new Error('Unissued prepared evidence');
-  return state.snapshot;
-}
 export function preparedEvidenceMatchesInput(prepared: PreparedClaimEvidence, contract: ConclusionContract | null | undefined,
   relations: readonly EvidenceRelationCandidateV1[] | undefined): boolean {
   return preparedStates.get(prepared)?.inputFingerprint === inputFingerprint(contract, relations);
@@ -127,10 +100,4 @@ export function preparedReferenceResolution(prepared: PreparedClaimEvidence, ref
 }
 export function preparedEvidenceBindingEligibility(prepared: PreparedClaimEvidence): ConclusionBindingEligibility {
   return preparedStates.get(prepared)?.snapshot.bindingEligibility || 'ineligible';
-}
-
-/** Serialized handles/snapshots cannot recreate the issued identity read set. */
-export function preparedIdentityResolutions(prepared: PreparedClaimEvidence): IdentityResolutionV1[] {
-  const state = preparedStates.get(prepared);
-  return state ? collectCapturedIdentities(state.identityRequests, state.identityResolutions, state.identityTracePin).identities : [];
 }

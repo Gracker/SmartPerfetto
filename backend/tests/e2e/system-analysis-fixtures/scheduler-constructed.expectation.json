@@ -1,7 +1,10 @@
 {
   "schemaVersion": 1,
   "intent": {
-    "allowedSceneIds": ["general", "linux"],
+    "allowedSceneIds": [
+      "general",
+      "linux"
+    ],
     "taskKind": "investigation",
     "scope": "bounded_question",
     "deliverable": "answer"
@@ -10,41 +13,20 @@
     {
       "id": "selected_duration",
       "kind": "numeric",
-      "columns": [
-        "dur",
-        "dur_ns",
-        "duration_ns"
-      ],
-      "verification": "proved",
       "unit": "ns",
       "oracle": {
         "sql": "SELECT s.id AS row_id, s.dur AS duration_ns, s.ts AS start_ts, s.ts + s.dur AS end_ts, t.upid, t.utid FROM slice s JOIN thread_track tt ON s.track_id = tt.id JOIN thread t USING(utid) JOIN process p USING(upid) WHERE s.name = 'SmartPerfetto::CASE::system-scheduling-evidence' AND t.name = 'main' AND p.name = 'com.smartperfetto.fixture'",
         "column": "duration_ns",
-        "unit": "ns",
-        "anchorMatch": {
-          "startTs": "start_ts",
-          "upid": "upid",
-          "nativeRow": {
-            "relation": "slice",
-            "idColumn": "id",
-            "oracleColumn": "row_id"
-          }
-        }
+        "unit": "ns"
       }
     }
   ],
   "investigation": {
-    "contentAssurance": "passed",
-    "evidenceAssurance": "passed",
-    "assessmentStatus": "checked",
     "requirements": [
       {
         "id": "thread_state",
         "domain": "thread_state",
-        "applicability": "applicable",
-        "coverage": "covered",
         "acquisition": "observed",
-        "scopeMatch": "matched",
         "records": [
           {
             "metricId": "system.thread.state.duration",

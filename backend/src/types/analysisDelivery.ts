@@ -40,27 +40,6 @@ export interface AnalysisRuntimeAppendix {
   reason?: AnalysisCompletion['reason'];
 }
 
-export type AnalysisReportRequirementCondition =
-  | {kind: 'semantic'; description: string}
-  | {kind: 'unresolved'; reason: 'legacy_trigger_patterns' | 'invalid_condition'};
-
-export interface AnalysisReportRequirement {
-  id: string;
-  label: string;
-  description?: string;
-  required: boolean;
-  /** Absent means unconditional for a scene-wide report. */
-  condition?: AnalysisReportRequirementCondition;
-}
-
-export type AnalysisMissingReportSection = Pick<AnalysisReportRequirement, 'id' | 'label' | 'description'>;
-
-export interface PinnedAnalysisReportRequirements {
-  sceneId: string;
-  registryFingerprint: string;
-  requirements: readonly AnalysisReportRequirement[];
-}
-
 export interface AnalysisReportBinding extends AnalysisCandidateIdentity {
   conclusionContractFingerprint: string;
   evidenceFingerprint: string;
@@ -87,53 +66,12 @@ export interface FinalReportAssessment {
   requirements: readonly AnalysisReportRequirementAssessment[];
 }
 
-export type EvidenceRenderedProof = {
-  kind: 'verified_facts';
-  candidate: AnalysisCandidateIdentity;
-  claimIds: readonly string[];
-  claimsFingerprint: string;
-  verificationFingerprint: string;
-  evidenceFingerprint: string;
-} | {
-  kind: 'acknowledgement';
-  candidate: AnalysisCandidateIdentity;
-  intentFingerprint: string;
-  evidence: 'not_applicable';
-};
-
-/** Issued with the actual verification result for the current evidence snapshot. */
-export interface AnalysisVerificationBinding {
-  candidate: AnalysisCandidateIdentity;
-  claimsFingerprint: string;
-  evidenceFingerprint: string;
-  verificationFingerprint: string;
-}
-
-export interface AnalysisSourceVerificationBinding extends AnalysisVerificationBinding {
-  conclusionContractFingerprint: string;
-  sourceUseFingerprint: string;
-  sourceScopeFingerprint?: string;
-}
-
 interface CurrentAnalysisDeliveryContext {
   /** Trusted inputs come from the server's current run, not parsed output. */
   acceptedCandidate?: AnalysisCandidateIdentity;
   completion?: AnalysisCompletion;
   outputOrigin?: AnalysisOutputOrigin;
-  /** Actual final-role main dispatch only; requested configuration alone never sets this. */
-  finalSubmission?: {
-    mode: 'authored_claim_document_v1' | 'authored_claim_document_v2' | 'authored_claim_document_v2_dual';
-    outcome: 'submitted' | 'missing_submission' | 'transport_failure';
-  };
   turnIntent?: AnalysisTurnIntent;
-  evidenceRenderedProof?: EvidenceRenderedProof;
-  evidenceFingerprint?: string;
-  claimVerificationBinding?: AnalysisVerificationBinding;
-  sourceVerificationBinding?: AnalysisSourceVerificationBinding;
-  sourceUseFingerprint?: string;
-  sourceScopeFingerprint?: string;
-  reportRequirements?: PinnedAnalysisReportRequirements;
-  reportAssessment?: FinalReportAssessment;
   investigationRequirements?: ResolvedAnalysisInvestigationRequirements;
   investigationEvidence?: InvestigationEvidenceSnapshot;
   investigationAssessment?: FinalInvestigationAssessment;
@@ -142,12 +80,7 @@ interface CurrentAnalysisDeliveryContext {
 export type AnalysisDeliveryContext =
   | {entry: 'historical_restore'}
   | (CurrentAnalysisDeliveryContext & {entry: 'runtime_draft'})
-  | (CurrentAnalysisDeliveryContext & {
-      entry: 'new_finalization';
-      acceptedCandidate: AnalysisCandidateIdentity;
-      /** Issued only from current source-free declarations and the actual run ledger. */
-      sourceApplicability?: 'not_applicable';
-    });
+  | (CurrentAnalysisDeliveryContext & {entry: 'new_finalization'; acceptedCandidate: AnalysisCandidateIdentity});
 
 export interface AnalysisDeliveryAssurance {
   schemaVersion: 1;
@@ -180,11 +113,4 @@ export function sameAnalysisCandidate(
     left.attemptId === right.attemptId &&
     left.conclusionFingerprint === right.conclusionFingerprint &&
     left.conclusionFingerprint === analysisDeliveryFingerprint(conclusion));
-}
-
-/** Legacy regex/recovery copies do not participate in the semantic contract. */
-export function reportRequirementsFingerprint(pin: PinnedAnalysisReportRequirements): string {
-  return analysisDeliveryFingerprint(pin.requirements.map(({id, label, description, required, condition}) => ({
-    id, label, ...(description ? {description} : {}), required, ...(condition ? {condition} : {}),
-  })));
 }

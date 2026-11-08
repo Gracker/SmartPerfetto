@@ -64,22 +64,29 @@ export interface RuntimePerformanceSqlReceiptV1 {
 }
 
 /**
- * Why a model call was made. `continuation` asks for more or corrected answer
- * text; `declaration_repair` asks only for the machine declaration of an
- * unchanged body; `review` is the finalizer's one no-tool semantic review.
+ * Why a model call was made, as receipts record it. `continuation` asks for
+ * more or corrected answer text; `review` is a no-tool one-shot call.
+ * `declaration_repair` (and a `review` by the retired finalizer) appear only
+ * in historical receipts, which stay readable.
  */
 export const RUNTIME_MODEL_CALL_PURPOSES = [
   'classification', 'answer_turn', 'declaration_repair', 'continuation', 'review',
 ] as const;
 export type RuntimeModelCallPurpose = typeof RUNTIME_MODEL_CALL_PURPOSES[number];
+/** The purposes a current call is dispatched for. */
+export type RuntimeModelDispatchPurpose = Exclude<RuntimeModelCallPurpose, 'declaration_repair'>;
 
-/** The closed condition that admitted a continuation or declaration repair. */
+/**
+ * The closed condition that admitted a continuation. `invalid_protocol`,
+ * `missing_declaration` and `invalid_declaration` admitted the retired
+ * declaration repair and appear only in historical receipts.
+ */
 export const RUNTIME_MODEL_CALL_TRIGGERS = [
   'output_limit', 'empty_body', 'invalid_protocol', 'missing_declaration', 'invalid_declaration', 'turn_limit', 'timeout',
 ] as const;
 export type RuntimeModelCallTrigger = typeof RUNTIME_MODEL_CALL_TRIGGERS[number];
 
-/** Why the finalizer's semantic review was required. */
+/** Historical receipts only: why the retired finalizer semantic review was required. */
 export const RUNTIME_FINAL_REVIEW_TRIGGERS = [
   'report', 'selection', 'source', 'investigation', 'claims_verifiable', 'acknowledgement',
 ] as const;
@@ -151,16 +158,10 @@ export interface RuntimeConfigFieldCommitment {
   readonly type: 'absent' | 'undefined' | 'null' | 'boolean' | 'number' | 'string' | 'object' | 'array';
   readonly valueCommitment: string;
 }
-export interface RuntimeBenchmarkConfigCommitmentsV2 {
-  readonly schemaVersion: 'benchmark_config_commitments@2';
-  readonly fields: readonly RuntimeConfigFieldCommitment[];
-  readonly fullFingerprint: string;
-  readonly controlsFingerprint: string;
-  readonly legacyConfigFingerprint: string;
-}
 export interface RuntimeObservedOutputConfig {
   readonly finalSubmission: FinalSubmissionModeKey;
-  readonly declarationSyntax: 'canonical_v1' | 'authoring_v1' | 'authoring_v2';
+  /** Present only in receipts recorded before authored declarations were retired. */
+  readonly declarationSyntax?: 'canonical_v1' | 'authoring_v1' | 'authoring_v2';
 }
 export interface RuntimeExecutionProfileObservation {
   readonly schemaVersion: 'execution_profile_observation@1';
@@ -233,8 +234,6 @@ const OBSERVATION_HASH = /^[a-f0-9]{64}$/;
 const CONFIG_TYPES = ['absent', 'undefined', 'null', 'boolean', 'number', 'string', 'object', 'array'] as const;
 const OUTPUT_SYNTAXES = ['canonical_v1', 'authoring_v1', 'authoring_v2'] as const;
 const FINAL_NATIVE_STATUSES = ['completed', 'incomplete', 'failed', 'cancelled', 'unknown'] as const;
-const TREATMENT_CONFIG_FIELDS = ['/environment/SMARTPERFETTO_FINAL_SUBMISSION',
-  '/environment/SMARTPERFETTO_CONCLUSION_AUTHORING'] as const;
 const MAX_CONFIG_FIELDS = 4096;
 const MAX_CONFIG_BYTES = 1024 * 1024;
 
@@ -341,33 +340,6 @@ export function runtimeConfigCommitmentsFingerprint(fields: readonly RuntimeConf
   try {return canonicalContentHash({schemaVersion: 'benchmark_config_commitments@2', fields: parseConfigFields(fields)});}
   catch {return undefined;}
 }
-export function runtimeConfigControlsFingerprint(fields: readonly RuntimeConfigFieldCommitment[]): string | undefined {
-  try {
-    return canonicalContentHash({schemaVersion: 'benchmark_config_commitments@2', fields: parseConfigFields(fields).map(row =>
-      TREATMENT_CONFIG_FIELDS.includes(row.field as typeof TREATMENT_CONFIG_FIELDS[number])
-        ? {...row, valueCommitment: canonicalContentHash(['treatment_value', row.field])} : row)});
-  } catch {return undefined;}
-}
-export function alignRuntimeConfigCommitments(left: readonly RuntimeConfigFieldCommitment[], right: readonly RuntimeConfigFieldCommitment[]):
-  readonly [readonly RuntimeConfigFieldCommitment[], readonly RuntimeConfigFieldCommitment[]] | undefined {
-  try {
-    const sides = [new Map(parseConfigFields(left).map(row => [row.field, row])), new Map(parseConfigFields(right).map(row => [row.field, row]))];
-    const keys = [...new Set(sides.flatMap(side => [...side.keys()]))].sort();
-    if (keys.length > MAX_CONFIG_FIELDS) return undefined;
-    return [keys.map(key => sides[0].get(key) ?? absentConfigField(key)), keys.map(key => sides[1].get(key) ?? absentConfigField(key))];
-  } catch {return undefined;}
-}
-export function parseRuntimeBenchmarkConfigCommitments(value: unknown): RuntimeBenchmarkConfigCommitmentsV2 | undefined {
-  try {
-    const input = exactObservationObject(value, ['schemaVersion', 'fields', 'fullFingerprint', 'controlsFingerprint', 'legacyConfigFingerprint']);
-    if (input.schemaVersion !== 'benchmark_config_commitments@2') return undefined;
-    const fields = parseConfigFields(input.fields);
-    if (runtimeConfigCommitmentsFingerprint(fields) !== input.fullFingerprint || runtimeConfigControlsFingerprint(fields) !== input.controlsFingerprint) return undefined;
-    return immutableCanonicalSnapshot({schemaVersion: 'benchmark_config_commitments@2', fields,
-      fullFingerprint: observationHash(input.fullFingerprint), controlsFingerprint: observationHash(input.controlsFingerprint),
-      legacyConfigFingerprint: observationHash(input.legacyConfigFingerprint)});
-  } catch {return undefined;}
-}
 /** Raw values remain caller-local until committed; credentials/output choices are never common controls. */
 export function buildRuntimeCommonModelConfig(config: unknown, context?: Readonly<{runtime: 'openai-agents-sdk';
   sdk: Readonly<{agentsCoreVersion: string; agentsOpenAiVersion: string; identity: 'matched' | 'unknown'}> |
@@ -396,10 +368,11 @@ export function buildRuntimeCommonModelConfig(config: unknown, context?: Readonl
   } catch {return undefined;}
 }
 function parseOutputConfig(value: unknown): RuntimeObservedOutputConfig {
-  const input = exactObservationObject(value, ['finalSubmission', 'declarationSyntax']);
+  const input = exactObservationObject(value, ['finalSubmission'], ['declarationSyntax']);
   if (!getFinalSubmissionModeDescriptor(input.finalSubmission)) throw new Error('runtime_observation_enum_invalid');
   return {finalSubmission: input.finalSubmission as FinalSubmissionModeKey,
-    declarationSyntax: observationMember(input.declarationSyntax, OUTPUT_SYNTAXES)};
+    ...(observationOwn(input, 'declarationSyntax')
+      ? {declarationSyntax: observationMember(input.declarationSyntax, OUTPUT_SYNTAXES)} : {})};
 }
 function parseProfileObservation(value: unknown): RuntimeExecutionProfileObservation {
   const input = exactObservationObject(value, ['schemaVersion', 'role', 'purpose', 'modelHash', 'originalFingerprint', 'fields', 'structureFingerprint']);
@@ -819,8 +792,9 @@ export interface RuntimePerformanceDeliveryBudgetReceiptV1 {
 }
 
 /**
- * Whether the finalizer's semantic review was required, and what required it.
- * Counts only; no claim ids, text or evidence values.
+ * Historical receipts only: whether the retired finalizer semantic review was
+ * required, and what required it. Current runs record none; absence is the
+ * current state. Counts only; no claim ids, text or evidence values.
  */
 export interface RuntimePerformanceFinalReviewReceiptV1 {
   necessity: typeof RUNTIME_FINAL_REVIEW_NECESSITIES[number];
@@ -833,7 +807,10 @@ export const RUNTIME_DECLARATION_REPAIR_OUTCOMES = [
   'not_requested', 'accepted', 'rejected', 'budget_skipped', 'cancelled', 'error', 'not_completed',
 ] as const;
 
-/** The first canonical declaration and its repair outcome; counts and closed facts only. */
+/**
+ * Historical receipts only: the first canonical declaration and its repair
+ * outcome. Declarations are retired; current runs record none.
+ */
 export interface RuntimePerformanceDeclarationReceiptV1 {
   status: typeof RUNTIME_DECLARATION_STATUSES[number];
   declaredClaimCount: number;
@@ -875,7 +852,7 @@ export interface RuntimePerformanceSpan {
 }
 
 export interface RuntimeModelCallStart {
-  purpose: RuntimeModelCallPurpose;
+  purpose: RuntimeModelDispatchPurpose;
   trigger?: RuntimeModelCallTrigger;
   model?: string;
   reasoning?: RuntimeModelCallReasoning;
@@ -1017,11 +994,6 @@ export class RuntimePerformanceRecorder {
   private readonly policyObservations: RuntimeModelPolicyObservation[] = [];
   private readonly finalTransportEvents: RuntimeFinalTransportEvent[] = [];
   private finalTransportTruncated = 0;
-  private finalReview: RuntimePerformanceFinalReviewReceiptV1 | undefined;
-  private declaration: RuntimePerformanceDeclarationReceiptV1 | undefined;
-  // Independent of capped timing arrays. Absence from those arrays cannot
-  // establish that no repair was attempted.
-  private declarationRepair: RuntimePerformanceDeclarationReceiptV1['repair'] = 'not_requested';
   private readonly deliveryBudgets: RuntimePerformanceDeliveryBudgetReceiptV1[] = [];
   private sceneEvidence: RuntimePerformanceSceneEvidenceReceiptV1 | undefined;
   private nextToolSequence = 0;
@@ -1099,8 +1071,6 @@ export class RuntimePerformanceRecorder {
       || this.policyObservations.length > 0
       || this.finalTransportEvents.length > 0
       || this.finalTransportTruncated > 0
-      || this.finalReview !== undefined
-      || this.declaration !== undefined
       || this.deliveryBudgets.length > 0
       || this.sceneEvidence !== undefined
       || this.truncated.phases > 0
@@ -1234,13 +1204,6 @@ export class RuntimePerformanceRecorder {
     this.finalTransportTruncated++;
   }
 
-  findFinalTransportRetainedEvent(nativeCandidateKey: string): Readonly<{eventKey: string; nativeCandidateKey: string}> | undefined {
-    if (this.sealedReceipt || this.finalTransportTruncated) return undefined;
-    const found = this.finalTransportEvents.filter(event => event.kind === 'candidate_retained' && event.nativeCandidateKey === nativeCandidateKey);
-    if (found.length !== 1) return undefined;
-    return Object.freeze({eventKey: found[0].eventKey, nativeCandidateKey});
-  }
-
   recordModelExecutionPolicy(input: unknown): void {
     this.assertCollecting('record_model_execution_policy');
     const receipt = projectRuntimeModelPolicyReceipt(input);
@@ -1299,7 +1262,6 @@ export class RuntimePerformanceRecorder {
   startModelCall(input: RuntimeModelCallStart): RuntimeModelCallSpan {
     this.assertCollecting('start_model_call');
     const startOffsetMs = this.offsetMs();
-    if (!this.declaration && input.purpose === 'declaration_repair') this.declarationRepair = 'not_completed';
     let firstOutputMs: number | undefined;
     let doneOffsetMs: number | undefined;
     let doneUsage: unknown;
@@ -1317,12 +1279,6 @@ export class RuntimePerformanceRecorder {
       end: (end = {}) => {
         if (ended || !this.canObserveActivity()) return;
         ended = true;
-        // A native success is not declaration acceptance. Keep an explicit
-        // acceptance decision even if the transport attaches its facts later.
-        if (!this.declaration && input.purpose === 'declaration_repair' &&
-          this.declarationRepair !== 'accepted' && this.declarationRepair !== 'rejected') {
-          this.declarationRepair = end.outcome === 'cancelled' || end.outcome === 'error' ? end.outcome : 'not_completed';
-        }
         const model = boundedModelName(end.model) ?? boundedModelName(input.model);
         const modelSource = model && end.modelSource === 'provider_reported' && typeof end.model === 'string' &&
           end.model === model && end.model.length <= MAX_MODEL_NAME_CHARS ? 'provider_reported'
@@ -1363,48 +1319,8 @@ export class RuntimePerformanceRecorder {
     };
   }
 
-  /**
-   * The run's own finalization decides first; a later finalization that shares
-   * this manifest scope cannot replace that decision.
-   */
-  recordFinalReview(input: RuntimePerformanceFinalReviewReceiptV1): void {
-    this.assertCollecting('record_final_review');
-    if (this.finalReview) return;
-    this.finalReview = {
-      necessity: input.necessity,
-      triggers: [...new Set(input.triggers)],
-      declaredClaimCount: Number.isSafeInteger(input.declaredClaimCount) && input.declaredClaimCount >= 0
-        ? input.declaredClaimCount : 0,
-    };
-  }
-
-  /** Only the declaration acceptance boundary may supply either decision. */
-  recordDeclarationRepair(outcome: 'accepted' | 'rejected'): void {
-    this.assertCollecting('record_declaration_repair');
-    if (outcome !== 'accepted' && outcome !== 'rejected') throw new Error('runtime_performance_invalid_declaration_repair');
-    if (this.declaration) return;
-    this.declarationRepair = outcome;
-  }
-
-  /** Freeze all declaration facts at the first canonical finalization, not at seal. */
-  recordFinalDeclaration(input: Omit<RuntimePerformanceDeclarationReceiptV1, 'repair'>): void {
-    this.assertCollecting('record_final_declaration');
-    assertKnownFields(input as unknown as Record<string, unknown>, ['status', 'declaredClaimCount']);
-    if (!RUNTIME_DECLARATION_STATUSES.includes(input.status)) throw new Error('runtime_performance_invalid_declaration_status');
-    if (!Number.isSafeInteger(input.declaredClaimCount) || input.declaredClaimCount < 0) {
-      throw new Error('runtime_performance_invalid_declaration_count');
-    }
-    if (this.declaration) return;
-    this.declaration = {status: input.status, declaredClaimCount: input.declaredClaimCount, repair: this.declarationRepair};
-  }
-
   recordDeliveryBudget(input: RuntimePerformanceDeliveryBudgetReceiptV1): void {
     this.assertCollecting('record_delivery_budget');
-    if (!this.declaration && input.purpose === 'declaration_repair' &&
-      this.declarationRepair !== 'accepted' && this.declarationRepair !== 'rejected') {
-      if (input.decision === 'skip') this.declarationRepair = 'budget_skipped';
-      if (input.decision === 'dispatch') this.declarationRepair = 'not_completed';
-    }
     if (this.deliveryBudgets.length >= DEFAULT_MAX_RECEIPT_ITEMS) return;
     this.deliveryBudgets.push({purpose: input.purpose, decision: input.decision, source: input.source,
       estimateMs: boundedMs(input.estimateMs, 'delivery_budget_estimate'),
@@ -1454,8 +1370,6 @@ export class RuntimePerformanceRecorder {
       ...(this.policyObservations.length > 0 ? {policyObservations: [...this.policyObservations]} : {}),
       ...(this.finalTransportEvents.length || this.finalTransportTruncated ? {finalTransportObservation: {
         schemaVersion: 'final_transport_observation@1' as const, events: [...this.finalTransportEvents], truncated: this.finalTransportTruncated}} : {}),
-      ...(this.finalReview ? {finalReview: this.finalReview} : {}),
-      ...(this.declaration ? {declaration: this.declaration} : {}),
       ...(this.deliveryBudgets.length > 0 ? {deliveryBudgets: [...this.deliveryBudgets]} : {}),
       ...(this.sceneEvidence ? {sceneEvidence: this.sceneEvidence} : {}),
       ...(this.truncated.phases > 0
@@ -1613,41 +1527,7 @@ export function recordRuntimeFinalTransportEvent(source: RuntimePerformanceSourc
   try {return resolveRuntimePerformanceRecorder(source)?.recordFinalTransportEvent(input);}
   catch {return undefined;}
 }
-/** Unbound observation drop; late/sealed/currentness failures cannot mutate any receipt. */
-export function dropRuntimeFinalTransportObservation(source: RuntimePerformanceSource | undefined): void {
-  try {resolveRuntimePerformanceRecorder(source)?.dropFinalTransportObservation();}
-  catch { /* Internal observability only. */ }
-}
-/** Lookup a recorded lineage summary; this does not grant or recreate any native capability. */
-export function findRuntimeRetainedTransportEvent(source: RuntimePerformanceSource | undefined,
-  nativeCandidateKey: string): Readonly<{eventKey: string; nativeCandidateKey: string}> | undefined {
-  try {return resolveRuntimePerformanceRecorder(source)?.findFinalTransportRetainedEvent(nativeCandidateKey);}
-  catch {return undefined;}
-}
 
-/** Record the finalizer's review decision on an optional recorder; never throws. */
-export function recordRuntimeFinalReview(
-  recorder: RuntimePerformanceRecorder | undefined,
-  input: RuntimePerformanceFinalReviewReceiptV1,
-): void {
-  try { resolveRuntimePerformanceRecorder(recorder ? {runtimePerformanceRecorder: recorder} : undefined)?.recordFinalReview(input); } catch { /* Internal observability only. */ }
-}
-
-/** Record the acceptance boundary's decision; never alters the candidate or throws. */
-export function recordRuntimeDeclarationRepair(
-  recorder: RuntimePerformanceRecorder | undefined,
-  outcome: 'accepted' | 'rejected',
-): void {
-  try { resolveRuntimePerformanceRecorder(recorder ? {runtimePerformanceRecorder: recorder} : undefined)?.recordDeclarationRepair(outcome); } catch { /* Internal observability only. */ }
-}
-
-/** Record the first canonical declaration without changing its verification state. */
-export function recordRuntimeFinalDeclaration(
-  recorder: RuntimePerformanceRecorder | undefined,
-  input: Omit<RuntimePerformanceDeclarationReceiptV1, 'repair'>,
-): void {
-  try { resolveRuntimePerformanceRecorder(recorder ? {runtimePerformanceRecorder: recorder} : undefined)?.recordFinalDeclaration(input); } catch { /* Internal observability only. */ }
-}
 
 /** Record a delivery call's pre-dispatch budget decision on an optional recorder; never throws. */
 export function recordRuntimeDeliveryBudget(

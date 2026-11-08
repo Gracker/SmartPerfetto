@@ -1,6 +1,0 @@
-<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
-<!-- Copyright (C) 2024-2026 Gracker (Chris) | SmartPerfetto -->
-
-本次修复固定使用 `authoring_v1`。只返回一个完整的 `{"authoringVersion":"conclusion_authoring@1","referenceDictionary":[...],"contract":{...}}` JSON 对象，不带 Markdown/HTML 外壳；服务端生成 reserved authoring fence。外层仅三个键：`authoringVersion`、`referenceDictionary`、`contract`。完整 canonical 声明放入 `$.contract`（包括 `mode`、`claims`），完整本地字典放入 `$.referenceDictionary`；不支持补丁、继承上一候选字典或第二次修复。
-
-`{"$ref":index}` 只用于 claim references、semantic scope subjectRefs/objectRefs 和 relation subject/object/proof，其他字段仍是完整形式。是否保留原有有效断言，以展开后的引用判定，不按索引判定；修改共用字典项不能重写另一条有效断言。保留独立的 numeric 断言值/单位和全部语义限定。Canonical 规则及诊断 ordinal 指向 `$.contract.claims` 内的断言。展开后上限为 {{authoringMaxBytes}} UTF-8 bytes、{{authoringMaxNodes}} 个节点、深度 {{authoringMaxDepth}}，不得通过截断来通过校验。

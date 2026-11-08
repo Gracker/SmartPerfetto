@@ -8,6 +8,8 @@ export const DEFAULT_PROVIDER_STREAM_IDLE_TIMEOUT_MS = 5 * 60_000;
 export const DEFAULT_MAX_RUN_TIMEOUT_MS = 60 * 60_000;
 export const DEFAULT_EXTERNAL_TOOL_RESULT_MAX_CHARS = 2_000;
 export const DEFAULT_OPENAI_HISTORY_MAX_BYTES = 4 * 1024 * 1024;
+/** Default wall-clock bound of one batched evidence read; finalization reserves time for it. */
+export const EVIDENCE_READ_MAX_ELAPSED_MS = 1500;
 
 export type RuntimeTimeoutKind = 'request' | 'stream_idle';
 
@@ -62,15 +64,11 @@ export function serializedByteLength(value: unknown): number {
  *
  * The deadline never moves backwards and never enters the delivery reserve,
  * which is fixed at start below the hard deadline so a no-tool delivery call
- * always fits. Part of that reserve is kept for finalization: its evidence
- * reads are bounded by the deadline the run hands over, and a delivery call
- * that used the whole reserve would leave the answer it produced unverifiable.
+ * always fits. Part of that reserve is kept for finalization, which makes no
+ * model call: its one batched evidence read (bounded by the read budget), the
+ * synchronous citation check and the gate. A delivery call that used the whole
+ * reserve would leave no time to finalize the answer it produced.
  */
-export interface FinalizationBudgetOptions {
-  /** Spend the remaining budget up to the hard deadline instead of at most the delivery reserve. */
-  useRemainingBudget?: boolean;
-}
-
 export interface ProgressAwareRunDeadline {
   readonly startedAt: number;
   /** Initial deadline span before any extension. */
@@ -94,17 +92,12 @@ export interface ProgressAwareRunDeadline {
   extendIfStreaming(now?: number): boolean;
   /** Window a delivery call may use from now, keeping the finalization reserve. */
   deliveryWindowMs(now?: number): number;
-  /** One completed-answer protocol repair may use the delivery reserve, never the finalization reserve. */
-  completedOutputRepairDeadlineAt(now?: number): number;
   /**
    * Deadline handed to finalization; never past the hard deadline. When no
-   * delivery call ran, the unused delivery reserve funds finalization (at most
-   * that reserve from now): its one no-tool semantic review is exactly the
-   * call the reserve exists for. A report deliverable that will make that call
-   * may use the whole remaining budget instead, because its quality gate fails
-   * whenever the review does not finish.
+   * delivery call ran, the unused delivery reserve bounds finalization's
+   * evidence reads (at most that reserve from now).
    */
-  finalizationDeadlineAt(now?: number, deliveryDeadlineAt?: number, options?: FinalizationBudgetOptions): number;
+  finalizationDeadlineAt(now?: number, deliveryDeadlineAt?: number): number;
   snapshot(now?: number): RunDeadlineSnapshot;
 }
 
@@ -123,6 +116,8 @@ export interface RunDeadlineSnapshot {
 }
 
 const RECENT_ROUND_WINDOW = 4;
+/** Headroom beyond the evidence read budget for finalization's synchronous work. */
+const FINALIZATION_MARGIN_MS = 1000;
 
 export function createProgressAwareRunDeadline(input: {
   baseBudgetMs: number;
@@ -146,7 +141,10 @@ export function createProgressAwareRunDeadline(input: {
   const hardDeadlineAt = constrained ? input.hardDeadlineAt! : startedAt + nativeMaxRunMs;
   const maxRunMs = constrained ? Math.max(0, hardDeadlineAt - startedAt) : nativeMaxRunMs;
   const nativeDeliveryReserveMs = Math.min(Math.max(perTurnMs, Math.floor(nativeMaxRunMs / 6)), nativeMaxRunMs - baseBudgetMs);
-  const nativeFinalizationReserveMs = Math.min(perTurnMs, Math.floor(nativeDeliveryReserveMs / 4));
+  // Finalization makes no model call: it reads captured evidence once (bounded by
+  // the read budget), checks citations synchronously and applies the gate.
+  const nativeFinalizationReserveMs = Math.min(EVIDENCE_READ_MAX_ELAPSED_MS + FINALIZATION_MARGIN_MS,
+    Math.floor(nativeDeliveryReserveMs / 4));
   // Scale only existing reserves when an explicit cap leaves less time. Zero
   // reserve stays zero, and an expired admission never obtains a new window.
   const reserveScale = Math.min(1, maxRunMs / nativeMaxRunMs);
@@ -193,18 +191,10 @@ export function createProgressAwareRunDeadline(input: {
     deliveryWindowMs(now = Date.now()) {
       return Math.max(0, Math.min(deliveryReserveMs, hardDeadlineAt - now) - finalizationReserveMs);
     },
-    completedOutputRepairDeadlineAt(now = Date.now()) {
-      // Preserve an already longer investigation window. A late protocol repair
-      // gets the same bounded delivery reserve as a no-tool timeout closeout;
-      // this does not move the investigation or hard deadline.
-      return Math.min(hardDeadlineAt - finalizationReserveMs,
-        Math.max(current(), now + deliveryReserveMs - finalizationReserveMs));
-    },
-    finalizationDeadlineAt(now = Date.now(), deliveryDeadlineAt?: number, options: FinalizationBudgetOptions = {}) {
+    finalizationDeadlineAt(now = Date.now(), deliveryDeadlineAt?: number) {
       // A delivery window already excluded the reserve. Without a delivery call the
       // reserve is unspent: finalization may use it, bounded from now and by the hard deadline.
       if (deliveryDeadlineAt !== undefined) return Math.min(hardDeadlineAt, deliveryDeadlineAt + finalizationReserveMs);
-      if (options.useRemainingBudget) return hardDeadlineAt;
       return Math.min(hardDeadlineAt, Math.max(current(), now + finalizationReserveMs, now + deliveryReserveMs));
     },
     snapshot(now = Date.now()) {

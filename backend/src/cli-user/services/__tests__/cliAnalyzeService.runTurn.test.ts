@@ -3,7 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import { EventEmitter } from 'events';
-import {attachIssuedNativeObjectEntryFixture} from '../../../../tests/helpers/authoredFinalEntryFixture';
+import {attachIssuedAssistantEntryFixture} from '../../../../tests/helpers/finalEntryFixture';
 import {installCurrentRealmStructuredCloneForTest} from '../../../../tests/helpers/openAiRuntimeFixture';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -692,93 +692,25 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
     });
   });
 
-  it('streams the final review start and finish to the CLI after the runtime handler detached', async () => {
-    const deadlineAt = Date.now() + 5 * 60_000;
-    mockFinalizeAnalysisResult.mockImplementationOnce(async input => {
-      input.onProgress?.({stage: 'final_review_started', deadlineAt});
-      input.onProgress?.({stage: 'final_review_finished', status: 'unavailable', reason: 'timeout'});
-      return {result: input.result};
-    });
-    const events: StreamingUpdate[] = [];
-    await new CliAnalyzeService().runTurn({...cliTurnBinding, traceId: 'trace-cli', query: '分析启动慢',
-      onEvent: update => events.push(update)});
-    const reviews = events.filter(event => event.type === 'progress' && (event.content as any)?.phase === 'final_review');
-    expect(reviews.map(event => event.content)).toEqual([
-      expect.objectContaining({stage: 'started', deadlineAt, message: '正在核验结论与其声明是否一致'}),
-      expect.objectContaining({stage: 'finished', outcome: 'unavailable', reason: 'timeout',
-        message: '结论复核未完成：语义复核超出时间预算'}),
-    ]);
-  });
 
-  it('prints no pending cue when no review ran and returns the run performance receipt', async () => {
+  it('emits no review progress and returns the run performance receipt', async () => {
     const performance = {schemaVersion: 1 as const, phases: [], tools: [], sql: [],
       finalReview: {necessity: 'not_required' as const, triggers: [], declaredClaimCount: 0}};
     const toolResults = {schemaVersion: 1 as const, results: [{toolName: 'invoke_skill', outcome: 'returned' as const}]};
     mockFinalizeAnalysisResult.mockImplementationOnce(async input => {
-      // A review that is not required sends nothing: no provisional answer, no progress.
       mockRunManifestLifecycles[mockRunManifestLifecycles.length - 1].sealOnceAndPersist.mockReturnValueOnce({
         runManifestId: 'manifest-cli-test', runId: input.owner.runId, capabilityManifest, performance, toolResults});
       return {result: input.result};
     });
     const events: StreamingUpdate[] = [];
-    const provisional: string[] = [];
     const output = await new CliAnalyzeService().runTurn({...cliTurnBinding, traceId: 'trace-cli', query: 'trace 时长',
-      onEvent: update => events.push(update), onProvisionalAnswer: ({conclusion}) => provisional.push(conclusion)});
-    expect(provisional).toEqual([]);
+      onEvent: update => events.push(update)});
     expect(events.some(event => (event.content as any)?.phase === 'final_review')).toBe(false);
     expect(output.runtimePerformance).toEqual(performance);
     expect(output.toolResultAudit).toEqual(toolResults);
   });
 
-  it('hands the provisional answer to its own callback and leaves the event stream unchanged', async () => {
-    mockFinalizeAnalysisResult.mockImplementationOnce(async input => {
-      input.onProvisionalAnswer?.({conclusion: 'Answer body.'});
-      input.onProgress?.({stage: 'final_review_started', deadlineAt: Date.now() + 60_000, answerReadable: true});
-      return {result: input.result};
-    });
-    const events: StreamingUpdate[] = [];
-    const provisional: string[] = [];
-    await new CliAnalyzeService().runTurn({...cliTurnBinding, traceId: 'trace-cli', query: '分析启动慢',
-      onEvent: update => events.push(update), onProvisionalAnswer: ({conclusion}) => provisional.push(conclusion)});
-    expect(provisional).toEqual(['Answer body.']);
-    expect(events.some(event => event.type === 'conclusion')).toBe(false);
-    expect(mockFinalizeAnalysisResult.mock.calls[mockFinalizeAnalysisResult.mock.calls.length - 1]?.[0]).toEqual(expect.objectContaining({
-      onProvisionalAnswer: expect.any(Function)}));
 
-    // json/ndjson callers pass no callback: the finalizer then reports the review
-    // start without answerReadable, so the machine stream never gains that field.
-    const machineEvents: StreamingUpdate[] = [];
-    mockFinalizeAnalysisResult.mockImplementationOnce(async input => {
-      const delivered = input.onProvisionalAnswer?.({conclusion: 'Answer body.'}) === true;
-      input.onProgress?.({stage: 'final_review_started', deadlineAt: Date.now() + 60_000,
-        ...(delivered ? {answerReadable: true} : {})});
-      return {result: input.result};
-    });
-    await new CliAnalyzeService().runTurn({...cliTurnBinding, traceId: 'trace-cli', query: '分析启动慢',
-      onEvent: update => machineEvents.push(update)});
-    expect(mockFinalizeAnalysisResult.mock.calls[mockFinalizeAnalysisResult.mock.calls.length - 1]?.[0]).not.toHaveProperty('onProvisionalAnswer');
-    const started = machineEvents.find(event => (event.content as any)?.phase === 'final_review');
-    expect(started?.content).not.toHaveProperty('answerReadable');
-    expect((started?.content as any)?.message).toBe('正在核验结论与其声明是否一致');
-  });
-
-  it('passes the review-only stop signal to the finalizer and still returns the turn for commit', async () => {
-    const reviewStop = new AbortController();
-    mockFinalizeAnalysisResult.mockImplementationOnce(async input => {
-      input.onProvisionalAnswer?.({conclusion: 'Answer body.'});
-      const stop = input.reviewStopSignal!;
-      await new Promise(resolve => stop.aborted ? resolve(undefined) : stop.addEventListener('abort', resolve, {once: true}));
-      return {result: {...input.result, claimVerificationResult: {schemaVersion: 'claim_verifier@2', policy: 'record_only',
-        status: 'not_checked', passed: false, checkedClaimCount: 0, unsupportedClaimCount: 0, claimResults: [],
-        issues: [], notCheckedReason: 'cancelled_by_user'}}};
-    });
-    const output = await new CliAnalyzeService().runTurn({...cliTurnBinding, traceId: 'trace-cli', query: '分析启动慢',
-      reviewStopSignal: reviewStop.signal, onEvent: () => undefined,
-      onProvisionalAnswer: () => reviewStop.abort()});
-    expect(mockFinalizeAnalysisResult.mock.calls[mockFinalizeAnalysisResult.mock.calls.length - 1]?.[0])
-      .toEqual(expect.objectContaining({reviewStopSignal: reviewStop.signal}));
-    expect(output.result.claimVerificationResult?.notCheckedReason).toBe('cancelled_by_user');
-  });
 
   it('preserves the shared finalizer partial verdict across CLI result, session, report, and events', async () => {
     mockFinalizeAnalysisResult.mockImplementationOnce(async input => ({
@@ -792,7 +724,7 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
             propositionCoverage: {status: 'none', covered: [], uncovered: ['numeric_cell'], reason: 'numeric_operator_rejected'}}],
           issues: [{claimId: 'claim-cli-contradiction', severity: 'error', code: 'claim_reference_value_mismatch',
             message: 'The claimed value contradicts the captured value.'}]}},
-      qualityIssue: {code: 'verifier_contradicted_claim', message: '最终结果质量闸门'},
+      qualityIssue: {code: 'sdk_incomplete', message: '最终结果质量闸门'},
     }));
     const service = new CliAnalyzeService();
     const events: StreamingUpdate[] = [];
@@ -839,7 +771,7 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
         type: 'degraded',
         content: expect.objectContaining({
           fallback: 'final_result_quality_gate',
-          code: 'verifier_contradicted_claim',
+          code: 'sdk_incomplete',
           partial: true,
         }),
       }),
@@ -1228,29 +1160,27 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
     });
     afterEach(() => {restoreClone?.(); restoreClone = undefined;});
 
-    it('takes the exact v2 candidate into the real shared finalizer and disposes it before persistence', async () => {
-      let issued!: ReturnType<typeof attachIssuedNativeObjectEntryFixture>;
+    it('takes the exact candidate into the real shared finalizer and disposes it before persistence', async () => {
+      let issued!: ReturnType<typeof attachIssuedAssistantEntryFixture>;
       mockAnalyze.mockImplementationOnce(async (_query, sessionId, _traceId, options) => {
         const value: AnalysisResult = {sessionId, success: true, findings: [], hypotheses: [], conclusion: 'Which interval should I inspect?',
           confidence: 0.8, rounds: 1, totalDurationMs: 1};
-        issued = attachIssuedNativeObjectEntryFixture({result: value, runId: options!.runId!, registry: finalizationRegistry, traceId: 'trace-cli'});
+        issued = attachIssuedAssistantEntryFixture({result: value, runId: options!.runId!, registry: finalizationRegistry, traceId: 'trace-cli'});
         return value;
       });
       const actual = jest.requireActual<typeof import('../../../services/finalizeAnalysisResult')>('../../../services/finalizeAnalysisResult').finalizeAnalysisResult;
       mockFinalizeAnalysisResult.mockImplementationOnce(async input => {
         expect(input.result).toBe(issued.result);
         expect(finalizationContexts.takeFinalizationContext(input.result)).toBeUndefined();
-        expect(input.context?.deliveryContext).toMatchObject({finalSubmission: {mode: 'authored_claim_document_v2', outcome: 'submitted'}});
-        expect(issued.read().binding.representationVersion).toBe('authored_claim_document@2');
+        expect(input.context?.deliveryContext).toMatchObject({outputOrigin: 'sdk_final'});
         return actual(input);
       });
       try {
         const output = await new CliAnalyzeService().runTurn({...cliTurnBinding, traceId: 'trace-cli', query: 'Inspect an interval', onEvent: jest.fn()});
         expect(mockAnalyze).toHaveBeenCalledTimes(1); expect(mockFinalizeAnalysisResult).toHaveBeenCalledTimes(1);
-        expect(output.result).toMatchObject({conclusion: 'Which interval should I inspect?', outputOrigin: 'model_tool_arguments', completion: {status: 'completed'}});
+        expect(output.result).toMatchObject({conclusion: 'Which interval should I inspect?', outputOrigin: 'sdk_final', completion: {status: 'completed'}});
         expect(mockPersistAgentTurn).toHaveBeenCalledTimes(1);
-        expect(mockPersistAgentTurn.mock.calls[0][0]).toMatchObject({result: {conclusion: output.result.conclusion, outputOrigin: 'model_tool_arguments'}});
-        expect(() => issued.read()).toThrow('invalid');
+        expect(mockPersistAgentTurn.mock.calls[0][0]).toMatchObject({result: {conclusion: output.result.conclusion, outputOrigin: 'sdk_final'}});
         expect(() => mockFinalizeAnalysisResult.mock.calls[0][0].context!.runId).toThrow('disposed');
         expect(JSON.stringify(output.result)).not.toMatch(/rawArguments|nativeDocument|privateNativeDocument|referenceDictionary|semanticFrames|partSpans|quoteBindings|documentJson/);
         const persisted = mockPersistAgentTurn.mock.calls[0][0] as {result: AnalysisResult};
@@ -1258,12 +1188,12 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
       } finally {issued?.cleanup();}
     });
 
-    it('disposes a late v2 runtime context after caller cancellation without finalizing or committing it', async () => {
+    it('disposes a late runtime context after caller cancellation without finalizing or committing it', async () => {
       const started = deferred<void>(), finish = deferred<void>();
-      let issued!: ReturnType<typeof attachIssuedNativeObjectEntryFixture>;
+      let issued!: ReturnType<typeof attachIssuedAssistantEntryFixture>;
       mockAnalyze.mockImplementationOnce(async (_query, sessionId, _traceId, options) => {
         const value: AnalysisResult = {sessionId, success: true, findings: [], hypotheses: [], conclusion: 'Late clarification?', confidence: 0.8, rounds: 1, totalDurationMs: 1};
-        issued = attachIssuedNativeObjectEntryFixture({result: value, runId: options!.runId!, registry: finalizationRegistry, traceId: 'trace-cli'});
+        issued = attachIssuedAssistantEntryFixture({result: value, runId: options!.runId!, registry: finalizationRegistry, traceId: 'trace-cli'});
         started.resolve(undefined); await finish.promise; return value;
       });
       const controller = new AbortController();
@@ -1275,7 +1205,6 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
         expect(mockFinalizeAnalysisResult).not.toHaveBeenCalled(); expect(mockPersistAgentTurn).not.toHaveBeenCalled();
         expect(mockPreparedSession.result).toBeUndefined();
         expect(finalizationContexts.takeFinalizationContext(issued.result)).toBeUndefined();
-        expect(() => issued.read()).toThrow('invalid');
         expect(mockAnalyze).toHaveBeenCalledTimes(1);
       } finally {finish.resolve(undefined); await pending.catch(() => undefined); issued?.cleanup();}
     });

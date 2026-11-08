@@ -11,7 +11,7 @@ import type { CodeAwareMode } from '../services/codebase/codeAwareFeature';
 import {KNOWLEDGE_TOOL_NAMES} from '../services/knowledge/knowledgeTools';
 import type {SourceAuthorizationPromptData} from '../services/codebase/selectedCodebaseCapabilities';
 import type {CapabilityManifestResolutionV1, CapabilityUnprobedReasonCode} from '../types/capabilityManifest';
-import type {AnalysisRecoveryKind, AnalysisMissingReportSection} from '../types/analysisDelivery';
+import type {AnalysisRecoveryKind} from '../types/analysisDelivery';
 import type {AnalysisTurnIntent} from '../agentRuntime/analysisTurnIntent';
 import type {RuntimeTurnPolicy} from '../agentRuntime/runtimeTurnPolicy';
 import type {ReadonlyStrategyRegistrySnapshot} from '../services/selfEvolution/effectiveRuntimeRegistryContext';
@@ -741,5 +741,4 @@ export interface VerificationIssue {
   severity: 'warning' | 'error' | 'info';
   message: string;
   recoveryKind?: AnalysisRecoveryKind;
-  missingSections?: AnalysisMissingReportSection[];
 }

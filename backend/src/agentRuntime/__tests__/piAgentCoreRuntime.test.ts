@@ -29,7 +29,6 @@ import * as piAgentCoreRuntimeModule from '../piAgentCoreRuntime';
 import {installedPiAiVersion, parsePiAgentCoreModelConfig, piRuntimeFingerprintInput} from '../engines/pi/piAgentCoreConfig';
 import {resolvePiCatalogModel} from '../engines/pi/piAgentCoreProvider';
 import * as analysisRunSpecModule from '../analysisRunSpec';
-import * as outputConfigModule from '../finalSubmissionConfig';
 import type { RuntimeToolResult, SharedToolSpec } from '../runtimeToolSpec';
 import {createRuntimeToolResult, readRuntimeToolResultFacts} from '../runtimeToolResult';
 import {projectCodeAwareStreamingUpdate} from '../../services/security/codeAwareStreamingUpdateProjection';
@@ -62,7 +61,7 @@ import {registerCodeAwareCanary, revokeCodeAwareOutputGuards, clearCodeAwareOutp
 import * as sourceProjectionModule from '../../services/codebase/sourceClaimVerifier';
 import * as contextAuthorization from '../../services/resolvedAnalysisContext';
 import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
-import {renderConclusionContractSidecar, wrapConclusionAuthoringPayload, type ConclusionContract, type ConclusionContractClaimItem} from '../../agent/core/conclusionContract';
+import {renderConclusionContractSidecar, wrapConclusionAuthoringPayload, type ConclusionContract} from '../../agent/core/conclusionContract';
 import {inspectCandidateProtocol} from '../../services/canonicalAnalysisResult';
 import * as finalizationModule from '../analysisFinalizationContext';
 import * as runtimeCallStats from '../../services/runtimeCallStats';
@@ -71,7 +70,7 @@ import {expectRuntimeLeftTerminalStateToFinalizer, UNREPAIRABLE_DRAFT_ISSUE} fro
 import {ArtifactStore} from '../../agentv3/artifactStore';
 import {loadPiProviderRuntimeModules} from '../engines/pi/piAgentCoreProvider';
 import {createSceneRuntimeMatrixFixture} from '../../../tests/helpers/sceneRuntimeMatrixFixture';
-import {candidateWithPopulation, declaredCandidateWithClaims, declaredClaim} from '../../../tests/helpers/conclusionDeclarationFixture';
+import {declaredCandidateWithClaims, declaredClaim} from '../../../tests/helpers/conclusionDeclarationFixture';
 import {admitLearnedEntry, withDurableLearningPermission} from '../../services/security/durableLearning';
 import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
 import {admitted} from '../../../tests/helpers/admittedAnalysisOptions';
@@ -525,80 +524,46 @@ function buildScrollingPiReport(includeRepresentativeFrameSection: boolean): str
 
 describe('experimental Pi agent-core runtime contract', () => {
   it.each([
-    ['authored_claim_document_v1', 'canonical_v1', 'unsupported_final_submission', 'runtime'],
-    ['authored_claim_document_v1', 'authoring_v1', 'invalid_configuration', 'declaration_syntax_conflict'],
-    ['authored_claim_document_v1', 'authoring_v2', 'invalid_configuration', 'declaration_syntax_conflict'],
-    ['MODE_CANARY', 'canonical_v1', 'invalid_configuration', 'mode'],
-    ['assistant_text', 'SYNTAX_CANARY', 'invalid_configuration', 'declaration_syntax'],
-  ])('rejects output config %s / %s before Pi classifier or SDK dispatch', async (mode, syntax, code, reason) => {
-    const moduleLoader = jest.fn(async () => ({Agent: FakePiAgent}));
-    const providerRuntimeLoader = jest.fn(loadFakePiProviderRuntime);
-    const runtime = new PiAgentCoreRuntime(createFakeTraceProcessorService(), {kind: 'pi-agent-core', source: 'env'}, {
+    [undefined, undefined],
+    ['authored_claim_document_v1', 'canonical_v1'],
+    ['authored_claim_document_v2_dual', 'authoring_v2'],
+    ['MODE_CANARY', 'SYNTAX_CANARY'],
+  ])('ignores retired output config %s / %s and builds a plain-answer RunSpec once', async (mode, syntax) => {
+    const createSpec = analysisRunSpecModule.createAnalysisRunSpec;
+    let spec: ReturnType<typeof createSpec> | undefined;
+    const stop = new Error('test stopped after real RunSpec');
+    const specSpy = jest.spyOn(analysisRunSpecModule, 'createAnalysisRunSpec').mockImplementation(input => {
+      spec = createSpec(input);
+      throw stop;
+    });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    let runtime: PiAgentCoreRuntime;
+    runtime = new PiAgentCoreRuntime(createFakeTraceProcessorService(), {kind: 'pi-agent-core', source: 'env'}, {
       env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON,
-        SMARTPERFETTO_FINAL_SUBMISSION: mode, SMARTPERFETTO_CONCLUSION_AUTHORING: syntax},
-      moduleLoader, providerRuntimeLoader,
+        ...(mode ? {SMARTPERFETTO_FINAL_SUBMISSION: mode} : {}),
+        ...(syntax ? {SMARTPERFETTO_CONCLUSION_AUTHORING: syntax} : {})},
+      moduleLoader: async () => ({Agent: FakePiAgent}),
+      providerRuntimeLoader: async config => {
+        const provider = await loadFakePiProviderRuntime(config);
+        return {...provider, streamFn: ((...args: unknown[]) => {
+          (runtime as any).env.SMARTPERFETTO_FINAL_SUBMISSION = 'authored_claim_document_v1';
+          (runtime as any).env.SMARTPERFETTO_CONCLUSION_AUTHORING = 'LATE_SYNTAX_CANARY';
+          return provider.streamFn(...args);
+        }) as typeof provider.streamFn};
+      },
     });
-    await expect(runtime.analyze('Explain this trace', 'output-config-pi', 'trace-pi')).rejects.toMatchObject({
-      name: 'FinalSubmissionConfigurationError', code, message: `${code}:final_submission:${reason}`,
-    });
-    expect(moduleLoader).not.toHaveBeenCalled();
-    expect(providerRuntimeLoader).not.toHaveBeenCalled();
-    expect(piClassifierCalls).toHaveLength(0);
-    expect(FakePiAgent.instances).toHaveLength(0);
-  });
-
-  it.each(['canonical_v1', 'authoring_v1', 'authoring_v2'])(
-    'keeps the captured Pi output config %s through classification and real RunSpec', async syntax => {
-      const capture = jest.spyOn(outputConfigModule, 'captureAnalysisOutputConfig');
-      const createSpec = analysisRunSpecModule.createAnalysisRunSpec;
-      let spec: ReturnType<typeof createSpec> | undefined;
-      const stop = new Error('test stopped after real RunSpec');
-      const specSpy = jest.spyOn(analysisRunSpecModule, 'createAnalysisRunSpec').mockImplementation(input => {
-        spec = createSpec(input);
-        throw stop;
-      });
-      let runtime: PiAgentCoreRuntime;
-      runtime = new PiAgentCoreRuntime(createFakeTraceProcessorService(), {kind: 'pi-agent-core', source: 'env'}, {
-        env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON, SMARTPERFETTO_CONCLUSION_AUTHORING: syntax},
-        moduleLoader: async () => ({Agent: FakePiAgent}),
-        providerRuntimeLoader: async config => {
-          const provider = await loadFakePiProviderRuntime(config);
-          return {...provider, streamFn: ((...args: unknown[]) => {
-            (runtime as any).env.SMARTPERFETTO_FINAL_SUBMISSION = 'authored_claim_document_v1';
-            (runtime as any).env.SMARTPERFETTO_CONCLUSION_AUTHORING = 'LATE_SYNTAX_CANARY';
-            return provider.streamFn(...args);
-          }) as typeof provider.streamFn};
-        },
-      });
-      try {
-        await expect(runtime.analyze('Explain this trace', 'output-config-pi-frozen', 'trace-pi')).rejects.toBe(stop);
-        expect(piClassifierCalls).toHaveLength(1);
-        expect(specSpy).toHaveBeenCalledTimes(1);
-        expect(capture).toHaveBeenCalledTimes(1);
-        const captured = capture.mock.results[0].value;
-        expect(Object.isFrozen(captured)).toBe(true);
-        expect(specSpy.mock.calls[0][0].outputConfig).toBe(captured);
-        expect(spec).toMatchObject({finalSubmission: 'assistant_text', declarationSyntax: syntax});
-      } finally {
-        specSpy.mockRestore();
-        capture.mockRestore();
-        runtime.cleanupSession('output-config-pi-frozen');
-      }
-    },
-  );
-
-  it('rejects typed output before the Pi hidden fake-stream path loads its SDK', async () => {
-    const moduleLoader = jest.fn(async () => ({Agent: FakePiAgent}));
-    const runtime = new PiAgentCoreRuntime(createFakeTraceProcessorService(),
-      {kind: EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND, source: 'env'}, {
-        env: {[PI_AGENT_CORE_FAKE_STREAM_ENV]: '1', SMARTPERFETTO_FINAL_SUBMISSION: 'authored_claim_document_v1'},
-        moduleLoader, providerRuntimeLoader: loadFakePiProviderRuntime,
-      });
-    await expect(runtime.analyze('Smoke', 'output-config-pi-smoke', 'trace-pi')).rejects.toMatchObject({
-      code: 'unsupported_final_submission', reason: 'runtime',
-    });
-    expect(moduleLoader).not.toHaveBeenCalled();
-    expect(FakePiAgent.instances).toHaveLength(0);
+    try {
+      await expect(runtime.analyze('Explain this trace', 'output-config-pi-frozen', 'trace-pi')).rejects.toBe(stop);
+      expect(piClassifierCalls).toHaveLength(1);
+      expect(specSpy).toHaveBeenCalledTimes(1);
+      expect(spec).not.toHaveProperty('declarationSyntax');
+      expect(spec).not.toHaveProperty('finalSubmission');
+      expect(JSON.stringify(warn.mock.calls)).not.toMatch(/CANARY/);
+    } finally {
+      warn.mockRestore();
+      specSpy.mockRestore();
+      runtime.cleanupSession('output-config-pi-frozen');
+    }
   });
 
   it('describes Pi agent-core as hidden, optional, sequential, and no shell/file tool runtime', () => {
@@ -1376,7 +1341,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       }));
       const context = takeFinalizationContext(terminal)!;
       try {
-        expect(context.getNativeDeclaration(terminal, new AbortController().signal)).toMatchObject({raw: SOURCE_FINALIZATION_RAW_SOURCE});
+        expect(context).not.toHaveProperty('getNativeDeclaration');
         expect(JSON.stringify(terminal)).not.toContain('conclusion_protocol_projection');
       } finally {context.dispose();}
       const next = await runtime.analyze('public second run', sessionId, 'trace-pi', admitted({
@@ -3471,7 +3436,7 @@ describe('experimental Pi agent-core runtime contract', () => {
     }
   });
 
-  it('keeps the completed candidate when task expiry interrupts repair and holds the guard until prompt drain', async () => {
+  it('keeps the original candidate when task expiry interrupts its continuation and holds the guard until prompt drain', async () => {
     jest.useFakeTimers({now: 1000, doNotFake: ['nextTick', 'setImmediate']});
     passVerification();
     const sessionId = 'pi-repair-task-deadline';
@@ -3485,7 +3450,8 @@ describe('experimental Pi agent-core runtime contract', () => {
       [PI_AGENT_CORE_ABORT_JOIN_TIMEOUT_MS_ENV]: '5'}});
     FakePiAgent.promptHandler = async (_agent, _prompt, index) => {
       if (index === 2) {entered.resolve(); return repair.promise;}
-      return [{role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: body}]}];
+      // An output-limited answer earns the one continuation interrupted below.
+      return [{role: 'assistant', stopReason: 'length', content: [{type: 'text', text: body}]}];
     };
     try {
       const running = runtime.analyze('question', sessionId, 'trace-pi', scope.bind({analysisMode: 'fast' as const}, sessionId));
@@ -3493,13 +3459,11 @@ describe('experimental Pi agent-core runtime contract', () => {
       await jest.advanceTimersByTimeAsync(55);
       const result = await running;
       expect(result.conclusion).toBe(body);
-      expect(result.completion).toMatchObject({status: 'completed', attemptId: '1'});
+      expect(result.completion).toMatchObject({status: 'incomplete', reason: 'output_limit', attemptId: '1'});
       expect(owner.signal.aborted).toBe(false);
       const context = takeFinalizationContext(result)!;
       try {
         expect(context.deadlineMs).toBe(1050);
-        await expect(context.dispatchText({prompt: 'review', systemPrompt: '', deadlineMs: 50_000,
-          outputByteLimit: 8192, signal: owner.signal})).resolves.toMatchObject({status: 'unavailable', reason: 'timeout'});
       } finally {context.dispose();}
       await expect(runtime.analyze('next', sessionId, 'trace-pi')).rejects.toThrow(/already in progress/);
       repair.resolve([{role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: 'LATE_REPAIR_MUST_NOT_REPLACE_BODY'}]}]);
@@ -3536,8 +3500,9 @@ describe('experimental Pi agent-core runtime contract', () => {
     const runtime = typedRuntime();
     const sessionId = `typed-pi-advisory-${nativeError}`;
     const result = await runtime.analyze('Read the current value', sessionId, 'trace-pi', {runId: sessionId});
-    expect(FakePiAgent.instances[0].promptCount).toBe(nativeError ? 1 : 2);
-    expect(replies).toEqual(nativeError ? [failedNext] : []);
+    // A completed answer needs no declaration repair; neither outcome spends a second call.
+    expect(FakePiAgent.instances[0].promptCount).toBe(1);
+    expect(replies).toEqual([failedNext]);
     expect(result.conclusion).toBe(body);
     expect(result.completion).toMatchObject({status: nativeError ? 'failed' : 'completed', attemptId: '1',
       conclusionFingerprint: analysisDeliveryFingerprint(body)});
@@ -3576,7 +3541,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       // bounded question needs are gathered after it.
       expect(events).not.toContain('before_classification');
       expect(events).toContain('preflight');
-      expect(FakePiAgent.instances[0].promptCount).toBe(2);
+      expect(FakePiAgent.instances[0].promptCount).toBe(1);
       expect(buildPrompt).toHaveBeenCalledWith(expect.objectContaining({
         onDemandContext: true, strategyRegistry: snapshot.strategyRegistry,
         turnIntent: expect.objectContaining({scope: 'bounded_question', deliverable: 'answer'}),
@@ -3811,10 +3776,12 @@ describe('experimental Pi agent-core runtime contract', () => {
         const result = await typedRuntime({env: {AGENT_QUICK_MAX_TURNS: outcome === 'no-reserve' ? '1' : '2',
           AGENT_QUICK_TIMEOUT_SECONDS: '1'}}).analyze('query', `pi-output-limit-${outcome}`, 'trace-pi', {analysisMode: 'fast'});
         expect(FakePiAgent.instances[0].promptCount).toBe(eligible ? 2 : 1);
-        if (outcome === 'complete') {
+        if (outcome === 'complete' || outcome === 'invalid' || outcome === 'no-declaration') {
+          // Any completed continuation with an answer body replaces the cut-off candidate;
+          // it needs no declaration, and a stray malformed one is stripped downstream.
           expect(result.completion).toMatchObject({status: 'completed', sdkFinishReason: 'stop', attemptId: '2',
             conclusionFingerprint: analysisDeliveryFingerprint(result.conclusion)});
-          expect(inspectCandidateProtocol(result.conclusion).status).toBe('valid');
+          expect(inspectCandidateProtocol(result.conclusion).canonicalBody).toContain('Observed ten 195 ms lock waits.');
         } else {
           expect(result.completion).toMatchObject({status: outcome === 'error' ? 'failed' : 'incomplete', attemptId: '1'});
           expect(result.completion?.reason).toBe(outcome === 'error' ? 'provider_error' : 'output_limit');
@@ -3864,178 +3831,22 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(result.completion).toMatchObject({status: 'incomplete', reason: 'output_limit', attemptId: '1'});
   });
 
-  it.each(['accepted', 'incomplete', 'claims-dropped', 'relations-dropped', 'relations-swapped'] as const)(
-    'uses one reserved no-tool turn for a bodyless 35-claim invalid relation: %s', async outcome => {
-      passVerification();
-      const claims = Array.from({length: 35}, (_, i) => declaredClaim(`claim:${i}`));
-      const base = {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [],
-        evidenceChain: [], claims, uncertainties: [], nextSteps: []};
-      const proposal = {schemaVersion: 'evidence_relation_candidate@1', id: 'proposal:lock', kind: 'lock_owner',
-        direction: 'subject_to_object', subject: {evidenceRefId: 'evidence:subject'},
-        object: {evidenceRefId: 'evidence:object'}, proof: {evidenceRefId: 'evidence:proof'}};
-      const first = renderConclusionContractSidecar({...base, relationProposals: [{...proposal,
-        proofBindings: {subject: {endpointColumn: 'tid', proofColumn: 'owner_tid'}}}]} as any);
-      const second = `Ten waits lasted 195 ms each; the captured owner is identified.\n` +
-        renderConclusionContractSidecar({...base, claims: outcome === 'claims-dropped' ? claims.slice(1) : claims,
-          relationProposals: outcome === 'relations-dropped' ? [] : [{...proposal,
-            ...(outcome === 'relations-swapped' ? {id: 'proposal:replacement'} : {}), proofBindings: {
-            subject: {endpointColumn: 'tid', proofColumn: 'owner_tid'},
-            object: {endpointColumn: 'tid', proofColumn: 'waiter_tid'}}}]} as any);
-      FakePiAgent.promptHandler = async (agent, prompt, index) => {
-        if (index === 2) {
-          expect(agent.state.tools).toEqual([]);
-          expect(prompt).toContain('proofBindings');
-          expect(prompt).toContain('invalid_proof_bindings');
-          expect(await (agent.options!.beforeToolCall as any)({toolCall: {name: 'execute_sql'}}))
-            .toMatchObject({block: true});
-        }
-        const message = {role: 'assistant', stopReason: index === 2 && outcome === 'incomplete' ? 'length' : 'stop',
-          content: [{type: 'text', text: index === 1 ? first : second}]};
-        agent.emitForTest({type: 'turn_end', message});
-        expect(await (agent.options!.finishTurn as any)({message})).toEqual({action: 'end'});
-        return [message];
-      };
-      const result = await typedRuntime({env: {AGENT_QUICK_MAX_TURNS: '2'}})
-        .analyze('query', `pi-pifix-relation-${outcome}`, 'trace-pi', {analysisMode: 'fast'});
-      expect(FakePiAgent.instances[0].promptCount).toBe(2);
-      expect(result.rounds).toBe(2);
-      if (outcome === 'accepted') {
-        expect(inspectCandidateProtocol(result.conclusion)).toMatchObject({status: 'valid', sidecar: {bindingEligibility: 'eligible'}});
-        expect(inspectCandidateProtocol(result.conclusion).sidecar.contract?.claims).toHaveLength(35);
-        const context = takeFinalizationContext(result)!;
-        try {
-          const declaration = context.getNativeDeclaration(result, new AbortController().signal);
-          if (!declaration || declaration.inputKind === 'model_tool_arguments' || declaration.inputKind === 'assistant_json') {
-            throw new Error('Expected an assistant-text native declaration');
-          }
-          expect(inspectCandidateProtocol(declaration.raw).status).toBe('valid');
-        }
-        finally {context.dispose();}
-      } else {
-        expect(result.completion?.attemptId).toBe('1');
-        // The rejected correction leaves the first candidate delivered; its one
-        // invalid proposal is item-scoped now (plan A.1), so the 35 claims stay eligible.
-        expect(inspectCandidateProtocol(result.conclusion).sidecar.bindingEligibility).toBe('eligible');
-      }
-    });
-
-  it('repairs closed invalid framing at the acquisition limit without changing its body or claim IDs', async () => {
+  it('issues no declaration repair call when a completed answer carries no declaration', async () => {
     passVerification();
-    const body = 'The one slow Binder transaction is blocked in WMS relayoutWindow.';
-    const good = declaredCandidateWithClaims(body, [declaredClaim('binder:slow'), declaredClaim('wms:lock')]);
-    const first = good.replace('```json', '```json ');
-    FakePiAgent.promptHandler = async (agent, prompt, index) => {
-      if (index === 2) {expect(agent.state.tools).toEqual([]); expect(prompt).toContain('invalid_framing');}
-      const message = {role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: index === 1 ? first : good}]};
-      agent.emitForTest({type: 'turn_end', message});
-      expect(await (agent.options!.finishTurn as any)({message})).toEqual({action: 'end'});
-      return [message];
-    };
-    const result = await typedRuntime({env: {AGENT_QUICK_MAX_TURNS: '2'}})
-      .analyze('query', 'pi-pifix-framing', 'trace-pi', {analysisMode: 'fast'});
-    expect(FakePiAgent.instances[0].promptCount).toBe(2);
-    expect(result.rounds).toBe(2);
-    expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
-    expect(inspectCandidateProtocol(result.conclusion).sidecar.contract?.claims?.map(claim => claim.id)).toEqual(['binder:slow', 'wms:lock']);
-  });
-
-  it('uses the reserved delivery turn to repair a rejected declaration around the unchanged body', async () => {
-    passVerification();
-    const body = 'Frame 12 missed its deadline.';
-    let completionPrompt = '';
-    FakePiAgent.promptHandler = async (_agent, prompt, index) => {
-      if (index === 2) completionPrompt = prompt;
-      return [{role: 'assistant', stopReason: 'stop', content: [{type: 'text',
-        text: candidateWithPopulation(body, index === 1 ? 'everywhere' : 'cited_rows')}]}];
-    };
-    const result = await typedRuntime().analyze('query', 'pi-invalid-declaration', 'trace-pi', {runId: 'pi-invalid-declaration'});
-    expect(FakePiAgent.instances[0].promptCount).toBe(2);
-    expect(completionPrompt).toContain('invalid_declaration');
-    expect(inspectCandidateProtocol(result.conclusion)).toMatchObject({status: 'valid'});
-    expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
-  });
-
-  it('does not send a declaration repair that cannot finish in the time left, and records why', async () => {
-    // The real assessment with one second left: the run's own deadline is far longer in this fixture.
-    jest.mocked(runtimeCallStats.admitDeliveryCall).mockImplementation((recorder, input) =>
-      realAdmitDeliveryCall(recorder, {...input, remainingMs: 1_000}));
-    passVerification();
-    const body = 'Frame 12 missed its deadline.';
-    FakePiAgent.promptHandler = async () => [{role: 'assistant', stopReason: 'stop', content: [{type: 'text',
-      text: candidateWithPopulation(body, 'everywhere')}]}];
+    const body = 'Frame 12 missed its deadline by 4.2 ms.';
+    FakePiAgent.promptHandler = async () => [{role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: body}]}];
     const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
     const result = await withEffectiveRuntimeRegistrySnapshot(createEffectiveRuntimeRegistrySnapshot(), () =>
-      typedRuntime().analyze('query', 'pi-repair-budget', 'trace-pi',
+      typedRuntime().analyze('query', 'pi-no-declaration', 'trace-pi',
         {runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder)}));
     expect(FakePiAgent.instances[0].promptCount).toBe(1);
-    expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
-    expect(runtimeCallStats.admitDeliveryCall).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      model: 'pi-test-model', purpose: 'declaration_repair', inputBytes: expect.any(Number),
-      remainingMs: expect.any(Number), failOpen: false}));
-    expect(runtimePerformanceRecorder.seal().deliveryBudgets).toEqual([{purpose: 'declaration_repair', decision: 'skip',
-      source: 'default', estimateMs: 90_000, remainingMs: 1_000, diagnostic: 'stats_not_configured'}]);
-  });
-
-  it('uses the reserved no-tools delivery turn to attach declarations to a full multilingual body', async () => {
-    passVerification();
-    const body = `${'启动阶段保持原始正文。'.repeat(700)}\n${'Full body remains byte-for-byte stable. '.repeat(140)}`.trimEnd();
-    expect(Buffer.byteLength(body, 'utf8')).toBeGreaterThan(8 * 1024);
-    const repaired = `${body}\n${protocolSidecar}`;
-    let completionPrompt = '';
-    let originalSystemPrompt = '';
-    FakePiAgent.promptHandler = async (agent, prompt, index) => {
-      if (index === 1) originalSystemPrompt = agent.state.systemPrompt;
-      if (index === 2) {
-        completionPrompt = prompt;
-        expect(agent.state.tools).toEqual([]);
-        expect(agent.state.systemPrompt).toBe(originalSystemPrompt);
-        agent.emitForTest({type: 'message_update', assistantMessageEvent: {
-          type: 'text_delta', delta: 'DECLARATION_COMPLETION_MUST_STAY_BUFFERED',
-        }});
-      }
-      return [{role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: index === 1 ? body : repaired}]}];
-    };
-    const runtime = typedRuntime();
-    const updates: StreamingUpdate[] = [];
-    runtime.on('update', update => updates.push(update));
-    const result = await runtime.analyze('query', 'pi-missing-declaration', 'trace-pi', {runId: 'pi-missing-declaration'});
-    expect(FakePiAgent.instances[0].promptCount).toBe(2);
-    expect(completionPrompt).toContain('missing_declaration');
-    const candidateLine = completionPrompt.split('\n').find(line => line.startsWith('{"schemaVersion":1,"kind":"original_native_candidate"'));
-    expect(JSON.parse(candidateLine ?? '{}')).toEqual({schemaVersion: 1, kind: 'original_native_candidate', body});
-    expect(completionPrompt).not.toContain('prior_conclusion_truncated');
-    expect(inspectCandidateProtocol(result.conclusion).status).toBe('valid');
-    expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body.trim());
-    expect(result.completion).toMatchObject({status: 'completed', attemptId: '2',
-      conclusionFingerprint: analysisDeliveryFingerprint(result.conclusion)});
-    expect(JSON.stringify(updates)).not.toContain('DECLARATION_COMPLETION_MUST_STAY_BUFFERED');
-  });
-
-  it('repairs an oversized rejected declaration when the unchanged body fits the Pi output cap', async () => {
-    passVerification();
-    const body = 'Frame 12 missed its deadline.';
-    const valid = candidateWithPopulation(body, 'cited_rows');
-    const payload = inspectCandidateProtocol(valid).sidecar.rawPayload;
-    const rejected = valid.replace('```json\n', `\`\`\`JSON\n${' '.repeat(80 * 1024)}`);
-    expect(Buffer.byteLength(rejected, 'utf8')).toBeGreaterThan(64 * 1024);
-    expect(inspectCandidateProtocol(rejected).canonicalBody.trim()).toBe(body);
-    let completionPrompt = '';
-    FakePiAgent.promptHandler = async (agent, prompt, index) => {
-      if (index === 2) {
-        completionPrompt = prompt;
-        expect(agent.state.tools).toEqual([]);
-      }
-      return [{role: 'assistant', stopReason: 'stop', content: [{type: 'text',
-        text: index === 1 ? rejected : JSON.stringify(payload)}]}];
-    };
-    const result = await typedRuntime().analyze('query', 'pi-oversized-rejected-sidecar', 'trace-pi');
-    expect(FakePiAgent.instances[0].promptCount).toBe(2);
-    expect(completionPrompt).toContain('invalid_declaration');
-    expect(completionPrompt).toContain('只输出完整声明 JSON 对象');
-    expect(inspectCandidateProtocol(result.conclusion).status).toBe('valid');
-    expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
-    expect(result.completion).toMatchObject({status: 'completed', attemptId: '2'});
-    expect(Buffer.byteLength(result.conclusion, 'utf8')).toBeLessThan(64 * 1024);
+    expect(result.conclusion.trim()).toBe(body);
+    expect(result.completion).toMatchObject({status: 'completed', attemptId: '1'});
+    expect(runtimeCallStats.admitDeliveryCall).not.toHaveBeenCalledWith(expect.anything(),
+      expect.objectContaining({purpose: 'declaration_repair'}));
+    const receipt = runtimePerformanceRecorder.seal();
+    expect((receipt.modelCalls ?? []).some(call => call.purpose === 'declaration_repair')).toBe(false);
+    expect((receipt.deliveryBudgets ?? []).some(budget => budget.purpose === 'declaration_repair')).toBe(false);
   });
 
   it('does not correct an undecodable authoring candidate through the ordinary Pi recovery path', async () => {
@@ -4047,32 +3858,8 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(result.completion).toMatchObject({status: 'completed'});
     expect(inspectCandidateProtocol(result.conclusion).status).toBe('invalid');
     const context = takeFinalizationContext(result)!;
-    try {expect(context.getNativeDeclaration(result, new AbortController().signal)).toMatchObject({raw: native});}
+    try {expect(context).not.toHaveProperty('getNativeDeclaration');}
     finally {context.dispose();}
-  });
-
-  it('does not dispatch declaration completion when the original body cannot fit the Pi output cap', async () => {
-    passVerification();
-    const body = 'x'.repeat(64 * 1024);
-    FakePiAgent.promptMessages = [{role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: body}]}];
-    const result = await typedRuntime().analyze('query', 'pi-declaration-output-cap', 'trace-pi');
-    expect(FakePiAgent.instances[0].promptCount).toBe(1);
-    expect(result.conclusion).toBe(body);
-    expect(result.completion).toMatchObject({status: 'completed', attemptId: '1'});
-  });
-
-  it('rejects an unchanged Pi repair when the declaration pushes the candidate over the output cap', async () => {
-    passVerification();
-    const body = 'x'.repeat(64 * 1024 - 100);
-    const repaired = `${body}\n${protocolSidecar}`;
-    expect(Buffer.byteLength(body, 'utf8')).toBeLessThan(64 * 1024);
-    expect(Buffer.byteLength(repaired, 'utf8')).toBeGreaterThan(64 * 1024);
-    FakePiAgent.promptHandler = async (_agent, _prompt, index) => [{role: 'assistant', stopReason: 'stop',
-      content: [{type: 'text', text: index === 1 ? body : repaired}]}];
-    const result = await typedRuntime().analyze('query', 'pi-declaration-overflow', 'trace-pi');
-    expect(FakePiAgent.instances[0].promptCount).toBe(2);
-    expect(result.conclusion).toBe(body);
-    expect(result.completion).toMatchObject({status: 'completed', attemptId: '1'});
   });
 
   it.each(['sidecar-only', 'invalid-schema'])('repairs native completed %s while preserving the pinned Pi prompt and source protocol', async kind => {
@@ -4106,7 +3893,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe('The marker is present.');
       expect(result.completion).toMatchObject({status: 'completed', attemptId: '2', conclusionFingerprint: analysisDeliveryFingerprint(result.conclusion)});
       const context = takeFinalizationContext(result)!;
-      try {expect(context.getNativeDeclaration(result, new AbortController().signal)).toMatchObject({raw: complete});}
+      try {expect(context).not.toHaveProperty('getNativeDeclaration');}
       finally {context.dispose();}
       expect(FakePiAgent.instances[0].state.systemPrompt).toBe(originalPrompt);
       const diagnostic = updates.filter(update => update.content?.phase === 'candidate_protocol').map(update => update.content.candidateProtocolDiagnostic);
@@ -4116,56 +3903,22 @@ describe('experimental Pi agent-core runtime contract', () => {
     } finally { authorization.mockRestore(); }
   });
 
-  it('gives the existing Pi relation correction the shared closed schema without a third call', async () => {
-    passVerification();
-    const semantics = {schemaVersion: 'claim_semantics@1', predicate: 'numeric.cell', polarity: 'affirmed',
-      discourse: 'asserted', quantifier: 'one', modality: 'certain', scope: {population: 'cited_rows'}};
-    const claim = (id: string, claimSemantics: unknown = semantics): ConclusionContractClaimItem =>
-      ({id, kind: 'numeric', text: `${id} holds.`, references: [],
-        semantics: claimSemantics as ConclusionContractClaimItem['semantics']});
-    const base: ConclusionContract = {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
-      conclusions: [], clusters: [], evidenceChain: [], claims: [claim('claim-1')], uncertainties: [], nextSteps: [],
-      relationProposals: [{schemaVersion: 'evidence_relation_candidate@1', id: 'proposal:relation_1',
-        kind: 'overlap', direction: 'symmetric', subject: {evidenceRefId: 'evidence-subject'}}]};
-    // The repair needs a repairable invalid claim (plan A.3); the invalid proposal
-    // rides the same correction and gets the exact relation schema.
-    const first = `The marker is present.\n${renderConclusionContractSidecar({...base,
-      claims: [claim('claim-1'), claim('claim-2', {...semantics, polarity: 'sometimes'})],
-      relationProposals: [{...base.relationProposals![0], PRIVATE_RELATION_KEY_CANARY: 'PRIVATE_RELATION_VALUE_CANARY'}]} as any)}`;
-    const complete = `The marker is present.\n${renderConclusionContractSidecar({...base,
-      claims: [claim('claim-1'), claim('claim-2')]})}`;
-    let recoveryPrompt = '';
-    FakePiAgent.promptHandler = async (_agent, input, index) => {
-      if (index === 2) recoveryPrompt = input;
-      return [{role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: index === 1 ? first : complete}]}];
-    };
-    const runtime = typedRuntime(); const updates: any[] = []; runtime.on('update', update => updates.push(update));
-    const result = await runtime.analyze('query', 'pi-relation-protocol', 'trace-pi');
-    expect(FakePiAgent.instances[0].promptCount).toBe(2);
-    expect(recoveryPrompt).toContain('proofBindings');
-    expect(recoveryPrompt).toContain('endpointColumn');
-    expect(recoveryPrompt).toContain('"reason":"unknown_field"');
-    expect(recoveryPrompt.slice(recoveryPrompt.indexOf('{"candidateProtocolDiagnostic"'))).not.toContain('PRIVATE_RELATION_');
-    expect(updates.find(update => update.content?.phase === 'candidate_protocol')?.content.candidateProtocolDiagnostic)
-      .toMatchObject({relationProposalDiagnostics: [{scope: 'item', ordinal: 1, reason: 'unknown_field'}]});
-    const context = takeFinalizationContext(result)!;
-    try {expect(context.getNativeDeclaration(result, new AbortController().signal)).toMatchObject({raw: complete});}
-    finally {context.dispose();}
-  });
-
-  it.each(['plain-body', 'sidecar-only', 'invalid-schema'])('retains the first Pi declaration when correction returns %s', async kind => {
+  it.each(['plain-body', 'sidecar-only', 'invalid-schema'])('completes a bodyless Pi reply only with a correction that has a body: %s', async kind => {
     passVerification();
     const first = protocolSidecar.replace('"focused_answer"', '"invalid-mode"');
     const second = kind === 'plain-body' ? 'The marker is present.' : kind === 'sidecar-only' ? protocolSidecar : first;
     FakePiAgent.promptHandler = async (_agent, _input, index) => [{role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: index === 1 ? first : second}]}];
     const result = await typedRuntime().analyze('query', `pi-protocol-rejected-${kind}`, 'trace-pi');
     expect(FakePiAgent.instances[0].promptCount).toBe(2);
-    const context = takeFinalizationContext(result)!;
-    try {expect(context.getNativeDeclaration(result, new AbortController().signal)).toMatchObject({raw: first});}
-    finally {context.dispose();}
-    expect(result.completion?.attemptId).toBe('1');
-    expect(inspectCandidateProtocol(result.conclusion).status).toBe('invalid');
-    // A rejected repair leaves no runtime-written terminal message; finalization assesses the candidate.
+    if (kind === 'plain-body') {
+      // A plain answer needs no declaration to replace a bodyless reply.
+      expect(result.completion?.attemptId).toBe('2');
+      expect(result.conclusion.trim()).toBe('The marker is present.');
+    } else {
+      expect(result.completion?.attemptId).toBe('1');
+      expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe('');
+    }
+    // A rejected correction leaves no runtime-written terminal message; finalization assesses the candidate.
     expect(result.terminationMessage).toBeUndefined();
   });
 
@@ -4180,8 +3933,9 @@ describe('experimental Pi agent-core runtime contract', () => {
     });
     const runtime = typedRuntime(); const updates: any[] = []; runtime.on('update', update => updates.push(update));
     try {
-      await expect(runtime.analyze('query', 'pi-projection-only-invalid', 'trace-pi'))
-        .rejects.toThrow('conclusion_protocol_projection_mismatch');
+      const result = await runtime.analyze('query', 'pi-projection-only-invalid', 'trace-pi');
+      // The projected body no longer matches the native candidate, so finalization cannot bind its completion.
+      takeFinalizationContext(result)?.dispose();
       expect(FakePiAgent.instances[0].promptCount).toBe(1);
       expect(updates.filter(update => update.content?.phase === 'candidate_protocol').map(update =>
         [update.content.candidateProtocolDiagnostic.stage, update.content.candidateProtocolDiagnostic.status]))
@@ -4267,14 +4021,14 @@ describe('experimental Pi agent-core runtime contract', () => {
     });
   });
 
-  it('ends the run when authorization changes during a declaration repair', async () => {
+  it('ends the run when authorization changes during a same-run continuation', async () => {
     passVerification();
     const body = 'Authorized candidate body.';
-    const repaired = `${body}\n${protocolSidecar}`;
+    const repaired = `${body} Completed.`;
     let revoked = false;
     FakePiAgent.promptHandler = async (_agent, _input, index) => {
       if (index === 2) revoked = true;
-      return [{role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: index === 1 ? body : repaired}]}];
+      return [{role: 'assistant', stopReason: index === 1 ? 'length' : 'stop', content: [{type: 'text', text: index === 1 ? body : repaired}]}];
     };
     const realAuthorization = contextAuthorization.assertCurrentAnalysisContextAuthorization;
     const authorization = jest.spyOn(contextAuthorization, 'assertCurrentAnalysisContextAuthorization').mockImplementation((...args) => {
@@ -4288,7 +4042,7 @@ describe('experimental Pi agent-core runtime contract', () => {
     } finally { authorization.mockRestore(); }
   });
 
-  it('keeps the issue-based correction when a rejected declaration is too large to repair', async () => {
+  it('keeps the issue-based correction for an answer whose stray declaration is invalid', async () => {
     const issue = {type: 'missing_evidence', severity: 'error', message: 'Needs evidence', recoveryKind: 'correct_evidence'};
     mockClaudeVerifierVerifyConclusion.mockImplementationOnce(async () => ({passed: false, heuristicIssues: [issue], llmIssues: []}))
       .mockImplementation(async () => ({passed: true, heuristicIssues: [], llmIssues: []}));
@@ -4304,7 +4058,8 @@ describe('experimental Pi agent-core runtime contract', () => {
     await typedRuntime().analyze('same question', 'pi-oversized-declaration', 'trace-pi', {runId: 'r-oversized', analysisMode: 'fast'});
     expect(FakePiAgent.instances[0].promptCount).toBe(2);
     expect(correctionPrompt).not.toContain('invalid_declaration');
-    expect(correctionPrompt).toContain('candidateProtocolDiagnostic');
+    expect(correctionPrompt).toContain('correct_evidence');
+    expect(correctionPrompt).not.toContain('candidateProtocolDiagnostic');
   });
 
   it('gathers no trace facts and binds no trace for a conversation without a mounted trace', async () => {
@@ -4574,13 +4329,11 @@ describe('experimental Pi agent-core runtime contract', () => {
       const providerQuery = context.getProviderQuery(new AbortController().signal);
       expect(providerQuery).toEqual({text: 'context only', analysisContextFingerprint});
       expect(Object.isFrozen(providerQuery)).toBe(true);
-      expect(context.getSelection(new AbortController().signal)).toEqual({present: true, kind: 'track_event',
-        context: options.selectionContext, sideResolution: {status: 'unknown'}});
+      expect(context).not.toHaveProperty('getSelection');
       expect(JSON.stringify(result)).not.toContain('"providerQuery"');
       expect(takeFinalizationContext(result)).toBeUndefined();
       expect(context.deliveryContext).toEqual(projected.deliveryContext);
       expect(context.traceIdentity).toEqual({currentTraceId: 'trace-current', referenceTraceId: 'trace-reference'});
-      expect(context.deliveryCall).toEqual({model: 'pi-test-model'});
       expect(readView).toHaveBeenCalledTimes(1);
       expect(readView.mock.calls[0][0].currentRunId).toBe(context.runId);
       expect(readView.mock.calls[0][0].allowedTraces).toEqual([
@@ -4590,18 +4343,10 @@ describe('experimental Pi agent-core runtime contract', () => {
       expect(JSON.stringify(result)).not.toContain(readView.mock.calls[0][0].ownerKey);
       const queriesBefore = trace.query.mock.calls.length;
       expect(piClassifierCalls).toHaveLength(1);
-      runtime.abortSession(sessionId); // The settled main lease cannot cancel the finalizer's own signal.
+      runtime.abortSession(sessionId);
       try {
-        const response = await context.dispatchText({prompt: 'semantic coverage', systemPrompt: '',
-          deadlineMs: Date.now() + 30_000, outputByteLimit: 8192, signal: new AbortController().signal});
-        expect(response.status).toBe('ok');
-        expect(piClassifierCalls).toHaveLength(2);
-        expect(piClassifierCalls[1].model).toBe(FakePiAgent.instances[0].state.model);
-        expect(piClassifierCalls[1].context.tools).toEqual([]);
-        expect(piClassifierCalls[1].context.messages).toHaveLength(1);
-        // The review's output cap follows its byte limit (8 KiB -> 2048 tokens * 1.25), under the model cap.
-        expect(piClassifierCalls[1].options.maxTokens).toBe(2560);
-        expect(piClassifierCalls[1].model).toMatchObject({maxTokens: 4096});
+        // Finalization issues no model call of its own.
+        expect(piClassifierCalls).toHaveLength(1);
         expect(piClassifierCalls[0].options.maxTokens).toBe(1024);
         expect(trace.query.mock.calls.length).toBe(queriesBefore);
         expect(FakePiAgent.instances).toHaveLength(1);
@@ -4645,14 +4390,8 @@ describe('experimental Pi agent-core runtime contract', () => {
     try {
       expect(context.runId).toBe('pi-cancelled-run');
       expect(context.sourceScope).toMatchObject({codeAwareMode: 'off', selectedCodebaseIds: [], hasCodebaseAccess: false});
-      expect(context.hasSemanticTransport).toBe(false);
-      expect(context.getSelection(new AbortController().signal)).toEqual({present: true, kind: 'track_event',
-        context: {kind: 'track_event', eventId: 7, ts: 42},
-        sideResolution: {status: 'resolved', traceSide: 'current', traceId: 'trace-pi'}});
+      expect(context).not.toHaveProperty('getSelection');
       expect(context.deliveryContext).toMatchObject({completion: result.completion});
-      expect(await context.dispatchText({prompt: 'must not dispatch', systemPrompt: '',
-        deadlineMs: Date.now() + 30_000, outputByteLimit: 8192, signal: new AbortController().signal}))
-        .toMatchObject({status: 'unavailable', reason: 'invalid_configuration'});
       expect(piClassifierCalls).toHaveLength(1);
     } finally { context.dispose(); }
   });
@@ -4671,7 +4410,7 @@ describe('experimental Pi agent-core runtime contract', () => {
     });
     expect(result.turnIntent).toMatchObject({scope: 'bounded_question', deliverable: 'answer'});
     expect(result.quickRun).toBeUndefined();
-    expect(FakePiAgent.instances[0].promptCount).toBe(2);
+    expect(FakePiAgent.instances[0].promptCount).toBe(1);
     expect(result.completion?.status).toBe('completed');
   });
 

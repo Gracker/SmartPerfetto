@@ -3,7 +3,6 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {refreshQuickRunStopReason} from '../../agentRuntime/quickBudget';
-import {readAuthoredFinalSubmission} from '../../agentRuntime/authoredFinalSubmission';
 import {parseClaimSemanticsDeclaration, type ConclusionContract} from '../../agent/core/conclusionContract';
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
 import {
@@ -37,14 +36,11 @@ import {
   isIssuedCodeAwareTextProjectionReceipt,
   projectCodeAwareStructuredText,
   sanitizeCodeAwareStructuredText,
-  sanitizeCodeAwareStructuredTextWithReceipt,
   sanitizeCodeAwareTextWithReceipt,
   type CodeAwareTextProjectionReceipt,
 } from '../security/codeAwareOutputRegistry';
 import {analysisDeliveryFingerprint, type AnalysisDeliveryContext} from '../../types/analysisDelivery';
-import {projectConclusionProtocol, projectConclusionContractForDisplay, issueConclusionProtocolProjection,
-  issueAuthoredConclusionProtocolProjection, readConclusionProtocolProjection, bindAuthoredFinalDelivery,
-  type AuthoredConclusionSubmission, type IssuedConclusionProtocolProjection} from '../security/conclusionProtocolProjection';
+import {projectConclusionProtocol, projectConclusionContractForDisplay} from '../security/conclusionProtocolProjection';
 
 /**
  * `failed`: a claim binds a reference this run never issued (or outside the
@@ -167,7 +163,7 @@ function boundedSourceReferenceCandidates(
 }
 
 function authoritativeSourceContext(
-  contract: ConclusionContract,
+  contract: Pick<ConclusionContract, 'sourceUseDecision' | 'sourceReferences'>,
   decision: SourceUseDecisionV1,
 ): {
   decision: SourceUseDecisionV1;
@@ -249,13 +245,6 @@ export function projectSafeSourceProvenance(input: {
   /** The stored verifier result; a current one adds per-claim standing and cited locations. */
   sourceClaimVerificationResult?: StoredSourceClaimVerificationResult;
 }): SafeSourceProvenanceProjection | undefined {
-  if (
-    !isRecord(input.conclusionContract) ||
-    input.conclusionContract.schemaVersion !== 'conclusion_contract_v1'
-  ) {
-    return undefined;
-  }
-
   const hasActualDecision = Object.prototype.hasOwnProperty.call(
     input,
     'actualSourceUseDecision',
@@ -264,9 +253,16 @@ export function projectSafeSourceProvenance(input: {
     ? sanitizeSourceUseDecision(input.actualSourceUseDecision)
     : undefined;
   if (hasActualDecision && !actualDecision) return undefined;
+  // The run's own source ledger is the provenance. A current answer may carry
+  // no derived contract at all; only a stored contract can add declared
+  // bindings, and a malformed one projects nothing.
+  const storedContract = isRecord(input.conclusionContract) &&
+    input.conclusionContract.schemaVersion === 'conclusion_contract_v1'
+    ? input.conclusionContract as unknown as ConclusionContract : undefined;
+  if (!storedContract && (input.conclusionContract !== undefined || !actualDecision)) return undefined;
 
   const contract = sanitizeConclusionSourceContract(
-    input.conclusionContract as unknown as ConclusionContract,
+    storedContract ?? {schemaVersion: 'conclusion_contract_v1', claims: []} as unknown as ConclusionContract,
     hasActualDecision
       ? {actualSourceUseDecision: actualDecision ?? null}
       : {},
@@ -345,6 +341,67 @@ const SOURCE_CLAIM_OUTCOMES = {
     message: 'the answer body does not cite this claim\'s source, so its context cannot be checked'},
 } as const satisfies Record<string, {status: SourceClaimStatus; code: SourceClaimVerificationIssue['code']; message: string}>;
 
+type MatchedAnswerCitation = SourceCitationV1 & {block: number};
+
+/** Match every source location written in the answer body against the run's issued references. */
+function matchAnswerCitations(body: string, references: readonly SourceReferenceV1[]): {
+  citations: MatchedAnswerCitation[]; truncated: boolean;
+} {
+  const extracted = extractSourceCitations(body);
+  const blocks = splitAnswerBlocks(body);
+  let blockIndex = 0;
+  const citations = extracted.citations.map(citation => {
+    while (blockIndex < blocks.length && blocks[blockIndex]!.end <= citation.index) blockIndex++;
+    const block = blockIndex < blocks.length && blocks[blockIndex]!.start <= citation.index ? blockIndex : -1;
+    return {...matchSourceCitation(citation, references), block};
+  });
+  return {citations, truncated: extracted.truncated};
+}
+
+const CITATION_TRUNCATED_ISSUE: SourceClaimVerificationIssue = {severity: 'warning',
+  code: 'source_citation_extraction_truncated', message: 'the answer writes more source locations than are checked'};
+
+/** One advisory issue per written location the run never returned, or that several file versions fit. */
+function citationMismatchIssues(citations: readonly SourceCitationV1[]): SourceClaimVerificationIssue[] {
+  return citations.flatMap(citation => citation.status === 'unmatched' || citation.status === 'ambiguous' ? [{
+    severity: 'warning' as const, citation: citation.citation,
+    code: citation.status === 'unmatched' ? 'source_citation_unmatched' as const : 'source_citation_ambiguous' as const,
+    message: citation.status === 'unmatched'
+      ? 'the answer cites a source location this run never returned'
+      : 'the answer cites a source location several returned file versions fit'}] : []);
+}
+
+/** Judged against every candidate; the stored list is bounded. */
+function storedCitations(citations: readonly MatchedAnswerCitation[]): SourceCitationV1[] {
+  return citations.map(({block: _block, ...citation}) => citation.candidateReferenceIds
+    ? {...citation, candidateReferenceIds: citation.candidateReferenceIds.slice(0, MAX_STORED_CANDIDATE_REFERENCES)}
+    : citation);
+}
+
+const UNCHECKED_LEDGER_ISSUE: SourceClaimVerificationIssue = {severity: 'warning', code: 'source_claim_semantics_unchecked',
+  message: 'declared source evidence has no current authorized execution ledger'};
+
+/**
+ * The source check of a new answer, which declares no claims: every source
+ * location written in the body is matched against the run's issued
+ * references. All matched is `passed`; an unmatched or ambiguous citation (or
+ * a citation with no recorded ledger) is an advisory `partial`; no citation is
+ * `not_checked`, which the finalizer does not store (source `not_applicable`).
+ */
+export function verifySourceCitations(input: {body: string; sourceUse?: SourceUseDecisionV1}): SourceClaimVerificationResult {
+  const result = (status: SourceClaimVerificationStatus, citations: SourceCitationV1[] = [],
+    issues: SourceClaimVerificationIssue[] = []): SourceClaimVerificationResult =>
+    ({schemaVersion: 'source_claim_verifier@2', status, bindings: [], claims: [], citations, issues});
+  const decision = sanitizeSourceUseDecision(input.sourceUse);
+  if (!decision) {
+    return hasSourceCitation(input.body) ? result('partial', [], [{...UNCHECKED_LEDGER_ISSUE}]) : result('not_checked');
+  }
+  const {citations, truncated} = matchAnswerCitations(input.body, decision.references);
+  const issues = [...(truncated ? [{...CITATION_TRUNCATED_ISSUE}] : []), ...citationMismatchIssues(citations)];
+  return result(issues.length > 0 ? 'partial' : citations.length > 0 ? 'passed' : 'not_checked',
+    storedCitations(citations), issues);
+}
+
 /**
  * Per-claim source status from the run's issued references. A claim depends
  * on source by structure, never by wording: a `source.*` predicate, codebase
@@ -365,6 +422,9 @@ const SOURCE_CLAIM_OUTCOMES = {
  * the citation's file version and shares a written line. A claim's binding
  * pins an ambiguous citation for that claim only; the answer still carries
  * the ambiguity.
+ *
+ * Declared bindings are retired for new answers (see `verifySourceCitations`);
+ * this verifier remains for historical declarations and evaluation replays.
  */
 export function verifySourceClaimBindings(input: {
   conclusionContract?: ConclusionContract | null;
@@ -373,12 +433,12 @@ export function verifySourceClaimBindings(input: {
   /** The canonical answer body whose written source locations are checked. */
   body?: string;
 }): SourceClaimVerificationResult {
-  const contract = input.conclusionContract;
+  const contract: Pick<ConclusionContract, 'claims' | 'sourceClaimBindings' | 'sourceUseDecision' | 'sourceReferences'> =
+    input.conclusionContract ?? {claims: [], sourceClaimBindings: []};
   const decision = sanitizeSourceUseDecision(input.actualSourceUseDecision);
   const empty = (status: SourceClaimVerificationStatus, issues: SourceClaimVerificationIssue[] = []):
     SourceClaimVerificationResult => ({schemaVersion: 'source_claim_verifier@2', status, bindings: [], claims: [],
     citations: [], issues});
-  if (!contract) return empty('not_checked');
   const declaredClaims = contract.claims || [];
   const idCounts = new Map<string, number>();
   for (const claim of declaredClaims) if (claim.id) idCounts.set(claim.id, (idCounts.get(claim.id) ?? 0) + 1);
@@ -395,10 +455,9 @@ export function verifySourceClaimBindings(input: {
       ? [{claimId: claim.id, semantics, textCitations}] : [];
   });
   if (!decision || !context) {
-    // Declared source evidence with no authorized execution ledger cannot be checked.
+    // Source evidence with no recorded execution ledger cannot be matched.
     return sourceDependent.length > 0 || bindings.length > 0 || hasSourceCitation(input.body ?? '')
-      ? empty('partial', [{severity: 'warning', code: 'source_claim_semantics_unchecked',
-        message: 'declared source evidence has no current authorized execution ledger'}])
+      ? empty('partial', [{...UNCHECKED_LEDGER_ISSUE}])
       : empty('not_checked');
   }
 
@@ -413,14 +472,8 @@ export function verifySourceClaimBindings(input: {
   }
   const issues: SourceClaimVerificationIssue[] = [];
 
-  const body = extractSourceCitations(input.body ?? '');
-  const blocks = splitAnswerBlocks(input.body ?? '');
-  let blockIndex = 0;
-  const citations = body.citations.map(citation => {
-    while (blockIndex < blocks.length && blocks[blockIndex]!.end <= citation.index) blockIndex++;
-    const block = blockIndex < blocks.length && blocks[blockIndex]!.start <= citation.index ? blockIndex : -1;
-    return {...matchSourceCitation(citation, references), block};
-  });
+  const body = matchAnswerCitations(input.body ?? '', references);
+  const citations = body.citations;
   // The file versions a citation was matched to: its pin, or an ambiguous one's candidates.
   const citedIdentities = (citation: SourceCitationV1): Set<string> => new Set(
     (citation.sourceReferenceId !== undefined ? [citation.sourceReferenceId] : citation.candidateReferenceIds ?? [])
@@ -428,10 +481,7 @@ export function verifySourceClaimBindings(input: {
         const reference = referenceById.get(id);
         return reference ? [sourceReferenceIdentity(reference)] : [];
       }));
-  if (body.truncated) {
-    issues.push({severity: 'warning', code: 'source_citation_extraction_truncated',
-      message: 'the answer writes more source locations than are checked'});
-  }
+  if (body.truncated) issues.push({...CITATION_TRUNCATED_ISSUE});
 
   const claimStatuses: SourceClaimStatusV1[] = [];
   for (const {claimId, semantics, textCitations} of sourceDependent) {
@@ -515,22 +565,12 @@ export function verifySourceClaimBindings(input: {
     }
   }
 
-  for (const citation of citations) {
-    if (citation.status !== 'unmatched' && citation.status !== 'ambiguous') continue;
-    issues.push({severity: 'warning', citation: citation.citation,
-      code: citation.status === 'unmatched' ? 'source_citation_unmatched' : 'source_citation_ambiguous',
-      message: citation.status === 'unmatched'
-        ? 'the answer cites a source location this run never returned'
-        : 'the answer cites a source location several returned file versions fit'});
-  }
+  issues.push(...citationMismatchIssues(citations));
   const status: SourceClaimVerificationStatus = issues.some(issue => issue.severity === 'error') ? 'failed'
     : issues.length > 0 ? 'partial'
       : claimStatuses.length > 0 || citations.length > 0 ? 'passed' : 'not_checked';
-  // Judged against every candidate; the stored list is bounded.
   return {schemaVersion: 'source_claim_verifier@2', status, bindings, claims: claimStatuses,
-    citations: citations.map(({block: _block, ...citation}) => citation.candidateReferenceIds
-      ? {...citation, candidateReferenceIds: citation.candidateReferenceIds.slice(0, MAX_STORED_CANDIDATE_REFERENCES)}
-      : citation), issues};
+    citations: storedCitations(citations), issues};
 }
 
 export function verifySourceClaimBindingsForResult(
@@ -588,26 +628,14 @@ export interface SourceAwareAnalysisProjection {
   result: AnalysisResult;
   conclusionProjection: CodeAwareTextProjectionReceipt;
   deliveryContext?: AnalysisDeliveryContext;
-  protocolProjection?: IssuedConclusionProtocolProjection;
 }
 
 /** Final callers must consume the returned context instead of the pre-projection one. */
 export function finalizeSourceAwareAnalysisResultWithProjection(
   result: AnalysisResult,
   sourceUse: SourceUseDecisionReader | undefined,
-  options: {priorProjection?: CodeAwareTextProjectionReceipt; context?: AnalysisDeliveryContext;
-    authoredSubmission?: AuthoredConclusionSubmission} = {},
+  options: {priorProjection?: CodeAwareTextProjectionReceipt; context?: AnalysisDeliveryContext} = {},
 ): SourceAwareAnalysisProjection {
-  const authoredSubmission = options.authoredSubmission;
-  if (authoredSubmission) {
-    const snapshot = readAuthoredFinalSubmission(authoredSubmission.submission, authoredSubmission.input);
-    if (options.priorProjection || result.conclusion !== snapshot.compiled.body) {
-      throw new Error('authored_source_projection_mismatch');
-    }
-    result.conclusionContract = structuredClone(snapshot.compiled.canonicalParse.contract) as ConclusionContract | undefined;
-  }
-  const originalDeclaration = {raw: result.conclusion,
-    ...(!authoredSubmission && result.conclusionContract ? {contract: structuredClone(result.conclusionContract)} : {})};
   const nativeCandidate = options.context?.entry !== 'historical_restore' ? options.context?.acceptedCandidate : undefined;
   const structure = () => ({
     conclusionContract: result.conclusionContract, claimSupport: result.claimSupport,
@@ -631,9 +659,7 @@ export function finalizeSourceAwareAnalysisResultWithProjection(
   // Recompute against this run's accessor before privacy projection changes text.
   // An archived or provider-authored sidecar cannot establish current source failure.
   const currentSourceVerification = actualDecision ? verifySourceClaimBindingsForResult(result) : undefined;
-  const directProjection = authoredSubmission
-    ? sanitizeCodeAwareStructuredTextWithReceipt(result.sessionId, result.conclusion)
-    : shouldProject
+  const directProjection = shouldProject
     ? result.conclusion.length > 0 ? projectConclusionProtocol(result.sessionId, result.conclusion)
       : createCodeAwareStreamingTextProjection(result.sessionId, 'final-result-empty').projectCompleteWithReceipt('')
     : sanitizeCodeAwareTextWithReceipt(undefined, result.conclusion);
@@ -704,8 +730,7 @@ export function finalizeSourceAwareAnalysisResultWithProjection(
     delete result.deliveryAssurance;
     if (bodyChanged) delete result.completion;
     if (deliveryContext && deliveryContext.entry !== 'historical_restore') {
-      deliveryContext = {...deliveryContext, claimVerificationBinding: undefined, sourceVerificationBinding: undefined,
-        reportAssessment: undefined, investigationAssessment: undefined, evidenceRenderedProof: undefined};
+      deliveryContext = {...deliveryContext, investigationAssessment: undefined};
       if (bodyChanged) {
         const original = deliveryContext.acceptedCandidate;
         const nativeCompletion = deliveryContext.completion;
@@ -743,20 +768,7 @@ export function finalizeSourceAwareAnalysisResultWithProjection(
       deliveryContext = {...deliveryContext, outputOrigin: 'runtime_fallback'};
     }
   }
-  const displayCandidate = deliveryContext?.entry !== 'historical_restore' ? deliveryContext?.acceptedCandidate : undefined;
-  const protocolProjection = nativeCandidate && displayCandidate && !hasPriorProjection &&
-    nativeCandidate.conclusionFingerprint === analysisDeliveryFingerprint(originalDeclaration.raw)
-    ? authoredSubmission
-      ? issueAuthoredConclusionProtocolProjection({submission: authoredSubmission, result, nativeCandidate, displayCandidate,
-        bodyProjection: conclusionProjection})
-      : issueConclusionProtocolProjection({original: originalDeclaration, result, nativeCandidate, displayCandidate}) : undefined;
-  if (authoredSubmission && !protocolProjection) throw new Error('authored_source_projection_missing');
-  if (protocolProjection && authoredSubmission && deliveryContext && nativeCandidate) {
-    bindAuthoredFinalDelivery({context: deliveryContext, result, nativeDeclaration: readConclusionProtocolProjection(protocolProjection,
-      {result, candidate: displayCandidate, runId: nativeCandidate.runId})});
-  }
-  return {result, conclusionProjection, ...(deliveryContext ? {deliveryContext} : {}),
-    ...(protocolProjection ? {protocolProjection} : {})};
+  return {result, conclusionProjection, ...(deliveryContext ? {deliveryContext} : {})};
 }
 
 

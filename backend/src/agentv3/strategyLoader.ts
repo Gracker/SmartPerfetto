@@ -21,7 +21,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
-import type {AnalysisReportRequirementCondition} from '../types/analysisDelivery';
 import {canonicalContentHash} from '../services/selfEvolution/canonicalJson';
 import {
   currentEffectiveRuntimeRegistrySnapshot,
@@ -48,17 +47,20 @@ export interface StrategyDetailSection {
   default: boolean;
 }
 
+type AnalysisReportRequirementCondition =
+  | {kind: 'semantic'; description: string}
+  | {kind: 'unresolved'; reason: 'legacy_trigger_patterns' | 'invalid_condition'};
+
 /**
- * Scene-owned final report contract. Strategies declare these as data so
- * runtime quality gates can enforce scene completeness without adding
- * TypeScript branches for every analysis scenario.
+ * Scene-owned final report contract. Strategies declare these as data; the
+ * system prompt states them as report guidance. No gate assesses coverage.
  */
 export interface FinalReportContractRequirement {
   id: string;
   label: string;
   description?: string;
   condition?: AnalysisReportRequirementCondition;
-  /** @deprecated Historical configuration only; semantic review decides applicability. */
+  /** @deprecated Historical configuration only; never decides applicability. */
   triggerPatterns: string[];
   /** @deprecated Historical configuration only; never proves semantic coverage. */
   patterns: string[];

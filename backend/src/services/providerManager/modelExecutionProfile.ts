@@ -6,7 +6,6 @@ import {createHash} from 'node:crypto';
 import type {AgentRuntimeKind} from '../../agentRuntime/runtimeKinds';
 import {isProductionAgentRuntimeKind} from '../../agentRuntime/runtimeKinds';
 import {isFinalSubmissionMode, type FinalSubmissionMode} from '../../agentRuntime/finalSubmissionConfig';
-import {resolveConclusionDeclarationSyntax} from '../../agent/core/conclusionAuthoring';
 import type {ConclusionDeclarationSyntax} from '../../agent/core/conclusionContract';
 
 export const MODEL_EXECUTION_PROFILE_RULESET = 'model_execution_profile_rules@5';
@@ -33,7 +32,7 @@ export interface SdkModelCapabilities {
 
 /** Already resolved values from the same captured config the runtime will use. */
 export interface ModelEffectiveSettings {
-  /** Captured output configuration, not a claim of actual transport adoption. */
+  /** Retired output labels kept so historical receipts re-derive their profiles; current runs set neither. */
   readonly finalSubmission?: FinalSubmissionMode;
   readonly declarationSyntax?: ConclusionDeclarationSyntax;
   readonly authoredReasoning?: ReasoningSetting;
@@ -154,13 +153,13 @@ function reasoning(value: ReasoningSetting | undefined): ReasoningSetting | unde
   if (value?.mode !== 'enabled' || (value.effort !== undefined && !EFFORTS.includes(value.effort))) invalid();
   return {mode: 'enabled', ...(value.effort !== undefined ? {effort: value.effort} : {})};
 }
+/** Historical profile labels only; no current run selects a declaration syntax. */
+const HISTORICAL_DECLARATION_SYNTAXES: readonly ConclusionDeclarationSyntax[] = ['canonical_v1', 'authoring_v1', 'authoring_v2'];
 function effectiveSettings(input: ModelEffectiveSettings): ModelEffectiveSettings {
   if (!input || typeof input !== 'object') invalid();
   if (input.finalSubmission !== undefined && !isFinalSubmissionMode(input.finalSubmission)) invalid();
-  let declarationSyntax: ConclusionDeclarationSyntax | undefined;
-  if (input.declarationSyntax !== undefined) {
-    try {declarationSyntax = resolveConclusionDeclarationSyntax(input.declarationSyntax);} catch {invalid();}
-  }
+  const declarationSyntax = input.declarationSyntax;
+  if (declarationSyntax !== undefined && !HISTORICAL_DECLARATION_SYNTAXES.includes(declarationSyntax)) invalid();
   const authoredReasoning = reasoning(input.authoredReasoning);
   const sdkEffectiveReasoning = reasoning(input.sdkEffectiveReasoning);
   const numbers: Partial<Record<typeof NUMERIC_SETTINGS[number], number>> = {};

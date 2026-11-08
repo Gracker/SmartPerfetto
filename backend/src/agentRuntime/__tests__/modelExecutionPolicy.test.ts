@@ -38,13 +38,13 @@ describe('explicit model execution policy', () => {
     else expect(target.effective.maxOutputTokens).toBe(maxOutputTokens);
   });
 
-  it.each(['classification', 'review', 'declaration_repair', 'answer_turn', 'continuation'] as const)(
+  it.each(['classification', 'review', 'answer_turn', 'continuation'] as const)(
     'preserves native configuration for %s unless a candidate was explicitly selected', purpose => {
       expect(policy(profile(), {purpose, selection: 'preserve'})).toMatchObject({status: 'ready', controls: {surface: 'none'},
         receipt: {outcome: 'preserved', mapped: 'unchanged', authored: 'absent', sdkEffective: 'unknown', wireObservation: 'not_observed'}});
     });
 
-  it.each(['classification', 'review', 'declaration_repair'] as const)(
+  it.each(['classification', 'review'] as const)(
     'maps explicit GLM %s candidate to enabled low, never off or a claimed observed wire setting', purpose => {
       expect(policy(profile(), {purpose})).toMatchObject({status: 'ready',
         controls: {surface: 'openai_chat', thinking: {type: 'enabled'}, reasoning_effort: 'low'},

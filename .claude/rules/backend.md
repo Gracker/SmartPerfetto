@@ -35,48 +35,42 @@ when changing code.
 
 ## Final Results and Evidence
 
-- Runtime candidate, private finalization context, canonical body, original
-  declarations/captures, finite proof, semantic review, reports, CLI artifacts,
-  snapshots and live chat are separate surfaces. The product owner extracts
-  context from the exact result and finalizes once. Native completion facts
-  determine delivery; prose, length, headings or tool examples do not.
+- Runtime candidate, private finalization context, canonical body, delivery
+  assurance, reports, CLI artifacts, snapshots and live chat are separate
+  surfaces. The product owner extracts context from the exact result and
+  finalizes once. Native completion facts determine delivery; prose, length,
+  headings or tool examples do not.
+- Data accuracy comes from Skills/SQL and producer-authoritative units. Fix
+  data acquisition instead of adding per-claim checks. The answer is plain
+  assistant text: no model-authored declaration, typed final submission,
+  declaration repair or semantic review call. A declaration a model still writes
+  is stripped from the body and not stored; it never becomes evidence.
 - The finalizer alone writes terminal quality state. Missing body or native
-  lifecycle/completion faults may block delivery; claim/report/source/identity
-  verification failures remain separate annotations, not automatic partial
-  delivery or lower finding confidence. Preserve unverified versus contradicted
-  and finding confidence versus verification coverage. Do not fabricate a pass.
-- Semantic review runs at most once with no tools under the pinned provider,
-  original deadline, current owner and authorization. It cannot rewrite the
-  body, restart acquisition or extend budgets. A skipped review is explicitly
-  unchecked, never equivalent to passed review; source access, report and live
-  investigation obligations retain their review requirements.
-- Finite proof reads issued immutable captures, original values and
-  producer-authoritative units/semantics. Display strings, inferred column
-  names, Query Review, model declarations, serialized receipts and restored
-  snapshots grant no authority. Preserve the original proposition/references;
-  generic causal claims cannot be reduced to numeric equalities to obtain proof.
-- Numeric presentation is an untrusted display proposal. Its independent
-  captured-cell arithmetic check preserves original values and verifies neither
-  subject nor causality. Unchecked bindings, rounding warnings, malformed review
-  items and missing coverage cannot become verified claims. Root declaration
-  faults and per-entry faults keep their distinct eligibility/validity outcomes.
-- Delivery/declaration recovery uses only the original run's remaining budget,
-  deadline, provider and authorization. Declaration-only repair preserves body,
-  valid entries and original identities; failure restores the accepted candidate.
-  Closeout after exhaustion stays partial/max-turns and never authorizes an extra
-  semantic call. Record attempted native calls, not an unexecuted SDK cap+1.
+  lifecycle/completion faults may block delivery. New finalizations record
+  `claims`, `report`, `investigation` and `investigationEvidence` assurance as
+  `not_applicable`; `completion` and dual-trace `identity` stay checked. Source
+  is a citation-only annotation (see [codebase-aware](codebase-aware.md)).
+  Annotations never become automatic partial delivery or lower finding
+  confidence. Do not fabricate a pass; a projection that alters checked inputs
+  downgrades `passed` to `not_checked` and keeps `not_applicable`.
+- Delivery recovery (output-limit or empty-body continuation and one same-run
+  correction) uses only the original run's remaining budget, deadline, provider and authorization.
+  Closeout after exhaustion stays partial/max-turns. Record attempted native
+  calls, not an unexecuted SDK cap+1. Stale `SMARTPERFETTO_FINAL_SUBMISSION` or
+  declaration-syntax env values log one warning and fall back to
+  `assistant_text`; they never fail a run.
 - Drafts are capability-gated, live-only and revocable by run/attempt. Reset on
   new response, retry, continuation or tool-after-answer; private projection
   alteration withdraws the draft. Stale events, failed timer projection and
-  sub-agent prose cannot become the main answer. Provisional answers use the
-  terminal surface's projector; verdicts come only from finalization.
-- Stop before provisional delivery cancels fully; stop after it ends review,
-  then a second stop forces. Preserve the shared watchdog, single terminal write,
-  atomic conversation descriptor/turn commit and current-run checks. A watchdog
-  fallback is allowed only in its admitted public/authorized/current-owner cases;
-  superseded results, callbacks and cleanup never affect a successor.
+  sub-agent prose cannot become the main answer. The finalized answer is sent
+  once through the terminal surface's projector before report/snapshot
+  generation; assurance comes only from finalization.
+- Stop fully cancels the current run. Preserve the single terminal write,
+  atomic conversation descriptor/turn commit and current-run checks; superseded
+  results, callbacks and cleanup never affect a successor.
 - Historical report/snapshot reads project stored results without a new
-  finalizer or recreated execution witness. Readability changes must preserve
+  finalizer or recreated execution witness; stored declarations, verdicts and
+  per-claim citations still render. Readability changes must preserve
   report/snapshot/CLI provenance and every affected output contract.
 
 ## Sessions, Privacy and Learning
@@ -108,7 +102,7 @@ when changing code.
 ## Concurrency and Self-Evolution
 
 - `runtimeExecutionGuard.ts` keeps one active runtime per session until outer
-  execution settles, except the explicit watchdog terminal fallback above.
+  execution settles.
   Same-processor SQL remains serialized by one `TraceProcessorSqlWorker`.
   Spawn long-lived processors only through the shared launcher/lifecycle policy;
   owner exit/orphan sweep must prevent leaked processes.

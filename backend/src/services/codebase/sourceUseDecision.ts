@@ -117,15 +117,6 @@ export interface SourceClaimBindingV1 {
   mechanismStatus?: SourceMechanismStatus;
 }
 
-/** A decision to skip source cannot erase actual access or incomplete coverage. */
-export function isUnusedSourceDecision(value: SourceUseDecisionV1 | undefined): boolean {
-  return value === undefined || value.schemaVersion === SOURCE_USE_DECISION_SCHEMA_VERSION &&
-    value.status === 'not_needed' && value.coverageComplete !== false &&
-    (value.incompleteReasons === undefined || Array.isArray(value.incompleteReasons) && value.incompleteReasons.length === 0) &&
-    [value.attemptedTools, value.queriedCodebaseIds, value.usedCodebaseIds, value.references]
-      .every(items => Array.isArray(items) && items.length === 0);
-}
-
 export const MAX_SOURCE_REFERENCE_COUNT = 100;
 export const MAX_SOURCE_REFERENCE_PATH_LENGTH = 512;
 

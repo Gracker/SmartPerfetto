@@ -44,26 +44,9 @@ import {parseAnalysisHistoryTurn} from '../../services/analysisHistoryStore';
 import {isTurnInterrupted, TurnInterruptController, TurnInterruptedError, type InterruptSource} from './turnInterrupt';
 import type {RequestedSourceDepth} from '../../services/codebase/sourceDepthPolicy';
 
-/**
- * Text output shows the answer while its semantic review runs. json/ndjson keep
- * their exact event stream, so they never receive it (nor "answer readable"),
- * and their first Ctrl-C is therefore always the full abort.
- */
-function provisionalAnswerOption(renderer: Renderer,
-  interrupt?: TurnInterruptController): Pick<RunTurnInput, 'onProvisionalAnswer'> {
-  // Only the text renderer implements printProvisionalConclusion.
-  return renderer.printProvisionalConclusion
-    ? {onProvisionalAnswer: ({conclusion}) => {
-        renderer.printProvisionalConclusion?.(conclusion);
-        // From now on the user has read the answer: a stop ends only its review.
-        interrupt?.markProvisionalDelivered();
-      }}
-    : {};
-}
-
-/** The turn's stop signals; full abort surfaces as TurnInterruptedError. */
-function interruptOptions(interrupt?: TurnInterruptController): Pick<RunTurnInput, 'signal' | 'reviewStopSignal'> {
-  return interrupt ? {signal: interrupt.signal, reviewStopSignal: interrupt.reviewStopSignal} : {};
+/** The turn's stop signal; a full abort surfaces as TurnInterruptedError. */
+function interruptOptions(interrupt?: TurnInterruptController): Pick<RunTurnInput, 'signal'> {
+  return interrupt ? {signal: interrupt.signal} : {};
 }
 
 async function withTurnInterrupt<T>(ctx: TurnRunnerContext,
@@ -197,7 +180,6 @@ async function runStartSession(
       ctx.renderer.onEvent(update);
       if (streamFile) appendStreamEvent(streamFile, update);
     },
-    ...provisionalAnswerOption(ctx.renderer, interrupt),
     ...interruptOptions(interrupt),
   });
   // Defensive: if onSessionReady didn't fire (future refactor hazard) we
@@ -373,7 +355,6 @@ async function runContinueSession(
       ctx.renderer.onEvent(update);
       appendStreamEvent(streamFile, update);
     },
-    ...provisionalAnswerOption(ctx.renderer, interrupt),
     ...interruptOptions(interrupt),
   };
   let result: RunTurnOutput;

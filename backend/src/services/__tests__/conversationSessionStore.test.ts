@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
 import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -11,7 +12,6 @@ import {ConversationSessionStore, type ConversationSessionDescriptor} from '../c
 import {toAnalysisHistoryTurn} from '../../agentRuntime/analysisHistory';
 import {openEnterpriseDb, ENTERPRISE_DB_PATH_ENV} from '../enterpriseDb';
 import {persistAnalysisRunState, resetAnalysisRunStoreForTests} from '../analysisRunStore';
-import {buildReviewNotFinishedResult} from '../reviewStopHandle';
 import {createAnalysisHistoryReader, renderAnalysisHistoryContext} from '../../agentRuntime/analysisHistory';
 import {NO_PRIVATE_CONTEXT} from '../security/analysisPrivateContext';
 
@@ -47,14 +47,23 @@ afterEach(() => {
 });
 
 describe('logical conversation durability', () => {
-  it('writes one terminal turn per run and keeps a review-not-finished body incomplete for later readers', () => {
+  /** A turn stored by the retired review-stop fallback; historical rows stay readable as stored. */
+  const reviewNotFinishedHistoricalResult = (sessionId: string): AnalysisResult => ({
+    sessionId, success: true, findings: [], hypotheses: [], conclusion: 'Main thread waited 80 ms on binder.',
+    confidence: 0, rounds: 0, totalDurationMs: 0, partial: true, terminationReason: 'review_not_finished',
+    terminationMessage: 'The semantic review did not finish: this answer is unverified.',
+    claimVerificationResult: {schemaVersion: 'claim_verifier@2', status: 'not_checked', policy: 'record_only',
+      notCheckedReason: 'review_not_finished', passed: false, checkedClaimCount: 0, unsupportedClaimCount: 0,
+      claimResults: [], issues: []},
+  });
+
+  it('writes one terminal turn per run and keeps a historical review-not-finished body incomplete for later readers', () => {
     const store = new ConversationSessionStore(db);
     store.save(descriptor(), turn());
     const done = {...descriptor(), status: 'completed' as const, lastActivityAt: 200,
       lastRun: {...descriptor().lastRun, status: 'completed' as const, completedAt: 200}};
     const partial = toAnalysisHistoryTurn({id: 'run-a', turnIndex: 0, query: 'why?', traceId: 'trace-a', timestamp: 200,
-      analysisContextFingerprint: 'auth-a', result: buildReviewNotFinishedResult({sessionId: scope.sessionId,
-        conclusion: 'Main thread waited 80 ms on binder.', outputLanguage: 'en'})});
+      analysisContextFingerprint: 'auth-a', result: reviewNotFinishedHistoricalResult(scope.sessionId)});
     store.save(done, partial);
     expect(() => store.save(done, {...partial, answer: 'a second terminal write'}))
       .toThrow('conversation_recovery_turn_already_terminal');

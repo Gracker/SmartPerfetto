@@ -79,10 +79,9 @@ Register the public Android Internals Wiki (or your own team documents) as a doc
   knowledge base is background, never a substitute for current-trace evidence.
   See [Private Knowledge](docs/getting-started/private-knowledge.en.md) and
   [Android Internals Knowledge](docs/getting-started/android-internals-knowledge.en.md).
-- Delivers first, verifies after: the Claude and OpenAI runtimes stream the
-  answer as a draft while it is written. A finished answer remains readable
-  while an eligible, budgeted no-tool review checks it. Stopping that review
-  keeps the answer; full and forced stops have separate semantics.
+- Streams the answer as it is written: the Claude and OpenAI runtimes show a
+  draft that the finished answer replaces as soon as the run completes, with no
+  extra review call after it. Stop cancels the run.
 - Opens a critical-path wait-chain drawer on a selected `thread_state`, and a
   flamegraph page for CPU call-stack hotspots, both with a rule-based fallback
   AI summary. See [Critical Path And Flamegraph](docs/getting-started/critical-path-and-flamegraph.en.md).
@@ -90,7 +89,7 @@ Register the public Android Internals Wiki (or your own team documents) as a doc
   presets or your own config, optionally analyzing right after capture.
 - Sends UI selections as identity and time bounds only; the backend re-queries
   descriptive facts and runs `/anr` or `/jank` through the same evidence and
-  verification pipeline.
+  finalization pipeline.
 - Supports the browser UI, the `smp` CLI, and HTTP/SSE integration. See the
   [Feature Overview](docs/getting-started/features.en.md) for the complete scope.
 
@@ -164,12 +163,8 @@ Pi users can configure reasoning in model JSON; see the [Pi configuration](docs/
 4. Ask a question such as `Analyze scrolling jank`, `Why is startup slow?`, or
    `Analyze the ANR in this trace`.
 
-Server verification details are collapsed by default; expand them to read the full record. Verification warnings remain visible. Completed analyses are delivered normally, with verification concerns and coverage gaps labelled separately for users to assess against the evidence.
-Web, CLI and exported reports retain each claim's evidence and verification
-status. A malformed claim leaves other valid claims eligible for checking;
-missing proof and a contradicted claim remain distinct outcomes.
-Explicitly bound numeric displays are checked against captured evidence before semantic review, including unit conversion and rounding; model agreement cannot override a wrong display. Raw citations and propositions retain full precision. Correct formatting proves neither scope nor causality; older output retains the conservative rounding-warning path.
-Final conclusions retain all material findings, supporting evidence and limitations within the requested scope, even when intermediate tables are hidden. Length alone does not justify dropping findings or claims.
+Numbers and units come from Skill and SQL results; answers prefer the units and totals a Skill reports over values re-derived from raw rows, and treat missing data as unknown. The server does not re-check each sentence: delivery details (collapsed by default) record native completion, dual-trace comparison identity and, for code-aware runs, whether written source locations match source this run read. Their warnings remain visible. Results saved by earlier versions keep their stored claim evidence and verification status.
+Final conclusions retain all material findings, supporting evidence and limitations within the requested scope, even when intermediate tables are hidden. Length alone does not justify dropping findings.
 Final answers prefer compact tables for comparable metrics, phase timings and trace differences, alongside explanations and evidence references. Single values and questions better answered in prose remain free-form.
 HTML reports retain captured table columns, nested values and provenance. Metric tables show declared units and explicit warning labels; ordinary observations carry no health verdict. Save HTML uses a local browser download, and printing expands captured details. See [HTML analysis reports](docs/getting-started/features.en.md#5-html-analysis-reports) for historical report limits.
 
@@ -183,7 +178,8 @@ smp run trace.pftrace "Analyze scrolling jank"
 ```
 
 Incomplete CLI runs show the termination reason and available diagnostics;
-a report body can still fail evidence or declaration checks. See the
+a delivered body can still carry a comparison-identity or source-citation
+warning. See the
 [CLI result guidance](docs/reference/cli.en.md#global-options).
 
 ## Documentation

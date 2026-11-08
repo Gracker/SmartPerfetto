@@ -3,20 +3,14 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import type {ClaudeAnalysisContext, TraceCompleteness} from './types';
-import {defaultStrategyDetail, getFinalReportContract, loadPromptTemplate, renderTemplate} from './strategyLoader';
+import {defaultStrategyDetail, getFinalReportContract, loadPromptTemplate} from './strategyLoader';
 import {loadSourceUsePrompt} from '../services/codebase/sourceUseDecision';
 import {sourceAuthorizationPayload} from '../services/codebase/selectedCodebaseCapabilities';
 import {knowledgeUsePrompt} from '../services/knowledge/knowledgePrompt';
 import {DEFAULT_OUTPUT_LANGUAGE} from './outputLanguage';
 import {resolveRuntimeTurnPolicy, type RuntimeTurnPolicy} from '../agentRuntime/runtimeTurnPolicy';
 import {resolveAnalysisInvestigationRequirements} from '../agentRuntime/analysisInvestigationRequirements';
-import {CONCLUSION_CONTRACT_SIDECAR_MARKER, CONCLUSION_AUTHORING_FENCE, CONCLUSION_AUTHORING_FENCE_V2,
-  type ConclusionDeclarationSyntax} from '../agent/core/conclusionContract';
-import {CONCLUSION_AUTHORING_LIMITS} from '../agent/core/conclusionAuthoring';
-import {SUPPORTED_DETERMINISTIC_CLAIM_RULES} from '../services/verifier/deterministicClaimVerifier';
 import {buildFocusAppPromptData, packageProvenance} from '../agentRuntime/focusAppTarget';
-import type {FinalSubmissionMode} from '../agentRuntime/finalSubmissionConfig';
-import {getFinalSubmissionModeDescriptor} from '../agentRuntime/finalSubmissionImplementation';
 
 /**
  * Rough token estimate for mixed Chinese/English text.
@@ -107,10 +101,6 @@ export function stripTemplateComments(content: string): string {
 }
 
 type TypedTurnPromptContext = Partial<ClaudeAnalysisContext> & {
-  declarationSyntax?: ConclusionDeclarationSyntax;
-  /** Captured run choice and actual registered-tool projection, never authorization. */
-  finalSubmission?: FinalSubmissionMode;
-  resolvedFinalTool?: Readonly<{role: 'final_candidate_submission'; nativeName: string}>;
   runtimeEvidenceContext?: string;
   quickMemoryContext?: string;
 };
@@ -194,58 +184,7 @@ function buildTypedTurnSystemPromptParts(
   };
 
   push(1, 'turn_protocol', requiredAsset('prompt-turn-policy'));
-  // Inject protocol syntax after authoring comments are removed. Applying the
-  // comment stripper to the rendered asset would delete its sidecar example.
-  const finalSubmission = context.finalSubmission ?? 'assistant_text';
-  const submissionDescriptor = getFinalSubmissionModeDescriptor(finalSubmission);
-  if (!submissionDescriptor) {
-    throw new Error('[SystemPrompt] Invalid final submission mode');
-  }
-  const typedSubmission = submissionDescriptor.kind === 'typed';
-  const nativeObjectSubmission = typedSubmission && submissionDescriptor.representationVersion === 'authored_claim_document@2';
-  if (typedSubmission && (context.declarationSyntax !== submissionDescriptor.requiredDeclarationSyntax
-    || context.resolvedFinalTool?.role !== 'final_candidate_submission'
-    || typeof context.resolvedFinalTool.nativeName !== 'string'
-    || !context.resolvedFinalTool.nativeName.trim())) {
-    throw new Error(nativeObjectSubmission
-      ? '[SystemPrompt] Typed object submission requires authoring_v2 syntax and a resolved final tool'
-      : '[SystemPrompt] Typed final submission requires canonical syntax and a resolved final tool');
-  }
-  if (nativeObjectSubmission) {
-    const declarationFraming = renderTemplate(requiredAsset('prompt-authored-final-submission-v2-framing'), {
-      authoringMaxBytes: String(CONCLUSION_AUTHORING_LIMITS.utf8Bytes),
-      authoringMaxNodes: String(CONCLUSION_AUTHORING_LIMITS.nodes),
-      authoringMaxDepth: String(CONCLUSION_AUTHORING_LIMITS.depth),
-      supportedProofRules: JSON.stringify(SUPPORTED_DETERMINISTIC_CLAIM_RULES),
-    });
-    const deliveryAsset = submissionDescriptor.sourcePolicy === 'function_or_assistant_json'
-      ? 'prompt-authored-final-submission-v2-dual-delivery' : 'prompt-authored-final-submission-v2-delivery';
-    push(1, 'conclusion_declaration', renderTemplate(requiredAsset(deliveryAsset), {
-      declarationFraming, finalSubmissionToolName: context.resolvedFinalTool?.nativeName,
-    }));
-  } else {
-    const declarationSchema = requiredAsset('prompt-conclusion-contract-schema');
-    const declarationFraming = renderTemplate(requiredAsset(typedSubmission
-      ? 'prompt-authored-final-submission-framing' : context.declarationSyntax === 'authoring_v2'
-      ? 'prompt-conclusion-authoring-v2-framing' : context.declarationSyntax === 'authoring_v1'
-        ? 'prompt-conclusion-authoring-framing' : 'prompt-conclusion-full-framing'), {
-      sidecarOpeningMarker: CONCLUSION_CONTRACT_SIDECAR_MARKER,
-      authoringOpeningFence: context.declarationSyntax === 'authoring_v2' ? CONCLUSION_AUTHORING_FENCE_V2 : CONCLUSION_AUTHORING_FENCE,
-      authoringMaxBytes: String(CONCLUSION_AUTHORING_LIMITS.utf8Bytes),
-      authoringMaxNodes: String(CONCLUSION_AUTHORING_LIMITS.nodes),
-      authoringMaxDepth: String(CONCLUSION_AUTHORING_LIMITS.depth),
-    });
-    const declarationDelivery = renderTemplate(requiredAsset(typedSubmission
-      ? 'prompt-authored-final-submission-delivery' : 'prompt-conclusion-delivery'), {
-      declarationFraming,
-      finalSubmissionToolName: context.resolvedFinalTool?.nativeName,
-    });
-    push(1, 'conclusion_declaration', renderTemplate(declarationSchema, {
-      declarationDelivery,
-      ackDeclarationRule: typedSubmission ? '' : requiredAsset('prompt-conclusion-ack-rule'),
-      supportedProofRules: JSON.stringify(SUPPORTED_DETERMINISTIC_CLAIM_RULES),
-    }));
-  }
+  push(1, 'answer_guidance', requiredAsset('prompt-answer-guidance'));
   push(1, 'output_language', requiredAsset(language === 'en' ? 'prompt-language-en' : 'prompt-language-zh'));
   push(1, 'retrieved_context_safety', requiredAsset('retrieved-context-safety'));
   if (policy.allowNewEvidence) push(3, 'sql_discovery_guidance', requiredAsset('knowledge-perfetto-sql'));

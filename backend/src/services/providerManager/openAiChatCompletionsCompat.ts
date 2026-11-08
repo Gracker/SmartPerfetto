@@ -11,10 +11,9 @@ export type OpenAIChatCompletionsTokenLimit =
   | { max_completion_tokens: number };
 
 /** Closed set of no-tool request purposes that may carry provider controls. */
-export type OpenAITextRequestPurpose = 'classification' | 'final_semantic' | 'declaration_repair' | 'continuation';
+export type OpenAITextRequestPurpose = 'classification' | 'continuation';
 
-export const OPENAI_TEXT_REQUEST_PURPOSES: readonly OpenAITextRequestPurpose[] =
-  Object.freeze(['classification', 'final_semantic', 'declaration_repair', 'continuation']);
+const OPENAI_TEXT_REQUEST_PURPOSES: readonly OpenAITextRequestPurpose[] = Object.freeze(['classification', 'continuation']);
 
 export function isOpenAITextRequestPurpose(value: unknown): value is OpenAITextRequestPurpose {
   return typeof value === 'string' && (OPENAI_TEXT_REQUEST_PURPOSES as readonly string[]).includes(value);
@@ -68,9 +67,8 @@ export function resolveOpenAITextRequestPurpose(input: OpenAITextRequestPurposeI
       modelId: input.model, baseUrl: input.requestUrl.toString(), sdkCapabilities: input.sdkCapabilities,
       sdk: input.sdkIdentity ?? {packageName: input.runtimeKind, version: 'unknown', adapterContractVersion: 'openai-purpose@1'},
       effective: input.effective ?? {}});
-    const purpose = input.purpose === 'final_semantic' ? 'review' : input.purpose ?? 'answer_turn';
-    const candidate = purpose === 'classification' || purpose === 'review' || purpose === 'declaration_repair' ||
-      purpose === 'continuation' && input.outputOnly === true;
+    const purpose = input.purpose ?? 'answer_turn';
+    const candidate = purpose === 'classification' || purpose === 'continuation' && input.outputOnly === true;
     const selected = resolveModelExecutionPolicy({profile, purpose, outputOnly: input.outputOnly,
       selection: candidate ? 'minimum_legal_candidate' : 'preserve'});
     if (selected.status === 'unsupported') throw new OpenAITextPolicyConfigurationError();
@@ -89,15 +87,9 @@ export function resolveOpenAITextRequestPurpose(input: OpenAITextRequestPurposeI
       else if (setting.effort !== undefined) options.reasoning = {effort: setting.effort};
       else throw new OpenAITextPolicyConfigurationError();
     }
-    const jsonPurpose = input.purpose === 'classification' || input.purpose === 'final_semantic' || input.purpose === 'declaration_repair';
     if (input.protocol === 'chat_completions' && profile.adapter.surface === 'openai_chat' &&
-        jsonPurpose && profile.server.jsonOutput?.status === 'supported') {
+        input.purpose === 'classification' && profile.server.jsonOutput?.status === 'supported') {
       options.response_format = {type: profile.server.jsonOutput.value};
-    }
-    // Retain the existing DeepSeek review JSON syntax contract only for a recognized model/API.
-    if (input.purpose === 'final_semantic' && profile.endpoint.family === 'deepseek' && profile.server.thinking.status === 'supported') {
-      if (input.protocol === 'responses') options.text = {format: {type: 'json_object'}};
-      else options.response_format = {type: 'json_object'};
     }
     return {options, profile, ...(input.purpose !== undefined ? {policy: selected.receipt} : {})};
   } catch {throw new OpenAITextPolicyConfigurationError();}

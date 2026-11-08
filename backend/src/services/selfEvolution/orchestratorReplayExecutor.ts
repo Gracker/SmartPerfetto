@@ -11,7 +11,6 @@ import type {
 import type {StreamingUpdate} from '../../agent/types';
 import {createAgentOrchestrator} from '../../agentRuntime';
 import {parseOutputLanguage} from '../../agentv3/outputLanguage';
-import {assessFinalReportContractCompleteness} from '../finalReportContractGate';
 import type {ProviderService} from '../providerManager/providerService';
 import type {ProviderScope} from '../providerManager/types';
 import type {TraceProcessorService} from '../traceProcessorService';
@@ -736,12 +735,8 @@ export class OrchestratorReplayExecutor implements ReplayExecutor {
               ?? preparedVerification.claimVerificationResult;
             const claimSupport = result.claimSupport
               ?? preparedVerification.claimSupport;
-            const reportContractPass =
-              invalidDataEnvelopeCount === 0
-              && !assessFinalReportContractCompleteness({
-                conclusion: result.conclusion,
-                query: replay.evalCase.query,
-              });
+            // No report-coverage gate exists; only the replay's own envelopes can fail it.
+            const reportContractPass = invalidDataEnvelopeCount === 0;
             const exposureReceipt = sealEvaluationExposureReceipt();
             if (result.success && result.rounds === 0) {
               recordEvaluationFirstOutputNotApplicable();

@@ -22,11 +22,6 @@ import type {
   AnalysisReceiptV2,
   DataEnvelope,
 } from '../types/dataContract';
-import {
-  assessFinalReportContractApplicability,
-  assessFinalReportContractCompleteness,
-  type FinalReportContractCompletenessInput,
-} from './finalReportContractGate';
 
 type AnalysisReceiptMode = AnalysisReceipt['mode'];
 type AnalysisReceiptResolvedMode = AnalysisReceipt['resolvedMode'];
@@ -74,7 +69,6 @@ export interface BuildAnalysisReceiptInput {
   providerId?: string | null;
   requestedMode?: AnalysisReceiptMode;
   resolvedMode?: AnalysisReceiptResolvedMode;
-  sceneType?: FinalReportContractCompletenessInput['sceneType'];
   generatedAt?: number;
   cliTurnPath?: string;
   capabilityManifest?: CapabilityManifestAttributionV1;
@@ -176,12 +170,8 @@ function buildAnalysisReceiptBody(
       claimVerification: projectAssuranceGate(result.deliveryAssurance.claims),
       identityResolution: projectAssuranceGate(result.deliveryAssurance.identity),
     } : {
-      finalReportContract: finalReportGate({
-        result,
-        session,
-        quickRun,
-        sceneType: input.sceneType,
-      }),
+      // No report-coverage gate exists; a result without assurance has nothing to assess.
+      finalReportContract: 'not_applicable',
       claimVerification: claimVerificationGate(claimVerificationResult),
       identityResolution: identityResolutionGate(identityResolutions),
     },
@@ -351,23 +341,6 @@ function countStrategyHints(quickRun?: QuickRunReceipt): number {
 /** The receipt's legacy summary cannot replace the finalizer's exact assurance. */
 function projectAssuranceGate(status: AnalysisAssuranceStatus): AnalysisReceiptGateStatus {
   return status === 'passed' || status === 'not_applicable' ? status : 'partial';
-}
-
-function finalReportGate(input: {
-  result: AgentRuntimeAnalysisResult;
-  session: AnalysisSessionReceiptSource;
-  quickRun?: QuickRunReceipt;
-  sceneType?: FinalReportContractCompletenessInput['sceneType'];
-}): AnalysisReceipt['qualityGates']['finalReportContract'] {
-  if (input.quickRun?.resolvedMode === 'quick') return 'not_applicable';
-  const contractInput: FinalReportContractCompletenessInput = {
-    conclusion: input.result.conclusion || '',
-    query: input.session.query,
-    sceneType: input.sceneType,
-    contractSceneId: input.result.conclusionContract?.metadata?.sceneId,
-  };
-  if (!assessFinalReportContractApplicability(contractInput)) return 'not_applicable';
-  return assessFinalReportContractCompleteness(contractInput) ? 'partial' : 'passed';
 }
 
 function claimVerificationGate(

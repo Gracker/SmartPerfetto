@@ -4,7 +4,6 @@
 
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import * as analysisRunSpecModule from '../analysisRunSpec';
-import * as outputConfigModule from '../finalSubmissionConfig';
 import {EventEmitter} from 'events';
 import {spawn as spawnChildProcess} from 'child_process';
 import fs from 'fs';
@@ -82,7 +81,6 @@ import * as evaluationRuntimeHooks from '../../services/selfEvolution/evaluation
 import {renderConclusionContractSidecar, wrapConclusionAuthoringPayload, type ConclusionContract} from '../../agent/core/conclusionContract';
 import {inspectCandidateProtocol} from '../../services/canonicalAnalysisResult';
 import {createSceneRuntimeMatrixFixture} from '../../../tests/helpers/sceneRuntimeMatrixFixture';
-import {candidateWithPopulation} from '../../../tests/helpers/conclusionDeclarationFixture';
 import {admitLearnedEntry, withDurableLearningPermission} from '../../services/security/durableLearning';
 import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
 import {admitted} from '../../../tests/helpers/admittedAnalysisOptions';
@@ -497,73 +495,44 @@ function createNativeIntentHarness(input: {
 }
 
 describe('OpenCode output configuration admission', () => {
-  it('rejects typed output before the OpenCode hidden smoke path loads its SDK', async () => {
-    const h = createNativeIntentHarness({
-      selection: {kind: EXPERIMENTAL_OPENCODE_RUNTIME_KIND, source: 'env'},
-      env: {SMARTPERFETTO_OPENCODE_REAL_ANALYSIS: '0', SMARTPERFETTO_FINAL_SUBMISSION: 'authored_claim_document_v1'},
-    });
-    await expect(h.runtime.analyze('Smoke', 'output-config-opencode-smoke', 'trace-opencode')).rejects.toMatchObject({
-      code: 'unsupported_final_submission', reason: 'runtime',
-    });
-    expect(mockOpenCodeIntentTransport).not.toHaveBeenCalled();
-    expect(h.moduleLoader).not.toHaveBeenCalled();
-    expect(h.prompts).toHaveLength(0);
-  });
-
   it.each([
-    ['authored_claim_document_v1', 'canonical_v1', 'unsupported_final_submission', 'runtime'],
-    ['authored_claim_document_v1', 'authoring_v1', 'invalid_configuration', 'declaration_syntax_conflict'],
-    ['authored_claim_document_v1', 'authoring_v2', 'invalid_configuration', 'declaration_syntax_conflict'],
-    ['MODE_CANARY', 'canonical_v1', 'invalid_configuration', 'mode'],
-    ['assistant_text', 'SYNTAX_CANARY', 'invalid_configuration', 'declaration_syntax'],
-  ])('rejects %s / %s before OpenCode classifier or SDK dispatch', async (mode, syntax, code, reason) => {
-    const h = createNativeIntentHarness({env: {
-      SMARTPERFETTO_FINAL_SUBMISSION: mode, SMARTPERFETTO_CONCLUSION_AUTHORING: syntax,
-    }});
-    await expect(h.runtime.analyze('Explain this trace', 'output-config-opencode', 'trace-opencode')).rejects.toMatchObject({
-      name: 'FinalSubmissionConfigurationError', code, message: `${code}:final_submission:${reason}`,
+    [undefined, undefined],
+    ['authored_claim_document_v1', 'canonical_v1'],
+    ['authored_claim_document_v2_dual', 'authoring_v2'],
+    ['MODE_CANARY', 'SYNTAX_CANARY'],
+  ])('ignores retired output config %s / %s and builds a plain-answer RunSpec once', async (mode, syntax) => {
+    const createSpec = analysisRunSpecModule.createAnalysisRunSpec;
+    let spec: ReturnType<typeof createSpec> | undefined;
+    const stop = new Error('test stopped after real RunSpec');
+    const specSpy = jest.spyOn(analysisRunSpecModule, 'createAnalysisRunSpec').mockImplementation(input => {
+      spec = createSpec(input);
+      throw stop;
     });
-    expect(mockOpenCodeIntentTransport).not.toHaveBeenCalled();
-    expect(h.moduleLoader).not.toHaveBeenCalled();
-    expect(h.prompts).toHaveLength(0);
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    let runtime: OpenCodeRuntime;
+    const h = createNativeIntentHarness({
+      env: {...(mode ? {SMARTPERFETTO_FINAL_SUBMISSION: mode} : {}),
+        ...(syntax ? {SMARTPERFETTO_CONCLUSION_AUTHORING: syntax} : {})},
+      beforeClassifierReply: async () => {
+        (runtime as any).env.SMARTPERFETTO_FINAL_SUBMISSION = 'authored_claim_document_v1';
+        (runtime as any).env.SMARTPERFETTO_CONCLUSION_AUTHORING = 'LATE_SYNTAX_CANARY';
+      },
+    });
+    runtime = h.runtime;
+    try {
+      await expect(runtime.analyze('Explain this trace', 'output-config-opencode-frozen', 'trace-opencode')).rejects.toBe(stop);
+      expect(mockOpenCodeIntentTransport).toHaveBeenCalledTimes(1);
+      expect(h.prompts).toHaveLength(1);
+      expect(specSpy).toHaveBeenCalledTimes(1);
+      expect(spec).not.toHaveProperty('declarationSyntax');
+      expect(spec).not.toHaveProperty('finalSubmission');
+      expect(JSON.stringify(warn.mock.calls)).not.toMatch(/CANARY/);
+    } finally {
+      warn.mockRestore();
+      specSpy.mockRestore();
+      await runtime.cleanupSession('output-config-opencode-frozen');
+    }
   });
-
-  it.each(['canonical_v1', 'authoring_v1', 'authoring_v2'])(
-    'keeps the captured OpenCode output config %s through classification and real RunSpec', async syntax => {
-      const capture = jest.spyOn(outputConfigModule, 'captureAnalysisOutputConfig');
-      const createSpec = analysisRunSpecModule.createAnalysisRunSpec;
-      let spec: ReturnType<typeof createSpec> | undefined;
-      const stop = new Error('test stopped after real RunSpec');
-      const specSpy = jest.spyOn(analysisRunSpecModule, 'createAnalysisRunSpec').mockImplementation(input => {
-        spec = createSpec(input);
-        throw stop;
-      });
-      let runtime: OpenCodeRuntime;
-      const h = createNativeIntentHarness({
-        env: {SMARTPERFETTO_CONCLUSION_AUTHORING: syntax},
-        beforeClassifierReply: async () => {
-          (runtime as any).env.SMARTPERFETTO_FINAL_SUBMISSION = 'authored_claim_document_v1';
-          (runtime as any).env.SMARTPERFETTO_CONCLUSION_AUTHORING = 'LATE_SYNTAX_CANARY';
-        },
-      });
-      runtime = h.runtime;
-      try {
-        await expect(runtime.analyze('Explain this trace', 'output-config-opencode-frozen', 'trace-opencode')).rejects.toBe(stop);
-        expect(mockOpenCodeIntentTransport).toHaveBeenCalledTimes(1);
-        expect(h.prompts).toHaveLength(1);
-        expect(specSpy).toHaveBeenCalledTimes(1);
-        expect(capture).toHaveBeenCalledTimes(1);
-        const captured = capture.mock.results[0].value;
-        expect(Object.isFrozen(captured)).toBe(true);
-        expect(specSpy.mock.calls[0][0].outputConfig).toBe(captured);
-        expect(spec).toMatchObject({finalSubmission: 'assistant_text', declarationSyntax: syntax});
-      } finally {
-        specSpy.mockRestore();
-        capture.mockRestore();
-        await runtime.cleanupSession('output-config-opencode-frozen');
-      }
-    },
-  );
 });
 
 describe('OpenCode authorization at every dispatch and observation', () => {
@@ -742,30 +711,17 @@ describe('OpenCode native turn intent and delivery', () => {
     } finally {release.resolve(); await analysis.catch(() => undefined); scope.dispose();}
   }));
 
-  it('preserves the completed native candidate when its declaration repair exhausts the explicit cap', async () => withBackendDataDir(async () => {
-    const base = Date.now();
-    let now = base;
-    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
-    const owner = new AbortController();
-    const scope = createRuntimeAdmissionScope({runId: 'repair-task', admittedAt: base, taskTimeoutMs: 1000,
-      assertCurrent() {}, ownerSignal: owner.signal});
+  it('issues no declaration repair call when a completed answer carries no declaration', async () => withBackendDataDir(async () => {
     const answer = 'The original native body remains accepted.';
-    const harness = createNativeIntentHarness({answer, closeoutAnswer: 'Must not replace the accepted body.',
-      beforeCloseoutReply: () => {now = base + 1001;}});
-    let context: ReturnType<typeof finalizationContext.takeFinalizationContext>;
-    try {
-      const result = await harness.runtime.analyze('same scope', 'repair-task-session', 'trace-opencode',
-        scope.bind({analysisMode: 'full' as const}, 'repair-task-session'));
-      expect(result.conclusion).toBe(answer);
-      expect(result.completion).toMatchObject({status: 'completed', sdkFinishReason: 'stop'});
-      expect(harness.prompts).toHaveLength(3);
-      expect(owner.signal.aborted).toBe(false);
-      context = finalizationContext.takeFinalizationContext(result);
-      expect(context?.deadlineMs).toBe(base + 1000);
-      expect(await context!.dispatchText({prompt: 'Review', systemPrompt: '', signal: owner.signal,
-        deadlineMs: base + 90000, outputByteLimit: 1024})).toEqual({status: 'unavailable', reason: 'timeout'});
-      expect(harness.prompts).toHaveLength(3);
-    } finally {context?.dispose(); scope.dispose(); clock.mockRestore();}
+    const harness = createNativeIntentHarness({answer, closeoutAnswer: 'Must not replace the accepted body.'});
+    const result = await harness.runtime.analyze('same scope', 'no-declaration-session', 'trace-opencode', {analysisMode: 'full'});
+    expect(result.conclusion).toBe(answer);
+    expect(result.completion).toMatchObject({status: 'completed', sdkFinishReason: 'stop'});
+    expect(harness.prompts).toHaveLength(2);
+    expect(mockOpenCodeIntentTransport.mock.calls.some(([input]) => input.purpose !== 'classification')).toBe(false);
+    expect(runtimeCallStats.admitDeliveryCall).not.toHaveBeenCalledWith(expect.anything(),
+      expect.objectContaining({purpose: 'declaration_repair'}));
+    finalizationContext.takeFinalizationContext(result)?.dispose();
   }));
 
   it('stops only the captured native attempt on task expiry and drains it without aborting its owner', async () => withBackendDataDir(async () => {
@@ -853,10 +809,6 @@ describe('OpenCode native turn intent and delivery', () => {
       context = finalizationContext.takeFinalizationContext(result);
       expect(context?.deadlineMs).toBe(now + expected);
       expect(harness.configs[1].agent.smartperfetto.maxSteps).toBe(analysisMode === 'fast' ? 2 : 8);
-      await context!.dispatchText({prompt: 'Review the current candidate', systemPrompt: '',
-        signal: new AbortController().signal, deadlineMs: now + expected + 60000, outputByteLimit: 8192});
-      const calls = mockOpenCodeIntentTransport.mock.calls;
-      expect(calls[calls.length - 1][0].deadlineMs).toBe(now + expected);
       expect(harness.serverCloses.every(close => close.mock.calls.length === 1)).toBe(true);
       expect(harness.bridgeClose).toHaveBeenCalledTimes(1);
     } finally {context?.dispose(); clock.mockRestore();}
@@ -916,7 +868,7 @@ describe('OpenCode native turn intent and delivery', () => {
     expect(harness.prompts[2].body.parts[0].text).toContain('Only the frame interval is known.');
     expect(harness.aborts[1]).toHaveBeenCalledTimes(1);
     expect(harness.bridgeClose).toHaveBeenCalledTimes(1);
-    expect(finalizationContext.takeFinalizationContext(result)?.hasSemanticTransport).toBe(false);
+    finalizationContext.takeFinalizationContext(result)?.dispose();
   }));
 
   it('does not expand a one-turn OpenCode budget with a hidden closeout call', async () => withBackendDataDir(async () => {
@@ -989,7 +941,8 @@ describe('OpenCode native turn intent and delivery', () => {
     }});
     const sessionId = `opencode-advisory-${nativeError}`;
     const result = await harness.runtime.analyze('Read the current value', sessionId, 'trace-opencode', {runId: sessionId});
-    expect(harness.prompts).toHaveLength(nativeError ? 2 : 3);
+    // A completed answer needs no declaration repair; neither outcome spends a delivery call.
+    expect(harness.prompts).toHaveLength(2);
     expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
     expect(result.completion).toMatchObject({status: nativeError ? 'failed' : 'completed',
       conclusionFingerprint: analysisDeliveryFingerprint(body)});
@@ -1019,9 +972,8 @@ describe('OpenCode native turn intent and delivery', () => {
       return {harness, result};
     };
 
-    it('spends the delivery call writing the body from the returned data, with no declaration repair after it',
+    it('spends the delivery call writing the body from the returned data',
       async () => withBackendDataDir(async () => {
-        // Its declaration is missing, which alone would ask for a repair; the call is already spent.
         const {harness, result} = await run({closeoutAnswer: 'Three ANRs are recorded for com.example.app.'});
         expect(harness.prompts).toHaveLength(3);
         expect(Object.values(harness.prompts[2].body.tools).every(value => value === false)).toBe(true);
@@ -1103,16 +1055,23 @@ describe('OpenCode native turn intent and delivery', () => {
       expect(result.rounds).toBe(2);
       const context = finalizationContext.takeFinalizationContext(result)!;
       try {
-        expect(context.getNativeDeclaration(result, new AbortController().signal)).toMatchObject({raw: complete});
+        expect(context).not.toHaveProperty('getNativeDeclaration');
         const call = mockOpenCodeIntentTransport.mock.calls.find(([input]) => input.purpose === 'continuation')!;
         expect(call[0].deadlineMs).toBe(context.deadlineMs);
       } finally {context.dispose();}
       expect(harness.serverCloses.every(close => close.mock.calls.length === 1)).toBe(true);
     }));
 
+    it('accepts a complete plain answer without any declaration', async () => withBackendDataDir(async () => {
+      const {harness, result} = await run({closeoutAnswer: body});
+      expect(harness.prompts).toHaveLength(3);
+      expect(result.conclusion).toBe(body);
+      expect(result.completion).toMatchObject({status: 'completed', sdkFinishReason: 'stop'});
+      finalizationContext.takeFinalizationContext(result)?.dispose();
+    }));
+
     it.each([
       ['length again', {closeoutFinish: 'length'}],
-      ['missing declaration', {closeoutAnswer: body}],
       ['failed call', {closeoutError: true}],
     ])('preserves the original incomplete receipt when delivery has %s', async (_name, input) => withBackendDataDir(async () => {
       const {harness, result} = await run(input);
@@ -1144,38 +1103,6 @@ describe('OpenCode native turn intent and delivery', () => {
     }));
   });
 
-  it('uses the reserved delivery turn to repair a rejected declaration around the unchanged body', async () => withBackendDataDir(async () => {
-    const body = 'Frame 12 missed its deadline.';
-    const harness = createNativeIntentHarness({answer: candidateWithPopulation(body, 'everywhere'), closeoutAnswer: candidateWithPopulation(body, 'cited_rows')});
-    const result = await harness.runtime.analyze('same scope', 'opencode-invalid-declaration', 'trace-opencode', {
-      analysisMode: 'full', runId: 'opencode-invalid-declaration',
-    });
-    expect(harness.prompts).toHaveLength(3);
-    expect(harness.prompts[2].body.parts[0].text).toContain('invalid_declaration');
-    expect(inspectCandidateProtocol(result.conclusion)).toMatchObject({status: 'valid'});
-    expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
-    finalizationContext.takeFinalizationContext(result)?.dispose();
-  }));
-
-  it('does not send a declaration repair that cannot finish in the time left', async () => withBackendDataDir(async () => {
-    // The real assessment with one second left: the run's own deadline is far longer in this fixture.
-    jest.mocked(runtimeCallStats.admitDeliveryCall).mockImplementation((recorder, input) =>
-      realAdmitDeliveryCall(recorder, {...input, remainingMs: 1_000}));
-    const body = 'Frame 12 missed its deadline.';
-    const harness = createNativeIntentHarness({answer: candidateWithPopulation(body, 'everywhere'),
-      closeoutAnswer: candidateWithPopulation(body, 'cited_rows')});
-    const result = await harness.runtime.analyze('same scope', 'opencode-repair-budget', 'trace-opencode', {
-      analysisMode: 'full', runId: 'opencode-repair-budget',
-    });
-    expect(harness.prompts).toHaveLength(2);
-    expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
-    expect(runtimeCallStats.admitDeliveryCall).toHaveBeenCalledTimes(1);
-    expect(runtimeCallStats.admitDeliveryCall).toHaveBeenCalledWith(undefined, expect.objectContaining({
-      purpose: 'declaration_repair', failOpen: false, inputBytes: expect.any(Number)}));
-    expect(jest.mocked(runtimeCallStats.admitDeliveryCall).mock.results[0]?.value).toBe(false);
-    finalizationContext.takeFinalizationContext(result)?.dispose();
-  }));
-
   it('does not spend another OpenCode turn on an undecodable authoring frame', async () => withBackendDataDir(async () => {
     const native = `Body remains.\n${wrapConclusionAuthoringPayload('{"authoringVersion":"unsupported"}')}`;
     const harness = createNativeIntentHarness({answer: native, closeoutAnswer: 'Must not run.'});
@@ -1186,65 +1113,8 @@ describe('OpenCode native turn intent and delivery', () => {
     expect(result.completion).toMatchObject({status: 'completed'});
     expect(inspectCandidateProtocol(result.conclusion).status).toBe('invalid');
     const context = finalizationContext.takeFinalizationContext(result)!;
-    try {expect(context.getNativeDeclaration(result, new AbortController().signal)).toMatchObject({raw: native});}
+    try {expect(context).not.toHaveProperty('getNativeDeclaration');}
     finally {context.dispose();}
-  }));
-
-  it('uses the reserved no-tools delivery turn for an unchanged full declaration candidate', async () => withBackendDataDir(async () => {
-    const body = `${'启动正文保持完整。'.repeat(850)}\n${'Native body remains unchanged. '.repeat(170)}`.trimEnd();
-    expect(Buffer.byteLength(body, 'utf8')).toBeGreaterThan(8 * 1024);
-    const sidecar = renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
-      conclusions: [{rank: 1, statement: 'The authored body is preserved.'}], clusters: [], evidenceChain: [],
-      claims: [], uncertainties: [], nextSteps: []} as ConclusionContract);
-    const repaired = `${body}\n${sidecar}`;
-    const harness = createNativeIntentHarness({answer: body, closeoutAnswer: repaired});
-    const result = await harness.runtime.analyze('same scope', 'opencode-missing-declaration', 'trace-opencode', {
-      analysisMode: 'full', runId: 'opencode-missing-declaration',
-    });
-    expect(harness.prompts).toHaveLength(3);
-    expect(harness.configs[2].agent.smartperfetto.maxSteps).toBe(2);
-    expect(Object.values(harness.prompts[2].body.tools).every(value => value === false)).toBe(true);
-    expect(harness.prompts[2].body.parts[0].text).toContain('missing_declaration');
-    expect(inspectCandidateProtocol(repaired).canonicalBody.trim()).toBe(body);
-    expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
-    expect(result.completion).toMatchObject({status: 'completed'});
-    const context = finalizationContext.takeFinalizationContext(result)!;
-    try { expect(context.getNativeDeclaration(result, new AbortController().signal)).toMatchObject({raw: repaired}); }
-    finally { context.dispose(); }
-  }));
-
-  it('does not dispatch declaration completion when the original body cannot fit the OpenCode output cap', async () => withBackendDataDir(async () => {
-    const body = 'x'.repeat(64 * 1024);
-    const harness = createNativeIntentHarness({answer: body});
-    const result = await harness.runtime.analyze('same scope', 'opencode-declaration-output-cap', 'trace-opencode', {
-      analysisMode: 'full',
-    });
-    expect(harness.prompts).toHaveLength(2);
-    expect(harness.configs).toHaveLength(2);
-    expect(result.conclusion).toBe(body);
-    expect(result.completion).toMatchObject({status: 'completed'});
-  }));
-
-  it('keeps the original OpenCode body and takes the declaration when a completion changes the body', async () => withBackendDataDir(async () => {
-    const body = 'Original bounded answer.';
-    const changed = `Changed bounded answer.\n${renderConclusionContractSidecar({
-      schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [],
-      evidenceChain: [], claims: [], uncertainties: [], nextSteps: [],
-    })}`;
-    const harness = createNativeIntentHarness({answer: body, closeoutAnswer: changed});
-    const updates: unknown[] = [];
-    harness.runtime.on('update', update => updates.push(update));
-    const result = await harness.runtime.analyze('same scope', 'opencode-declaration-rejected', 'trace-opencode', {
-      analysisMode: 'full', runId: 'opencode-declaration-rejected',
-    });
-    expect(harness.prompts).toHaveLength(3);
-    expect(harness.configs).toHaveLength(3);
-    // The completion's declaration is delivered; its edited prose never is.
-    expect(inspectCandidateProtocol(result.conclusion)).toMatchObject({status: 'valid'});
-    expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
-    expect(result.completion).toMatchObject({status: 'completed', runId: 'opencode-declaration-rejected'});
-    expect(JSON.stringify(updates)).not.toContain('Changed bounded answer');
-    expect(harness.serverCloses.every(close => close.mock.calls.length === 1)).toBe(true);
   }));
 
   it('attaches a single final context to the exact projected object and dispatches review on the pinned main model', async () => withBackendDataDir(async () => {
@@ -1275,12 +1145,10 @@ describe('OpenCode native turn intent and delivery', () => {
       const providerQuery = context!.getProviderQuery(new AbortController().signal);
       expect(providerQuery).toEqual({text: 'same scope', analysisContextFingerprint});
       expect(Object.isFrozen(providerQuery)).toBe(true);
-      expect(context!.getSelection(new AbortController().signal)).toEqual({present: true, kind: 'track_event',
-        context: options.selectionContext, sideResolution: {status: 'unknown'}});
+      expect(context).not.toHaveProperty('getSelection');
       expect(JSON.stringify(result)).not.toContain('"providerQuery"');
       expect(finalizationContext.takeFinalizationContext(result)).toBeUndefined();
       expect(context?.traceIdentity).toEqual({currentTraceId: 'trace-opencode', referenceTraceId: 'trace-reference'});
-      expect(context?.deliveryCall).toEqual({providerOrigin: 'http://127.0.0.1:9999', model: 'main-model'});
       expect(context?.deliveryContext).toMatchObject({acceptedCandidate: result.completion});
       expect(readView).toHaveBeenCalledTimes(1);
       expect(readView.mock.calls[0][0].currentRunId).toBe(context!.runId);
@@ -1288,32 +1156,6 @@ describe('OpenCode native turn intent and delivery', () => {
         {traceId: 'trace-opencode', traceSide: 'current'},
         {traceId: 'trace-reference', traceSide: 'reference'},
       ], ownerKey: expect.any(String)});
-      const response = await context!.dispatchText({
-        prompt: 'Review the current candidate', systemPrompt: '',
-        signal: new AbortController().signal, deadlineMs: context!.deadlineMs + 60_000,
-        outputByteLimit: 8192,
-      });
-      expect(response).toMatchObject({status: 'ok', actualModel: 'main-model'});
-      expect(mockOpenCodeIntentTransport.mock.calls[1][0].deadlineMs).toBe(context!.deadlineMs);
-      expect(harness.configs[2]).toMatchObject({model: 'smartperfetto/main-model', mcp: {}, instructions: [],
-        agent: {smartperfetto: {maxSteps: 2}}});
-      for (const config of [harness.configs[1], harness.configs[2]]) {
-        expect(config.provider.smartperfetto).toMatchObject({
-          npm: '@ai-sdk/openai-compatible', name: 'Pinned provider',
-          options: {baseURL: 'http://127.0.0.1:9999/v1', apiKey: 'fixture-api-key'},
-          models: {'main-model': {id: 'main-model',
-            modalities: {input: ['text'], output: ['text']}}},
-        });
-        expect(config.provider.smartperfetto.models['main-model']).not.toHaveProperty('limit');
-        expect(config.provider.smartperfetto.models['main-model']).not.toHaveProperty('reasoning');
-        expect(config.provider.smartperfetto.models['main-model']).not.toHaveProperty('tool_call');
-        expect(config.provider.smartperfetto.models['main-model']).not.toHaveProperty('cost');
-        expect(config.provider.smartperfetto.models['main-model']).not.toHaveProperty('temperature');
-      }
-      expect(harness.prompts[2].body.model).toEqual({providerID: 'smartperfetto', modelID: 'main-model'});
-      expect(Object.values(harness.prompts[2].body.tools).every(enabled => enabled === false)).toBe(true);
-      expect(harness.serverCloses[2]).toHaveBeenCalledTimes(1);
-      expect(fs.existsSync(path.dirname(harness.directories[2]))).toBe(false);
     } finally {
       context?.dispose(); readView.mockRestore(); attach.mockRestore();
     }
@@ -1326,9 +1168,6 @@ describe('OpenCode native turn intent and delivery', () => {
     try {
       expect(context?.deliveryContext).toMatchObject({completion: {runId: 'failed-run', status: 'failed'}});
       expect(context?.sourceScope).toMatchObject({codeAwareMode: 'off', selectedCodebaseIds: [], hasCodebaseAccess: false});
-      expect(context?.hasSemanticTransport).toBe(false);
-      expect(await context?.dispatchText({prompt: 'unused', systemPrompt: '', signal: new AbortController().signal,
-        deadlineMs: Date.now() + 5000, outputByteLimit: 8192})).toEqual({status: 'unavailable', reason: 'invalid_configuration'});
       expect(harness.prompts).toHaveLength(2);
     } finally {
       context?.dispose();
@@ -1487,14 +1326,14 @@ describe('OpenCode native turn intent and delivery', () => {
       sdkFinishReason: 'stop', conclusionFingerprint: analysisDeliveryFingerprint(answer)});
     expect(result.outputOrigin).toBe('sdk_final');
     // No-tool hosts stay above one step: OpenCode turns the last step into its own summary request.
-    expect(harness.configs.map(config => config.agent.smartperfetto.maxSteps)).toEqual([2, 8, 2]);
-    expect(harness.prompts).toHaveLength(3);
+    expect(harness.configs.map(config => config.agent.smartperfetto.maxSteps)).toEqual([2, 8]);
+    expect(harness.prompts).toHaveLength(2);
     expect(harness.traceProcessor.query).toHaveBeenCalled();
     expect(harness.serverCloses.every(close => close.mock.calls.length === 1)).toBe(true);
     expect(fs.existsSync(path.dirname(harness.directories[0]))).toBe(false);
   }));
 
-  it('records actual classifier and repair identities while keeping a custom host control mapping unknown', async () => withBackendDataDir(async () => {
+  it('records the actual classifier identity while keeping a custom host control mapping unknown', async () => withBackendDataDir(async () => {
     const recorder = createRuntimePerformanceRecorder();
     const sink = createNoopAttributionSink(recorder);
     const registry = await buildEffectiveRuntimeRegistrySnapshot({scope: sink.identity.scope});
@@ -1507,16 +1346,15 @@ describe('OpenCode native turn intent and delivery', () => {
     expect(harness.configs[0].provider.smartperfetto.models['glm-5.3-flash']).toMatchObject({reasoning: true,
       tool_call: true, interleaved: {field: 'reasoning_content'}});
     expect(harness.configs[0].provider.smartperfetto.models['glm-5.3-flash'].options).toBeUndefined();
-    expect(harness.configs).toHaveLength(3);
-    // The answer host keeps the provider default; the no-tool declaration repair is a delivery purpose.
+    // The completed answer needs no delivery call: classification and the answer host only.
+    expect(harness.configs).toHaveLength(2);
     expect(harness.configs[1].agent.smartperfetto.options).toBeUndefined();
-    expect(harness.configs[2].agent.smartperfetto.options).toBeUndefined();
     finalizationContext.takeFinalizationContext(result)?.dispose();
     const observed = recorder.seal();
     expect(observed.policyObservations).toEqual(expect.arrayContaining([
       expect.objectContaining({purpose: 'classification', selection: 'minimum_legal_candidate', mapped: 'unknown'}),
-      expect.objectContaining({purpose: 'declaration_repair', selection: 'minimum_legal_candidate', mapped: 'unknown'}),
     ]));
+    expect((observed.policyObservations ?? []).some(policy => policy.purpose === 'declaration_repair')).toBe(false);
     expect(observed.modelCalls).toEqual(expect.arrayContaining([expect.objectContaining({purpose: 'classification',
       model: 'glm-5.3-flash', providerOrigin: 'https://open.bigmodel.cn', reasoning: 'provider_default'})]));
   }));
@@ -1554,7 +1392,7 @@ describe('OpenCode native turn intent and delivery', () => {
     const result = await harness.runtime.analyze('same scope', 'intent-comparison', 'trace-opencode', {
       analysisMode: 'fast', referenceTraceId: 'trace-reference',
     });
-    expect(result.quickRun).toMatchObject({enforcement: 'timeout_only', hardCapTurns: 3, actualTurns: 2});
+    expect(result.quickRun).toMatchObject({enforcement: 'timeout_only', hardCapTurns: 3, actualTurns: 1});
     expect(harness.configs[0]).toMatchObject({model: 'smartperfetto/light-model', mcp: {}, instructions: [],
       provider: {smartperfetto: {models: {'light-model': {id: 'light-model'}}}}});
     expect(Object.values(harness.configs[0].tools).every(value => value === false)).toBe(true);
@@ -4087,7 +3925,7 @@ describe('experimental OpenCode runtime contract', () => {
       }));
       const context = finalizationContext.takeFinalizationContext(terminal)!;
       try {
-        expect(context.getNativeDeclaration(terminal, new AbortController().signal)).toMatchObject({raw: `## Final Report\n${SOURCE_FINALIZATION_RAW_SOURCE}`});
+        expect(context).not.toHaveProperty('getNativeDeclaration');
         expect(JSON.stringify(terminal)).not.toContain('conclusion_protocol_projection');
       } finally {context.dispose();}
       mockOpenCodePreparation(runtime, null, 'startup', 'public second run', [], undefined, true);

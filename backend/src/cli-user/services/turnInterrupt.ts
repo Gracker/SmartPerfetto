@@ -5,17 +5,13 @@
 /**
  * Per-turn Ctrl-C handling for the CLI.
  *
- * The first Ctrl-C after a printed provisional answer ends only its semantic
- * review: the turn still commits (verdict `~`). Before that answer, or on the
- * next press, the turn is fully aborted through its signal and not saved. A
- * further press, or a turn that has not unwound within the grace period after
- * a full abort, exits with 130. json/ndjson never print a provisional answer,
- * so their first Ctrl-C is the full abort. Once the turn is committed, Ctrl-C
- * no longer belongs to it.
+ * The first Ctrl-C fully aborts the turn through its signal; it is not saved.
+ * A further press, or a turn that has not unwound within the grace period
+ * after the abort, exits with 130. Once the turn is committed, Ctrl-C no
+ * longer belongs to it.
  */
 
 import {localize, parseOutputLanguage, type OutputLanguage} from '../../agentv3/outputLanguage';
-import {resolveReviewStopWatchdogMs, ReviewStopController} from '../../services/reviewStopHandle';
 
 export interface InterruptSource {
   /** Registers the turn's handler; the returned function removes it. */
@@ -68,13 +64,10 @@ export interface TurnInterruptOptions {
   exit?(code: number): void;
   /** Grace period after a full abort before exiting 130. */
   graceMs?: number;
-  /** Bound on the commit after a review-only stop. */
-  watchdogMs?: number;
   language?: OutputLanguage;
 }
 
 export class TurnInterruptController {
-  private readonly stop: ReviewStopController<void>;
   private readonly abortController = new AbortController();
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
   private unsubscribe?: () => void;
@@ -87,35 +80,15 @@ export class TurnInterruptController {
     this.language = options.language ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
     this.notify = options.notify ?? (message => { process.stderr.write(`\n${message}\n`); });
     this.exit = options.exit ?? (code => process.exit(code));
-    // The CLI never saves an unverified body: a stop whose commit outlives the
-    // shared watchdog is the full abort, and the turn is not saved.
-    this.stop = new ReviewStopController<void>({
-      watchdogMs: options.watchdogMs ?? resolveReviewStopWatchdogMs(),
-      owner: {
-        fullCancel: () => {
-          if (this.disposed || this.abortController.signal.aborted) return;
-          this.notify(localize(this.language,
-            '核验未能按时结束，停止本轮分析；上方已显示的结论不会保存。',
-            'Verification did not end in time; stopping this turn. The answer shown above is not saved.'));
-          this.abortTurn();
-        },
-      },
-    });
     this.unsubscribe = options.source.subscribe(() => this.handleInterrupt());
   }
 
   /** Full abort of the turn; the turn is not saved. */
   get signal(): AbortSignal { return this.abortController.signal; }
 
-  /** Ends only the review of a printed answer; the turn still commits. */
-  get reviewStopSignal(): AbortSignal { return this.stop.signal; }
-
   get interrupted(): boolean { return this.abortController.signal.aborted; }
 
-  /** The text renderer printed the provisional answer. */
-  markProvisionalDelivered(): void { this.stop.markDelivered(); }
-
-  /** The turn is saved: release Ctrl-C and cancel pending review/grace timers. */
+  /** The turn is saved: release Ctrl-C and cancel the pending grace timer. */
   markCommitted(): void {
     this.dispose();
   }
@@ -124,22 +97,14 @@ export class TurnInterruptController {
     this.disposed = true;
     this.unsubscribe?.();
     this.unsubscribe = undefined;
-    this.stop.dispose();
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear();
   }
 
   private handleInterrupt(): void {
     if (this.disposed) return;
-    // Pressed again after the turn was already aborted (by the user or the watchdog).
-    const request = this.abortController.signal.aborted ? 'noop' : this.stop.requestStop();
-    if (request === 'review') {
-      this.notify(localize(this.language,
-        '正在结束核验；结论将按未核验保存。再按 Ctrl-C 放弃保存并停止。',
-        'Stopping verification; the answer will be saved as unverified. Press Ctrl-C again to stop without saving.'));
-      return;
-    }
-    if (request === 'full') {
+    // Pressed again after the turn was already aborted.
+    if (!this.abortController.signal.aborted) {
       this.notify(localize(this.language,
         '正在停止本轮分析，不会保存。再按 Ctrl-C 立即退出。',
         'Stopping this turn; it will not be saved. Press Ctrl-C again to exit immediately.'));

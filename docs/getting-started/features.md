@@ -31,8 +31,8 @@ SmartPerfetto 在 Perfetto UI 中内置 AI Assistant 面板。用户加载 `.pft
 - UI 会流式展示进度、SQL/Skill 证据、表格结果和最终结论。
 - 每轮的分析过程和步骤位于本轮结论上方，结论是该轮最后的内容；各轮独立排列。
 - 结论应能追溯到具体时间段、线程、slice、SQL 行或 Skill 结果。
-- 服务器核验详情默认折叠，点击可查看完整证据和源码引用；核验警告仍直接显示。已完成的分析正常交付，核验疑点或未覆盖项会单独标注，供用户结合证据判断。
-- 使用 Claude 或 OpenAI runtime 时，回答会边生成边显示为草稿；回答写完后先完整显示，并标注“正在核验”，核验结论随后给出。此时第一次停止只结束核验，已显示的回答会保留。Pi、OpenCode、Qoder runtime 不显示草稿，回答写完后一次性显示。选用了源码或知识库的会话同样显示草稿，但草稿只发给本人，并先经过与最终回答相同的脱敏投影；一旦某段草稿需要脱敏，本轮草稿整体撤回，回答写完后再显示投影后的正文。
+- 服务器交付详情默认折叠，点击可查看完整证据和源码引用。数值来自 Skill 与 SQL 结果，而不是逐句复核；服务器记录原生完成状态、双 Trace 对比身份，以及选用源码时正文写出的源码位置是否与本轮读取的源码一致。警告仍直接显示。
+- 使用 Claude 或 OpenAI runtime 时，回答会边生成边显示为草稿；运行结束后由最终回答替换草稿，之后不再有复核步骤；点“停止”会取消本次运行。Pi、OpenCode、Qoder runtime 不显示草稿，回答写完后一次性显示。选用了源码或知识库的会话同样显示草稿，但草稿只发给本人，并先经过与最终回答相同的脱敏投影；一旦某段草稿需要脱敏，本轮草稿整体撤回，回答写完后再显示投影后的正文。
 
 ### 面板布局与快捷操作
 
@@ -246,7 +246,7 @@ Code-Aware Analysis 允许用户把本机 App、AOSP、kernel 或 OEM SDK 源码
 
 - 把调用栈、native frame 或 kernel symbol 映射到相对文件路径、行号和 symbol。
 - 选中源码只把已授权的源码工具交给模型，是否检索由模型按问题决定；源码回执按本轮实际调用记录状态，不能取得新证据的回合为 `not_needed`。
-- Trace/Skill/SQL 证明发生，`CodeRef` 证明实现机制；结论用 `corroborated|compatible|ambiguous|unverified` 显示绑定强度。
+- Trace/Skill/SQL 证明发生，`CodeRef` 解释实现机制；回答写出的源码位置会与本轮读取的源码比对（旧版本保存的结果可能显示 `corroborated|compatible|ambiguous|unverified` 绑定强度）。
 - Web 显示安全源码回执；HTML report、CLI、snapshot 和 API 共用同一 provenance 投影。源码正文只以授权分析随结果保存的引用出现，没有 API 返回已索引的源码正文。
 - 未给 session 配置 codebase 时，普通 trace-only 分析路径保持不变。
 

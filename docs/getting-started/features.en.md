@@ -31,8 +31,8 @@ Output:
 - The UI streams progress, SQL/Skill evidence, tables, and the final conclusion.
 - Each round places its analysis process and steps above its final conclusion, keeping each round together.
 - Conclusions should trace back to concrete time ranges, threads, slices, SQL rows, or Skill results.
-- Server verification details are collapsed by default; expand them for the full evidence and source references. Verification warnings remain visible. Completed analyses are delivered normally, with verification concerns and coverage gaps labelled separately for users to assess against the evidence.
-- With the Claude or OpenAI runtime, the answer streams in as a draft while it is written. Once finished it is shown in full, marked as being verified, and the verdict follows. A first stop at that point ends only the verification and keeps the answer. The Pi, OpenCode and Qoder runtimes show no draft: the answer appears once it is finished. Sessions with source or knowledge selected also show a draft, but only to you and only after the same redacting projection as the final answer; once any draft text needs redaction, the draft is withdrawn for the rest of the run and the projected answer appears when it is finished.
+- Server delivery details are collapsed by default; expand them for the full evidence and source references. Numbers come from Skill and SQL results rather than a per-sentence check; the server records native completion, dual-trace comparison identity and, with source selected, whether written source locations match source this run read. Warnings remain visible.
+- With the Claude or OpenAI runtime, the answer streams in as a draft while it is written. Once the run finishes, the final answer replaces the draft, with no review step after it; Stop cancels the run. The Pi, OpenCode and Qoder runtimes show no draft: the answer appears once it is finished. Sessions with source or knowledge selected also show a draft, but only to you and only after the same redacting projection as the final answer; once any draft text needs redaction, the draft is withdrawn for the rest of the run and the projected answer appears when it is finished.
 
 ### Panel Layout And Shortcuts
 
@@ -265,7 +265,7 @@ Output:
 
 - Maps call stacks, native frames, or kernel symbols to relative file paths, line ranges, and symbols.
 - Selecting source only hands the authorized source tools to the model, which decides whether to search for the question; the source receipt records status from the calls the run actually made, and `not_needed` for a turn that may acquire no evidence.
-- Trace/Skill/SQL proves occurrence and `CodeRef` proves mechanism; `corroborated|compatible|ambiguous|unverified` reports the binding strength.
+- Trace/Skill/SQL proves occurrence and `CodeRef` explains mechanism; source locations written in the answer are matched against source this run read (results saved by earlier versions may show a `corroborated|compatible|ambiguous|unverified` binding strength).
 - Web shows a safe source receipt, while HTML reports, CLI, snapshots, and APIs reuse the same provenance projection. Source text appears only as quotations an authorized analysis saved with its own results; no API returns indexed source text.
 - If no codebase is configured for the session, the normal trace-only analysis path is unchanged.
 

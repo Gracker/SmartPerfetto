@@ -149,8 +149,14 @@ function boundCandidate(value: AnalysisCandidateIdentity, conclusion: string): b
     value.conclusionFingerprint && value.conclusionFingerprint === analysisDeliveryFingerprint(conclusion));
 }
 
+/**
+ * A projection that alters the checked inputs withdraws a pass. `not_applicable`
+ * states the axis has no subject or no checking mechanism (retired claim,
+ * report and investigation coverage; source without access or citations), and
+ * no text projection can create one, so it is kept.
+ */
 function downgrade(status: AnalysisAssuranceStatus): AnalysisAssuranceStatus {
-  return status === 'passed' || status === 'not_applicable' ? 'not_checked' : status;
+  return status === 'passed' ? 'not_checked' : status;
 }
 
 function copyAssuranceStatus(value: unknown): AnalysisAssuranceStatus {

@@ -16,7 +16,6 @@
     "src/agentRuntime/experimentalRuntime.ts#EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND",
     "src/agentRuntime/experimentalRuntime.ts#isExperimentalAgentRuntimeKind",
     "src/agentRuntime/experimentalRuntime.ts#listExperimentalRuntimeKinds",
-    "src/agentRuntime/runtimeDescriptors.ts#listProductionRuntimeKinds",
     "src/agentRuntime/runtimeKinds.ts#listExperimentalRuntimeKinds",
     "src/agentRuntime/runtimePromptContext.ts#buildQuickKnowledgeBaseContext",
     "src/agentRuntime/runtimePromptContext.ts#buildQuickMemoryContext",

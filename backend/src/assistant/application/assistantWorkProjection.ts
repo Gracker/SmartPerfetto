@@ -7,14 +7,14 @@ import type {AssistantWorkSummary} from '../contracts/assistantWorkContract';
 export function projectAssistantWork(input: {
   sessionId: string; runId?: string; status: string; live: boolean;
   startedAt?: number; completedAt?: number; interrupted?: boolean;
-  provisionalDelivered?: boolean; hasResult?: boolean;
+  hasResult?: boolean;
   outcomeKind?: string; activity?: AssistantWorkSummary['activity']; captureActivity?: AssistantWorkSummary['captureActivity'];
 }): AssistantWorkSummary {
   const inputReason = input.outcomeKind === 'needs_user_input' ? 'question'
     : input.outcomeKind === 'recommend_full' ? 'full_analysis' : undefined;
   const phase = input.interrupted ? 'interrupted'
     : input.status === 'running' || input.status === 'pending'
-      ? input.live ? input.provisionalDelivered ? 'reviewing' : 'running' : 'unknown'
+      ? input.live ? 'running' : 'unknown'
       : input.status === 'cancelled' ? 'cancelled'
       : input.status === 'failed' || input.status === 'quota_exceeded' ? 'failed'
       : inputReason || input.status === 'awaiting_user' ? 'needs_input'

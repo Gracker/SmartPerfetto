@@ -28,19 +28,22 @@ asset registry, not generated output. Backend contract changes regenerate plugin
 - Use workspace-scoped URLs and authenticated, bounded fetch-based SSE clients;
   keep Authorization/workspace headers and replay cursor semantics. A new event
   must have a consumer. Native EventSource cannot carry these required headers.
-- Draft, provisional and final are states of the same answer message. Drafts
-  require run/attempt identity, reject stale/foreign events, reset explicitly,
-  stay live-only and are never stored. Sub-agent or process commentary is not
-  answer text. Provisional delivery replaces the draft and shows verification
-  pending; it does not release loading/stop/session ownership before terminal
-  completion. Verdict events replace the same message and include report data.
-- Errors, cancellation or stream end without a verdict mark delivered text
-  unfinished; stored messages cannot remain pending. Conversation uses its
+- Draft and final are states of the same answer message. Drafts require
+  run/attempt identity, reject stale/foreign events, reset explicitly, stay
+  live-only and are never stored. Sub-agent or process commentary is not answer
+  text. The finalized `conclusion` replaces the draft but does not release
+  loading/stop/session ownership before terminal completion;
+  `analysis_completed` replaces the same message and carries delivery assurance
+  and report data.
+- Errors, cancellation or stream end without `analysis_completed` mark delivered
+  text unfinished; stored messages cannot remain pending. Conversation uses its
   deterministic run/message identity and persists only terminal results.
 - Stop-and-redirect releases the composer only after matching terminal ownership.
-  `review_stop_requested` is nonterminal: keep the stream attached; force-stop
-  outcomes may commit a verdict or explicit review-not-finished partial result.
-  Treat completed/committed outcomes accordingly. A late stop response is a no-op.
+  A stop cancels the run; a late stop response is a no-op. The plugin still
+  handles legacy provisional answers, `provisional_answer`,
+  `review_stop_requested` and `final_review` progress, which the current
+  backend no longer emits; remove that UI only with a prebuild and submodule
+  update.
 - Retry only bounded busy conflicts (`CANCELLATION_IN_PROGRESS`,
   `RUN_ALREADY_ACTIVE`); source/authorization 409s need their existing handling,
   never a retry loop. Context-changing mode/provider edits start a compatible

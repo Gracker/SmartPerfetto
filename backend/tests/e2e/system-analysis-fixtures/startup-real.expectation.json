@@ -10,35 +10,20 @@
     {
       "id": "startup_duration",
       "kind": "numeric",
-      "columns": [
-        "dur_ms",
-        "duration_ms",
-        "ttid_ms"
-      ],
-      "verification": "proved",
       "unit": "ms",
       "oracle": {
         "sql": "INCLUDE PERFETTO MODULE android.startup.startups; SELECT s.dur / 1e6 AS duration_ms, s.ts AS start_ts, s.ts + s.dur AS end_ts, sp.upid FROM android_startups s JOIN android_startup_processes sp USING (startup_id)",
         "column": "duration_ms",
-        "unit": "ms",
-        "anchorMatch": {
-          "startTs": "start_ts"
-        }
+        "unit": "ms"
       }
     }
   ],
   "investigation": {
-    "contentAssurance": "passed",
-    "evidenceAssurance": "passed",
-    "assessmentStatus": "checked",
     "requirements": [
       {
         "id": "thread_state",
         "domain": "thread_state",
-        "applicability": "applicable",
-        "coverage": "covered",
         "acquisition": "observed",
-        "scopeMatch": "matched",
         "records": [
           {
             "metricId": "system.thread.state.duration",

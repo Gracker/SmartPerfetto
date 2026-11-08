@@ -4,7 +4,6 @@
 
 import {createHash} from 'crypto';
 import {isPlainJsonObject} from '../../utils/isPlainJsonObject';
-import {FINAL_SEMANTIC_INPUT_BYTE_LIMIT} from '../finalSemanticLimits';
 
 import type {SanitizedRagResult} from '../rag/lookupResponseFilter';
 import {LLMEchoOutputStream, type CodeRef} from './llmEchoOutputFilter';
@@ -66,7 +65,6 @@ export interface CodeAwareTextProjectionReceipt {
 }
 
 const issuedProjectionReceipts = new WeakSet<object>();
-const exactProjectionInputs = new WeakMap<CodeAwareTextProjectionReceipt, string>();
 
 function textFingerprint(text: string): string {
   return createHash('sha256').update(text).digest('hex');
@@ -85,20 +83,12 @@ function textProjectionReceipt(
   text: string,
   replaced = false,
 ): CodeAwareTextProjectionReceipt {
-  const receipt = issueProjectionReceipt({text, disposition: replaced ? 'replaced' : text === input ? 'preserved' : 'redacted',
+  return issueProjectionReceipt({text, disposition: replaced ? 'replaced' : text === input ? 'preserved' : 'redacted',
     inputFingerprint: textFingerprint(input), outputFingerprint: textFingerprint(text)});
-  exactProjectionInputs.set(receipt, input);
-  return receipt;
 }
 
 export function isIssuedCodeAwareTextProjectionReceipt(value: unknown): value is CodeAwareTextProjectionReceipt {
   return typeof value === 'object' && value !== null && issuedProjectionReceipts.has(value);
-}
-
-/** Exact input-role lineage for typed submissions; never returns the private input. */
-export function hasExactCodeAwareTextProjectionInput(receipt: CodeAwareTextProjectionReceipt, input: string): boolean {
-  return isIssuedCodeAwareTextProjectionReceipt(receipt) && exactProjectionInputs.has(receipt) &&
-    exactProjectionInputs.get(receipt) === input;
 }
 
 /** Only a contiguous chain of runtime-issued receipts can carry earlier replacement. */
@@ -108,18 +98,13 @@ export function composeCodeAwareTextProjectionReceipts(
 ): CodeAwareTextProjectionReceipt {
   if (!isIssuedCodeAwareTextProjectionReceipt(current)) throw new Error('Unissued text projection receipt');
   if (!isIssuedCodeAwareTextProjectionReceipt(prior) || prior.outputFingerprint !== current.inputFingerprint) return current;
-  const composed = issueProjectionReceipt({
+  return issueProjectionReceipt({
     text: current.text,
     inputFingerprint: prior.inputFingerprint,
     outputFingerprint: current.outputFingerprint,
     disposition: prior.disposition === 'replaced' || current.disposition === 'replaced' ? 'replaced' :
       prior.disposition === 'redacted' || current.disposition === 'redacted' ? 'redacted' : 'preserved',
   });
-  if (exactProjectionInputs.has(prior) && exactProjectionInputs.has(current) &&
-      prior.text === exactProjectionInputs.get(current)) {
-    exactProjectionInputs.set(composed, exactProjectionInputs.get(prior)!);
-  }
-  return composed;
 }
 
 /** A channel write or flush, and whether that channel's output so far differs from its input. */
@@ -563,9 +548,6 @@ export function projectCodeAwareProtocolLiteral(sessionId: string | undefined, l
   return guard ? guard.projectProtocolLiteral(literal) : literal;
 }
 
-/** Input-role text from issued current reads or exact-bound native declarations; never arbitrary model text. */
-export const projectCodeAwareAuthorizedInputText = projectCodeAwareProtocolLiteral;
-
 /** Issues a complete text mapping after a bounded, field-aware security projection. */
 export function issueCodeAwareStructuredProjectionReceipt(input: string, text: string, replaced = false): CodeAwareTextProjectionReceipt {
   return textProjectionReceipt(input, text, replaced);
@@ -697,12 +679,6 @@ export function projectCodeAwareStructuredText<T>(
 ): {value: T; changed: boolean} {
   const {value: projected, changed} = projectStructuredText(sessionId, value, MAX_STRUCTURED_TEXT_ITEMS);
   return {value: projected, changed};
-}
-
-/** Semantic input retains its existing byte budget; ordinary output limits stay unchanged. */
-export function projectCodeAwareSemanticInputStructure<T>(sessionId: string | undefined, value: T):
-  {value: T; changed: boolean; limited: boolean} {
-  return projectStructuredText(sessionId, value, FINAL_SEMANTIC_INPUT_BYTE_LIMIT);
 }
 
 function projectStructuredText<T>(sessionId: string | undefined, value: T, maxItems: number):

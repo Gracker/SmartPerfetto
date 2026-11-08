@@ -19,7 +19,7 @@ TraceProcessor / YAML Skill / runtime direct evidence
   -> HTML report
   -> CLI turn artifacts
   -> analysis-result snapshot / comparison
-  -> evidence、claim verification 与 identity sidecar
+  -> evidence、delivery assurance 与 identity sidecar
 ```
 
 这些产品面可以使用不同投影，但不能各自发明不兼容的数据结构。聊天可以隐藏低信号
@@ -132,32 +132,28 @@ Skill 时，`display.layer`、`display.level`、列 schema、执行状态和 syn
 
 ## 终态与证据验证
 
-`AnalysisResult` 的正文、原始 claim 声明和 native completion 是不同输入。运行时从
-SDK 终态记录生成 completion/output origin，产品层在复制结果前取出私有
-`RuntimeFinalizationContext`，再调用唯一的 `finalizeAnalysisResult()`。它保留 canonical
-正文及原命题；真实 machine sidecar 可以从聊天中隐藏，不能靠标题、错误词或正文长度
-改写命题、推断成功或机械重写答案。
+`AnalysisResult` 的正文和 native completion 是不同输入。运行时从 SDK 终态记录生成
+completion/output origin，产品层在复制结果前取出私有 `RuntimeFinalizationContext`，再调用
+唯一的 `finalizeAnalysisResult()`。回答是普通 assistant 文本，不带模型编写的声明；模型若仍
+写出声明，会从 canonical 正文中剥离且不保存。不能靠标题、错误词或正文长度推断成功或机械
+重写答案。
 
-原始采集由 `evidenceCapture.ts` 在显示/传输截断前签发，`evidenceReadView.ts` 只读取
-本次 finalize 已接纳且仍保留的记录。`claim_verifier@2` 将有限证明与最多一次无工具
-语义审核结合；审核沿用 pinned provider、原 absolute deadline 和产品 owner/授权检查。
-合法的 typed intent/claim JSON 不是真值，语义一致也不能替代原始观测。
+数据准确性来自 Skill 与 SQL，而不是逐条核验断言。原始采集由 `evidenceCapture.ts` 在显示/传输
+截断前签发，`evidenceReadView.ts` 只读取本次 finalize 已接纳且仍保留的记录；finalization 用它们
+做双 Trace 身份解析，不调用模型。新的 finalization 不携带 `claimVerificationResult` 或
+`claimSupport`。`deliveryAssurance` 检查 `completion` 和对比 `identity`，用仅针对本轮签发源码
+引用的引用检查标注 `source`，并把 `claims`、`report`、`investigation` 和 `investigationEvidence`
+记为 `not_applicable`。格式化数值、推断列名、Query Review 和 snapshot 恢复不能补造权限；
+单位仍以生产者声明为准。
 
-当前有限目录支持 `numeric.cell`、`interval.overlap`、`comparison.delta`，以
-`SUPPORTED_DETERMINISTIC_CLAIM_RULES` 为权威。证明还要求精确引用、受信字段语义、单位
-及适用范围；一般因果关系不因此成为确定性证明。未知 predicate、缺失 witness、单位
-或覆盖信息必须保留 candidate/unknown/not-checked 边界。格式化数值、推断列名、Query
-Review、相等端点和 snapshot 恢复不能补造验证权。
-
-引用的 number/string 类型不一致、不能定位唯一行或读取受限时，保留未核实状态和原始
-literal，不转换数值或按声明值挑选数据行。明确缺失、越权和同类型数值矛盾仍然失败；
-有限数学证明独立检查 typed 命题。数值单位不等于时钟语义，重叠候选不会因此自动通过验证。
+旧版本保存的结果保留已存的声明、`claim_verifier@2` 结论、有限证明结果和逐 claim 源码状态，
+并按原样展示。
 
 公开的 `analysis_completed` / result 可携带 `turnIntent`、`completion`、`outputOrigin`、
-`runtimeAppendix`、`reportAssessment` 和 `deliveryAssurance`，历史事件允许缺省。正文与
+`runtimeAppendix` 和 `deliveryAssurance`（历史结果还可能带 `reportAssessment`），历史事件允许缺省。正文与
 这些结构化元数据分层投影，报告、CLI 和 snapshot 保留必要 provenance。私有 context、
 provider 调用闭包、可读取 capture 的能力和原始 witness 不进入 JSON 或生成的前端类型。
-历史读取/重放只投影已有结果，不重新执行语义验证或签发证明；正常访问授权仍然生效。
+历史读取/重放只投影已有结果，不重新执行 finalization 或签发证明；正常访问授权仍然生效。
 
 ## Analysis Receipt
 

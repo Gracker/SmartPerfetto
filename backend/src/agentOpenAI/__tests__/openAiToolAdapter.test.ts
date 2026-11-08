@@ -10,10 +10,8 @@ import {createRuntimeToolResult, readRuntimeToolResultFacts} from '../../agentRu
 import {McpToolRegistry} from '../../agentv3/mcpToolRegistry';
 import {Agent, OpenAIProvider, Runner, RunContext, setTracingDisabled, tool} from '@openai/agents';
 import OpenAI from 'openai';
-import {createJsonSchemaFromZodRawShape, preserveRuntimeLiteralStrings, preserveRuntimeLiteralJson} from '../../agentRuntime/runtimeToolSpec';
+import {createJsonSchemaFromZodRawShape, preserveRuntimeLiteralStrings} from '../../agentRuntime/runtimeToolSpec';
 import {chatCompletionResponse} from '../../../tests/helpers/openAiRuntimeFixture';
-import {AUTHORED_FINAL_SUBMISSION_PENDING_ACK} from '../../agentRuntime/authoredFinalSubmission';
-import type {createOpenAiTypedFinalAttempt} from '../../agentRuntime/engines/openai/openAiTypedFinalAdmission';
 import {SQL_EXECUTION_CONTEXTS} from '../../types/queryReviewContract';
 
 describe('createOpenAIToolsFromMcpDefinitions', () => {
@@ -52,81 +50,21 @@ describe('createOpenAIToolsFromMcpDefinitions', () => {
     } finally {await provider.close();}
   });
 
-  it('binds private hooks to the actual returned tool and exact handler document, without an extra capability', async () => {
-    const documentJson = '  {"literal":"null","bodyParts":["  exact  "]}  ';
-    const order: string[] = [];
-    const registry = new McpToolRegistry();
-    registry.registerShared({name: 'registered_final_fixture', role: 'final_candidate_submission', exposure: 'internal',
-      evidenceEffect: 'none', description: 'Fixture final role', inputSchema: {documentJson: preserveRuntimeLiteralStrings(z.string())},
-      handler: async args => {
-        order.push('handler'); expect(args).toEqual({documentJson});
-        return {content: [{type: 'text', text: AUTHORED_FINAL_SUBMISSION_PENDING_ACK}]};
-      }});
-    const invocation = Object.freeze({kind: 'openai_typed_final_invocation' as const});
-    // This is an adapter ordering test. Actual admission/SDK gates have their own real-run suite.
-    const stage = jest.fn<ReturnType<typeof createOpenAiTypedFinalAttempt>['stageInvocation']>(async (_call) => {
-      order.push('stage'); return invocation;
-    });
-    const success = jest.fn<ReturnType<typeof createOpenAiTypedFinalAttempt>['markPrivateHandlerSuccess']>((_invocation, _result) => {
-      order.push('success');
-    });
-    const bridge = {stageInvocation: stage, markPrivateHandlerSuccess: success} as unknown as ReturnType<typeof createOpenAiTypedFinalAttempt>;
-    const mapped = jest.fn();
-    const [installed] = createOpenAIToolsFromMcpDefinitions(registry.list(), {currentFinalAttempt: () => bridge, onAdapted: mapped});
-    if (installed.type !== 'function') throw new Error('Expected installed function tool');
-    const context = new RunContext();
-    const call = {type: 'function_call' as const, name: installed.name, callId: 'call', arguments: JSON.stringify({documentJson})};
-    const output = await installed.invoke(context, call.arguments, {toolCall: call});
-    expect(output).toBe(AUTHORED_FINAL_SUBMISSION_PENDING_ACK);
-    expect(order).toEqual(['stage', 'handler', 'success']);
-    expect(mapped).toHaveBeenCalledWith(registry.list()[0], installed);
-    expect(stage).toHaveBeenCalledWith({tool: installed, context, toolCall: call, parsedArguments: {documentJson}});
-    expect(success).toHaveBeenCalledWith(invocation, {output: AUTHORED_FINAL_SUBMISSION_PENDING_ACK, arguments: {documentJson}});
-  });
-
-  it('passes actual native object arguments through the marked handler subtree with installed-tool identity', async () => {
-    const rawArguments = '{"document":{"parts":["{\\\"literal\\\":true}","[1,2]"],"values":[null,1e999,-0]}}';
-    const expected = JSON.parse(rawArguments);
-    const invocation = Object.freeze({kind: 'openai_typed_final_invocation' as const});
-    const stage = jest.fn<ReturnType<typeof createOpenAiTypedFinalAttempt>['stageInvocation']>(async () => invocation);
-    const success = jest.fn<ReturnType<typeof createOpenAiTypedFinalAttempt>['markPrivateHandlerSuccess']>();
-    const bridge = {stageInvocation: stage, markPrivateHandlerSuccess: success} as unknown as ReturnType<typeof createOpenAiTypedFinalAttempt>;
-    let handlerArgs: Record<string, unknown> | undefined;
-    const registry = new McpToolRegistry();
-    registry.registerShared({name: 'renamed_native_final', role: 'final_candidate_submission', exposure: 'internal',
-      evidenceEffect: 'none', description: 'Native fixture', inputSchema: {document: preserveRuntimeLiteralJson(
-        z.object({parts: z.array(z.string()), values: z.array(z.number().nullable())}))},
-      handler: async args => {handlerArgs = args; return {content: [{type: 'text', text: AUTHORED_FINAL_SUBMISSION_PENDING_ACK}]};}});
-    const [installed] = createOpenAIToolsFromMcpDefinitions(registry.list(), {currentFinalAttempt: () => bridge});
-    if (installed.type !== 'function') throw new Error('Expected function');
-    const context = new RunContext();
-    const call = {type: 'function_call' as const, name: installed.name, callId: 'native-call', arguments: rawArguments};
-    expect(await installed.invoke(context, rawArguments, {toolCall: call})).toBe(AUTHORED_FINAL_SUBMISSION_PENDING_ACK);
-    expect(stage).toHaveBeenCalledWith({tool: installed, context, toolCall: call, parsedArguments: expected});
-    expect(handlerArgs).toEqual(expected);
-    expect(handlerArgs!.document).toBe((stage.mock.calls[0][0].parsedArguments as Record<string, unknown>).document);
-    expect(success).toHaveBeenCalledWith(invocation, {output: AUTHORED_FINAL_SUBMISSION_PENDING_ACK, arguments: handlerArgs});
-    expect(Object.is((handlerArgs!.document as {values: number[]}).values[1], Infinity)).toBe(true);
-    expect(Object.is((handlerArgs!.document as {values: number[]}).values[2], -0)).toBe(true);
-  });
-
-  it.each([false, true])('does not expose typed raw errors or treat extra values as a private bridge (bound=%s)', async bound => {
+  it('does not expose raw errors from a role-tagged tool', async () => {
     const handler = jest.fn(async () => {throw new Error('PRIVATE_TYPED_ARGUMENT_CANARY');});
     const registry = new McpToolRegistry();
     registry.registerShared({name: 'registered_final_fixture', role: 'final_candidate_submission', exposure: 'internal',
       evidenceEffect: 'none', description: 'Fixture final role', inputSchema: {documentJson: preserveRuntimeLiteralStrings(z.string())}, handler});
-    const success = jest.fn();
-    const bridge = {stageInvocation: async () => ({kind: 'openai_typed_final_invocation'}), markPrivateHandlerSuccess: success} as unknown as ReturnType<typeof createOpenAiTypedFinalAttempt>;
-    const [installed] = createOpenAIToolsFromMcpDefinitions(registry.list(), bound ? {currentFinalAttempt: () => bridge} : {});
+    const [installed] = createOpenAIToolsFromMcpDefinitions(registry.list());
     if (installed.type !== 'function') throw new Error('Expected installed function tool');
     const call = {type: 'function_call' as const, name: installed.name, callId: 'untrusted-call',
       arguments: JSON.stringify({documentJson: 'PRIVATE_TYPED_ARGUMENT_CANARY'})};
-    const output = await installed.invoke(new RunContext({privateBridge: bridge}), call.arguments, {toolCall: call});
+    const output = await installed.invoke(new RunContext({}), call.arguments, {toolCall: call});
     expect(String(output)).toContain('submission_rejected');
     expect(String(output)).not.toContain('PRIVATE_TYPED_ARGUMENT_CANARY');
-    expect(handler).toHaveBeenCalledTimes(bound ? 1 : 0);
-    expect(success).not.toHaveBeenCalled();
+    expect(handler).toHaveBeenCalledTimes(1);
   });
+
   it('sends de-duplicated strict annotations on two actual SDK dispatches with unchanged argument parsing', async () => {
     const inputSchema = {text: z.string(), filter: z.string().optional().describe('Filter annotation retained once.')};
     const handler = jest.fn(async (_args: Record<string, unknown>) => ({content: [{type: 'text' as const, text: 'read result'}]}));

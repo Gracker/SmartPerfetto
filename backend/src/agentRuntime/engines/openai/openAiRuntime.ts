@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {bindRuntimePerformanceContext, resolveRuntimePerformanceRecorder, type RuntimePerformanceSource} from '../../runtimePerformanceContext';
+import {resolveRuntimePerformanceRecorder} from '../../runtimePerformanceContext';
 import {createModelRequestMetricsFetch} from '../../modelRequestMetrics';
 
 import {collectSceneEvidenceForPrompt, collectSelectedEvidenceForPrompt} from '../../sceneEntryEvidence';
@@ -10,8 +10,7 @@ import {shouldCollectSelectedEvidenceFoundation} from '../../selectedEvidenceFou
 import {snapshotSceneCoverageRegistry} from '../../../agent/scene/sceneCoveragePlan';
 import {EventEmitter} from 'events';
 import {AsyncLocalStorage} from 'node:async_hooks';
-import {types} from 'node:util';
-import {Agent, MaxTurnsExceededError, OpenAIProvider, Runner, StreamedRunResult, setTracingDisabled, type AgentInputItem, type ModelSettings, type RunStreamEvent, type Tool} from '@openai/agents';
+import {Agent, MaxTurnsExceededError, OpenAIProvider, Runner, StreamedRunResult, setTracingDisabled, type AgentInputItem, type ModelSettings, type RunStreamEvent} from '@openai/agents';
 import type {Model, ModelProvider, ModelRequest} from '@openai/agents';
 import OpenAI from 'openai';
 import {commitEvaluationSdkHandoffIfActive, recordEvaluationTokenDeltaIfPresent} from '../../../services/selfEvolution/evaluationRuntimeHooks';
@@ -28,9 +27,8 @@ import type {AnalysisOptions, AnalysisResult, AnalysisTerminationReason, IOrches
 import type {ArchitectureInfo} from '../../../agent/detectors/types';
 import {createClaudeMcpServer, loadLearnedSqlFixPairs} from '../../../agentv3/claudeMcpServer';
 import {buildSystemPrompt} from '../../../agentv3/claudeSystemPrompt';
-import {loadPromptTemplate, renderTemplate} from '../../../agentv3/strategyLoader';
-import {inspectCandidateProtocol, buildCandidateProtocolDiagnostic, buildAuthoredCandidateProtocolDiagnostic, sanitizeCandidateProtocolDiagnostic,
-  type CandidateProtocolDiagnostic} from '../../../services/canonicalAnalysisResult';
+import {renderRequiredLocalizedStrategyTemplate} from '../../../agentv3/localizedStrategyTemplate';
+import {inspectCandidateProtocol, buildCandidateProtocolDiagnostic} from '../../../services/canonicalAnalysisResult';
 import {extractFindingsFromText} from '../../../agentv3/claudeFindingExtractor';
 import {resolveFocusAppTarget} from '../../focusAppTarget';
 import {registerFocusAppEvidence} from '../../focusAppEvidence';
@@ -39,10 +37,6 @@ import {getExtendedKnowledgeBase} from '../../../services/sqlKnowledgeBase';
 import {analysisContextMemoryPartitionKey} from '../../../services/resolvedAnalysisContext';
 import {createRuntimeRunAuthorization, throwIfRunAuthorizationRevoked, type RunAuthorizationCheck} from '../../runAuthorizationFence';
 import {ensureRuntimeAdmission, assertRuntimeTaskWorkRemaining, RuntimeTaskDeadlineExceededError} from '../../runtimeTaskDeadline';
-import {conclusionDeclarationAuthoring} from '../../../agent/core/conclusionContract';
-import {AUTHORED_CLAIM_DOCUMENT_VERSION} from '../../../agent/core/authoredClaimDocument';
-import {AUTHORED_QUOTE_FAILURE_REASONS, AUTHORED_QUOTE_MATCH_COUNT_LIMIT,
-  type AuthoredQuoteFailureLocation} from '../../../agent/core/authoredClaimObject';
 import type {AnalysisNote, AnalysisPlanV3, ClaudeAnalysisContext, Hypothesis, TracePairContext, TraceCompleteness, UncertaintyFlag} from '../../../agentv3/types';
 import {recordPlanOrPrePlanToolCall, resetPrePlanToolCallsForNewRun, readToolResultFacts} from '../../../agentv3/planToolCallRecorder';
 import {buildComplexityClassifierInput} from '../../../agentv3/queryComplexityContext';
@@ -63,7 +57,7 @@ import {
 } from '../../answerDraftStream';
 import {isPlainObject} from '../../../utils/llmJson';
 import {planPhaseUpdatedContent} from '../../../agentv3/planPhaseEvents';
-import {loadOpenAIConfig, createOpenAiFinalizationConfig, resolveOpenAiClassifierOutputLimit, type OpenAIAgentConfig} from './openAiConfig';
+import {loadOpenAIConfig, resolveOpenAiClassifierOutputLimit, type OpenAIAgentConfig} from './openAiConfig';
 import {withOpenAITextPurposeOptions} from './openAiModelSettings';
 import {
   buildOpenAIChatCompletionsTokenLimit,
@@ -71,7 +65,6 @@ import {
   OpenAITextPolicyConfigurationError,
   type OpenAITextRequestPurposeOptions,
 } from '../../../services/providerManager/openAiChatCompletionsCompat';
-import {openAiTextRequestPurposeFor} from '../../intentTransport';
 import {resolveModelExecutionProfile, type ResolvedModelExecutionProfile} from '../../../services/providerManager/modelExecutionProfile';
 import {resolveModelExecutionPolicy} from '../../modelExecutionPolicy';
 import {admitDeliveryCall, deliveryCallFailsOpen} from '../../../services/runtimeCallStats';
@@ -81,10 +74,10 @@ import {buildQuickRunReceipt, captureSkillDisplayEntities, createRuntimeSkillNot
 import {createAnalysisRunSpec, type AnalysisRunSpec} from '../../analysisRunSpec';
 import type {RuntimeSelection} from '../../runtimeSelection';
 import {RuntimeExecutionGuard, type RuntimeExecutionLease} from '../../runtimeExecutionGuard';
-import {createRuntimePerformanceRun, recordRuntimeModelExecutionPolicy, runtimeModelCallInputBytesBucket, runtimeOutcomeFromError, type RuntimeModelCallPurpose, type RuntimeModelCallSpan,
+import {createRuntimePerformanceRun, recordRuntimeModelExecutionPolicy, runtimeModelCallInputBytesBucket, runtimeOutcomeFromError, type RuntimeModelDispatchPurpose, type RuntimeModelCallSpan,
   type RuntimeModelCallTrigger, type RuntimeModelCallStart, type RuntimeModelCallEnd, type RuntimePerformanceOutcome, type RuntimePerformanceRun} from '../../runtimePerformance';
 import {buildRuntimeAppliedModelControls, buildRuntimeCommonModelConfig, buildRuntimeExecutionProfileObservation,
-  recordRuntimeFinalTransportEvent, dropRuntimeFinalTransportObservation, runtimeObservationHash, runtimeCandidateObservationKey, runtimeProviderOrigin,
+  recordRuntimeFinalTransportEvent, runtimeObservationHash, runtimeCandidateObservationKey, runtimeProviderOrigin,
   type RuntimeFinalTransportEventInput} from '../../runtimePerformance';
 import {OPENAI_AGENT_RUNTIME_KIND} from '../../runtimeKinds';
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
@@ -105,21 +98,10 @@ import {runOpenAiIntentTransport} from './openAiIntentTransport';
 import {
   attachFinalizationContext,
   attachRunDeliveryRecord,
-  reportReviewUsesRemainingBudget,
   sourceUseFinalizationFields,
 } from '../../analysisFinalizationContext';
 import {buildRuntimeTracePairIdentityContext} from '../../runtimePromptContext';
 import {createRuntimeTurnCloseoutTape, resolveRuntimeTurnBudget} from '../../runtimeTurnCloseout';
-import {
-  acceptNativeDeclarationCompletion,
-  buildNativeDeclarationCompletionPrompt,
-  appendRelationProposalRecoveryFragment,
-  INVALID_NATIVE_DECLARATION,
-  MISSING_NATIVE_DECLARATION,
-  requestNativeDeclarationCompletion,
-  isNativeDeclarationRecoveryBlocked,
-  type NativeDeclarationCompletionRequest,
-} from '../../runtimeConclusionProtocol';
 import type {RuntimeToolObserver} from '../../runtimeToolObserver';
 import {createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext, toAnalysisHistoryTurn, type AnalysisHistoryReader} from '../../analysisHistory';
 import type {ReadonlyStrategyRegistrySnapshot} from '../../../services/selfEvolution/effectiveRuntimeRegistryContext';
@@ -127,35 +109,17 @@ import {analysisDeliveryFingerprint, type AnalysisCandidateIdentity, type Analys
 import {analysisHasPrivateContext} from '../../../services/security/analysisPrivateContext';
 import {resolveDurableLearningPermission} from '../../../services/security/durableLearning';
 import {runtimeSourceDepth} from '../../../services/codebase/sourceDepthPolicy';
-import {createOpenAiTypedFinalAttempt,
-  type OpenAiTypedFinalWireEvents, type OpenAiTypedFinalWireObserver} from './openAiTypedFinalAdmission';
-import {FinalSubmissionConfigurationError} from '../../finalSubmissionConfig';
-import {getAuthoredFinalSubmissionModeDescriptor, getOpenAiTypedFinalContractIdentity} from '../../finalSubmissionImplementation';
 import {createOpenAiCandidateIdentity} from '../../openAiCandidateIdentity';
-import {admitFinalSubmissionConfiguration, installedOpenAiSdkCompatibility} from './openAiFinalSubmissionConfig';
-import {createAuthoredFinalSubmissionIssuer, readAuthoredFinalSubmission, type AuthoredFinalSubmissionSnapshot} from '../../authoredFinalSubmission';
-import {hasCurrentAuthoredFinalDelivery, type AuthoredConclusionSubmission} from '../../../services/security/conclusionProtocolProjection';
+import {installedOpenAiSdkIdentity} from './openAiSdkIdentity';
+import {ANALYSIS_OUTPUT_CONFIG} from '../../finalSubmissionConfig';
 import {projectRuntimeToolEventPayload} from '../../../services/security/runtimeToolEventProjection';
 import type {RuntimeToolRole} from '../../runtimeToolSpec';
-import type {McpToolDefinition, ResolvedFinalTool} from '../../../agentv3/mcpToolRegistry';
 
-type TypedFinalAttempt = ReturnType<typeof createOpenAiTypedFinalAttempt>;
-type ActualFinalSubmission = NonNullable<Exclude<AnalysisDeliveryContext, {entry: 'historical_restore'}>['finalSubmission']>;
 type ObservedNativeFact = Extract<RuntimeFinalTransportEventInput, {kind: 'native_terminal'}>['fact'];
-type ObservedAuthor = {role: 'body' | 'declaration' | 'body_and_declaration'; terminal: {eventKey?: string}};
+/** Internal lineage receipt: the answer is one native body; continuation replaces it whole. */
 interface ObservedCandidateLineage {
-  transform: 'native' | 'declaration_repair';
-  authors: readonly ObservedAuthor[];
-  declaredBody: 'present' | 'absent';
-  declaredClaims: 'present' | 'absent' | 'invalid' | 'unknown';
-}
-interface ObservedAssistantSubmission {
-  readonly runId: string;
-  readonly attemptId: string;
-  readonly bodyFingerprint: string;
-  readonly event: Omit<Extract<RuntimeFinalTransportEventInput, {kind: 'assistant_document_issued_after_drain'}>, 'nativeCandidateKey'>;
-  readonly declaredBody: ObservedCandidateLineage['declaredBody'];
-  readonly declaredClaims: ObservedCandidateLineage['declaredClaims'];
+  terminal: {eventKey?: string};
+  bodyPresent: boolean;
 }
 
 /** Observation may be unavailable, but must never change execution or ownership. */
@@ -172,69 +136,12 @@ function observedFinish(value: unknown): ObservedNativeFact['finish'] {
     default: return 'other';
   }
 }
-function observedDeclaration(parsed: {status: string; contract?: {claims?: unknown}}): ObservedCandidateLineage['declaredClaims'] {
-  if (parsed.status === 'absent') return 'absent';
-  if (parsed.status === 'invalid' || parsed.status === 'partially_valid') return 'invalid';
-  return Array.isArray(parsed.contract?.claims) ? 'present' : 'absent';
-}
 
-interface OpenAiLogicalDispatchBinding {
-  readonly attemptKey: string;
-  readonly logicalCallKey: string;
-}
 interface OpenAiDispatchObservationScope {
-  readonly attemptKey: string;
-  readonly wireObserver?: OpenAiTypedFinalWireObserver;
-  onAuthorizedDispatch(): OpenAiLogicalDispatchBinding | undefined;
+  onAuthorizedDispatch(): void;
 }
-interface OpenAiWireRequestTicket {
-  bindAuthorizedDispatch(binding: OpenAiLogicalDispatchBinding | undefined): void;
-  track(pending: Set<OpenAiWireRequestTicket>): void;
-  close(): void;
-}
-// Observation retention only: exceeding this cap never blocks a provider request.
-const MAX_PENDING_WIRE_OBSERVATIONS = 512;
-// Old SDK chains retain their own attempt and request, never a newer collector or span.
+// Old SDK chains retain their own attempt, never a newer span.
 const modelCallDispatchContext = new AsyncLocalStorage<OpenAiDispatchObservationScope>();
-const wireRequestContext = new AsyncLocalStorage<OpenAiWireRequestTicket>();
-
-function createOpenAiWireRequestTicket(scope: OpenAiDispatchObservationScope,
-  events: OpenAiTypedFinalWireEvents | undefined, source: RuntimePerformanceSource | undefined): OpenAiWireRequestTicket {
-  let binding: OpenAiLogicalDispatchBinding | undefined;
-  let bindingAttempted = false, bindingConflict = false, closed = false;
-  let untrack: (() => void) | undefined;
-  const drop = bindRuntimePerformanceContext(() => observeSafely(() => dropRuntimeFinalTransportObservation(source)));
-  const close = bindRuntimePerformanceContext(() => {
-    if (closed) return;
-    closed = true;
-    untrack?.();
-    try {
-      if (!events || !binding || bindingConflict) {drop(); return;}
-      const collectorDispatchOrdinal = events.dispatchOrdinal;
-      if (collectorDispatchOrdinal === undefined || !Number.isSafeInteger(collectorDispatchOrdinal) || collectorDispatchOrdinal < 1) {drop(); return;}
-      const material = events.materialSnapshot?.();
-      if (!material) {drop(); return;}
-      recordRuntimeFinalTransportEvent(source, {kind: 'typed_output_observed', ...binding,
-        collectorDispatchOrdinal, material});
-    } catch {drop();} // A diagnostic failure must not enter the wire collector's fail/revoke path.
-  });
-  const ticket: OpenAiWireRequestTicket = Object.freeze({
-    bindAuthorizedDispatch(value: OpenAiLogicalDispatchBinding | undefined) {
-      if (closed) return;
-      if (bindingAttempted || value?.attemptKey !== scope.attemptKey) bindingConflict = true;
-      bindingAttempted = true;
-      if (!bindingConflict && value) binding = Object.freeze({attemptKey: value.attemptKey, logicalCallKey: value.logicalCallKey});
-    },
-    track(pending: Set<OpenAiWireRequestTicket>) {
-      if (closed || untrack) return;
-      if (pending.size >= MAX_PENDING_WIRE_OBSERVATIONS) {closed = true; drop(); return;}
-      pending.add(ticket);
-      untrack = () => {pending.delete(ticket);};
-    },
-    close,
-  });
-  return ticket;
-}
 
 class OpenAiNativeDrainUnavailableError extends Error {
   readonly code = 'OPENAI_SDK_NATIVE_DRAIN_UNAVAILABLE';
@@ -280,34 +187,12 @@ interface OpenAiChatTerminal {
 function createOpenAiTerminalFetch(
   fetchImpl: typeof fetch,
   onRequest: (terminal: OpenAiChatTerminal) => void,
-  typedFinalObserver?: OpenAiTypedFinalWireObserver,
-  observationSource?: RuntimePerformanceSource,
 ): typeof fetch {
   return async (input, init) => {
     const terminal: OpenAiChatTerminal = {};
     onRequest(terminal);
-    const scope = modelCallDispatchContext.getStore();
-    const observer = scope ? scope.wireObserver : typedFinalObserver;
-    let typed: OpenAiTypedFinalWireEvents | undefined;
-    try { typed = observer?.startRequest(); } catch { /* Observation cannot alter legacy delivery. */ }
-    const ticket = scope?.wireObserver
-      ? observeSafely(() => createOpenAiWireRequestTicket(scope, typed, observationSource)) : undefined;
-    const observe = (callback: (events: OpenAiTypedFinalWireEvents) => void) => {
-      if (typed) {
-        try { callback(typed); } catch {
-          try { typed.fail('invalid_framing'); } catch { /* A failed observer grants no typed receipt. */ }
-          typed = undefined;
-        }
-      }
-    };
-    let response: Response;
-    try { response = await (ticket ? wireRequestContext.run(ticket, () => fetchImpl(input, init)) : fetchImpl(input, init)); }
-    catch (error) {observe(events => events.fail('transport_error')); observeSafely(() => ticket?.close()); throw error;}
-    if (!response.body || !response.headers.get('content-type')?.includes('text/event-stream')) {
-      observe(events => events.fail('not_sse'));
-      observeSafely(() => ticket?.close());
-      return response;
-    }
+    const response = await fetchImpl(input, init);
+    if (!response.body || !response.headers.get('content-type')?.includes('text/event-stream')) return response;
     const decoder = new TextDecoder();
     let buffer = '';
     let eventData: string[] = [];
@@ -316,11 +201,10 @@ function createOpenAiTerminalFetch(
       if (!eventData.length) return;
       const data = eventData.join('\n');
       eventData = [];
-      if (done) {terminal.invalid = true; observe(events => events.fail('data_after_done')); return;}
-      if (data === '[DONE]') {done = true; observe(events => events.done()); return;}
+      if (done) {terminal.invalid = true; return;}
+      if (data === '[DONE]') {done = true; return;}
       try {
         const value = JSON.parse(data);
-        observe(events => events.chunk(value));
         if (value.error != null) terminal.invalid = true;
         if (typeof value.model === 'string' && value.model) terminal.model ??= value.model;
         if (isPlainObject(value.usage)) terminal.usage = value.usage;
@@ -342,13 +226,12 @@ function createOpenAiTerminalFetch(
           }
           if (choice.delta?.refusal) terminal.refused = true;
         }
-      } catch {terminal.invalid = true; observe(events => events.fail('invalid_json'));}
+      } catch {terminal.invalid = true;}
     };
     const consume = (chunk: string) => {
       buffer += chunk;
       if (buffer.length > 1024 * 1024) {
         terminal.invalid = true;
-        observe(events => events.fail('invalid_framing'));
         buffer = '';
         eventData = [];
         return;
@@ -367,8 +250,6 @@ function createOpenAiTerminalFetch(
         consume(decoder.decode());
         // SSE dispatch requires the wire's blank line. EOF is not an event delimiter.
         if (buffer || eventData.length) terminal.invalid = true;
-        observe(events => events.end(!buffer && !eventData.length));
-        observeSafely(() => ticket?.close());
       },
     }));
     return new Response(body, {status: response.status, statusText: response.statusText, headers: response.headers});
@@ -443,8 +324,6 @@ function finalizeOpenAiCandidate(input: {
   finish: Pick<AnalysisCompletion, 'status' | 'reason' | 'sdkFinishReason'>;
   outputOrigin: AnalysisOutputOrigin;
   sourceUse?: ReturnType<typeof createClaudeMcpServer>['sourceUse'];
-  authoredSubmission?: AuthoredConclusionSubmission;
-  finalSubmission?: ActualFinalSubmission;
   observeCandidate?: (input: {nativeCandidate: AnalysisCandidateIdentity;
     displayCandidate: AnalysisCandidateIdentity | undefined; productStatus: AnalysisCompletion['status']}) => void;
 }) {
@@ -456,18 +335,15 @@ function finalizeOpenAiCandidate(input: {
   });
   result.outputOrigin = input.outputOrigin;
   result.completion = {schemaVersion: 1, runtimeKind: OPENAI_AGENT_RUNTIME_KIND, ...acceptedCandidate,
-    ...input.finish, ...(nativeEmpty && input.finish.status === 'completed' && !input.finalSubmission ? {status: 'unknown' as const} : {})};
+    ...input.finish, ...(nativeEmpty && input.finish.status === 'completed' ? {status: 'unknown' as const} : {})};
   if (nativeEmpty) {
     result.success = false;
     result.partial = true;
     result.confidence = 0;
   }
   const nativeContext: AnalysisDeliveryContext = {entry: 'runtime_draft', acceptedCandidate,
-    completion: result.completion, outputOrigin: input.outputOrigin, turnIntent: result.turnIntent,
-    ...(input.finalSubmission ? {finalSubmission: input.finalSubmission} : {})};
-  const finalized = finalizeOwnerSourceAwareAnalysisResultWithProjection(result, input.sourceUse, {
-    context: nativeContext, ...(input.authoredSubmission ? {authoredSubmission: input.authoredSubmission} : {}),
-  });
+    completion: result.completion, outputOrigin: input.outputOrigin, turnIntent: result.turnIntent};
+  const finalized = finalizeOwnerSourceAwareAnalysisResultWithProjection(result, input.sourceUse, {context: nativeContext});
   if (!finalized.deliveryContext) throw new Error('OpenAI candidate projection omitted delivery context');
   observeSafely(() => input.observeCandidate?.({nativeCandidate: acceptedCandidate,
     displayCandidate: finalized.deliveryContext?.entry === 'historical_restore' ? undefined : finalized.deliveryContext?.acceptedCandidate,
@@ -542,39 +418,6 @@ function parseJsonObject(value: unknown): Record<string, unknown> | undefined {
   } catch {
     return undefined;
   }
-}
-
-function quoteDiagnosticData(value: unknown, required: readonly string[], optional: readonly string[] = []): Record<string, unknown> | undefined {
-  if (!value || typeof value !== 'object' || types.isProxy(value) || Object.getPrototypeOf(value) !== Object.prototype) return;
-  const keys = Reflect.ownKeys(value);
-  const allowed = [...required, ...optional];
-  if (required.some(key => !keys.includes(key)) || keys.some(key => typeof key !== 'string' || !allowed.includes(key))) return;
-  const data: Record<string, unknown> = {};
-  for (const key of keys) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (!descriptor || !('value' in descriptor) || !descriptor.enumerable) return;
-    data[key as string] = descriptor.value;
-  }
-  return data;
-}
-
-/** Closed internal log projection. Never spread the model/compiler object into a log. */
-function projectCompilerFailureLocation(value: unknown): AuthoredQuoteFailureLocation | undefined {
-  const data = quoteDiagnosticData(value, ['reason', 'claimOrdinal', 'quoteOrdinal', 'partIndex', 'localMatchCount'], ['localOccurrence']);
-  if (!data) return;
-  const reason = AUTHORED_QUOTE_FAILURE_REASONS.find(candidate => candidate === data.reason);
-  const integer = (value: unknown, minimum: number): value is number =>
-    typeof value === 'number' && Number.isSafeInteger(value) && value >= minimum;
-  if (!reason || !integer(data.claimOrdinal, 1) || !integer(data.quoteOrdinal, 1) || !integer(data.partIndex, 0)) return;
-  const hasOccurrence = Object.prototype.hasOwnProperty.call(data, 'localOccurrence');
-  if (hasOccurrence && !integer(data.localOccurrence, 0)) return;
-  const matches = quoteDiagnosticData(data.localMatchCount, ['count', 'precision']);
-  if (!matches || !integer(matches.count, 0) || matches.count > AUTHORED_QUOTE_MATCH_COUNT_LIMIT) return;
-  const precision = matches.count === AUTHORED_QUOTE_MATCH_COUNT_LIMIT ? 'at_least' : 'exact';
-  if (matches.precision !== precision) return;
-  return {reason, claimOrdinal: data.claimOrdinal, quoteOrdinal: data.quoteOrdinal, partIndex: data.partIndex,
-    ...(hasOccurrence ? {localOccurrence: data.localOccurrence as number} : {}),
-    localMatchCount: {count: matches.count, precision}};
 }
 
 function summarizeToolOutput(value: unknown): string {
@@ -710,24 +553,12 @@ function buildOpenAIBaseModelSettings(
 }
 
 function buildOpenAIModelSettings(
-  config: Pick<OpenAIAgentConfig, 'maxOutputTokens' | 'protocol' | 'analysisReasoningEffort' | 'baseURL'> &
-    Partial<Pick<OpenAIAgentConfig, 'outputConfig'>>,
+  config: Pick<OpenAIAgentConfig, 'maxOutputTokens' | 'protocol' | 'analysisReasoningEffort' | 'baseURL'>,
   model: string,
   onPolicy?: (receipt: unknown) => void,
   onProfile?: (profile: ResolvedModelExecutionProfile) => void,
-  admittedProfile?: ResolvedModelExecutionProfile,
 ): ModelSettings {
   const settings = buildOpenAIBaseModelSettings(config, model);
-  const descriptor = getAuthoredFinalSubmissionModeDescriptor(config.outputConfig?.finalSubmission);
-  if (descriptor?.sourcePolicy === 'function_or_assistant_json') {
-    if (config.protocol !== 'chat_completions' || admittedProfile?.model.requestedId !== model ||
-        admittedProfile.effective.finalSubmission !== config.outputConfig?.finalSubmission ||
-        admittedProfile.effective.declarationSyntax !== config.outputConfig?.declarationSyntax ||
-        admittedProfile.server.jsonOutput?.status !== 'supported' || admittedProfile.server.jsonOutput.value !== 'json_object') {
-      throw new OpenAITextPolicyConfigurationError();
-    }
-    settings.providerData = {...settings.providerData, response_format: {type: admittedProfile.server.jsonOutput.value}};
-  }
   const effort = config.analysisReasoningEffort;
   if (effort === undefined) return settings;
   try {
@@ -761,13 +592,13 @@ function buildOpenAIModelSettings(
 }
 
 /**
- * Provider controls for declaration-only repair and timeout closeout on the
- * main client, using the same purpose mapping as the no-tool transports.
- * Ordinary answer/continuation calls keep the run's own settings.
+ * Provider controls for timeout closeout on the main client, using the same
+ * purpose mapping as the no-tool transports. Ordinary answer/continuation
+ * calls keep the run's own settings.
  */
 function outputOnlyProviderData(
   config: Pick<OpenAIAgentConfig, 'baseURL' | 'protocol'> & Partial<Pick<OpenAIAgentConfig, 'maxOutputTokens'>>,
-  purpose: 'declaration_repair' | 'continuation',
+  purpose: 'continuation',
   selectedModel: string,
   onPolicy?: (receipt: unknown) => void,
   onProfile?: (profile: ResolvedModelExecutionProfile) => void,
@@ -777,7 +608,7 @@ function outputOnlyProviderData(
   try { requestUrl = new URL(config.baseURL); } catch { throw new OpenAITextPolicyConfigurationError(); }
   const {options, policy, profile} = resolveOpenAITextRequestPurpose({requestUrl, model: selectedModel,
     runtimeKind: OPENAI_AGENT_RUNTIME_KIND, protocol: config.protocol,
-    purpose: openAiTextRequestPurposeFor(purpose), outputOnly: true,
+    purpose, outputOnly: true,
     sdkIdentity: {packageName: '@openai/agents-openai', version: 'unknown', adapterContractVersion: 'provider-data@1'},
     // These are adapter expression facts, not arbitrary server/model capabilities.
     sdkCapabilities: {surface: config.protocol === 'chat_completions' ? 'openai_chat' : 'openai_responses',
@@ -805,10 +636,7 @@ function buildOpenAiOutputLimitRecoveryInput(
   observedToolCalls: number,
   turnIntent: AnalysisTurnIntent,
   language: OutputLanguage,
-  recoveryReason: 'output_limit' | 'empty_body' | 'invalid_protocol' | 'turn_limit' |
-    typeof MISSING_NATIVE_DECLARATION | typeof INVALID_NATIVE_DECLARATION,
-  candidateDiagnostic: CandidateProtocolDiagnostic,
-  declarationRequest?: NativeDeclarationCompletionRequest,
+  recoveryReason: 'output_limit' | 'empty_body' | 'turn_limit',
 ): AgentInputItem[] | undefined {
   if (!Array.isArray(history) || !history.some(item => 'role' in item && item.role === 'user')) return undefined;
   const pendingCalls = new Set<string>();
@@ -822,29 +650,13 @@ function buildOpenAiOutputLimitRecoveryInput(
   }
   if (pendingCalls.size || completedCalls < observedToolCalls) return undefined;
   let prompt: string;
-  if (recoveryReason === MISSING_NATIVE_DECLARATION || recoveryReason === INVALID_NATIVE_DECLARATION) {
-    if (declarationRequest?.reason !== recoveryReason) return undefined;
-    try {
-      prompt = buildNativeDeclarationCompletionPrompt({request: declarationRequest, intent: turnIntent,
-        outputLanguage: language});
-    } catch {
-      // Optional protocol completion cannot invalidate an already completed
-      // native candidate when its external template is unavailable.
-      return undefined;
-    }
-  } else {
-    let template: string | undefined;
-    try { template = loadPromptTemplate(`prompt-openai-final-report-continuation-${language === 'en' ? 'en' : 'zh'}`); }
-    catch { return undefined; }
-    if (!template?.trim()) return undefined;
-    const basePrompt = renderTemplate(template.replace(/<!--[\s\S]*?-->/g, '').trim(), {
+  try {
+    prompt = renderRequiredLocalizedStrategyTemplate('prompt-openai-final-report-continuation', language, {
       turn_intent: JSON.stringify(turnIntent),
       completion_reason: recoveryReason,
-      candidate_protocol_diagnostic: JSON.stringify(sanitizeCandidateProtocolDiagnostic(candidateDiagnostic) ?? null),
     });
-    try { prompt = appendRelationProposalRecoveryFragment(basePrompt, candidateDiagnostic, language); }
-    catch { return undefined; }
-  }
+  } catch { return undefined; }
+  if (!prompt.trim()) return undefined;
   const input: AgentInputItem[] = [...history, {role: 'user', content: prompt}];
   return serializedByteLength(input) <= maxHistoryBytes ? input : undefined;
 }
@@ -866,15 +678,11 @@ export const __testing = {
   createOpenAiReasoningFilterState,
   filterOpenAiVisibleAnswerDelta,
   compactProviderErrorMessage,
-  projectCompilerFailureLocation,
   commitAfterProviderClose,
   buildOpenAIModelSettings,
   createRequestIsolatedOpenAiModelProvider,
   outputOnlyProviderData,
   createOpenAiTerminalFetch,
-  createOpenAiWireRequestTicket,
-  installedOpenAiSdkCompatibility,
-  admitFinalSubmissionConfiguration,
   resolveOpenAiNativeCompletion,
   finalizeOpenAiCandidate,
   openAiStreamEventCarriesOutput,
@@ -940,11 +748,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     const runId = options.runId ?? randomUUID();
     const resolvedConfig = loadOpenAIConfig(options.providerId, providerScopeFromAnalysisOptions(options));
     const config = options.outputLanguage ? {...resolvedConfig, outputLanguage: options.outputLanguage} : resolvedConfig;
-    const admittedFinalModels = admitFinalSubmissionConfiguration(config, options.analysisMode ?? 'auto');
-    const typedFinalMode = config.outputConfig.finalSubmission === 'assistant_text' ? undefined : config.outputConfig.finalSubmission;
-    const usesTypedFinal = typedFinalMode !== undefined;
-    const typedDescriptor = getAuthoredFinalSubmissionModeDescriptor(typedFinalMode);
-    const typedRepresentationVersion = typedDescriptor?.representationVersion ?? AUTHORED_CLAIM_DOCUMENT_VERSION;
     const executionLease = this.executionGuard.begin({
       runtime: OPENAI_AGENT_RUNTIME_KIND, sessionId,
       referenceTraceId: options.referenceTraceId, runId,
@@ -996,7 +799,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       // continuation and retry that resends earlier tool results included), and
       // around every tool call. Aborting the lease aborts the SDK run.
       const {fence: authorization, assertActive} = createRuntimeRunAuthorization({options, executionLease});
-      let requestPurpose: {purpose: RuntimeModelCallPurpose; trigger?: RuntimeModelCallTrigger} = {purpose: 'answer_turn'};
+      let requestPurpose: {purpose: RuntimeModelDispatchPurpose; trigger?: RuntimeModelCallTrigger} = {purpose: 'answer_turn'};
       // Below the reasoning-compat serializer, so SDK retries and later native
       // turns are measured from the exact body sent to fetch. No response reader.
       const measuredFetch = createModelRequestMetricsFetch(fetch, {
@@ -1005,10 +808,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       const authorizedFetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
         authorization.assertCurrent();
         assertWorkRemaining();
-        observeSafely(() => {
-          const binding = modelCallDispatchContext.getStore()?.onAuthorizedDispatch();
-          wireRequestContext.getStore()?.bindAuthorizedDispatch(binding);
-        });
+        observeSafely(() => modelCallDispatchContext.getStore()?.onAuthorizedDispatch());
         return measuredFetch(input, {...init, signal: init?.signal
           ? AbortSignal.any([init.signal, workSignal]) : workSignal});
       }) as typeof fetch;
@@ -1043,16 +843,8 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       // A failed light-model classifier does not authorize a provider switch.
       // The already configured primary remains usable under the same budget.
       const selectedModel = quickMode && turnIntent.status === 'resolved' ? config.lightModel : config.model;
-      if (admittedFinalModels && !admittedFinalModels.has(selectedModel)) {
-        throw new FinalSubmissionConfigurationError('unsupported_final_submission', 'model_set');
-      }
-      const typedContractIdentity = getOpenAiTypedFinalContractIdentity(admittedFinalModels?.get(selectedModel)?.sdk.adapterContractVersion);
-      if (usesTypedFinal && (!typedContractIdentity || typedContractIdentity.representationVersion !== typedRepresentationVersion)) {
-        throw new FinalSubmissionConfigurationError('unsupported_final_submission', 'sdk');
-      }
       const maxTurns = quickMode ? config.quickMaxTurns : config.maxTurns;
       const turnBudget = resolveRuntimeTurnBudget(maxTurns);
-      const finalizationConfig = createOpenAiFinalizationConfig(config);
       const traceIdentity = runTraceIdentity(traceId, options);
       const allowedTraces = runAllowedTraces(traceIdentity);
       const evidenceOwnerKey = analysisDeliveryFingerprint({runId, sessionId,
@@ -1061,7 +853,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         authorization: analysisContextMemoryPartitionKey(options)});
       const analysisRunSpec = createAnalysisRunSpec({
         query, sessionId, traceId, options, runtimeSelection: this.runtimeSelection,
-        outputConfig: config.outputConfig,
         sceneType, outputLanguage: config.outputLanguage, previousTurns: [], history: historyReader.getTurns(), turnIntent,
         resolvedMode: policy.budgetMode, resolvedModel: selectedModel,
         budget: config,
@@ -1078,7 +869,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       workDeadlineAt = runDeadline.hardDeadlineAt;
       assertWorkRemaining();
       const sceneRunDeadline = resolveSceneProductScope(options, {runId, sessionId, traceId}) ? runDeadline : undefined;
-      let currentTypedAttempt: TypedFinalAttempt | undefined;
       const context = await this.prepareAnalysisContext(query, sessionId, traceId, options, {
         config, runId, sceneType, policy, turnIntent, strategyRegistry: intentResolver.strategyRegistry,
         analysisRunSpec, sessionContext, previousTurns, executionLease, runtimePerformance,
@@ -1087,7 +877,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         isActive: () => acceptsToolUpdates && !workSignal.aborted && Date.now() < workDeadlineAt &&
           (!sceneRunDeadline || Date.now() < sceneRunDeadline.current()),
         sceneDeadlineMs: workDeadlineAt, scenePacing: sceneRunDeadline,
-        ...(usesTypedFinal ? {currentFinalAttempt: () => currentTypedAttempt} : {}),
       });
       sourceUse = context.sourceUse;
       assertWorkRemaining();
@@ -1100,15 +889,10 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       const nativeFetch = shouldUseMimoReasoningContentCompat(config)
         ? createMimoReasoningContentFetch(authorizedFetch) as typeof fetch : authorizedFetch;
       const observedFetch = config.protocol === 'chat_completions'
-        ? createOpenAiTerminalFetch(nativeFetch, terminal => {chatTerminal = terminal;}, undefined,
-          options.runManifestAttributionSink) : nativeFetch;
+        ? createOpenAiTerminalFetch(nativeFetch, terminal => {chatTerminal = terminal;}) : nativeFetch;
       setTracingDisabled(true);
       const observedCommonConfig = observeSafely(() => {
-        const sdk = installedOpenAiSdkCompatibility();
-        return buildRuntimeCommonModelConfig(config, {runtime: OPENAI_AGENT_RUNTIME_KIND, sdk: {
-          agentsCoreVersion: sdk.agentsCoreVersion, agentsOpenAiVersion: sdk.agentsOpenAiVersion,
-          identity: sdk.agentsCoreVersion === 'unknown' || sdk.agentsOpenAiVersion === 'unknown' ? 'unknown' : 'matched',
-        }});
+        return buildRuntimeCommonModelConfig(config, {runtime: OPENAI_AGENT_RUNTIME_KIND, sdk: installedOpenAiSdkIdentity()});
       });
       let observedMainProfile: ResolvedModelExecutionProfile | undefined;
       let observedStageProfile: ResolvedModelExecutionProfile | undefined;
@@ -1126,7 +910,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         agent = new Agent({name: 'SmartPerfetto', instructions: context.systemPrompt,
           model: selectedModel, tools: context.tools, toolUseBehavior: 'run_llm_again',
           modelSettings: buildOpenAIModelSettings(config, selectedModel, observePolicy,
-            profile => {observedMainProfile = profile;}, admittedFinalModels?.get(selectedModel))});
+            profile => {observedMainProfile = profile;})});
         sdkStartPhase.end('ok');
       } catch (error) {
         sdkStartPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
@@ -1141,29 +925,23 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       // admission-bound hard ceiling.
       // Set only for the single no-tool delivery call admitted after a timeout.
       let deliveryDeadlineAt: number | undefined;
-      // A completed answer's one protocol repair uses the existing delivery
-      // reserve. Keep it separate from exhausted-budget closeout: its original
-      // completion remains eligible for the normal finalization policy.
-      let completedOutputDeliveryDeadlineAt: number | undefined;
       // Internal diagnostics: which timeout-delivery branch this run took.
       let timeoutDelivery: 'not_needed' | 'attempted' | 'no_returned_data' | 'turn_budget_exhausted' |
-        'delivery_window_too_short' | 'template_unavailable' | 'recovery_in_progress' | 'authoring_unrecoverable' |
+        'delivery_window_too_short' | 'template_unavailable' | 'recovery_in_progress' |
         'configuration_unsupported' = 'not_needed';
       let conclusion = '';
       let outputOrigin: AnalysisOutputOrigin = 'assistant_stream';
       let finish: Pick<AnalysisCompletion, 'status' | 'reason' | 'sdkFinishReason'> = {status: 'unknown'};
       let attemptId = '';
       let terminationMessage: string | undefined;
-      let authoredSubmission: AuthoredConclusionSubmission | undefined;
-      let actualFinalSubmission: ActualFinalSubmission | undefined;
       let observedToolCalls = 0;
       let emittedAnswer = '';
       let retainedLineage: ObservedCandidateLineage | undefined;
-      let observedAssistantSubmission: ObservedAssistantSubmission | undefined;
+      // The last native inspection, reused when projection leaves that exact text unchanged.
+      let nativeInspection: {raw: string; protocol: ReturnType<typeof inspectCandidateProtocol>} | undefined;
       let recoveryCandidate: {
         conclusion: string; attemptId: string; outputOrigin: AnalysisOutputOrigin;
-        finish: typeof finish; hadDeclarations: boolean; terminationMessage: string | undefined;
-        declarationRequest?: NativeDeclarationCompletionRequest;
+        finish: typeof finish; terminationMessage: string | undefined;
         observedLineage?: ObservedCandidateLineage;
       } | undefined;
       // Internal performance receipt: why the next attempt's model calls are made.
@@ -1186,12 +964,11 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         const recoveringOutputLimit = Boolean(recoveryCandidate);
         // Acquisition and delivery share one absolute hard deadline and total budget.
         const remainingTurns = Math.max(1, maxTurns - rounds);
-        const reserveDeliveryTurn = !usesTypedFinal && !recoveringOutputLimit && turnBudget.deliveryTurns === 1 && remainingTurns > 1;
+        const reserveDeliveryTurn = !recoveringOutputLimit && turnBudget.deliveryTurns === 1 && remainingTurns > 1;
         const attemptMaxTurns = recoveringOutputLimit ? 1 : remainingTurns - (reserveDeliveryTurn ? 1 : 0);
         attemptId = randomUUID();
         const observedAttemptId = attemptId;
         const observedAttemptKey = observeSafely(() => runtimeObservationHash(JSON.stringify({runId, attemptId: observedAttemptId}))) ?? '';
-        const pendingWireObservations = new Set<OpenAiWireRequestTicket>();
         const observedPurpose = attemptCall.purpose;
         const observedAttemptProfile = observedStageProfile ?? observedMainProfile;
         const observedProfileRole = observedStageProfile ? 'stage_policy' as const : 'main_controls' as const;
@@ -1223,27 +1000,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         let nativeDrain: Promise<void> | undefined;
         let consumeWork: Promise<void> | undefined;
         let attemptContractFault: OpenAiNativeDrainUnavailableError | undefined;
-        let typedAttempt: TypedFinalAttempt | undefined;
-        let typedAttemptCurrent = true;
-        if (typedContractIdentity) {
-          if (!context.finalTool || context.finalTool.tool.type !== 'function') throw new Error('final_submission_tool_unavailable');
-          const assertRunCurrent = () => {
-            executionLease.throwIfAborted(); analysisAbortScope.throwIfAborted(); authorization.assertCurrent();
-          };
-          const ownerBinding = {owner: executionLease, sessionId, runId, attemptId,
-            providerPin: analysisDeliveryFingerprint({baseURL: config.baseURL, model: selectedModel, protocol: config.protocol}),
-            authorizationFingerprint: options.analysisContextFingerprint ?? analysisContextMemoryPartitionKey(options)};
-          const issuer = createAuthoredFinalSubmissionIssuer({binding: ownerBinding, representationVersion: typedRepresentationVersion, assertCurrent: assertRunCurrent,
-            sourcePolicy: typedDescriptor?.sourcePolicy,
-            assertAttemptCurrent: () => {assertRunCurrent(); if (!typedAttemptCurrent) throw new Error('final_submission_attempt_inactive');}});
-          typedAttempt = createOpenAiTypedFinalAttempt({finalTool: context.finalTool.tool, toolName: context.finalTool.nativeName,
-            contractVersion: typedContractIdentity.admissionVersion,
-            knownToolNames: context.tools.map(installedTool => installedTool.name),
-            issuer, ownerBinding, representationVersion: typedRepresentationVersion, signal: analysisAbortScope.signal, assertCurrent: assertRunCurrent,
-            deadlineAt: () => runDeadline.current()});
-          currentTypedAttempt = typedAttempt;
-          agent = agent.clone({toolUseBehavior: typedAttempt.toolUseBehavior});
-        }
         // The first span starts at SDK handoff. Later spans start at the authorized fetch after a native terminal event.
         const attemptInputBucket = runtimeModelCallInputBytesBucket(serializedByteLength(runInput) +
           Buffer.byteLength(context.systemPrompt));
@@ -1269,48 +1025,38 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           modelCallDone = false;
           completedModel = undefined;
         };
-        const observeAttemptDispatch = (): OpenAiLogicalDispatchBinding | undefined => {
+        const observeAttemptDispatch = (): void => {
           if (!active || controller.signal.aborted || analysisAbortScope.signal.aborted || executionLease.signal.aborted ||
               modelCallDispatchContext.getStore() !== dispatchObservationScope) return;
           advanceModelCall();
-          observeSafely(() => wireRequestContext.getStore()?.track(pendingWireObservations));
           observeSafely(() => {
             const providerOrigin = runtimeProviderOrigin(config.baseURL);
             if (!providerOrigin || !observedCommonConfig || !observedLogicalCallKey ||
-                observedPurpose !== 'answer_turn' && observedPurpose !== 'declaration_repair' && observedPurpose !== 'continuation') return;
+                observedPurpose !== 'answer_turn' && observedPurpose !== 'continuation') return;
             const profiles = [];
             if (observedAttemptProfile) {
               const profile = buildRuntimeExecutionProfileObservation(observedAttemptProfile, {role: observedProfileRole, purpose: observedPurpose});
               if (!profile) return;
               profiles.push(profile);
             }
-            const admittedProfile = admittedFinalModels?.get(selectedModel);
-            if (admittedProfile) {
-              const profile = buildRuntimeExecutionProfileObservation(admittedProfile, {role: 'typed_admission', purpose: observedPurpose});
-              if (!profile) return;
-              profiles.push(profile);
-            }
-            const controls = buildRuntimeAppliedModelControls({requestedOutput: config.outputConfig,
+            const controls = buildRuntimeAppliedModelControls({requestedOutput: ANALYSIS_OUTPUT_CONFIG,
               commonConfig: observedCommonConfig, appliedSettings: agent.modelSettings, profiles});
             if (!controls) return;
             recordRuntimeFinalTransportEvent(options.runManifestAttributionSink, {kind: 'main_dispatch',
               attemptKey: observedAttemptKey, logicalCallKey: observedLogicalCallKey, purpose: observedPurpose,
               configuredModelHash: runtimeObservationHash(selectedModel), providerOriginHash: runtimeObservationHash(providerOrigin), controls});
           });
-          return observedAttemptKey && observedLogicalCallKey
-            ? Object.freeze({attemptKey: observedAttemptKey, logicalCallKey: observedLogicalCallKey}) : undefined;
         };
-        const dispatchObservationScope: OpenAiDispatchObservationScope = Object.freeze({attemptKey: observedAttemptKey,
-          wireObserver: typedAttempt?.wireObserver, onAuthorizedDispatch: observeAttemptDispatch});
+        const dispatchObservationScope: OpenAiDispatchObservationScope = Object.freeze({onAuthorizedDispatch: observeAttemptDispatch});
         const answerStreamFilter = createOpenAiReasoningFilterState();
         const answerTextProjection = analysisHasPrivateContext(options)
           ? createCodeAwareStreamingTextProjection(sessionId, `openai-answer-${attemptId}`, 'owner') : undefined;
         // A recovery candidate is delivered atomically by the final conclusion event.
-        const attemptDraft = recoveringOutputLimit || usesTypedFinal
+        const attemptDraft = recoveringOutputLimit
           ? SILENT_ANSWER_DRAFT : createProjectedAnswerDraft(answerDraft, answerTextProjection);
         const toolInputsByTaskId = new Map<string, {toolName: string; args: Record<string, unknown>; role?: RuntimeToolRole}>();
         const processedToolResultIds = new Set<string>();
-        const attemptDeliveryDeadlineAt = deliveryDeadlineAt ?? completedOutputDeliveryDeadlineAt;
+        const attemptDeliveryDeadlineAt = deliveryDeadlineAt;
         const requestTimeout = createDeadlineRuntimeTimeout({
           deadlineAt: () => attemptDeliveryDeadlineAt ?? runDeadline.current(),
           ...(attemptDeliveryDeadlineAt === undefined ? {tryExtend: (now: number) => runDeadline.extendIfStreaming(now)} : {}),
@@ -1329,11 +1075,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           if (Date.now() >= (attemptDeliveryDeadlineAt ?? runDeadline.current())) {timedOut = true; throw new Error('OpenAI request deadline elapsed');}
           commitEvaluationSdkHandoffIfActive();
           attemptDispatched = true;
-          if (typedAttempt) {
-            actualFinalSubmission = {mode: typedFinalMode!, outcome: 'transport_failure'};
-            observePolicy(resolveModelExecutionPolicy({profile: admittedFinalModels!.get(selectedModel)!,
-              purpose: 'answer_turn', selection: 'preserve'}).receipt);
-          }
           modelCall = startAttemptModelCall();
           const started = modelCallDispatchContext.run(dispatchObservationScope, () => runner.run(agent, runInput, {stream: true, maxTurns: attemptMaxTurns,
             context: {signal: controller.signal}, signal: controller.signal}));
@@ -1349,13 +1090,8 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               controller.abort();
               throw attemptContractFault;
             }
-            try {typedAttempt?.bindStream(stream);} catch (error) {
-              // Failed observation cannot release ownership before the already captured real loop.
-              controller.abort();
-              return drain.then(() => {throw error;});
-            }
             return drain;
-          }, () => {typedAttempt?.failStartup();});
+          });
           void nativeDrain.catch(() => undefined);
           const stream = await Promise.race([
             started,
@@ -1414,9 +1150,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           consumeWork = modelCallDispatchContext.run(dispatchObservationScope, consume);
           void consumeWork.catch(() => undefined);
           await Promise.race([consumeWork, requestTimeout.promise, providerIdleTimeout.promise, cancellation]);
-          // SDK abort can resolve public completed before the timeout race rejects.
-          // The observed deadline still owns this unfinished typed attempt's outcome.
-          if (typedAttempt && timedOut && !streamCompleted) throw new RuntimeTaskDeadlineExceededError();
           analysisAbortScope.throwIfAborted();
           if (recoveringOutputLimit) {
             authorization.assertCurrent();
@@ -1430,6 +1163,8 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           outputOrigin = streamCompleted && finalOutput !== undefined ? 'sdk_final' : 'assistant_stream';
           finish = resolveOpenAiNativeCompletion({protocol: config.protocol, response: lastResponse,
             chatTerminal, streamCompleted, conclusion});
+          const nativeProtocol = inspectCandidateProtocol(conclusion);
+          nativeInspection = {raw: conclusion, protocol: nativeProtocol};
           observeSafely(() => {
             if (!observedLogicalCallKey) return;
             const response = observedResponse?.logicalCallKey === observedLogicalCallKey ? observedResponse : undefined;
@@ -1439,73 +1174,22 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               nativeStatus: finish.status, finish: observedFinish(finish.sdkFinishReason),
               rawMaterial: Object.freeze({status: 'observed' as const, hash: runtimeObservationHash(conclusion)}),
               nativeContract: 'openai_native_completion_observer@1', sdkStreamCompleted: streamCompleted});
-            retainedLineage = {transform: 'native', authors: [{role: 'body_and_declaration', terminal: observedTerminal}],
-              declaredBody: conclusion.trim() ? 'present' : 'absent', declaredClaims: 'unknown'};
+            retainedLineage = {terminal: observedTerminal, bodyPresent: nativeProtocol.canonicalBody.trim().length > 0};
           });
-          if (typedAttempt) {
-            endModelCall({outcome: 'ok', output: {bodyChars: conclusion.length, sidecarChars: 0,
-              declarationAuthoringStatus: 'not_observed'}});
-            // The ordinary assistant terminal remains honest when no submission was made.
-            // A tool-derived body cannot acquire assistant authorship while its drain gate is pending.
-            actualFinalSubmission = {mode: typedFinalMode!,
-              outcome: finish.status === 'completed' ? 'missing_submission' : 'transport_failure'};
-            if (finish.status !== 'completed') {conclusion = runAnswer; outputOrigin = 'assistant_stream';}
-            break;
-          }
-          const modelOutput = inspectCandidateProtocol(conclusion);
-          observeSafely(() => {
-            if (retainedLineage) retainedLineage = {...retainedLineage,
-              declaredBody: modelOutput.canonicalBody.trim() ? 'present' : 'absent',
-              declaredClaims: observedDeclaration(modelOutput.sidecar.status !== 'absent' ? modelOutput.sidecar
-                : modelOutput.typedJson ?? {status: 'absent'})};
-          });
-          const authoring = conclusionDeclarationAuthoring(modelOutput.sidecar) ?? conclusionDeclarationAuthoring(modelOutput.typedJson);
           endModelCall({outcome: 'ok',
-            output: {bodyChars: modelOutput.canonicalBody.length,
-              sidecarChars: Math.max(0, conclusion.length - modelOutput.canonicalBody.length),
-              declarationAuthoringStatus: authoring?.status ?? 'not_observed',
-              ...(authoring?.status === 'expanded' ? {declarationAuthoringVersion: authoring.authoringVersion} : {})}});
-          // A declaration completion delivers the restored body with its new declaration.
-          const repairedDeclarationCandidate = recoveryCandidate?.declarationRequest
-            ? acceptNativeDeclarationCompletion({request: recoveryCandidate.declarationRequest,
-              completion: finish, candidate: conclusion}) : undefined;
-          if (repairedDeclarationCandidate) conclusion = repairedDeclarationCandidate;
-          const nativeProtocol = repairedDeclarationCandidate ? inspectCandidateProtocol(conclusion) : modelOutput;
-          if (repairedDeclarationCandidate) observeSafely(() => {
-            const body = recoveryCandidate?.observedLineage?.authors.find(author => author.role === 'body' || author.role === 'body_and_declaration');
-            retainedLineage = body ? {transform: 'declaration_repair', authors: [{role: 'body', terminal: body.terminal},
-              {role: 'declaration', terminal: observedTerminal}], declaredBody: nativeProtocol.canonicalBody.trim() ? 'present' : 'absent',
-              declaredClaims: observedDeclaration(nativeProtocol.sidecar.status !== 'absent' ? nativeProtocol.sidecar
-                : nativeProtocol.typedJson ?? {status: 'absent'})} : undefined;
-          });
+            output: {bodyChars: nativeProtocol.canonicalBody.length,
+              sidecarChars: Math.max(0, conclusion.length - nativeProtocol.canonicalBody.length)}});
           const candidateProtocolDiagnostic = buildCandidateProtocolDiagnostic(nativeProtocol, 'native', recoveringOutputLimit ? 2 : 1);
           this.emitUpdate({type: 'progress', content: {phase: 'candidate_protocol',
             candidateProtocolDiagnostic}, timestamp: Date.now()});
-          const protocolInvalid = nativeProtocol.status === 'invalid';
           const bodyEmpty = !nativeProtocol.canonicalBody.trim();
-          const declarationRequest = requestNativeDeclarationCompletion({
-            intent: turnIntent, completion: finish, candidate: conclusion,
-            declarationSyntax: analysisRunSpec.declarationSyntax,
-            remainingDeliveryTurns: rounds < maxTurns ? turnBudget.deliveryTurns : 0,
-            // A well-framed rejected declaration is repaired alone; the body is kept as delivered.
-            repairInvalid: true,
-          });
-          const declarationRepairRejected = recoveryCandidate?.declarationRequest && !repairedDeclarationCandidate;
-          const completedOutputRepair = finish.status === 'completed' && !bodyEmpty &&
-            (Boolean(declarationRequest) || protocolInvalid);
-          const recoveryDeadlineAt = completedOutputRepair
-            ? runDeadline.completedOutputRepairDeadlineAt() : runDeadline.current();
           const exhaustedBudget = recoveryCandidate?.finish.reason === 'turn_limit' || recoveryCandidate?.finish.reason === 'timeout'
             ? recoveryCandidate.finish.reason : undefined;
-          if (recoveringOutputLimit && (finish.status !== 'completed' || bodyEmpty || declarationRepairRejected ||
-              protocolInvalid && !exhaustedBudget ||
-              recoveryCandidate?.hadDeclarations && nativeProtocol.status === 'absent')) {
+          if (recoveringOutputLimit && (finish.status !== 'completed' || bodyEmpty)) {
             restoreRecoveryCandidate();
           } else if (recoveringOutputLimit && exhaustedBudget) {
             // The new SDK candidate is real, but completing its prose does not
             // complete the investigation that exhausted its acquisition budget.
-            // Retain invalid declarations for the shared quality gate rather
-            // than erase an available partial body to hide its failed checks.
             finish = {...finish, status: 'incomplete', reason: exhaustedBudget};
             terminationMessage = exhaustedBudget === 'turn_limit'
               ? localize(config.outputLanguage,
@@ -1514,48 +1198,23 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               : localize(config.outputLanguage,
                 '调查时间预算已耗尽；仅依据已返回的证据生成有限结论，未完成项仍需继续核查。',
                 'The investigation time budget was exhausted; this limited conclusion uses only returned evidence, and unfinished questions still need investigation.');
-          } else if (!recoveringOutputLimit && !isNativeDeclarationRecoveryBlocked(nativeProtocol) &&
-              (finish.status === 'incomplete' && finish.reason === 'output_limit' ||
-              finish.status === 'completed' && (bodyEmpty || protocolInvalid || declarationRequest)) &&
-              streamCompleted && rounds < maxTurns && Date.now() < recoveryDeadlineAt) {
-            // A declaration-only request wins over a full-answer continuation; framing
-            // failures (no request) keep the continuation.
-            const recoveryReason = finish.reason === 'output_limit' ? 'output_limit' : declarationRequest
-              ? declarationRequest.reason : protocolInvalid ? 'invalid_protocol' : 'empty_body';
+          } else if (!recoveringOutputLimit &&
+              (finish.status === 'incomplete' && finish.reason === 'output_limit' || finish.status === 'completed' && bodyEmpty) &&
+              streamCompleted && rounds < maxTurns && Date.now() < runDeadline.current()) {
+            const recoveryReason = finish.reason === 'output_limit' ? 'output_limit' : 'empty_body';
             const recoveryInput = buildOpenAiOutputLimitRecoveryInput(stream.history, config.maxHistoryBytes,
-              observedToolCalls, turnIntent, config.outputLanguage, recoveryReason, candidateProtocolDiagnostic,
-              declarationRequest);
-            const repairsDeclaration = recoveryReason === MISSING_NATIVE_DECLARATION || recoveryReason === INVALID_NATIVE_DECLARATION;
-            let repairProviderData: OpenAITextRequestPurposeOptions | undefined;
-            let repairProfile: ResolvedModelExecutionProfile | undefined;
-            if (recoveryInput && repairsDeclaration) {
-              try { repairProviderData = outputOnlyProviderData(config, 'declaration_repair', selectedModel, observePolicy,
-                profile => {repairProfile = profile;}); }
-              catch (error) {
-                if (!(error instanceof OpenAITextPolicyConfigurationError)) throw error;
-                // No repair was dispatched. Preserve the completed native body
-                // and let normal finalization annotate the original declaration.
-                console.warn('[OpenAI] declaration repair unavailable: invalid_configuration; original candidate retained');
-                break;
-              }
-            }
+              observedToolCalls, turnIntent, config.outputLanguage, recoveryReason);
             if (recoveryInput && admitDeliveryCall(resolveRuntimePerformanceRecorder(options.runManifestAttributionSink), {
-              providerOrigin: config.baseURL, model: selectedModel,
-              purpose: declarationRequest && recoveryReason === declarationRequest.reason ? 'declaration_repair' : 'continuation',
+              providerOrigin: config.baseURL, model: selectedModel, purpose: 'continuation',
               inputBytes: serializedByteLength(recoveryInput) + Buffer.byteLength(context.systemPrompt),
-              remainingMs: recoveryDeadlineAt - Date.now(),
+              remainingMs: runDeadline.current() - Date.now(),
               failOpen: deliveryCallFailsOpen(turnIntent, {bodyMissing: recoveryReason === 'empty_body'})})) {
               acceptsToolUpdates = false;
-              if (completedOutputRepair) completedOutputDeliveryDeadlineAt = recoveryDeadlineAt;
-              attemptCall = {purpose: repairsDeclaration ? 'declaration_repair' : 'continuation', trigger: recoveryReason,
-                ...(repairsDeclaration ? outputOnlyReasoningReceipt(repairProviderData) : analysisReasoning)};
+              attemptCall = {purpose: 'continuation', trigger: recoveryReason, ...analysisReasoning};
               recoveryCandidate = {conclusion, attemptId, outputOrigin, finish, terminationMessage,
-                observedLineage: retainedLineage,
-                hadDeclarations: nativeProtocol.status !== 'absent', ...(declarationRequest ? {declarationRequest} : {})};
-              observedStageProfile = repairsDeclaration ? repairProfile : undefined;
-              const recoverySettings = repairsDeclaration ? buildOpenAIBaseModelSettings(config, selectedModel) : agent.modelSettings;
-              agent = agent.clone({tools: [], modelSettings: withOpenAITextPurposeOptions(
-                {...recoverySettings, toolChoice: 'none'}, repairProviderData)});
+                observedLineage: retainedLineage};
+              observedStageProfile = undefined;
+              agent = agent.clone({tools: [], modelSettings: {...agent.modelSettings, toolChoice: 'none'}});
               runInput = recoveryInput;
               continue;
             }
@@ -1571,36 +1230,25 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               nativeStatus: 'unknown', finish: 'unknown', rawMaterial: Object.freeze({status: 'observed' as const, hash: runtimeObservationHash(runAnswer)}),
               nativeContract: 'openai_native_completion_observer@1', sdkStreamCompleted: streamCompleted});
           });
-          if (typedAttempt && rawRun === undefined) typedAttempt.failStartup();
           providerOutcome = runtimeOutcomeFromError(error, executionLease.signal);
           endModelCall({outcome: timedOut ? 'cancelled' : runtimeOutcomeFromError(error, executionLease.signal)});
           analysisAbortScope.throwIfAborted();
           conclusion = runAnswer;
-          retainedLineage = {transform: 'native', authors: [{role: 'body_and_declaration', terminal: observedTerminal}],
-            declaredBody: runAnswer.trim() ? 'present' : 'absent', declaredClaims: 'unknown'};
+          retainedLineage = {terminal: observedTerminal, bodyPresent: runAnswer.trim().length > 0};
           terminationMessage = compactProviderErrorMessage(error);
           outputOrigin = 'assistant_stream';
           finish = timedOut ? {status: 'incomplete', reason: 'timeout'}
             : error instanceof MaxTurnsExceededError ? {status: 'incomplete', reason: 'turn_limit'}
-            : typedAttempt ? {status: 'failed'} : {status: 'failed', reason: 'provider_error'};
+            : {status: 'failed', reason: 'provider_error'};
           rounds += error instanceof MaxTurnsExceededError ? Math.max(attemptMaxTurns, attemptModelTurns)
             : Math.max(attemptModelTurns, attemptDispatched ? 1 : 0);
           runtimePerformanceOutcome = timedOut ? 'cancelled' : 'error';
-          if (typedAttempt) {
-            actualFinalSubmission = {mode: typedFinalMode!, outcome: 'transport_failure'};
-            terminationMessage = 'final_submission_transport_failure';
-            break;
-          }
-          const declarationRecoveryBlocked = isNativeDeclarationRecoveryBlocked(conclusion);
           if (!timedOut && error instanceof MaxTurnsExceededError && reserveDeliveryTurn &&
-              !declarationRecoveryBlocked &&
               rounds < maxTurns && Date.now() < runDeadline.current()) {
             let history: AgentInputItem[] | undefined;
             try { history = error.state?.history; } catch { /* Unreadable history cannot authorize recovery. */ }
-            const nativeProtocol = inspectCandidateProtocol(conclusion);
             const completeRecoveryInput = history && buildOpenAiOutputLimitRecoveryInput(history,
-              config.maxHistoryBytes, observedToolCalls, turnIntent, config.outputLanguage, 'turn_limit',
-              buildCandidateProtocolDiagnostic(nativeProtocol, 'native', 1));
+              config.maxHistoryBytes, observedToolCalls, turnIntent, config.outputLanguage, 'turn_limit');
             const boundedPrompt = closeoutTape.buildPrompt({query, priorConclusion: emittedAnswer || conclusion,
               outputLanguage: config.outputLanguage});
             const boundedInput = boundedPrompt ? [{role: 'user' as const, content: boundedPrompt}] : undefined;
@@ -1611,8 +1259,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               acceptsToolUpdates = false;
               attemptCall = {purpose: 'continuation', trigger: 'turn_limit', ...analysisReasoning};
               recoveryCandidate = {conclusion, attemptId, outputOrigin, finish, terminationMessage,
-                observedLineage: retainedLineage,
-                hadDeclarations: nativeProtocol.status !== 'absent'};
+                observedLineage: retainedLineage};
               observedStageProfile = undefined;
               agent = agent.clone({tools: [], modelSettings: {...agent.modelSettings, toolChoice: 'none'}});
               runInput = recoveryInput;
@@ -1624,8 +1271,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           // no returned data there is nothing to deliver and the empty result stands.
           const deliveryWindowMs = runDeadline.deliveryWindowMs();
           if (timedOut && deliveryDeadlineAt === undefined) {
-            timeoutDelivery = declarationRecoveryBlocked ? 'authoring_unrecoverable'
-              : recoveringOutputLimit ? 'recovery_in_progress'
+            timeoutDelivery = recoveringOutputLimit ? 'recovery_in_progress'
               : !closeoutTape.hasReturnedData() ? 'no_returned_data'
                 : rounds >= maxTurns ? 'turn_budget_exhausted'
                   : deliveryWindowMs < perTurnMs ? 'delivery_window_too_short' : 'attempted';
@@ -1650,8 +1296,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               attemptCall = {purpose: 'continuation', trigger: 'timeout',
                 ...outputOnlyReasoningReceipt(closeoutProviderData)};
               recoveryCandidate = {conclusion, attemptId, outputOrigin, finish, terminationMessage,
-                observedLineage: retainedLineage,
-                hadDeclarations: inspectCandidateProtocol(conclusion).status !== 'absent'};
+                observedLineage: retainedLineage};
               observedStageProfile = closeoutProfile;
               deliveryDeadlineAt = Date.now() + deliveryWindowMs;
               const closeoutSettings = buildOpenAIBaseModelSettings(config, selectedModel);
@@ -1675,10 +1320,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           // Rejection of one known operation must never skip draining the others.
           // In particular, a continue cannot overlap the old loop with recovery.
           const observedDrainResults = await Promise.allSettled([rawRun, nativeDrain, consumeWork]);
-          // A body read error/cancellation skips Transform.flush. Close only observation
-          // after the existing drain, without asserting EOF or changing collector admission.
-          for (const ticket of pendingWireObservations) observeSafely(() => ticket.close());
-          pendingWireObservations.clear();
           observeSafely(() => {
             if (!frozenNativeFact) return;
             const drainStatus = !rawRun || !nativeDrain || !consumeWork ? 'unavailable'
@@ -1686,94 +1327,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
             observedTerminal.eventKey = recordRuntimeFinalTransportEvent(options.runManifestAttributionSink,
               {kind: 'native_terminal', fact: frozenNativeFact, drainStatus});
           });
-          if (typedAttempt && attemptContractFault) typedAttempt.revoke('contract_unavailable');
-          if (typedAttempt && !attemptContractFault) {
-            let observedSubmission: AuthoredFinalSubmissionSnapshot | undefined;
-            try {
-              authoredSubmission = await typedAttempt.settleAfterDrain(consumeWork ?? Promise.resolve());
-              const submitted = readAuthoredFinalSubmission(authoredSubmission.submission, authoredSubmission.input);
-              conclusion = submitted.compiled.body;
-              if ('sourceKind' in submitted) {
-                // The SDK completed its original assistant string with stop. Compilation
-                // changes only the product body, never that native completion fact.
-                outputOrigin = 'sdk_final';
-              } else {
-                outputOrigin = 'model_tool_arguments';
-                finish = {status: 'completed', sdkFinishReason: 'tool_calls'};
-              }
-              terminationMessage = undefined;
-              actualFinalSubmission = {mode: typedFinalMode!, outcome: 'submitted'};
-              observedSubmission = submitted;
-            } catch {
-              // Keep the actual assistant terminal (if any); a failed transport is a separate product issue.
-              authoredSubmission = undefined;
-              actualFinalSubmission = {mode: typedFinalMode!,
-                outcome: finish.status === 'completed' ? 'missing_submission' : 'transport_failure'};
-              try {
-                const diagnostic = typedAttempt.diagnostic();
-                const compilerFailureLocation = diagnostic.compilerFailure === 'quote_unresolved'
-                  ? projectCompilerFailureLocation(diagnostic.compilerFailureLocation) : undefined;
-                console.warn('[OpenAIRuntime] typed final admission failed', {
-                  wireStatus: diagnostic.status,
-                  ...(diagnostic.reason ? {wireReason: diagnostic.reason} : {}),
-                  ...(diagnostic.admissionFailure ? {admissionFailure: diagnostic.admissionFailure} : {}),
-                  ...(diagnostic.compilerFailure ? {compilerFailure: diagnostic.compilerFailure} : {}),
-                  ...(compilerFailureLocation ? {compilerFailureLocation} : {}),
-                  ...(diagnostic.wireFinishReason ? {wireFinishReason: diagnostic.wireFinishReason} : {}),
-                  dispatchOrdinal: diagnostic.dispatchOrdinal,
-                });
-              } catch { /* Diagnostics never change completion or delivery. */ }
-            }
-            // Admission/currentness and adoption above are not observation work.
-            // A diagnostic listener must never recast a successfully issued submission.
-            if (observedSubmission) {
-              const issuedObservation = observedSubmission;
-              observeSafely(() => {
-                const contractIdentity = typedAttempt?.contractIdentity;
-                if (!observedLogicalCallKey || !contractIdentity ||
-                    contractIdentity.representationVersion !== issuedObservation.binding.representationVersion ||
-                    contractIdentity.compilerVersion !== issuedObservation.binding.compilerContractVersion) return;
-                const responseKey = runtimeObservationHash(issuedObservation.binding.responseId);
-                const actualModel = observedResponse?.logicalCallKey === observedLogicalCallKey &&
-                    observedResponse.response.status === 'observed' && observedResponse.response.hash === responseKey
-                  ? observedResponse.actualModel : {status: 'unknown' as const};
-                if ('sourceKind' in issuedObservation) {
-                  if (contractIdentity.admissionVersion !== 'openai_typed_final_admission@4' || !observedTerminal.eventKey) return;
-                  observedAssistantSubmission = Object.freeze({runId: issuedObservation.binding.runId,
-                    attemptId: issuedObservation.binding.attemptId,
-                    bodyFingerprint: analysisDeliveryFingerprint(issuedObservation.compiled.body),
-                    declaredBody: issuedObservation.compiled.body.trim() ? 'present' : 'absent',
-                    declaredClaims: observedDeclaration(issuedObservation.compiled.canonicalParse),
-                    event: Object.freeze({kind: 'assistant_document_issued_after_drain', sourceKind: 'assistant_json',
-                      attemptKey: runtimeObservationHash(JSON.stringify({runId, attemptId: observedAttemptId})),
-                      logicalCallKey: observedLogicalCallKey, responseKey,
-                      messageKey: runtimeObservationHash(issuedObservation.binding.messageId),
-                      nativeTerminalEventKey: observedTerminal.eventKey,
-                      rawAssistantTextHash: runtimeObservationHash(issuedObservation.rawAssistantText),
-                      compiledBodyHash: runtimeObservationHash(issuedObservation.compiled.body),
-                      actualModel: Object.freeze({...actualModel}), nativeStatus: 'completed', drainStatus: 'fulfilled', ...contractIdentity})});
-                  return;
-                }
-                const eventKey = recordRuntimeFinalTransportEvent(options.runManifestAttributionSink, {
-                  kind: 'typed_issued_after_drain', attemptKey: runtimeObservationHash(JSON.stringify({runId, attemptId: observedAttemptId})),
-                  logicalCallKey: observedLogicalCallKey, responseKey, callKey: runtimeObservationHash(issuedObservation.binding.callId),
-                  actualModel, nativeStatus: 'completed', drainStatus: 'fulfilled', nativeBodyHash: runtimeObservationHash(issuedObservation.compiled.body),
-                  ...contractIdentity,
-                });
-                retainedLineage = {transform: 'native', authors: [{role: 'body_and_declaration', terminal: {eventKey}}],
-                  declaredBody: issuedObservation.compiled.body.trim() ? 'present' : 'absent',
-                  declaredClaims: observedDeclaration(issuedObservation.compiled.canonicalParse)};
-              });
-              try {
-                const candidateProtocolDiagnostic = sanitizeCandidateProtocolDiagnostic(
-                  buildAuthoredCandidateProtocolDiagnostic(observedSubmission));
-                if (candidateProtocolDiagnostic) this.emitUpdate({type: 'progress', content: {phase: 'candidate_protocol',
-                  candidateProtocolDiagnostic}, timestamp: Date.now()});
-              } catch { /* Observation failure cannot revoke or replace the submitted candidate. */ }
-            }
-          }
-          typedAttemptCurrent = false;
-          currentTypedAttempt = undefined;
           providerPhase.end(attemptContractFault ? 'error' : providerOutcome);
           if (attemptContractFault) throw attemptContractFault;
         }
@@ -1809,84 +1362,48 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           contextInjected: {conversationTurns: countCompletedQuickConversationTurns(previousTurns)},
         }) : undefined,
       };
-      const {result, deliveryContext, conclusionProjection, protocolProjection} = finalizeOpenAiCandidate({
+      const {result, deliveryContext, conclusionProjection} = finalizeOpenAiCandidate({
         result: nativeResult, runId, attemptId, finish, outputOrigin,
-        sourceUse, authoredSubmission, finalSubmission: actualFinalSubmission,
+        sourceUse,
         observeCandidate: ({nativeCandidate, displayCandidate, productStatus}) => {
-          const assistant = observedAssistantSubmission;
-          if (assistant) {
-            if (nativeCandidate.runId !== assistant.runId || nativeCandidate.attemptId !== assistant.attemptId ||
-              nativeCandidate.conclusionFingerprint !== assistant.bodyFingerprint) return;
-            const eventKey = recordRuntimeFinalTransportEvent(options.runManifestAttributionSink,
-              {...assistant.event, nativeCandidateKey: runtimeCandidateObservationKey(nativeCandidate)});
-            retainedLineage = {transform: 'native', authors: [{role: 'body_and_declaration', terminal: {eventKey}}],
-              declaredBody: assistant.declaredBody, declaredClaims: assistant.declaredClaims};
-          }
-          if (!retainedLineage || !displayCandidate || retainedLineage.authors.some(author => !author.terminal.eventKey)) return;
+          const terminalEventKey = retainedLineage?.terminal.eventKey;
+          if (!retainedLineage || !displayCandidate || !terminalEventKey) return;
+          // Declarations are retired: the answer is one body, and no declaration is classified.
           recordRuntimeFinalTransportEvent(options.runManifestAttributionSink, {kind: 'candidate_retained',
-            nativeCandidateKey: runtimeCandidateObservationKey(nativeCandidate),
-            carrier: assistant ? 'assistant_document' : outputOrigin === 'model_tool_arguments' ? 'model_tool_arguments' : 'assistant_text',
-            transform: retainedLineage.transform,
-            authors: retainedLineage.authors.map(author => ({role: author.role, terminalEventKey: author.terminal.eventKey!})),
-            declaredBody: retainedLineage.declaredBody, declaredClaims: retainedLineage.declaredClaims, productStatus});
+            nativeCandidateKey: runtimeCandidateObservationKey(nativeCandidate), carrier: 'assistant_text', transform: 'native',
+            authors: [{role: 'body', terminalEventKey}],
+            declaredBody: retainedLineage.bodyPresent ? 'present' : 'absent', declaredClaims: 'unknown', productStatus});
         },
       });
       // Finalization gets the deadline this run reached plus the reserved time its
       // evidence reads need; it cannot extend it and never passes the hard deadline.
-      const deliveredSubmission = deliveryContext.entry === 'historical_restore' ? undefined : deliveryContext.finalSubmission;
-      const semanticCall = result.completion?.reason !== 'turn_limit' && result.completion?.reason !== 'timeout' &&
-        (!deliveredSubmission || deliveredSubmission.outcome === 'submitted' && hasCurrentAuthoredFinalDelivery(result, deliveryContext));
-      const finalizationDeadlineAt = runDeadline.finalizationDeadlineAt(Date.now(), deliveryDeadlineAt, {
-        useRemainingBudget: reportReviewUsesRemainingBudget({semanticCall, turnIntent: resolvedTurnIntent, result})});
-      const retainedProtocol = actualFinalSubmission ? undefined : inspectCandidateProtocol(result.conclusion);
-      // Report the retained candidate, including rejected repairs and calls
-      // skipped by budget/history admission. Native completion stays separate.
-      const declarationNotice = retainedProtocol && turnIntent.taskKind !== 'acknowledgement' && retainedProtocol.canonicalBody.trim() &&
-          retainedProtocol.status !== 'valid' ? localize(config.outputLanguage,
-          retainedProtocol.status === 'absent'
-            ? '结论正文已保留，但未能提交有效断言声明；本轮断言未完成独立核验。'
-            : '结论正文已保留，但断言声明未通过完整校验；未通过的条目仍未核验。',
-          retainedProtocol.status === 'absent'
-            ? 'The answer was retained, but no valid claim declaration was submitted; independent claim verification is incomplete.'
-            : 'The answer was retained, but its claim declaration did not fully pass validation; rejected entries remain unchecked.') : undefined;
-      if (retainedProtocol) this.emitUpdate({type: 'progress', content: {phase: 'candidate_protocol',
-        candidateProtocolDiagnostic: buildCandidateProtocolDiagnostic(retainedProtocol, 'runtime_projected',
-          recoveryCandidate && attemptId !== recoveryCandidate.attemptId ? 2 : 1, conclusionProjection.disposition),
-        ...(declarationNotice ? {message: declarationNotice} : {})}, timestamp: Date.now()});
+      const finalizationDeadlineAt = runDeadline.finalizationDeadlineAt(Date.now(), deliveryDeadlineAt);
+      // Report the retained candidate's protocol facts; native completion stays separate.
+      this.emitUpdate({type: 'progress', content: {phase: 'candidate_protocol',
+        candidateProtocolDiagnostic: buildCandidateProtocolDiagnostic(nativeInspection?.raw === result.conclusion
+          ? nativeInspection.protocol : inspectCandidateProtocol(result.conclusion), 'runtime_projected',
+          recoveryCandidate && attemptId !== recoveryCandidate.attemptId ? 2 : 1, conclusionProjection.disposition)},
+        timestamp: Date.now()});
       analysisAbortScope.throwIfAborted();
       const closingProvider = provider;
       return await commitAfterProviderClose(() => closingProvider.close().catch(() => undefined), analysisAbortScope, () => {
         provider = undefined;
-        const allowMemoryWrites = actualFinalSubmission === undefined || actualFinalSubmission.outcome === 'submitted';
         this.recordTurn({query, sessionId, result, sessionContext, previousTurnCount: previousTurns.length, quickMode,
-          allowMemoryWrites,
           sourceDerived: analysisHasPrivateContext(options),
           analysisContextFingerprint: options.analysisContextFingerprint});
-        if (allowMemoryWrites) {
-          this.recordPatternMemory({sessionId, result, previousTurnCount: previousTurns.length, quickMode,
-            sceneType, architecture: context.architecture, packageName: context.effectivePackageName, options});
-        }
+        this.recordPatternMemory({sessionId, result, previousTurnCount: previousTurns.length, quickMode,
+          sceneType, architecture: context.architecture, packageName: context.effectivePackageName, options});
         this.emitUpdate({type: 'conclusion', content: {conclusion: result.conclusion, durationMs: Date.now() - startTime, turns: rounds}, timestamp: Date.now()});
         this.emitUpdate({type: 'answer_token', content: {done: true, totalChars: result.conclusion.length}, timestamp: Date.now()});
         attachFinalizationContext(result, {
           runId, sessionId, deadlineMs: finalizationDeadlineAt, turnIntent: resolvedTurnIntent,
-          deliveryCall: {providerOrigin: finalizationConfig.baseURL, model: finalizationConfig.lightModel},
           providerQuery: {text: analysisRunSpec.query.text, analysisContextFingerprint: options.analysisContextFingerprint},
           strategyRegistry: intentResolver.strategyRegistry,
-          selection: analysisRunSpec.selection,
-          traceIdentity, deliveryContext, protocolProjection,
+          traceIdentity, deliveryContext,
           ...sourceUseFinalizationFields(sourceUse),
           evidenceReadView: this.artifactStores.get(sessionId)?.createEvidenceReadView({
             allowedTraces, ownerKey: evidenceOwnerKey, currentRunId: runId,
           }),
-          // No SDK/session state survives this closure. The shared context supplies
-          // the finalization caller's signal and clamps the original absolute deadline.
-          dispatchText: !semanticCall
-            ? undefined : input => runOpenAiIntentTransport({...input,
-            config: finalizationConfig, purpose: openAiTextRequestPurposeFor('review'),
-            onExecutionPolicy: observePolicy,
-            ...(finalizationConfig.maxOutputTokens !== undefined
-              ? {maxOutputTokens: finalizationConfig.maxOutputTokens} : {})}),
         });
         return result;
       });
@@ -2113,7 +1630,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       workSignal?: AbortSignal;
       sceneDeadlineMs?: number;
       scenePacing?: ScenePacingInputs;
-      currentFinalAttempt?: () => TypedFinalAttempt | undefined;
     },
   ) {
     const {config, sceneType, policy, analysisRunSpec, sessionContext, executionLease} = runtime;
@@ -2217,7 +1733,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       deadlineMs: runtime.sceneDeadlineMs ?? 0, traceProcessorService: this.traceProcessorService,
       artifactStore, sceneCoverageRegistry, signal: runtime.workSignal ?? executionLease?.signal, canInvokeTool, pacing: runtime.scenePacing});
     const mcp = createClaudeMcpServer({
-      finalSubmission: analysisRunSpec.finalSubmission,
       sceneRunContext,
       runId: runtime.runId,
       analysisHistoryReader: runtime.historyReader,
@@ -2263,24 +1778,12 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       outputLanguage: config.outputLanguage, codeAwareMode: options.codeAwareMode, codebaseIds: options.codebaseIds,
       sourceAuthorization: mcp.sourceAuthorization,
     };
-    const installedByDefinition = new Map<McpToolDefinition, Tool>();
-    const tools = createOpenAIToolsFromMcpDefinitions(mcp.toolDefinitions, {
-      currentFinalAttempt: runtime.currentFinalAttempt,
-      onAdapted: (definition, installed) => installedByDefinition.set(definition, installed),
-    });
-    const resolvedFinalTool: ResolvedFinalTool | undefined = mcp.resolvedFinalTool;
-    const installedFinalTool = resolvedFinalTool ? installedByDefinition.get(resolvedFinalTool.definition) : undefined;
-    if (analysisRunSpec.finalSubmission !== 'assistant_text' &&
-      (!resolvedFinalTool || !installedFinalTool || installedFinalTool.type !== 'function' || installedFinalTool.name !== resolvedFinalTool.nativeName)) {
-      throw new Error('final_submission_tool_unavailable');
-    }
+    const tools = createOpenAIToolsFromMcpDefinitions(mcp.toolDefinitions);
     const toolRoles = new Map(mcp.toolDefinitions.filter(definition => definition.role !== undefined)
       .map(definition => [definition.name, definition.role!]));
     return {
-      systemPrompt: buildSystemPrompt({...promptContext, declarationSyntax: analysisRunSpec.declarationSyntax,
-        finalSubmission: analysisRunSpec.finalSubmission, ...(resolvedFinalTool ? {resolvedFinalTool} : {})}),
+      systemPrompt: buildSystemPrompt(promptContext),
       tools, toolRoles, allowedTools: mcp.allowedTools,
-      ...(resolvedFinalTool && installedFinalTool ? {finalTool: {nativeName: resolvedFinalTool.nativeName, tool: installedFinalTool}} : {}),
       sessionContext, previousTurns: runtime.previousTurns, architecture, hypotheses,
       effectivePackageName, sourceUse: mcp.sourceUse,
     };
@@ -2525,7 +2028,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     sessionContext: ReturnType<typeof sessionContextManager.getOrCreate>;
     previousTurnCount: number;
     quickMode: boolean;
-    allowMemoryWrites: boolean;
     sourceDerived?: boolean;
     analysisContextFingerprint?: string;
   }): void {
@@ -2555,7 +2057,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       input.result.findings,
     );
 
-    if (input.allowMemoryWrites !== true || input.result.partial === true) return;
+    if (input.result.partial === true) return;
     input.sessionContext.updateWorkingMemoryFromConclusion({
       turnIndex: input.previousTurnCount,
       query: input.query,

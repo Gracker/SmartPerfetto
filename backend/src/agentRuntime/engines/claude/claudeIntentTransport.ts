@@ -10,7 +10,7 @@ import {
   sdkResultFailureReason,
   type IntentTransportInput,
 } from '../../intentTransport';
-import type {RuntimeModelCallPurpose} from '../../runtimePerformance';
+import type {RuntimeModelDispatchPurpose} from '../../runtimePerformance';
 import {isPlainObject} from '../../../utils/llmJson';
 import {claudeMessageHasToolUse} from './claudeSdkMessageGuards';
 import {resolveModelExecutionProfile, type ModelEffectiveSettings, type ResolveModelExecutionProfileInput} from '../../../services/providerManager/modelExecutionProfile';
@@ -32,7 +32,7 @@ export interface ClaudeIntentTransportInput extends IntentTransportInput {
   sdkBinaryOptions: Pick<Options, 'pathToClaudeCodeExecutable'>;
   loadSdk(): Promise<ClaudeIntentSdk>;
   /** Selects the call's deliberation (`claudeEffortForPurpose`); omitted, the SDK default. */
-  purpose?: RuntimeModelCallPurpose;
+  purpose?: RuntimeModelDispatchPurpose;
   authoredReasoning?: ModelEffectiveSettings['authoredReasoning'];
   effectiveSettings?: ModelEffectiveSettings;
   sdkIdentity?: ResolveModelExecutionProfileInput['sdk'];
@@ -40,8 +40,8 @@ export interface ClaudeIntentTransportInput extends IntentTransportInput {
 }
 
 /** Existing CLI effort policy. Unknown gateways retain it; no OpenAI controls are injected. */
-export function claudeEffortForPurpose(purpose: RuntimeModelCallPurpose | undefined): Options['effort'] | undefined {
-  return purpose === 'classification' || purpose === 'review' || purpose === 'declaration_repair' ? 'low' : undefined;
+export function claudeEffortForPurpose(purpose: RuntimeModelDispatchPurpose | undefined): Options['effort'] | undefined {
+  return purpose === 'classification' || purpose === 'review' ? 'low' : undefined;
 }
 
 /** Uses the caller's pinned Claude environment for one isolated classification query. */

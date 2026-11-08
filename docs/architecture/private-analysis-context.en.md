@@ -87,8 +87,8 @@ status. Failed quality checks retain their prose and specific diagnostic reasons
 each runtime issues an in-process receipt from the externally projected tool
 result. Shared narration uses its safe facts to describe returned locations,
 authorized content, or failures. JSON and model prose cannot forge that receipt.
-Source-use status comes from actual calls; mechanism status comes from admitted,
-nonempty source bindings and verification, never a model-only strength upgrade.
+Source-use status comes from actual calls; the source citation status comes from
+the server's citation check, never a model-only upgrade.
 Reports retain safe relative paths, line ranges, and reference identities for
 selected sources.
 
@@ -146,81 +146,27 @@ user Trace files; requesting release and observing native exit remain separate.
 The source guarantee concerns application-controlled materialization, not malicious
 same-UID changes to the application's private directory.
 
-Answers without source dependencies do not need a passed source verdict. Only
-the shared finalizer can issue `source: not_applicable`, using the current
-captured MCP access scope, no actual source access (or an explicit `not_needed`
-decision with an empty ledger), original source-free declarations, and complete
-semantic review. Missing scope, failed searches, incomplete review, and malformed
-source fields lost during projection do not establish non-applicability. The
-source verifier retains `not_checked`; no passed verdict is fabricated.
+Answers without written source citations need no source verdict. The shared
+finalizer records `source: not_applicable` when the run had no source access, or
+had access but the answer writes no source location; public AOSP frames such as
+`Foo.java:N` are normal in answers. Otherwise `source_claim_verifier@2` runs a
+citation-only check: every source location written in the body is matched
+against this run's issued references. All matched is `passed`; any unmatched or
+ambiguous citation is an advisory `coverage_incomplete`. A match proves no
+behavior, call chain or causality. This is a quality annotation: privacy remains
+enforced by `sanitizeCodeAwareText` and the private projection described above.
+No passed verdict is fabricated, and a projection that alters checked inputs
+withdraws a pass.
 
-Final declarations are parsed before display replacement. Original declarations
-and verification cell values live only in the in-process finalization context;
-public declarations and prose receive a separate safe projection. A private
-receipt issued by the shared projector binds the original declaration to the
-current run, attempt, display candidate, and claim fingerprints. Deterministic
-verification compares original values, never a displayed `CodeRef` against a
-raw Trace cell or two redactions as proof of original equality. Missing receipts,
-changed candidates, or revoked authorization leave verification unchecked;
-serialized results cannot recreate receipts. Protocol fields and enum values
-are projected structurally, then text values are serialized safely so source
-content or quoted paths cannot corrupt JSON.
-
-Experimental function-document submission preserves original tool arguments, `documentJson`,
-the compiled body and the whole original canonical payload, including invalid
-items. They remain in a current-run private submission and finalization context;
-public tool events, logs and progress contain only pending/rejected summaries.
-JSON, HTML and declaration examples in the body remain prose and are never scanned
-back into declarations. The three original strings and the display body are bound
-exactly; legitimate privacy replacements also require an issued exact-input
-projection chain. Hashes alone grant no authority. Normal SDK cleanup preserves a
-handed-off submission; product cancellation, revoked authorization or finalization
-disposal revokes it. Persisted authorship cannot restore this capability.
-
-V2 mixed-response companion text stays in the current run's private SDK context
-and bounded temporary buffer. Retained arguments and companion text share a
-1 MiB limit. Each component records any content lost to retention limits.
-Issued final-submission material comes from the unique tool document. Internal
-material observations retain fixed-field counts and statuses, with distinct
-markers for null, unknown and unretained material. Cancellation and late events
-remain bound to their run, attempt and request.
-
-Assistant documents in explicit dual mode use a separate private
-`sourceKind: assistant_json` snapshot. It retains rawAssistantText, the actual
-response ID, SDK message ID, native document, compiled body and original canonical
-payload, without inventing callId, rawArguments or a handler ACK. Only the
-`function_or_assistant_json` policy captured at issuer creation permits this source;
-model input cannot select or widen it. Every read still compares the original text
-and source/dispatch/version/owner identities exactly. Hashes correlate material but
-cannot replace equality. The assistant carrier has public origin `sdk_final`, while
-quality and semantic review still require submitted state and a matching live
-authored binding. Existing function sources retain their `model_tool_arguments`
-pairing. Both carriers share original declarations, private quote bindings and
-privacy projection rules; persisted records cannot restore these capabilities.
-
-Semantic review within the same run uses original text fields from the issued
-declaration. Input permission binds the native declaration, display candidate,
-and canonical projection; field path, owning declaration identity, and full
-text must match. Only source echo replacement for display is bypassed. Private
-queries, sensitive paths, canaries, revocation, and size checks still apply.
-The review body remains the actual displayed body, never hidden original prose;
-a declaration absent from that body cannot pass semantic review.
-
-Finite evidence proof and semantic review remain separate. `captured.cell`
-compares the originally declared string, boolean, or null against one captured
-cell using strict equality; numbers retain the unit-aware `numeric.cell` rule.
-Source is not a finite proof. `source_claim_verifier@2` computes each
-source-dependent claim's standing on the server (`invalid`, `unbound`,
-`location_only`, `source_only`, `trace_linked`) and matches every source location
-written in the body against this run's issued references. Only `invalid` (an
-unissued or out-of-selection reference, or a Trace ID not belonging to that
-claim) fails the answer; weaker standings stay unverified. A claim whose answer
-cites it only at lines the run did not read stays `location_only`, whatever else
-it read. Even `trace_linked` means only a read and cited body plus same-claim
-Trace evidence: it proves no behavior,
-call chain, or causality, and complete body semantic review still applies.
-Malformed entries anywhere in the binding array cannot be filtered into an
-absent declaration.
+New answers carry no model-authored declaration, typed final submission or
+final-document tool. A declaration a model still writes is recognized before
+display replacement only so it can be stripped from the body; it is not stored
+and grants no evidence. JSON, HTML and declaration examples in the body remain
+prose. Protocol fields and enum values are projected structurally, then text
+values are serialized safely so source content or quoted paths cannot corrupt
+JSON. Historical results keep their stored declarations, per-claim source
+statuses and verdicts and render them through the same safe projection;
+serialized results cannot recreate in-process receipts.
 
 Raw SQL units require execution evidence from an owned processor with matching
 binary/documentation pins and trusted native provenance. Direct `DURATION`
@@ -238,8 +184,7 @@ Previously completed immutable captures remain readable.
 When the formal schema has exactly one `ID` column and the query returns that
 original column, the native execution receipt also retains its relation, row ID
 and stable schema fingerprint. Preparing a duration reference preserves this
-companion identity within the existing read budgets. A finite proof projects
-only the rows containing its actual operands. JSON, display fields and generic
+companion identity within the existing read budgets. JSON, display fields and generic
 capture arguments cannot reissue this identity. Acceptance can match the same
 Trace, relation, original ID and independently resolved schema fingerprint to
 the actual event without another process query or clock inference. Missing IDs,

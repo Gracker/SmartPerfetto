@@ -1209,6 +1209,37 @@ export class ConclusionSidecarFramingScanner {
   }
 }
 
+/**
+ * Locate machine segments (sidecars, authoring fences, quarantined reserved
+ * comments) by the shared framing grammar alone. Nothing is parsed: no claims,
+ * relations or diagnostics are built from a payload.
+ */
+export function conclusionMachineSegments(raw: string): Array<{start: number; end: number}> {
+  const segments: Array<{start: number; end: number}> = [];
+  const scanner = new ConclusionSidecarFramingScanner(segment => segments.push({start: segment.start, end: segment.end}));
+  scanner.write(raw);
+  scanner.finish();
+  return segments;
+}
+
+/** The answer body without any stray machine segment; the entry for new answers. */
+export function stripMachineSegments(raw: string): string {
+  let body = raw;
+  for (const {start, end} of conclusionMachineSegments(raw).reverse()) body = body.slice(0, start) + body.slice(end);
+  return body;
+}
+
+/** Model-declared fields: parser-owned state plus the declarations it qualifies. New answers carry none. */
+const CONCLUSION_DECLARATION_FIELDS = ['claims', 'relationProposals', 'sourceClaimBindings', ...ROOT_PARSER_FIELDS] as const;
+
+/** Keep only server-derived structure; returns the contract unchanged when it declares nothing. */
+export function withoutConclusionDeclarations(contract: ConclusionContract | undefined): ConclusionContract | undefined {
+  if (!contract || !CONCLUSION_DECLARATION_FIELDS.some(key => hasOwn(contract, key))) return contract;
+  const copy: Record<string, unknown> = {...contract};
+  for (const key of CONCLUSION_DECLARATION_FIELDS) delete copy[key];
+  return copy as unknown as ConclusionContract;
+}
+
 /** Recognize explicit top-level sidecars without interpreting ordinary prose. */
 export function parseConclusionContractSidecar(raw: string): ConclusionContractSidecarParseResult {
   const lines = raw.split(/\r?\n/);

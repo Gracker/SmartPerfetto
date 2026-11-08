@@ -731,17 +731,13 @@ export type DisplayFormat = typeof VALID_DISPLAY_FORMATS[number];
  * - progress: Phase/step progress update
  * - error: Error message
  * - snapshot_created: Analysis result snapshot persisted for comparison
- * - conclusion: Provisional answer (`ProvisionalConclusionEventData`) emitted once
- *   when the final semantic review is dispatched. The body is final; the verdict is
- *   pending and arrives only with analysis_completed, which replaces the same message.
- *   When no review is dispatched, the finalized answer arrives once without
- *   `provisional`, still before analysis_completed.
+ * - conclusion: The finalized answer, emitted once before analysis_completed.
  *   The runtime's own raw conclusion is not forwarded.
  * - answer_token / answer_segment_reset: display-only answer draft from a
  *   draft-capable runtime (`EngineCapabilities.draftAnswerStreaming`), each
  *   carrying runId + attempt. Live only: sent without an SSE id, never in the
- *   replay buffer or the durable store. A reset revokes the draft; the
- *   provisional or final conclusion replaces it.
+ *   replay buffer or the durable store. A reset revokes the draft; the final
+ *   conclusion replaces it.
  * - analysis_completed: Final result with report URL
  */
 export const SSE_EVENT_TYPES = [
@@ -783,12 +779,12 @@ export const SSE_EVENT_TYPES = [
 export type SSEEventType = typeof SSE_EVENT_TYPES[number];
 
 /**
- * `conclusion` payload (`data` field). Consumers keep the run active: the stop
- * control then stops only the review (cancel answers `review_stop_requested`), and
- * error/cancel/disconnect without analysis_completed leaves the answer unverified.
+ * Legacy `conclusion` payload (`data` field) of the retired final semantic
+ * review: the current backend never emits it. Kept because generated frontend
+ * types still reference it and older recorded streams may carry it.
  */
 export interface ProvisionalConclusionEventData {
-  /** Owner-projected canonical body, identical to what the review checks. */
+  /** Owner-projected canonical body. */
   conclusion: string;
   provisional: true;
   verification: 'pending';

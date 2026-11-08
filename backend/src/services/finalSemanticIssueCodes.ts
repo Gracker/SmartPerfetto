@@ -18,5 +18,3 @@ export const SEMANTIC_UNDECLARED_CLAIM_ISSUE_CODE = 'semantic_undeclared_claim';
  * warning. It contradicts no value, so it cannot fail the claim.
  */
 export const SEMANTIC_NUMERIC_DISPLAY_ROUNDING_ISSUE_CODE = 'semantic_numeric_display_rounding';
-const SEMANTIC_CLAIM_ISSUE_CODES: ReadonlySet<string> = new Set(SEMANTIC_ISSUE_CODES.map(semanticClaimIssueCode));
-export const isSemanticClaimIssueCode = (code: string): boolean => SEMANTIC_CLAIM_ISSUE_CODES.has(code);

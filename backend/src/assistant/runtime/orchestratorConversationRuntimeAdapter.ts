@@ -15,7 +15,6 @@ import {
 } from '../../services/security/codeAwareOutputRegistry';
 import {projectOwnerCodeAwareStreamingUpdate} from '../../services/security/codeAwareStreamingUpdateProjection';
 import {
-  projectOwnerProvisionalConclusion,
   projectOwnerStructuredValue,
   projectOwnerAnalysisResult,
 } from '../../services/security/privateAnalysisProjection';
@@ -28,8 +27,6 @@ import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
 import {takeFinalizationContext} from '../../agentRuntime/analysisFinalizationContext';
 import {createRuntimeEvidenceContext, type RuntimeEvidenceBinding, type RuntimeEvidenceContext} from '../../agentRuntime/runtimeEvidenceContext';
 import {finalizeAnalysisResult, type FinalizedAnalysisResult} from '../../services/finalizeAnalysisResult';
-import {finalReviewProgressUpdate} from '../../services/finalizationProgress';
-import type {OutputLanguage} from '../../agentv3/outputLanguage';
 import {createAnswerDraftRelay} from '../../services/answerDraftRelay';
 import {loadPromptTemplate, renderTemplate} from '../../agentv3/strategyLoader';
 import {validateDataEnvelope, type DataEnvelope} from '../../types/dataContract';
@@ -147,7 +144,7 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
 
   private async finalizeRuntimeResult(result: AnalysisResult, input: ConversationRuntimeInput,
     state: ConversationExecution, dataEnvelopes: DataEnvelope[],
-    onRuntimeSettled?: () => void, outputLanguage: OutputLanguage = 'zh-CN', privateKnowledge = false,
+    onRuntimeSettled?: () => void,
   ): Promise<FinalizedAnalysisResult> {
     const context = takeFinalizationContext(result);
     let transferred = false;
@@ -161,18 +158,6 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
           ...(state.analysisContextFingerprint !== undefined ? {analysisContextFingerprint: state.analysisContextFingerprint} : {}),
           isCurrent: () => this.isCurrent(input, state), assertAuthorized: state.assertAuthorized},
         conversation: {fallbackQuestion: input.query, evidence: projectEvidence(result)},
-        onProgress: event => {
-          if (this.isCurrent(input, state)) input.onUpdate?.(finalReviewProgressUpdate(event, outputLanguage));
-        },
-        // The session service owns the stop state; this only forwards its signal.
-        ...(input.reviewStopSignal ? {reviewStopSignal: input.reviewStopSignal} : {}),
-        // Same owner projection as the terminal message, applied while this
-        // run's output guards are still registered.
-        onProvisionalAnswer: answer => {
-          if (!this.isCurrent(input, state) || !input.onProvisionalAnswer) return false;
-          return input.onProvisionalAnswer({message: projectOwnerProvisionalConclusion(privateKnowledge,
-            state.runtimeSessionId, answer.conclusion, outputLanguage)}) !== false;
-        },
       });
       this.assertActive(input, state);
       if (!finalized.conversationOutcome) throw new Error('conversation_finalization_outcome_missing');
@@ -242,8 +227,8 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
         answerDraft?.accept(update);
         return;
       }
-      // The answer reaches clients only as provisional_answer and run_completed;
-      // the runtime's own conclusion would be a second, unfinalized source.
+      // The answer reaches clients only as run_completed; the runtime's own
+      // conclusion would be a second, unfinalized source.
       if (update.type === 'conclusion') return;
       const safeUpdate = projectOwnerCodeAwareStreamingUpdate(runtimeSessionId, update, privateKnowledge, outputLanguage);
       if (safeUpdate) input.onUpdate?.(safeUpdate);
@@ -316,7 +301,7 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
               this.orchestrator.off('update', onUpdate);
               this.assertActive(input, state);
               answerDraft?.settle();
-            }, outputLanguage, privateKnowledge);
+            });
           };
           return await (leases ? leases.run(analyzeAndFinalize) : analyzeAndFinalize());
         } finally {

@@ -492,12 +492,13 @@ Use native receipts and the original quality gates for attribution and acceptanc
 
 Flagship expectations come from `backend/tests/e2e/flagship/*.expectation.json`
 and independent trace oracles, not model output. Preserve original startup
-classification even when a Skill offers a corrected category. Value, delivery
-and proof are separate check groups: value/delivery failure is FAILED; only
-missing proof is INCONCLUSIVE; strict PASSED requires all groups and hard flags.
-No judged report/unsettled verification is undelivered. Non-strict diagnostic
-success, readable output and honest verification annotations are not strict
-proof. Lifecycle/authorization/privacy failures still fail their own gates.
+classification even when a Skill offers a corrected category. Value and
+delivery are separate check groups: value facts are matched in the answer body
+with unit/rounding normalization, and a value/delivery failure is FAILED; an
+unmeasured facet is INCONCLUSIVE; strict PASSED requires both groups and hard
+flags. No judged report is undelivered. Non-strict diagnostic success and
+readable output are not strict acceptance. Lifecycle/authorization/privacy
+failures still fail their own gates.
 
 Delta baselines bind suite/runtime/trace/query/expectations/provider/model/gate/
 processor/stdlib fingerprints (only commit may differ), refuse invalid comparisons

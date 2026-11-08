@@ -3,6 +3,7 @@
 
 import type {ConclusionContractClaimReference} from '../../agent/core/conclusionContract';
 import type {DataEnvelope} from '../../types/dataContract';
+import {EVIDENCE_READ_MAX_ELAPSED_MS} from '../../agentRuntime/runtimeLimits';
 import {isPlainJsonObject} from '../../utils/isPlainJsonObject';
 import {wholeResultRowPredicate} from './scopedRowIdentity';
 import {buildInvestigationEvidenceSnapshot, type InvestigationEvidenceSnapshot,
@@ -224,7 +225,7 @@ export function createEvidenceReadView(records: () => readonly EvidenceReadRecor
   if (!options.ownerKey.trim()) throw new Error('Evidence read view requires a runtime owner');
   const allowed = new Set(options.allowedTraces.map(trace => `${trace.traceSide}:${trace.traceId}`));
   const budget: EvidenceReadBudget = {maxReferences: MAX_EVIDENCE_READ_REFERENCES, maxScannedRows: 100_000, maxCells: 16_384,
-    maxElapsedMs: 1500, maxBytes: 1_048_576, ...options.budget};
+    maxElapsedMs: EVIDENCE_READ_MAX_ELAPSED_MS, maxBytes: 1_048_576, ...options.budget};
   if (Object.values(budget).some(value => !Number.isSafeInteger(value) || value < 0)) throw new Error('Invalid evidence read budget');
   return Object.freeze({investigationEvidence: () => buildInvestigationEvidenceSnapshot(records(), options, observations()),
     async resolveReferences(requests: readonly EvidenceReadRequest[], signal?: AbortSignal) {

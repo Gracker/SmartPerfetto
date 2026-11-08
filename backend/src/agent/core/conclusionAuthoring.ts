@@ -6,15 +6,6 @@ export const CONCLUSION_AUTHORING_VERSION = 'conclusion_authoring@1';
 export const CONCLUSION_AUTHORING_VERSION_V2 = 'conclusion_authoring@2';
 export type ConclusionAuthoringVersion = typeof CONCLUSION_AUTHORING_VERSION | typeof CONCLUSION_AUTHORING_VERSION_V2;
 export const CONCLUSION_AUTHORING_LIMITS = Object.freeze({utf8Bytes: 1_048_576, nodes: 10_000, depth: 24});
-export const CONCLUSION_AUTHORING_ENV = 'SMARTPERFETTO_CONCLUSION_AUTHORING';
-
-/** Resolve internal configuration before a run; never read model/client fields or ambient state here. */
-export function resolveConclusionDeclarationSyntax(value: string | undefined): 'canonical_v1' | 'authoring_v1' | 'authoring_v2' {
-  if (value === undefined || value === 'canonical_v1') return 'canonical_v1';
-  if (value === 'authoring_v1') return 'authoring_v1';
-  if (value === 'authoring_v2') return 'authoring_v2';
-  throw new Error('invalid_configuration:conclusion_authoring');
-}
 
 type Path = readonly (string | number)[];
 type SlotKind = 'claim_references' | 'subject_refs' | 'object_refs' |

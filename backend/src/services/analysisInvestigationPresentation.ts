@@ -16,11 +16,16 @@ const UNRESOLVED_REFERENCE_CODES: ReadonlySet<string> = new Set(
   (['missing', 'ambiguous'] as const).map(claimReferenceIssueCode));
 const UNEXPRESSED_CLAIM_CODE = semanticClaimIssueCode('declaration_not_expressed');
 
-/** Presentation only: missing historical fields never become successful checks. */
+/**
+ * Presentation only: missing historical fields never become successful checks.
+ * Both axes `not_applicable` (every new answer, since investigation coverage
+ * has no checking mechanism) have nothing to report and print no lines.
+ */
 export function investigationStatusLines(
   assurance: Pick<AnalysisDeliveryAssurance, 'investigation' | 'investigationEvidence'> | undefined,
   language: OutputLanguage,
 ): string[] {
+  if (assurance?.investigation === 'not_applicable' && assurance.investigationEvidence === 'not_applicable') return [];
   const label = (status: AnalysisAssuranceStatus | undefined): string => {
     switch (status) {
       case 'passed': return localize(language, '已核验', 'Checked');

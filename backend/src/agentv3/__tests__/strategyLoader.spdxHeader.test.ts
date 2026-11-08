@@ -303,15 +303,4 @@ describe('strategyLoader tolerates leading SPDX HTML comments', () => {
     expect(guidance).toContain('do not end analysis or drop findings');
   });
 
-  it('aligns numeric rounding dispute locations without narrowing semantic review', () => {
-    const guidance = loadPromptTemplate('prompt-final-semantic-assessment')?.replace(/\s+/g, ' ');
-    expect(guidance).toContain('single-cell `captured.cell` or `numeric.cell` claim');
-    expect(guidance).toContain('both claim-level and `numeric_mismatch` issue-level `contentLocations` must quote those exact displayed values');
-    expect(guidance).toContain('Locate every disputed occurrence separately');
-    expect(guidance).toContain('do not select an entire catalog line containing other metrics or comparison words');
-    expect(guidance).toContain('still read the complete body to assess subject, scope and qualifiers');
-    expect(guidance).toContain('Report nonnumeric subject/scope issues independently');
-    expect(guidance).toContain('Never omit a wrong repeated value or another contradiction');
-  });
-
 });

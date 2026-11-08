@@ -34,7 +34,7 @@ turn; only authorized typed history crosses turns. Source history requires the
 original exact authorization fingerprint. Explicit SDK/env credentials establish
 readiness; host login or a Base URL alone does not.
 
-Live drafts/provisional/final answers, HTML reports, CLI turn artifacts, analysis
+Live draft/final answers, HTML reports, CLI turn artifacts, analysis
 snapshots, issue drafts and generated types are separate contracts. Readability
 must not remove evidence/identity/claim/source provenance or conflate native
 completion with verification. Raw comparison shares trace identity/evidence/session/

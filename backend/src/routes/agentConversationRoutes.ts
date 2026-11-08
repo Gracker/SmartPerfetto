@@ -765,11 +765,8 @@ async function cancelConversation(req: express.Request, res: express.Response): 
       res.status(400).json({success: false, code: 'RUN_ID_REQUIRED', error: 'runId is required'});
       return;
     }
-    // After a provisional answer the first cancel ends only the review and
-    // answers at once; the stream then carries run_completed with the turn.
     const result = await conversationSessionService.cancelRun(session.sessionId, runId);
-    res.json({success: true, sessionId: session.sessionId, runId,
-      status: result.status === 'review_stop_requested' ? result.status : result.outcome.kind});
+    res.json({success: true, sessionId: session.sessionId, runId, status: result.outcome.kind});
   } catch (error: unknown) {
     sendRouteError(res, error, {
       code: 'CONVERSATION_CANCEL_FAILED',

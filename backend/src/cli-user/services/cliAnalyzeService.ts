@@ -43,7 +43,7 @@ import {
   type AnalysisRunPersistenceScope,
   type PersistedAnalysisRunStatus,
 } from '../../services/analysisRunStore';
-import {finalizeAnalysisResult, type ProvisionalAnalysisAnswer} from '../../services/finalizeAnalysisResult';
+import {finalizeAnalysisResult} from '../../services/finalizeAnalysisResult';
 import type {RuntimePerformanceReceiptV1} from '../../agentRuntime/runtimePerformance';
 import {assertRuntimeTaskWorkRemaining, createRuntimeAdmissionScope, type RuntimeAdmissionScope} from '../../agentRuntime/runtimeTaskDeadline';
 import type {RuntimeToolResultAuditReceiptV1} from '../../agentRuntime/runtimeToolResultAudit';
@@ -119,7 +119,6 @@ import {
   projectOwnerAnalysisError,
   projectOwnerReportError,
   projectOwnerAnalysisResult,
-  projectOwnerProvisionalConclusion,
 } from '../../services/security/privateAnalysisProjection';
 import {
   analysisHasPrivateContext,
@@ -129,7 +128,6 @@ import {
 } from '../../services/security/analysisPrivateContext';
 import {withDurableLearningPermission} from '../../services/security/durableLearning';
 import {registerPrivateAnalysisQueryForEcho, sanitizeOwnerCodeAwareText} from '../../services/security/codeAwareOutputRegistry';
-import {finalReviewProgressUpdate} from '../../services/finalizationProgress';
 import {buildSkillRegistryAttribution} from '../../services/selfEvolution/skillFingerprint';
 import {getEffectiveRuntimeRegistrySnapshot} from '../../services/selfEvolution/effectiveRuntimeRegistryProvider';
 import {
@@ -179,12 +177,6 @@ export interface RunTurnInput {
   taskTimeoutMs?: number;
   /** Cancels runtime execution and finalization until the turn is committed. */
   signal?: AbortSignal;
-  /**
-   * Ends only the semantic review of an answer already handed to
-   * onProvisionalAnswer: the review resolves `cancelled_by_user` and the turn
-   * still finalizes and returns for commit.
-   */
-  reviewStopSignal?: AbortSignal;
   tracePath?: string;
   traceId?: string;
   referenceTraceId?: string;
@@ -208,13 +200,6 @@ export interface RunTurnInput {
   resolveCliTurnPath: (sessionId: string, turn: number) => string;
   /** Receives every StreamingUpdate from the orchestrator in real time. */
   onEvent: (update: StreamingUpdate) => void;
-  /**
-   * The finished answer (owner-projected for private runs) while its semantic
-   * review still runs. Kept apart from onEvent so the ndjson event stream is
-   * unchanged; the verdict arrives with the committed turn. Only the text
-   * renderer passes it, so json/ndjson progress never reads "answer readable".
-   */
-  onProvisionalAnswer?: (answer: {conclusion: string}) => void;
   /**
    * Fires once after `prepareSession` resolves, before `analyze()` starts
    * streaming events. Lets callers create the session folder + switch to
@@ -738,30 +723,13 @@ export class CliAnalyzeService {
             : undefined;
           assertActive();
           contextTransferred = true;
-          const onProvisionalAnswer = input.onProvisionalAnswer;
           const finalized = await finalizeAnalysisResult({result, context, query: input.query,
             owner: {runId: run.runId, signal: run.controller.signal,
               analysisContextFingerprint,
               isCurrent: () => this.currentSessionRuns.get(sessionId) === run && session.runSequence === ownedRunSequence,
               assertAuthorized: () => assertCurrentAnalysisContextAuthorization(effectiveInput, knowledgeScope, analysisContextFingerprint)},
-            dataEnvelopes: session.dataEnvelopes as DataEnvelope[], comparisonReportSection: session.comparisonReportSection,
+            dataEnvelopes: session.dataEnvelopes as DataEnvelope[],
             ...(comparisonIdentity ? {comparisonIdentity} : {}),
-            // The runtime update handler is already detached; report the review directly.
-            onProgress: event => {
-              try {
-                assertActive();
-                input.onEvent(finalReviewProgressUpdate(event, outputLanguage));
-              } catch (err) {
-                console.error('[CliAnalyzeService] onEvent handler threw:', (err as Error).message);
-              }
-            },
-            ...(input.reviewStopSignal ? {reviewStopSignal: input.reviewStopSignal} : {}),
-            // The finalizer treats a throwing observer as "not delivered".
-            ...(onProvisionalAnswer ? {onProvisionalAnswer: (answer: ProvisionalAnalysisAnswer) => {
-              assertActive();
-              onProvisionalAnswer({conclusion: projectOwnerProvisionalConclusion(privateKnowledge, sessionId,
-                answer.conclusion, outputLanguage)});
-            }} : {}),
           });
           assertActive();
           result = finalized.result;
@@ -1154,18 +1122,7 @@ async function runCliE2eFakeTurn(input: RunTurnInput, traceId: string): Promise<
         sourceUseDecision: codeAware.sourceUseDecision,
       }
     : undefined;
-  const claimSupport: NonNullable<AnalysisResult['claimSupport']> = [];
-  const claimVerificationResult: NonNullable<AnalysisResult['claimVerificationResult']> = {
-    schemaVersion: 'claim_verifier@1',
-    status: 'not_checked',
-    policy: 'record_only',
-    notCheckedReason: 'CLI E2E fake mode does not emit structured claims',
-    passed: false,
-    checkedClaimCount: 0,
-    unsupportedClaimCount: 0,
-    claimResults: [],
-    issues: [],
-  };
+  // Like a real new answer, the fake carries no declared claims and no claim verdict.
   const output: RunTurnOutput = {
     sessionId,
     traceId,
@@ -1183,8 +1140,6 @@ async function runCliE2eFakeTurn(input: RunTurnInput, traceId: string): Promise<
       conclusion: fakeConclusion,
       conclusionContract,
       sourceUseDecision: codeAware.sourceUseDecision,
-      claimSupport,
-      claimVerificationResult,
       identityResolutions: [],
       totalDurationMs,
     }),
@@ -1208,8 +1163,6 @@ async function runCliE2eFakeTurn(input: RunTurnInput, traceId: string): Promise<
         sourceUseDecision: codeAware.sourceUseDecision,
         sourceReferences: codeAware.codeReferences,
       } : {}),
-      claimSupport,
-      claimVerificationResult,
       identityResolutions: [],
       confidence: 1,
       rounds: 1,
@@ -1232,8 +1185,6 @@ async function runCliE2eFakeTurn(input: RunTurnInput, traceId: string): Promise<
       conclusion: durableResult.conclusion,
       conclusionContract: durableResult.conclusionContract,
       sourceUseDecision: durableResult.sourceUseDecision,
-      claimSupport: [],
-      claimVerificationResult: durableResult.claimVerificationResult,
       identityResolutions: [],
       totalDurationMs,
     }),
@@ -1318,8 +1269,6 @@ function buildCliE2eFakeReportHtml(input: {
   conclusion: string;
   conclusionContract?: unknown;
   sourceUseDecision?: SourceUseDecisionV1;
-  claimSupport?: AnalysisResult['claimSupport'];
-  claimVerificationResult?: AnalysisResult['claimVerificationResult'];
   identityResolutions?: AnalysisResult['identityResolutions'];
   totalDurationMs: number;
 }): string {
@@ -1347,8 +1296,6 @@ function buildCliE2eFakeReportHtml(input: {
       conclusion: input.conclusion,
       ...(input.conclusionContract ? {conclusionContract: input.conclusionContract} : {}),
       ...(sourceProvenance ? {sourceUseDecision: sourceProvenance.sourceUseDecision} : {}),
-      claimSupport: input.claimSupport,
-      claimVerificationResult: input.claimVerificationResult,
       identityResolutions: input.identityResolutions,
       confidence: 1,
       rounds: 1,

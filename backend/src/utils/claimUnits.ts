@@ -52,11 +52,16 @@ export type ClaimUnit = {readonly dimension: string; readonly numerator: bigint;
 // These are explicit unit definitions, not aliases inferred from a column name.
 const units: Readonly<Record<string, ClaimUnit>> = {
   ns: {dimension: 'time', numerator: 1n, denominator: 1n},
+  '纳秒': {dimension: 'time', numerator: 1n, denominator: 1n},
   us: {dimension: 'time', numerator: 1000n, denominator: 1n},
   'µs': {dimension: 'time', numerator: 1000n, denominator: 1n},
   'μs': {dimension: 'time', numerator: 1000n, denominator: 1n},
+  '微秒': {dimension: 'time', numerator: 1000n, denominator: 1n},
   ms: {dimension: 'time', numerator: 1000000n, denominator: 1n},
+  '毫秒': {dimension: 'time', numerator: 1000000n, denominator: 1n},
   s: {dimension: 'time', numerator: 1000000000n, denominator: 1n},
+  sec: {dimension: 'time', numerator: 1000000000n, denominator: 1n},
+  '秒': {dimension: 'time', numerator: 1000000000n, denominator: 1n},
   count: {dimension: 'count', numerator: 1n, denominator: 1n},
   frame: {dimension: 'frames', numerator: 1n, denominator: 1n},
   frames: {dimension: 'frames', numerator: 1n, denominator: 1n},

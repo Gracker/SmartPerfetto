@@ -104,11 +104,9 @@ Label units, trace sides, windows and denominators where applicable. For
 comparisons, align comparable metrics and state the delta direction; missing or
 incomparable values remain unknown, never zero. Do not compute percentage changes
 from a zero or missing baseline. Put readable evidence and limits beside the
-relevant rows or table. Every checkable table assertion still needs faithful
-declaration references; derived differences/percentages retain their operands
-and calculation basis. Mark rounded table values as approximate; keep declaration
-propositions and references exact. Presentation and browser previews cannot change
-scope or verification status. Avoid repeating table cells
+relevant rows or table. Derived differences/percentages retain their operands
+and calculation basis. Mark rounded table values as approximate. Presentation and
+browser previews cannot change scope. Avoid repeating table cells
 in paragraphs; use prose to explain mechanisms and implications.
 At the first comparison, identify each full package/process name, baseline and
 comparison role, and physical pane when supplied. Resolve user labels through

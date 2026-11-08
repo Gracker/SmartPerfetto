@@ -18,7 +18,6 @@ export const TRIGGERS = Object.freeze([
   'backend/src/services/perfetto',
   'backend/src/services/renderingPipelineDetectionSkillGenerator.ts',
   'backend/src/services/stdlibSkillCoverage.ts',
-  'backend/src/services/finalReportContractGate',
   'backend/src/services/report',
   'backend/src/services/comparison',
   'backend/src/services/analysisResultSnapshot',

@@ -38,7 +38,7 @@ function stub(name: string): unknown {
 }
 
 describe('McpToolRegistry — basic registration', () => {
-  it('resolves the unique installed final role without adding evidence attribution', async () => {
+  it('keeps a role-tagged tool out of plan and evidence attribution', async () => {
     const observe = jest.fn<(event: RuntimeToolInvocationEvent) => void>();
     const acquisitionObserver = jest.fn<RuntimeToolObserver>();
     const admit = jest.fn(() => undefined);
@@ -48,13 +48,10 @@ describe('McpToolRegistry — basic registration', () => {
     registry.registerSdk(stub('final_native'), 'final_native', 'internal', {
       role: 'final_candidate_submission', evidenceEffect: 'none',
     });
-    const resolved = registry.resolveFinalTool();
-    expect(resolved).toEqual({role: 'final_candidate_submission', nativeName: 'final_native', definition: registry.list()[0]});
-    expect(resolved?.definition).toBe(registry.list()[0]);
-    expect(Object.isFrozen(resolved)).toBe(true);
-    expect(resolved?.definition.shared.role).toBe('final_candidate_submission');
-    expect(resolved?.definition.shared.inputSchema).not.toHaveProperty('planPhaseId');
-    await resolved!.definition.shared.handler({q: 'private document'}, {});
+    const [definition] = registry.list();
+    expect(definition.shared.role).toBe('final_candidate_submission');
+    expect(definition.shared.inputSchema).not.toHaveProperty('planPhaseId');
+    await definition.shared.handler({q: 'private document'}, {});
     expect(events).toHaveLength(2);
     expect(events[1]).toMatchObject({role: 'final_candidate_submission', phase: 'completed'});
     expect(JSON.stringify(events)).not.toContain('private document');
@@ -63,34 +60,24 @@ describe('McpToolRegistry — basic registration', () => {
     expect(admit).not.toHaveBeenCalled();
   });
 
-  it.each(['second_role', 'same_name'] as const)('rejects ambiguous final resolution: %s', conflict => {
-    const registry = new McpToolRegistry();
-    registry.registerSdk(stub('one'), 'one', 'internal', {role: 'final_candidate_submission', evidenceEffect: 'none'});
-    registry.registerSdk(stub('two'), conflict === 'same_name' ? 'one' : 'two', 'internal', {
-      ...(conflict === 'second_role' ? {role: 'final_candidate_submission' as const} : {}), evidenceEffect: 'none',
-    });
-    expect(registry.size()).toBe(2);
-    expect(() => registry.resolveFinalTool()).toThrow('final_submission_role_not_unique');
-  });
-
-  it('does not infer a final role from names or input and never uses it to bypass authorization', async () => {
+  it('does not infer a role from names or input and never uses it to bypass authorization', async () => {
     const ordinary = new McpToolRegistry();
     ordinary.registerSdk(stub('submit_final_document'), 'submit_final_document', 'internal');
-    expect(ordinary.resolveFinalTool()).toBeUndefined();
+    expect(ordinary.list()[0].shared.role).toBeUndefined();
     expect(ordinary.list()[0].shared.inputSchema).toHaveProperty('planPhaseId');
     await ordinary.list()[0].shared.handler({role: 'final_candidate_submission'}, {role: 'final_candidate_submission'});
-    expect(ordinary.resolveFinalTool()).toBeUndefined();
+    expect(ordinary.list()[0].shared.role).toBeUndefined();
 
     const body = jest.fn(async () => createRuntimeToolResult({success: true}));
     const registry = new McpToolRegistry({requestScope: {sessionId: 's', hasCodebaseAccess: false}});
     registry.registerShared({name: 'final', description: 'Final', role: 'final_candidate_submission',
       exposure: 'requires_codebase_permission', evidenceEffect: 'none', inputSchema: {}, handler: body});
-    expect(registry.resolveFinalTool()).toBeUndefined();
-    expect(registry.resolveFinalTool({sessionId: 's', hasCodebaseAccess: true})).toBeUndefined();
+    expect(registry.listForRequest()).toEqual([]);
+    expect(registry.listForRequest({sessionId: 's', hasCodebaseAccess: true})).toEqual([]);
     const closed = new McpToolRegistry({canInvokeTool: () => false});
     closed.registerShared({name: 'final', description: 'Final', role: 'final_candidate_submission',
       exposure: 'internal', evidenceEffect: 'none', inputSchema: {}, handler: body});
-    expect(isPolicyRefusalResult(await closed.resolveFinalTool()!.definition.shared.handler({}, {}))).toBe(true);
+    expect(isPolicyRefusalResult(await closed.list()[0].shared.handler({}, {}))).toBe(true);
     expect(body).not.toHaveBeenCalled();
   });
 

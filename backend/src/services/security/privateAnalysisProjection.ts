@@ -969,10 +969,11 @@ export function projectOwnerConclusion(...args: Parameters<typeof projectPrivate
   return withOwnerCodeAwareProjection(() => projectPrivateConclusion(...args));
 }
 /**
- * A provisional answer uses exactly the projection its terminal conclusion will
- * get: owner projection for private-knowledge runs, the canonical body otherwise.
+ * An answer delivered ahead of its terminal event uses exactly the projection
+ * its terminal conclusion will get: owner projection for private-knowledge
+ * runs, the canonical body otherwise.
  */
-export function projectOwnerProvisionalConclusion(
+export function projectOwnerAnswerConclusion(
   privateKnowledge: boolean, sessionId: string, conclusion: string, language: OutputLanguage,
 ): string {
   return privateKnowledge ? projectOwnerConclusion({sessionId, conclusion, success: true, language}) : conclusion;
@@ -1021,14 +1022,6 @@ export function projectOwnerConclusionContract(
 ): ReturnType<typeof projectPrivateConclusionContract> {
   return withOwnerCodeAwareProjection(() => projectPrivateConclusionContract(...args));
 }
-
-export function projectOwnerClaimVerification(...args: Parameters<typeof projectPrivateClaimVerification>): ReturnType<typeof projectPrivateClaimVerification> {
-  return withOwnerCodeAwareProjection(() => projectPrivateClaimVerification(...args));
-}
-export function projectOwnerClaimSupport(...args: Parameters<typeof projectPrivateClaimSupport>): ReturnType<typeof projectPrivateClaimSupport> {
-  return withOwnerCodeAwareProjection(() => projectPrivateClaimSupport(...args));
-}
-
 
 export function projectOwnerAnalysisError(sessionId: string | undefined, error: unknown, language: OutputLanguage): string {
   const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';

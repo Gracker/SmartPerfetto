@@ -15,7 +15,6 @@ import {buildAnalysisTurnIntentPrompt} from '../../agentv3/queryComplexityPrompt
 import {buildStrategyRegistrySnapshotFromDefinitions, fingerprintStrategyDefinition, getRegisteredScenes, loadPromptTemplate} from '../../agentv3/strategyLoader';
 import type {IntentTransportInput, IntentTransportResult} from '../intentTransport';
 import {createAnalysisRunSpec} from '../analysisRunSpec';
-import {captureAnalysisOutputConfig} from '../finalSubmissionConfig';
 import {createRuntimePerformanceRecorder} from '../runtimePerformance';
 import {createRuntimePerformanceScope} from '../runtimePerformanceContext';
 
@@ -308,7 +307,6 @@ describe('analysis turn intent protocol', () => {
     expect(resolveTurnIntentComplexity(intent, 'auto')).toBe('full');
     expect(intent).toMatchObject({scope: 'bounded_question', deliverable: 'answer', evidenceAccess: 'existing_only'});
     const spec = createAnalysisRunSpec({
-      outputConfig: captureAnalysisOutputConfig({}),
       turnIntent: intent, query: context.query, sessionId: 'intent-run', traceId: 'trace',
       runtimeSelection: {kind: 'openai-agents-sdk', source: 'snapshot'}, outputLanguage: 'en',
       sceneType: intent.sceneId, resolvedMode: 'full', options: {analysisMode: 'full'},

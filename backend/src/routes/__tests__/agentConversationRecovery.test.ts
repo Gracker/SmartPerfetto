@@ -25,6 +25,7 @@ import {registerAgentConversationRoutes} from '../agentConversationRoutes';
 import * as finalization from '../../services/finalizeAnalysisResult';
 import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
 import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+import {runtimeSupportsDraftAnswerStreaming} from '../../agentRuntime/runtimeDescriptors';
 
 const loopbackServers = createLoopbackServerFixture();
 
@@ -78,8 +79,8 @@ afterEach(async () => {
   fs.rmSync(tmp, {recursive: true, force: true});
 });
 
-describe('conversation route deliver first, verify after', () => {
-  it('answers a review-only stop at once, then settles the answered turn', async () => {
+describe('conversation route stop', () => {
+  it('a stop fully cancels the running turn and settles before it answers', async () => {
     factory.mockImplementation(() => {
       const emitter = new EventEmitter() as unknown as IOrchestrator;
       emitter.reset = jest.fn();
@@ -88,38 +89,40 @@ describe('conversation route deliver first, verify after', () => {
         rounds: 1, totalDurationMs: 1}));
       return emitter;
     });
-    let provisionalSent!: () => void;
-    const provisional = new Promise<void>(resolve => {provisionalSent = resolve;});
+    let finalizing!: () => void;
+    const reached = new Promise<void>(resolve => {finalizing = resolve;});
     jest.spyOn(finalization, 'finalizeAnalysisResult').mockImplementation(async input => {
       try {
-        expect(input.onProvisionalAnswer?.({conclusion: input.result.conclusion})).toBe(true);
-        provisionalSent();
-        const stop = input.reviewStopSignal!;
-        await new Promise(resolve => stop.aborted ? resolve(undefined) : stop.addEventListener('abort', resolve, {once: true}));
-        input.owner.signal.throwIfAborted();
+        finalizing();
+        const signal = input.owner.signal;
+        await new Promise(resolve => signal.aborted ? resolve(undefined) : signal.addEventListener('abort', resolve, {once: true}));
+        signal.throwIfAborted();
         return {result: input.result, conversationOutcome: {kind: 'answered', message: input.result.conclusion}};
       } finally {input.context?.dispose();}
     });
     const started = await request(await app()).post('/api/agent/v1/conversation').send({query: 'trace 时长'});
     expect(started.status).toBe(202);
-    await provisional;
+    await reached;
     const cancelled = await request(await app()).post(`/api/agent/v1/conversation/${started.body.sessionId}/cancel`)
       .send({runId: started.body.runId});
     expect(cancelled.status).toBe(200);
     expect(cancelled.body).toEqual({success: true, sessionId: started.body.sessionId, runId: started.body.runId,
-      status: 'review_stop_requested'});
-    let snapshot = await request(await app()).get(`/api/agent/v1/conversation/${started.body.sessionId}`);
-    for (let attempt = 0; snapshot.body.activeRunId && attempt < 50; attempt++) {
-      await new Promise(resolve => setTimeout(resolve, 10));
-      snapshot = await request(await app()).get(`/api/agent/v1/conversation/${started.body.sessionId}`);
-    }
+      status: 'cancelled'});
+    const snapshot = await request(await app()).get(`/api/agent/v1/conversation/${started.body.sessionId}`);
     expect(snapshot.body.activeRunId).toBeUndefined();
-    expect(snapshot.body.history.map((message: {content: string}) => message.content))
-      .toEqual(['trace 时长', 'Trace duration is 12.3 s.']);
+    expect(snapshot.body.history.map((message: {content: string}) => message.content)).toEqual(['trace 时长']);
   });
 });
 
 describe('conversation live-only drafts', () => {
+  const previousRuntime = process.env.SMARTPERFETTO_AGENT_RUNTIME;
+  // The default Pi runtime streams no draft; pin one that does.
+  beforeEach(() => { process.env.SMARTPERFETTO_AGENT_RUNTIME = 'openai-agents-sdk'; });
+  afterEach(() => {
+    if (previousRuntime === undefined) delete process.env.SMARTPERFETTO_AGENT_RUNTIME;
+    else process.env.SMARTPERFETTO_AGENT_RUNTIME = previousRuntime;
+  });
+
   it('sends an answer draft without an SSE id or seqId, while replayable events keep theirs', async () => {
     const runtimeKind = resolveProviderRuntimeSnapshot(getProviderService(), null, undefined, owner).snapshot.runtimeKind;
     let release!: () => void;
@@ -153,8 +156,8 @@ describe('conversation live-only drafts', () => {
     release();
     const frames = String((await response).body).split('\n\n').filter(frame => frame.includes('event: runtime_update'));
     const draftFrames = frames.filter(frame => frame.includes('Draft text'));
-    // The default pinned runtime streams drafts; otherwise this test would prove nothing.
-    expect(['claude-agent-sdk', 'openai-agents-sdk']).toContain(runtimeKind);
+    // The pinned runtime must stream drafts; otherwise this test would prove nothing.
+    expect(runtimeSupportsDraftAnswerStreaming(runtimeKind)).toBe(true);
     expect(draftFrames).toHaveLength(1);
     expect(draftFrames[0]).not.toMatch(/^id: /m);
     const data = JSON.parse(draftFrames[0].split('\n').find(line => line.startsWith('data: '))!.slice(6));

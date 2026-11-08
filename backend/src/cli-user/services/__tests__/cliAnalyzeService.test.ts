@@ -164,7 +164,9 @@ describe('CliAnalyzeService test-only fake source report', () => {
     expect(output.result.conclusionContract).not.toHaveProperty('codeReferences');
     expect(output.result.conclusionContract?.claims).toEqual([]);
     expect(output.result.conclusionContract?.sourceClaimBindings ?? []).toEqual([]);
-    expect(output.result.claimVerificationResult).toMatchObject({status: 'not_checked', passed: false, claimResults: []});
+    // Like a real new answer, the fake carries no claim verdict.
+    expect(output.result).not.toHaveProperty('claimVerificationResult');
+    expect(output.result).not.toHaveProperty('claimSupport');
     expect(output.result.sourceClaimVerificationResult).toBeUndefined();
     expect(output.result.analysisReceipt).toBeUndefined();
     const reportData = renderReport.mock.calls[renderReport.mock.calls.length - 1][0];
@@ -172,7 +174,8 @@ describe('CliAnalyzeService test-only fake source report', () => {
       selected: [{codebaseId: 'cb-source'}, {codebaseId: 'cb-unmatched'}],
       sourceUseDecision: output.result.sourceUseDecision, sourceClaimBindings: [],
     });
-    expect(reportData.result.claimVerificationResult).toEqual(output.result.claimVerificationResult);
+    expect(reportData.result.claimVerificationResult).toBeUndefined();
+    expect(output.reportHtml).not.toMatch(/断言核验: 未核验|Claim verification: not checked|已核验断言|Verified Claims/);
     expect(output.reportHtml).toContain('本轮返回的源码位置');
     expect(output.reportHtml).toContain(`${sourcePath}:L22-L27`);
     expect(output.reportHtml).toContain(reference.id);
@@ -229,6 +232,6 @@ describe('CliAnalyzeService test-only fake source report', () => {
     expect(output.result.sourceReferences).toBeUndefined();
     expect(renderReport.mock.calls[renderReport.mock.calls.length - 1][0].sourceContext).toBeUndefined();
     expect(output.reportHtml).not.toContain('本轮返回的源码位置');
-    expect(output.result.claimVerificationResult).toMatchObject({status: 'not_checked', passed: false});
+    expect(output.result).not.toHaveProperty('claimVerificationResult');
   });
 });

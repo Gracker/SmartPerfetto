@@ -27,8 +27,6 @@ import {
 } from '../../../services/canonicalAnalysisResult';
 import {projectConclusionProtocol, projectConclusionContractForDisplay} from '../../../services/security/conclusionProtocolProjection';
 import {analysisDeliveryFingerprint} from '../../../types/analysisDelivery';
-import {buildNativeDeclarationCompletionPrompt, requestNativeDeclarationCompletion} from '../../../agentRuntime/runtimeConclusionProtocol';
-import type {AnalysisTurnIntent} from '../../../agentRuntime/analysisTurnIntent';
 import type {AnalysisResult} from '../orchestratorTypes';
 
 type Json = Record<string, any>;
@@ -141,7 +139,6 @@ function canonicalSurfaces(raw: string) {
     narrative: inspected.canonicalBody,
     diagnostic: JSON.stringify(diagnostic),
     resultContract: JSON.stringify(canonical.result.conclusionContract),
-    validationContract: JSON.stringify(canonical.validationContract),
     privateDisplay: projectConclusionProtocol(undefined, raw).text,
   };
 }
@@ -235,9 +232,6 @@ describe('lighter declaration wire forms keep the valid canonical contract byte-
 });
 
 describe('an invalid declaration that omits a nested schema version stays the model\'s own text', () => {
-  const intent: AnalysisTurnIntent = {schemaVersion: 1, status: 'resolved', source: 'semantic', registryFingerprint: 'registry',
-    taskKind: 'investigation', sceneId: 'general', scope: 'bounded_question', recommendedComplexity: 'full',
-    deliverable: 'answer', evidenceAccess: 'read_new'};
   const [invalidClaim] = withIntegerTimeRanges(withoutSemanticsSchemaVersion([{...REAL.interval,
     semantics: {...REAL.interval.semantics, polarity: 'sometimes'}}]));
   const [relation] = withoutRelationSchemaVersion(RELATIONS);
@@ -249,17 +243,9 @@ describe('an invalid declaration that omits a nested schema version stays the mo
     expect(modelSidecar).not.toContain('claim_semantics@1');
     expect(modelSidecar).not.toContain('evidence_relation_candidate@1');
 
-    // Repair request: the rejected declaration is the model's original segment, never a canonicalized rendering.
-    const request = requestNativeDeclarationCompletion({intent, completion: {status: 'completed'}, candidate: raw,
-      remainingDeliveryTurns: 1, repairInvalid: true})!;
-    expect(request.rejectedDeclaration).toBe(modelSidecar);
-    expect(request.diagnostic.claimDiagnostics).toEqual([{ordinal: 2, code: 'invalid_semantics', field: 'semantics.polarity'}]);
-    for (const outputLanguage of ['zh-CN', 'en'] as const) {
-      const prompt = buildNativeDeclarationCompletionPrompt({request, intent, outputLanguage});
-      expect(prompt).toContain(JSON.stringify({schemaVersion: 1, kind: 'rejected_declaration', text: modelSidecar}));
-      expect(prompt).not.toContain('claim_semantics@1');
-      expect(prompt).not.toContain('evidence_relation_candidate@1');
-    }
+    // Native diagnostic: closed vocabulary from the model's own segment.
+    expect(buildCandidateProtocolDiagnostic(inspectCandidateProtocol(raw), 'native', 1).claimDiagnostics)
+      .toEqual([{ordinal: 2, code: 'invalid_semantics', field: 'semantics.polarity'}]);
 
     // Private display re-render: a partially_valid declaration renders its valid
     // claims plus one closed marker per invalid entry, never the invalid raw text.
@@ -270,20 +256,12 @@ describe('an invalid declaration that omits a nested schema version stays the mo
     expect(projected).toContain('"status": "invalid"');
     expect(projected).toContain('"invalid_semantics"');
 
-    // Canonical/report raw fallback: the invalid claim keeps the model's semantics, integers included.
+    // A new answer's canonical body drops the stray declaration unparsed: nothing of it is stored.
     const canonical = canonicalizeAnalysisResult({sessionId: 'session-invalid', success: true, findings: [], hypotheses: [],
       conclusion: raw, confidence: 0.5, rounds: 1, totalDurationMs: 1} as unknown as AnalysisResult);
-    expect(canonical.bindingEligibility).toBe('eligible');
-    const stored = canonical.validationContract!.claims![1];
-    expect(stored.rawSemantics).toEqual(invalidClaim.semantics);
-    expect(stored.rawSemantics).not.toHaveProperty('schemaVersion');
-    expect(typeof (stored.rawSemantics as Json).scope.timeRangeNs.start).toBe('number');
-    expect(stored.semantics).toBeUndefined();
-    expect(canonical.protocolDiagnostics!.sidecar.rawPayload).toEqual(JSON.parse(JSON.stringify(declaration)));
-    // Re-rendering the stored invalid contract reproduces the model's semantics, still without an inserted version.
-    const rerendered = parseConclusionContractSidecar(renderConclusionContractSidecar(canonical.validationContract!));
-    expect(rerendered.contract!.claims![1].rawSemantics).toEqual(invalidClaim.semantics);
-    expect(canonical.result.conclusionContract?.claims?.[1]).not.toHaveProperty('rawSemantics');
+    expect(canonical.result.conclusion).not.toContain(CONCLUSION_CONTRACT_SIDECAR_MARKER);
+    expect(canonical.result.conclusionContract?.claims).toBeUndefined();
+    expect(JSON.stringify(canonical)).not.toContain('sometimes');
   });
 });
 
@@ -406,9 +384,6 @@ describe('numeric claim diagnostics name the failing part', () => {
     expect(parsed.claims[0].rawSemantics).toEqual(raw.semantics);
     expect(parsed.issues).toEqual(expect.arrayContaining([expect.objectContaining({code: 'invalid_semantics'})]));
   });
-  const intent: AnalysisTurnIntent = {schemaVersion: 1, status: 'resolved', source: 'semantic', registryFingerprint: 'registry',
-    taskKind: 'investigation', sceneId: 'general', scope: 'bounded_question', recommendedComplexity: 'full',
-    deliverable: 'answer', evidenceAccess: 'read_new'};
 
   it.each([
     ['shape', 'not-an-object'],
@@ -416,16 +391,12 @@ describe('numeric claim diagnostics name the failing part', () => {
     ['operator', {...numeric, operator: 'approx'}],
     ['value', {...numeric, value: '7 ms'}],
     ['unit', {...numeric, unit: ' '}],
-  ])('reports %s and reaches the repair prompt', (subreason, value) => {
+  ])('reports %s in the closed native diagnostic', (subreason, value) => {
     const raw = `正文。\n\n${renderConclusionContractSidecar(verboseDeclaration([withNumeric(value)]) as any)}`;
     const diagnostic = buildCandidateProtocolDiagnostic(inspectCandidateProtocol(raw), 'native', 1);
     expect(diagnostic.claimDiagnostics).toEqual([{ordinal: 1, code: 'invalid_semantics', field: 'semantics.numeric', subreason}]);
     expect(sanitizeCandidateProtocolDiagnostic(diagnostic)).toEqual(diagnostic);
     expect(JSON.stringify(diagnostic)).not.toContain('approx');
-    const request = requestNativeDeclarationCompletion({intent, completion: {status: 'completed'}, candidate: raw,
-      remainingDeliveryTurns: 1, repairInvalid: true})!;
-    const prompt = buildNativeDeclarationCompletionPrompt({request, intent, outputLanguage: 'zh-CN'});
-    expect(prompt).toContain(`"field":"semantics.numeric","subreason":"${subreason}"`);
   });
 
   it('accepts older diagnostics without a subreason and rejects any other subreason', () => {
@@ -470,10 +441,8 @@ describe('only the server supplies a new result\'s case recommendations', () => 
     } as unknown as AnalysisResult;
 
     const accepted = canonicalizeAnalysisResult(source);
-    // Both what the result delivers and what the finalizer re-projects from.
-    expect(accepted.result.conclusionContract).not.toHaveProperty('caseRecommendations');
-    expect(accepted.validationContract).not.toHaveProperty('caseRecommendations');
-    expect(accepted.validationContract?.conclusions).toEqual(source.conclusionContract?.conclusions);
+    // A new result's structure is derived from its body; only the server's retrieval supplies case hits.
+    expect(accepted.result.conclusionContract?.caseRecommendations).toBeUndefined();
     expect(canonicalizeAnalysisResult(source, {context: {entry: 'historical_restore'}})
       .result.conclusionContract?.caseRecommendations).toEqual(recommendations);
   });

@@ -7,7 +7,7 @@ import type {ModelExecutionPolicyReceipt} from '../../modelExecutionPolicy';
 import {
   runtimeOutcomeFromError,
   type RuntimeModelCallEnd,
-  type RuntimeModelCallPurpose,
+  type RuntimeModelDispatchPurpose,
   type RuntimeModelCallSpan,
   type RuntimeModelCallStart,
   type RuntimeModelCallUsageV1,
@@ -40,7 +40,7 @@ export function piAssistantModelCallEnd(message: AssistantMessage): RuntimeModel
       : {model: message.model})};
 }
 
-type AgentModelCallPurpose = Extract<RuntimeModelCallPurpose, 'answer_turn' | 'declaration_repair' | 'continuation'>;
+type AgentModelCallPurpose = Extract<RuntimeModelDispatchPurpose, 'answer_turn' | 'continuation'>;
 
 export interface PiAgentModelCallTracker {
   /** Record one native Agent stream dispatch until its final assistant message. */

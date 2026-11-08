@@ -31,7 +31,6 @@ import {captureEvidenceTable} from '../../services/evidence/evidenceCapture';
 import {prepareClaimEvidence} from '../../services/evidence/claimEvidencePreparation';
 import {createDataEnvelope} from '../../types/dataContract';
 import {attachFinalizationContext, takeFinalizationContext} from '../analysisFinalizationContext';
-import type {IntentTransportInput, IntentTransportResult} from '../intentTransport';
 import {buildStrategyRegistrySnapshotFromDefinitions} from '../../agentv3/strategyLoader';
 import {finalizeAnalysisResult, type AnalysisFinalizationOwner} from '../../services/finalizeAnalysisResult';
 import {
@@ -64,15 +63,15 @@ function plainResult(sessionId: string): AnalysisResult {
 describe('written source locations at shared finalization', () => {
   afterEach(() => clearAllCodeAwareOutputGuards());
 
-  async function locationFixture(mode: 'absent' | 'empty' | 'tuple_mismatch' | 'semantic_unavailable' | 'privacy' | 'changed_ledger') {
+  async function locationFixture(mode: 'absent' | 'empty' | 'unreturned' | 'changed_ledger') {
     const fixture = createRuntimeSourceFinalizationFixture({createMcpServer: createClaudeMcpServer,
       sessionId: `source-location-optional-${mode}`});
     try {
       const {decision, reference} = await fixture.executeProviderSourceLookup();
       const source = {sourceReferenceId: reference.id, filePath: reference.filePath,
         lineRange: {...reference.lineRange!}};
-      if (mode === 'tuple_mismatch') source.lineRange.end++;
-      const body = `This lookup returned ${source.filePath}:L${source.lineRange.start}-L${source.lineRange.end}.`;
+      const body = mode === 'unreturned' ? 'This lookup returned Unreturned.kt:L1.'
+        : `This lookup returned ${source.filePath}:L${source.lineRange.start}-L${source.lineRange.end}.`;
       const declaration: ConclusionContract = {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
         conclusions: [], clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [],
         claims: [{id: 'location', kind: 'identity', text: body, references: [], semantics: {
@@ -88,37 +87,22 @@ describe('written source locations at shared finalization', () => {
           ...candidate, schemaVersion: 1, runtimeKind: 'openai-agents-sdk', status: 'completed',
         }},
       });
-      const dispatch = jest.fn(async (input: IntentTransportInput): Promise<IntentTransportResult> => {
-        if (mode === 'semantic_unavailable') return {status: 'unavailable', reason: 'provider_error'};
-        // The finalizer owns canonical formatting; answer against its actual request body.
-        const request = JSON.parse(input.prompt.split('\n').pop()!) as {request: string; body: string};
-        expect(request.request).toBe('final_semantic_request@1');
-        const start = request.body.indexOf(body);
-        expect(start).toBeGreaterThanOrEqual(0);
-        return {status: 'ok', text: JSON.stringify({schemaVersion: 'final_semantic_response@1',
-          bodyCoverage: {status: 'complete', reviewedSpans: [{start: 0, end: request.body.length}]},
-          claims: [{claimId: 'location', consistency: 'consistent', issues: [],
-            contentLocations: [{start, end: start + body.length, text: body}]}], omissions: [], requirements: [],
-        })};
-      });
       const registry = buildStrategyRegistrySnapshotFromDefinitions({definitions: [], overlayGeneration: 'source-location-optional'});
       const sourceScope = fixture.sourceUse.getSourceExecutionScope?.();
       const traceId = `trace-${fixture.sessionId}`;
       attachFinalizationContext(result, {runId: candidate.runId, sessionId: result.sessionId, deadlineMs: Date.now() + 600_000,
         strategyRegistry: registry, traceIdentity: {currentTraceId: traceId}, sourceUse: decision, sourceScope,
-        protocolProjection: projection.protocolProjection, deliveryContext: projection.deliveryContext!,
+        deliveryContext: projection.deliveryContext!,
         turnIntent: {schemaVersion: 1, status: 'resolved', source: 'semantic', registryFingerprint: registry.registryFingerprint,
           taskKind: 'fact', sceneId: 'general', scope: 'bounded_question', recommendedComplexity: 'quick',
           deliverable: 'answer', evidenceAccess: 'existing_only'},
-        evidenceReadView: new ArtifactStore().createEvidenceReadView({allowedTraces: [{traceId, traceSide: 'current'}], ownerKey: candidate.runId}),
-        dispatchText: dispatch});
+        evidenceReadView: new ArtifactStore().createEvidenceReadView({allowedTraces: [{traceId, traceSide: 'current'}], ownerKey: candidate.runId})});
       const context = takeFinalizationContext(result)!;
       const owner: AnalysisFinalizationOwner = {runId: candidate.runId, signal: new AbortController().signal,
         isCurrent: () => true, assertAuthorized: () => {}, analysisContextFingerprint: sourceScope?.analysisContextFingerprint};
       const query = 'Where is the returned source location?';
-      if (mode === 'privacy') registerCodeAwareCanary(result.sessionId, query);
       if (mode === 'changed_ledger') result.sourceUseDecision!.references = [];
-      return {result, declaration, decision, reference, dispatch, context, cleanup: fixture.cleanup,
+      return {result, declaration, decision, reference, context, cleanup: fixture.cleanup,
         run: () => finalizeAnalysisResult({result, context, owner, query})};
     } catch (error) {
       fixture.cleanup();
@@ -126,42 +110,40 @@ describe('written source locations at shared finalization', () => {
     }
   }
 
-  test.each(['absent', 'empty'] as const)('matches a written location against the run with %s bindings, proving nothing about the code', async mode => {
+  test.each(['absent', 'empty'] as const)('checks a written location citation-only, with %s stray bindings and no claim verdict', async mode => {
     const fixture = await locationFixture(mode);
     try {
       const finalized = await fixture.run();
-      expect(finalized.semanticAssessment?.reason).toBeUndefined();
-      expect(finalized.semanticAssessment).toMatchObject({status: 'checked', consistency: 'consistent'});
-      // No finite rule proves a source location any longer.
-      expect(finalized.result.claimVerificationResult?.claimResults.some(claim => claim.status === 'verified')).toBe(false);
-      // The location was returned by this run's read; the unbound claim stays unverified.
+      expect(finalized.result).not.toHaveProperty('claimVerificationResult');
+      // The location was returned by this run's read; no declared claim is judged.
       expect(finalized.result.sourceClaimVerificationResult).toMatchObject({schemaVersion: 'source_claim_verifier@2',
-        status: 'partial', claims: [{claimId: 'location', status: 'unbound'}],
+        status: 'passed', claims: [], bindings: [],
         citations: [{status: 'verified_body', sourceReferenceId: fixture.reference.id}]});
+      expect(finalized.result.deliveryAssurance?.source).toBe('passed');
       expect(finalized.result.sourceUseDecision).toEqual(fixture.decision);
-      expect(finalized.result.conclusionContract?.sourceClaimBindings ?? []).toEqual([]);
+      expect(finalized.result.conclusionContract?.sourceClaimBindings).toBeUndefined();
       expect(Object.prototype.hasOwnProperty.call(fixture.declaration, 'sourceClaimBindings')).toBe(mode === 'empty');
-      expect(fixture.dispatch).toHaveBeenCalledTimes(1);
       expect(JSON.stringify(finalized.result)).not.toContain(SOURCE_FINALIZATION_RAW_SOURCE);
     } finally {fixture.cleanup();}
   });
 
-  test.each(['tuple_mismatch', 'semantic_unavailable', 'privacy'] as const)('verifies no location claim through %s', async mode => {
-    const fixture = await locationFixture(mode);
+  test('records a written location outside what the run returned as advisory, never a failure', async () => {
+    const fixture = await locationFixture('unreturned');
     try {
       const finalized = await fixture.run();
-      expect(finalized.result.claimVerificationResult?.passed).toBe(false);
-      expect(finalized.result.claimVerificationResult?.claimResults.some(claim => claim.status === 'verified')).toBe(false);
-      expect(finalized.result.sourceClaimVerificationResult?.status).not.toBe('passed');
-      if (mode === 'privacy') expect(fixture.dispatch).not.toHaveBeenCalled();
+      expect(finalized.result.sourceClaimVerificationResult?.status).toBe('partial');
+      expect(finalized.result.deliveryAssurance?.source).toBe('coverage_incomplete');
+      expect(finalized.qualityIssue).toBeUndefined();
     } finally {fixture.cleanup();}
   });
 
-  test('rejects a changed current source ledger before invoking semantic review', async () => {
+  test('ignores a source ledger changed on the result and checks against the run ledger', async () => {
     const fixture = await locationFixture('changed_ledger');
     try {
-      await expect(fixture.run()).rejects.toThrow('projection_mismatch');
-      expect(fixture.dispatch).not.toHaveBeenCalled();
+      const finalized = await fixture.run();
+      // Result metadata never replaces the run's own ledger captured with its context.
+      expect(finalized.result.sourceUseDecision?.references).toEqual(fixture.decision.references);
+      expect(finalized.result.sourceClaimVerificationResult?.status).toBe('passed');
     } finally {fixture.cleanup();}
   });
 });
@@ -471,25 +453,17 @@ describe('source finalization projection authority', () => {
     expect(assessFinalResultQualityAssessment({result, context: finalized.deliveryContext}).assurance.completion).toBe('not_checked');
   });
 
-  test('invalidates evidence proof when only structured claims are projected', () => {
+  test('invalidates stored assessments when only structured claims are projected', () => {
     const result = plainResult('receipt-claim-only');
     result.conclusionContract = {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [],
       clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [],
       claims: [{id: 'claim-a', text: 'PRIVATE_CLAIM_CANARY', references: []}]};
     const context = contextFor(result);
-    context.evidenceFingerprint = 'evidence-a';
-    context.claimVerificationBinding = {candidate: context.acceptedCandidate, evidenceFingerprint: 'evidence-a',
-      claimsFingerprint: analysisDeliveryFingerprint(result.conclusionContract.claims), verificationFingerprint: 'verification-a'};
-    context.sourceVerificationBinding = {...context.claimVerificationBinding, sourceUseFingerprint: 'source-a',
-      conclusionContractFingerprint: analysisDeliveryFingerprint(result.conclusionContract)};
-    context.evidenceRenderedProof = {kind: 'verified_facts', candidate: context.acceptedCandidate, claimIds: ['claim-a'],
-      claimsFingerprint: context.claimVerificationBinding.claimsFingerprint, verificationFingerprint: 'verification-a', evidenceFingerprint: 'evidence-a'};
-    context.reportAssessment = {schemaVersion: 1, status: 'checked', requirements: [], binding: {
+    result.reportAssessment = {schemaVersion: 1, status: 'checked', requirements: [], binding: {
       ...context.acceptedCandidate, conclusionContractFingerprint: analysisDeliveryFingerprint(result.conclusionContract),
       evidenceFingerprint: 'evidence-a', registryFingerprint: 'registry-a', requirementsFingerprint: 'requirements-a',
       intentFingerprint: analysisDeliveryFingerprint(context.turnIntent),
     }};
-    result.reportAssessment = context.reportAssessment;
     result.deliveryAssurance = {schemaVersion: 1, entry: 'new_finalization', completion: 'passed',
       claims: 'passed', source: 'passed', identity: 'passed', report: 'passed'};
     registerCodeAwareCanary(result.sessionId, 'PRIVATE_CLAIM_CANARY');
@@ -497,10 +471,6 @@ describe('source finalization projection authority', () => {
     expect(finalized.conclusionProjection.disposition).toBe('preserved');
     expect(finalized.deliveryContext).toMatchObject({completion: context.completion});
     if (finalized.deliveryContext?.entry !== 'new_finalization') throw new Error('Missing projected context');
-    expect(finalized.deliveryContext.claimVerificationBinding).toBeUndefined();
-    expect(finalized.deliveryContext.sourceVerificationBinding).toBeUndefined();
-    expect(finalized.deliveryContext.evidenceRenderedProof).toBeUndefined();
-    expect(finalized.deliveryContext.reportAssessment).toBeUndefined();
     expect(result.reportAssessment).toBeUndefined();
     expect(result.deliveryAssurance).toBeUndefined();
     expect(JSON.stringify(result.conclusionContract)).not.toContain('PRIVATE_CLAIM_CANARY');
@@ -544,7 +514,9 @@ describe('source finalization projection authority', () => {
     expect(result.sourceClaimVerificationResult?.issues.some(issue => issue.severity === 'error')).toBe(true);
     expect(JSON.stringify(result)).not.toContain('PRIVATE_ISSUE_CANARY');
     expect(JSON.stringify(result)).not.toContain('PRIVATE_SOURCE_ISSUE_CANARY');
-    expect(assessFinalResultQualityAssessment({result, context: finalized.deliveryContext}).assurance.claims).toBe('failed');
+    // Claim verification is retired from the gate; an unissued source reference still fails the source annotation.
+    expect(assessFinalResultQualityAssessment({result, context: finalized.deliveryContext}).assurance)
+      .toMatchObject({claims: 'not_applicable', source: 'failed'});
   });
 
   test('leaves a literal placeholder and source-free object unchanged without a guard replacement', () => {

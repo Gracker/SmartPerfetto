@@ -5,6 +5,7 @@
 import { getProviderService, type ProviderScope } from '../services/providerManager';
 import { mergeIsolatedProviderEnv } from '../services/providerManager/envIsolation';
 import type { RuntimeSelection } from './runtimeSelection';
+import { warnRetiredOutputEnv } from './finalSubmissionConfig';
 
 export type RuntimeFactoryEnv = Record<string, string | undefined>;
 
@@ -16,5 +17,8 @@ export function createRuntimeFactoryEnv(
   const providerEnv = selection.source === 'provider' && selection.providerId
     ? getProviderService().getEnvForProvider(selection.providerId, providerScope)
     : null;
-  return mergeIsolatedProviderEnv(baseEnv, providerEnv);
+  const env = mergeIsolatedProviderEnv(baseEnv, providerEnv);
+  // The configuration boundary every runtime's environment passes through.
+  warnRetiredOutputEnv(env);
+  return env;
 }

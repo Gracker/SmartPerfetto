@@ -114,10 +114,10 @@
       "boundary": "All budgets retain existing_only with no evidence prefetch."
     },
     {
-      "id": "reuse_and_unknown_origin",
-      "testFile": "src/services/__tests__/finalInvestigationContractGate.test.ts",
-      "testTitle": "does not count unknown provenance as current evidence and preserves reused evidence",
-      "boundary": "Existing records remain reused; unknown is not upgraded."
+      "id": "ledger_acquisition",
+      "testFile": "src/services/__tests__/ledgerAcquisitionGate.test.ts",
+      "testTitle": "does not claim coverage when the ledger truncated records",
+      "boundary": "Acquisition is read from the ledger alone; truncated or missing records never read as observed."
     },
     {
       "id": "saved_results",
@@ -127,27 +127,15 @@
     },
     {
       "id": "historical_restore",
-      "testFile": "src/services/__tests__/finalInvestigationContractGate.test.ts",
-      "testTitle": "keeps old and missing assessments unverified and explicit exemptions separate",
-      "boundary": "Historic/missing assessments remain not_checked."
-    },
-    {
-      "id": "missing_data_explanation",
-      "testFile": "src/services/__tests__/finalInvestigationContractGate.test.ts",
-      "testTitle": "can cover an accurate partial-data explanation without claiming complete acquisition",
-      "boundary": "Covered content with insufficient acquisition stays distinct."
-    },
-    {
-      "id": "complete_population",
-      "testFile": "src/services/__tests__/finalInvestigationContractGate.test.ts",
-      "testTitle": "cannot cherry-pick a covered CPU when a sibling CPU has a gap or an invalid row was omitted",
-      "boundary": "An observed CPU cannot hide missing sibling coverage."
+      "testFile": "src/services/__tests__/finalizeAnalysisResult.test.ts",
+      "testTitle": "keeps the stored verdicts, assurance and report presentation unchanged",
+      "boundary": "Stored verdicts and assurance are read back unchanged; new finalization never rewrites them."
     },
     {
       "id": "native_completion",
-      "testFile": "src/services/__tests__/finalInvestigationContractGate.test.ts",
-      "testTitle": "does not alter SDK completion, body or termination because investigation is missing",
-      "boundary": "Investigation assurance cannot rewrite SDK completion."
+      "testFile": "src/services/__tests__/finalizeAnalysisResult.test.ts",
+      "testTitle": "does not alter completion, body or termination because of the investigation ledger",
+      "boundary": "The investigation ledger is record-only display and cannot rewrite SDK completion."
     },
     {
       "id": "all_scene_configuration",

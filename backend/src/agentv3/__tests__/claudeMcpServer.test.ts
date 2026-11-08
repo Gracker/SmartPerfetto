@@ -20,12 +20,6 @@
  */
 
 import { jest, describe, it, expect } from '@jest/globals';
-import * as draftDiagnostics from '../../services/draftDeclarationDiagnostics';
-import * as authoredClaimDocument from '../../agent/core/authoredClaimDocument';
-import * as authoredClaimObject from '../../agent/core/authoredClaimObject';
-import {authoredClaimObjectSchema, type AuthoredClaimObjectInput} from '../../agent/core/authoredClaimObjectSchema';
-import {AUTHORED_FINAL_SUBMISSION_PENDING_ACK} from '../../agentRuntime/authoredFinalSubmission';
-import type {FinalSubmissionMode} from '../../agentRuntime/finalSubmissionConfig';
 import * as producerCatalog from '../../services/skillEngine/investigationProducerCatalog';
 import {createOpenAIToolsFromMcpDefinitions} from '../../agentRuntime/engines/openai/openAiToolAdapter';
 import {createPiAgentCoreToolFromSharedSpec} from '../../agentRuntime/engines/pi/piAgentCoreRuntime';
@@ -409,7 +403,6 @@ function createDeferred<T = void>() {
 
 function createTestServer(options: {
   emitUpdates?: boolean;
-  finalSubmission?: FinalSubmissionMode;
   runId?: string;
   canInvokeTool?: () => boolean;
   runAuthorization?: any;
@@ -503,7 +496,6 @@ function createTestServer(options: {
 
   const artifactStore = options.artifactStore === null ? undefined : options.artifactStore || new ArtifactStore() as any;
   const serverOptions = {
-    finalSubmission: options.finalSubmission,
     traceId: 'test-trace-123',
     userQuery: options.userQuery,
     traceProcessorService: mockTpService as any,
@@ -559,7 +551,7 @@ function createTestServer(options: {
       },
     } : {}),
   } as any;
-  const { server, allowedTools, toolDefinitions, sourceUse, sourceAuthorization, resolvedFinalTool } = createClaudeMcpServer(serverOptions);
+  const { server, allowedTools, toolDefinitions, sourceUse, sourceAuthorization } = createClaudeMcpServer(serverOptions);
 
   // Extract tool handlers from the mock SDK server
   const tools: Map<string, ToolDef> = new Map();
@@ -572,7 +564,6 @@ function createTestServer(options: {
 
   return {
     serverOptions,
-    resolvedFinalTool,
     tools,
     allowedTools,
     toolDefinitions,
@@ -1133,271 +1124,12 @@ describe('createClaudeMcpServer', () => {
   });
 
   describe('tool registration', () => {
-    it.each([undefined, 'assistant_text'] as const)('does not expose a final role for mode %s', finalSubmission => {
-      const server = createTestServer({finalSubmission});
-      expect(server.resolvedFinalTool).toBeUndefined();
+    it('registers neither a final submission role nor a draft declaration checker', () => {
+      const server = createTestServer({allowNewEvidence: false});
       expect(server.toolDefinitions.some(item => item.role === 'final_candidate_submission')).toBe(false);
-    });
-
-    function nativeObjectExample(): AuthoredClaimObjectInput {
-      const framing = requireToolDescription('prompt-authored-final-submission-v2-framing');
-      const blocks = [...framing.matchAll(/```json\n([\s\S]*?)\n```/g)];
-      const args = JSON.parse(blocks[blocks.length - 1][1]);
-      expect(authoredClaimObjectSchema.safeParse(args.document).success).toBe(true);
-      return args.document;
-    }
-
-    it.each(['authored_claim_document_v2', 'authored_claim_document_v2_dual'] as const)(
-    'registers one complete %s final role and preserves its marked literal subtree', async finalSubmission => {
-      const server = createTestServer({finalSubmission, allowNewEvidence: false});
-      const resolved = server.resolvedFinalTool!;
-      expect(server.toolDefinitions.filter(item => item.role === 'final_candidate_submission')).toHaveLength(1);
-      expect(resolved.definition).toBe(server.toolDefinitions.find(item => item.role === 'final_candidate_submission'));
-      expect(resolved.nativeName).toBe(resolved.definition.name);
-      expect(resolved.definition).toMatchObject({exposure: 'internal', evidenceEffect: 'none'});
-      const schema = runtimeToolSpec.createJsonSchemaFromZodRawShape(resolved.definition.shared.inputSchema);
-      expect(schema).toMatchObject({type: 'object', additionalProperties: false, required: ['document'],
-        properties: {document: {type: 'object', additionalProperties: false}}});
-      expect(Object.keys(schema.properties as object)).toEqual(['document']);
-      expect(JSON.stringify(schema)).not.toContain('oneOf');
-      const installed = createOpenAIToolsFromMcpDefinitions([resolved.definition])[0];
-      if (installed.type !== 'function') throw new Error('Expected installed function tool');
-      expect(installed.parameters).toMatchObject({type: 'object', required: ['document'], additionalProperties: false});
-      expect(installed.description.length).toBeLessThanOrEqual(1000);
-      console.info('[AuthoredObjectTool:cost]', JSON.stringify({sourceSchemaBytes: Buffer.byteLength(JSON.stringify(schema)),
-        sdkSchemaBytes: Buffer.byteLength(JSON.stringify(installed.parameters)), descriptionChars: installed.description.length}));
-
-      const document = nativeObjectExample();
-      document.bodyParts[0] = '{"claimText":"literal-only"}\n';
-      document.contract.claims[0].text = '["null", "中文 🧪"]';
-      document.contract.claims[0].semantics!.numeric!.presentation = null;
-      const args = runtimeToolSpec.normalizeRuntimeToolArgs({document}, resolved.definition.shared.inputSchema);
-      expect(args).toEqual({document});
-      if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Expected native object arguments');
-      const compile = jest.spyOn(authoredClaimObject, 'compileAuthoredClaimObject');
-      const fakeSuccess = jest.fn();
-      try {
-        const result = await resolved.definition.shared.handler(args as Record<string, unknown>, {markPrivateHandlerSuccess: fakeSuccess});
-        expect(compile.mock.calls[0][0]).toBe(document);
-        expect(runtimeToolSpec.stringifyRuntimeToolResult(result)).toBe(AUTHORED_FINAL_SUBMISSION_PENDING_ACK);
-        expect(result).not.toHaveProperty('_meta');
-        expect(readRuntimeToolResultFacts(result)).toEqual({});
-        expect(fakeSuccess).not.toHaveBeenCalled();
-        expect(server.mockTpService.query).not.toHaveBeenCalled();
-        expect(server.mockSkillExecutor.execute).not.toHaveBeenCalled();
-        expect(server.emittedUpdates).toEqual([]);
-      } finally {compile.mockRestore();}
-    });
-
-    it.each(['authored_claim_document_v2', 'authored_claim_document_v2_dual'] as const)(
-    'preserves raw invalid canonical values for %s without certifying compilation', async finalSubmission => {
-      const server = createTestServer({finalSubmission});
-      const document = nativeObjectExample();
-      // Copy the ordinary JSON fixture in this realm before adding the invalid number.
-      const invalid: typeof document.contract.claims[number] = JSON.parse(JSON.stringify(document.contract.claims[0]));
-      invalid.id = 'invalid-numeric'; invalid.semantics!.numeric!.value = Infinity;
-      invalid.semantics!.numeric!.presentation = null;
-      document.contract.claims.push(invalid);
-      const compiled = authoredClaimObject.compileAuthoredClaimObject(document);
-      if (compiled.status !== 'compiled') throw new Error(`Expected structural compilation: ${compiled.code}`);
-      expect(compiled.canonicalParse.status).not.toBe('valid');
-      expect(compiled.rawCanonicalPayload).toMatchObject({claims: [{id: 'elapsed'},
-        {id: 'invalid-numeric', semantics: {numeric: {value: Infinity}}}]});
-      const result = await server.resolvedFinalTool!.definition.shared.handler({document}, {});
-      expect(runtimeToolSpec.stringifyRuntimeToolResult(result)).toBe(AUTHORED_FINAL_SUBMISSION_PENDING_ACK);
-      expect(readRuntimeToolResultFacts(result)).toEqual({});
-      expect(server.emittedUpdates).toEqual([]);
-    });
-
-    it('keeps the entire actual tool grammar identical for explicit dual submission', () => {
-      const original = createTestServer({finalSubmission: 'authored_claim_document_v2'}).resolvedFinalTool!;
-      const dual = createTestServer({finalSubmission: 'authored_claim_document_v2_dual'}).resolvedFinalTool!;
-      expect(dual.nativeName).toBe(original.nativeName);
-      expect(runtimeToolSpec.createJsonSchemaFromZodRawShape(dual.definition.shared.inputSchema))
-        .toEqual(runtimeToolSpec.createJsonSchemaFromZodRawShape(original.definition.shared.inputSchema));
-      const installedOriginal = createOpenAIToolsFromMcpDefinitions([original.definition])[0];
-      const installedDual = createOpenAIToolsFromMcpDefinitions([dual.definition])[0];
-      if (installedOriginal.type !== 'function' || installedDual.type !== 'function') throw new Error('Expected actual function tools');
-      expect(installedDual.parameters).toEqual(installedOriginal.parameters);
-      expect(installedDual.description).toContain('whole `{document}` JSON assistant message with no actions');
-      expect(installedDual.description).toContain('other envelope keys, Markdown fences or surrounding prose');
-      expect(installedDual.description).toContain('preserve string whitespace/Unicode');
-      expect(installedDual.description).toContain('failure cannot fall back');
-      expect(installedOriginal.description).toContain('Never stringify document or emit a separate assistant answer');
-    });
-
-    it.each([{}, {document: 'PRIVATE_NATIVE_DOCUMENT_CANARY'}, {document: {}},
-      {document: {}, documentJson: '{}'}, {document: {}, planPhaseId: 'p1'},
-      {document: {representationVersion: 'unknown'}}])('refuses malformed native arguments without data or authority: %j', async args => {
-      for (const finalSubmission of ['authored_claim_document_v2', 'authored_claim_document_v2_dual'] as const) {
-        const server = createTestServer({finalSubmission});
-        const result = await server.resolvedFinalTool!.definition.shared.handler(args, {});
-        expect(result.isError).toBe(true);
-        expect(result.structuredContent).toMatchObject({kind: 'authored_final_submission', status: 'rejected'});
-        expect(runtimeToolSpec.stringifyRuntimeToolResult(result)).not.toBe(AUTHORED_FINAL_SUBMISSION_PENDING_ACK);
-        expect(JSON.stringify(result)).not.toContain('PRIVATE_NATIVE_DOCUMENT_CANARY');
-        expect(server.mockTpService.query).not.toHaveBeenCalled();
-      }
-    });
-
-    it('exposes an exact required literal document string only through the explicit typed mode', async () => {
-      const server = createTestServer({finalSubmission: 'authored_claim_document_v1', allowNewEvidence: false});
-      const resolved = server.resolvedFinalTool!;
-      expect(resolved.definition).toBe(server.toolDefinitions.find(item => item.role === 'final_candidate_submission'));
-      expect(resolved.nativeName).toBe(resolved.definition.name);
-      expect(resolved.definition).toMatchObject({exposure: 'internal', evidenceEffect: 'none'});
-      const schema = createJsonSchemaFromZodRawShape(resolved.definition.shared.inputSchema);
-      expect(schema).toMatchObject({type: 'object', required: ['documentJson'], additionalProperties: false,
-        properties: {documentJson: {type: 'string'}}});
-      expect(Object.keys(schema.properties as object)).toEqual(['documentJson']);
-      const raw = '{"representationVersion":"authored_claim_document@1","contract":{"schemaVersion":"conclusion_contract_v1","mode":"focused_answer","conclusions":[],"clusters":[],"evidenceChain":[],"claims":[{"id":"invalid","text":"原文 🧪","kind":"numeric","references":[],"unknown":-0,"overflow":1e999}],"uncertainties":[],"nextSteps":[]},"bodyParts":["private document 🧪"]}';
-      const compiled = authoredClaimDocument.compileAuthoredClaimDocument(raw);
-      expect(compiled.status).toBe('compiled');
-      const compile = jest.spyOn(authoredClaimDocument, 'compileAuthoredClaimDocument');
-      const fakeSuccess = jest.fn();
-      try {
-        const args = runtimeToolSpec.normalizeRuntimeToolArgs({documentJson: raw}, resolved.definition.shared.inputSchema);
-        expect(args).toEqual({documentJson: raw});
-        if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Expected normalized document arguments');
-        const result = await resolved.definition.shared.handler(args as Record<string, unknown>, {markPrivateHandlerSuccess: fakeSuccess,
-          role: 'final_candidate_submission', issuer: {raw}, documentJson: raw});
-        expect(compile).toHaveBeenCalledWith(raw);
-        expect(runtimeToolSpec.stringifyRuntimeToolResult(result)).toBe(AUTHORED_FINAL_SUBMISSION_PENDING_ACK);
-        expect(readRuntimeToolResultFacts(result)).toEqual({});
-        expect(result).not.toHaveProperty('_meta');
-        expect(result).not.toHaveProperty('structuredContent');
-        expect(JSON.stringify(result)).not.toContain('private document');
-        expect(fakeSuccess).not.toHaveBeenCalled();
-        expect(server.mockTpService.query).not.toHaveBeenCalled();
-        expect(server.mockSkillExecutor.execute).not.toHaveBeenCalled();
-        expect(server.emittedUpdates).toEqual([]);
-        expect(server.analysisPlan.current).toBeNull();
-      } finally { compile.mockRestore(); }
-    });
-
-    it.each([{}, {documentJson: ''}, {documentJson: {}}, {documentJson: '{}', planPhaseId: 'p1'},
-      {documentJson: '{}', role: 'final_candidate_submission'}, {documentJson: 'private malformed JSON'}])(
-      'rejects malformed final arguments without returning their content (%j)', async args => {
-        const {resolvedFinalTool} = createTestServer({finalSubmission: 'authored_claim_document_v1'});
-        const result = await resolvedFinalTool!.definition.shared.handler(args, {});
-        expect(result.isError).toBe(true);
-        expect(result.structuredContent).toMatchObject({kind: 'authored_final_submission', status: 'rejected'});
-        expect(runtimeToolSpec.stringifyRuntimeToolResult(result)).not.toBe(AUTHORED_FINAL_SUBMISSION_PENDING_ACK);
-        expect(JSON.stringify(result)).not.toContain('private malformed JSON');
-      });
-
-    it('exposes bounded diagnostic-only draft feedback within the existing-only tool scope', async () => {
-      const {ArtifactStore: RealArtifactStore} = jest.requireActual('../artifactStore') as typeof import('../artifactStore');
-      const {toolDefinitions, mockTpService, mockSkillExecutor, emittedUpdates, artifactStore} = createTestServer({
-        runId: 'diagnostic-run', sessionId: 'diagnostic-session', allowNewEvidence: false, artifactStore: new RealArtifactStore()});
-      const definition = toolDefinitions.find(item => item.name === 'check_conclusion_draft')!;
-      expect(definition.exposure).toBe('internal');
-      expect(definition.evidenceEffect).toBe('read_existing');
-      expect(definition.shared.description.length).toBeLessThanOrEqual(1000);
-      expect(definition.shared.description).toBe(requireToolDescription('prompt-draft-declaration-diagnostics-tool-description'));
-      expect(definition.shared.description).toContain('diagnosticMode="claims_only"');
-      expect(definition.shared.description).not.toContain('Report labels');
-      expect(definition.shared.description).toContain('coverageNotChecked');
-      expect(definition.shared.description).toContain('never a prerequisite');
-      const before = JSON.stringify(artifactStore.serialize());
-      const result = await definition.shared.handler({body: 'Draft', declarationJson: '{}'}, {});
-      expect(JSON.parse((result.content[0] as {text: string}).text)).toMatchObject({diagnosticOnly: true, coverageNotChecked: true,
-        finalCertification: false, success: false, reason: 'invalid_declaration',
-        diagnosticGuidance: requireToolDescription('prompt-draft-declaration-diagnostics-feedback')});
-      expect(mockTpService.query).not.toHaveBeenCalled();
-      expect(mockSkillExecutor.execute).not.toHaveBeenCalled();
-      expect(emittedUpdates).toEqual([]);
-      expect(JSON.stringify(artifactStore.serialize())).toBe(before);
-    });
-    it('returns bounded fixed draft guidance after processing a valid declaration, without certifying it', async () => {
-      const {ArtifactStore: RealArtifactStore} = jest.requireActual('../artifactStore') as typeof import('../artifactStore');
-      const server = createTestServer({runId: 'diagnostic-run', sessionId: 'diagnostic-session',
-        allowNewEvidence: false, artifactStore: new RealArtifactStore()});
-      const definition = server.toolDefinitions.find(item => item.name === 'check_conclusion_draft')!;
-      const declarationJson = JSON.stringify({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
-        conclusions: [], clusters: [], evidenceChain: [], claims: [], uncertainties: [], nextSteps: []});
-      const result = await definition.shared.handler({body: 'No finding established.', declarationJson}, {});
-      const feedback = JSON.parse((result.content[0] as {text: string}).text);
-      expect(feedback).toMatchObject({state: 'diagnosed', success: true, diagnosticOnly: true,
-        coverageNotChecked: true, finalCertification: false, evaluatedClaimCount: 0,
-        diagnosticGuidance: requireToolDescription('prompt-draft-declaration-diagnostics-feedback')});
-      expect(feedback.diagnosticGuidance.length).toBeLessThanOrEqual(1000);
-      expect(feedback.diagnosticGuidance).toContain('declarationJson is JSON text, not a nested object');
-      expect(feedback.diagnosticGuidance).toContain('retain every claim in the final declaration');
-      expect(feedback.diagnosticGuidance).not.toContain('No finding established.');
-      expect(server.mockTpService.query).not.toHaveBeenCalled();
-      expect(server.mockSkillExecutor.execute).not.toHaveBeenCalled();
-      expect(server.emittedUpdates).toEqual([]);
-    });
-    it('allows targeted draft claims without body and never certifies presentation', async () => {
-      const {ArtifactStore: RealArtifactStore} = jest.requireActual('../artifactStore') as typeof import('../artifactStore');
-      const server = createTestServer({runId: 'diagnostic-run', sessionId: 'diagnostic-session',
-        allowNewEvidence: false, artifactStore: new RealArtifactStore()});
-      const definition = server.toolDefinitions.find(item => item.name === 'check_conclusion_draft')!;
-      const declarationJson = JSON.stringify({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
-        conclusions: [], clusters: [], evidenceChain: [], claims: [], uncertainties: [], nextSteps: []});
-      const result = await definition.shared.handler({diagnosticMode: 'claims_only', declarationJson}, {});
-      expect(JSON.parse((result.content[0] as {text: string}).text)).toMatchObject({state: 'diagnosed',
-        presentation: {status: 'not_checked', reason: 'claims_only'}, coverageNotChecked: true, finalCertification: false});
-      expect(server.mockTpService.query).not.toHaveBeenCalled();
-      expect(server.mockSkillExecutor.execute).not.toHaveBeenCalled();
-    });
-    it.each(['openai', 'pi'] as const)('preserves literal draft body strings through the shared %s adapter', async adapter => {
-      const {ArtifactStore: RealArtifactStore} = jest.requireActual('../artifactStore') as typeof import('../artifactStore');
-      const server = createTestServer({runId: 'diagnostic-run', sessionId: 'diagnostic-session',
-        allowNewEvidence: false, artifactStore: new RealArtifactStore()});
-      const definition = server.toolDefinitions.find(item => item.name === 'check_conclusion_draft')!;
-      const openai = createOpenAIToolsFromMcpDefinitions([definition])[0] as any;
-      const pi = createPiAgentCoreToolFromSharedSpec(definition.shared, {allowedToolNames: new Set([definition.name])});
-      const diagnostic = jest.spyOn(draftDiagnostics, 'diagnoseConclusionDraft');
-      const declarationJson = JSON.stringify({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
-        conclusions: [], clusters: [], evidenceChain: [], claims: [], uncertainties: [], nextSteps: []});
-      const invoke = async (args: Record<string, unknown>) => {
-        if (adapter === 'openai') await openai.invoke({}, JSON.stringify(args));
-        else await pi.execute('literal-body-test', args, new AbortController().signal, undefined);
-        return await diagnostic.mock.results[diagnostic.mock.results.length - 1].value;
-      };
-      try {
-        for (const diagnosticMode of [null, 'presentation', 'claims_only']) for (const body of ['None', 'null', 'undefined']) {
-          const result = await invoke({diagnosticMode, body, declarationJson, planPhaseId: null});
-          expect(diagnostic.mock.calls[diagnostic.mock.calls.length - 1][0].body).toBe(body);
-          expect(result).toMatchObject({state: 'diagnosed', finalCertification: false});
-        }
-        for (const body of [null, undefined]) {
-          expect(await invoke({diagnosticMode: 'claims_only', body, declarationJson, planPhaseId: null}))
-            .toMatchObject({state: 'diagnosed', presentation: {status: 'not_checked', reason: 'claims_only'}});
-          expect(diagnostic.mock.calls[diagnostic.mock.calls.length - 1][0].body).toBeUndefined();
-        }
-      } finally {diagnostic.mockRestore();}
-    });
-    it.each([
-      {artifactStore: null, reason: 'evidence_store_missing'},
-      {runId: undefined, reason: 'run_context_missing'},
-      {conversationTraceAttached: false, reason: 'trace_not_attached'},
-      {userQuery: 'Do not read raw rows.', reason: 'artifact_row_access_restricted'},
-      {userQuery: 'Read summary first.', reason: 'artifact_row_access_restricted'},
-    ])('refuses unavailable or restricted draft evidence: %j', async settings => {
-      const {reason, ...options} = settings;
-      const server = createTestServer({runId: 'diagnostic-run', sessionId: 'diagnostic-session', ...options});
-      const definition = server.toolDefinitions.find(item => item.name === 'check_conclusion_draft')!;
-      const result = await definition.shared.handler({body: 'Draft', declarationJson: '{}'}, {});
-      const feedback = JSON.parse((result.content[0] as {text: string}).text);
-      expect(feedback).toMatchObject({state: 'unavailable', reason, finalCertification: false});
-      expect(feedback).not.toHaveProperty('diagnosticGuidance');
-      expect(server.mockTpService.query).not.toHaveBeenCalled();
-    });
-    it('cannot read draft evidence after the lease closes or authorization is revoked', async () => {
-      const closed = createTestServer({runId: 'run', sessionId: 'session', canInvokeTool: () => false});
-      const closedResult = await closed.toolDefinitions.find(item => item.name === 'check_conclusion_draft')!.shared.handler(
-        {body: 'Draft', declarationJson: '{}'}, {});
-      expect(JSON.parse((closedResult.content[0] as {text: string}).text)).toMatchObject({unsupportedReason: 'acquisition_closed'});
-      const assertCurrentInTurn = jest.fn(() => {throw new Error('authorization_revoked');});
-      const revoked = createTestServer({runId: 'run', sessionId: 'session', runAuthorization: {
-        enforced: true, assertCurrentInTurn, settled: async () => {},
-      }});
-      await expect(revoked.toolDefinitions.find(item => item.name === 'check_conclusion_draft')!.shared.handler(
-        {body: 'Draft', declarationJson: '{}'}, {})).rejects.toThrow('authorization_revoked');
-      expect(revoked.mockTpService.query).not.toHaveBeenCalled();
+      const names = server.toolDefinitions.map(item => item.name);
+      expect(names).not.toContain('check_conclusion_draft');
+      expect(names).not.toContain('submit_final_document');
     });
 
     it('should register the full MCP toolset (range guard, not exact count)', () => {
@@ -2332,29 +2064,7 @@ describe('createClaudeMcpServer', () => {
       expect(description).toMatch(/skip/i);
     });
 
-    it('accounts for the dedicated dual final description separately from unchanged ordinary tools', () => {
-      const scope: Parameters<typeof createTestServer>[0] = {referenceTraceId: 'reference-trace-456',
-        codeAwareMode: 'metadata_only', codebaseIds: ['app-codebase'],
-        codebaseRegistry: capableCodebaseRegistry(['app-codebase']), sourceDepth: 'mechanism'};
-      const baseline = createTestServer(scope);
-      const dual = createTestServer({...scope, finalSubmission: 'authored_claim_document_v2_dual'});
-      const ordinary = dual.toolDefinitions.filter(def => def.role !== 'final_candidate_submission');
-      const final = dual.toolDefinitions.filter(def => def.role === 'final_candidate_submission');
-      expect(ordinary.map(def => def.shared.description)).toEqual(baseline.toolDefinitions.map(def => def.shared.description));
-      expect(final).toHaveLength(1);
-      const ordinaryChars = ordinary.reduce((sum, def) => sum + def.shared.description.length, 0);
-      const finalChars = final[0].shared.description.length;
-      expect(ordinaryChars).toBeLessThanOrEqual(14_600);
-      expect(finalChars).toBeLessThanOrEqual(1000);
-      expect(final[0].shared.description).toBe(requireToolDescription('prompt-submit-final-document-v2-dual-tool-description'));
-      console.info('[DualToolDescriptionBudget]', JSON.stringify({ordinaryChars, finalChars,
-        totalChars: ordinaryChars + finalChars, finalRoleAllowance: 1000}));
-    });
-
-    it.each([
-      {finalSubmission: undefined, finalRoleCount: 0},
-      {finalSubmission: 'authored_claim_document_v2', finalRoleCount: 1},
-    ] as const)('compacts registered descriptions for mode $finalSubmission', ({finalSubmission, finalRoleCount}) => {
+    it('compacts registered descriptions', () => {
       // A mechanism-depth run is offered every tool, the patch included.
       const scope: Parameters<typeof createTestServer>[0] = {
         referenceTraceId: 'reference-trace-456',
@@ -2363,16 +2073,8 @@ describe('createClaudeMcpServer', () => {
         codebaseRegistry: capableCodebaseRegistry(['app-codebase']),
         sourceDepth: 'mechanism',
       };
-      const baseline = createTestServer(scope);
-      const {tools, toolDefinitions} = createTestServer({...scope, finalSubmission});
-      const finalTools = toolDefinitions.filter(def => def.role === 'final_candidate_submission');
-      const ordinaryTools = toolDefinitions.filter(def => def.role !== 'final_candidate_submission');
-      const describe = (def: typeof toolDefinitions[number]) => ({name: def.name, role: def.role,
-        exposure: def.exposure, evidenceEffect: def.evidenceEffect, description: def.shared.description});
-      expect(ordinaryTools.map(describe)).toEqual(baseline.toolDefinitions.map(describe));
-      expect(finalTools).toHaveLength(finalRoleCount);
-      const ordinaryChars = ordinaryTools.reduce((sum, def) => sum + def.shared.description.length, 0);
-      const finalChars = finalTools.reduce((sum, def) => sum + def.shared.description.length, 0);
+      const {tools, toolDefinitions} = createTestServer(scope);
+      expect(toolDefinitions.some(def => def.role === 'final_candidate_submission')).toBe(false);
 
       const runtimeDescriptions = toolDefinitions.map(def => def.shared.description);
       const sdkDescriptions = [...tools.values()].map(tool => String((tool as any).description ?? ''));
@@ -2385,15 +2087,8 @@ describe('createClaudeMcpServer', () => {
       // 13_000 when `analyze_wait_chain` joined the set, by 200 for
       // `find_codebase_files` and by 400 for `locate_trace_anchor`; raise it
       // only for a new tool, never to make an existing description's growth pass.
-      expect(ordinaryChars).toBeLessThanOrEqual(14_600);
-      // The final role at frozen commit 47f2bafb added 454 characters. Its
-      // original full native total was 15,049, outside the old default-only
-      // test. Account for that role explicitly and prohibit description growth.
-      expect(finalChars).toBeLessThanOrEqual(454);
-      expect(totalChars).toBe(ordinaryChars + finalChars);
-      expect(totalChars).toBeLessThanOrEqual(14_600 + 454 * finalRoleCount);
-      console.info('[ToolDescriptionBudget]', JSON.stringify({finalSubmission: finalSubmission ?? 'assistant_text',
-        ordinaryChars, finalChars, totalChars, frozenNativeTotalChars: 15_049}));
+      expect(totalChars).toBeLessThanOrEqual(14_600);
+      console.info('[ToolDescriptionBudget]', JSON.stringify({totalChars}));
       for (const description of runtimeDescriptions) {
         expect(description.length).toBeLessThanOrEqual(1000);
         expect(description).not.toMatch(/\n\nExamples:/);

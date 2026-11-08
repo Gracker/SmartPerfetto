@@ -85,7 +85,8 @@ describe('runtime closeout returned-data tape', () => {
     expect(context.originalQuery).toBe(question.query);
     expect(context.returnedData).toMatchObject({completeTranscript: false, verified: false,
       modelConsumptionKnown: false, entries: [{state: 'returned', returnedData: {rows: [{value: 7}]}}]});
-    expect(prompt).toContain(outputLanguage === 'en' ? 'do not append an unfinished JSON tail' : '不追加未写完的 JSON 尾部');
+    expect(prompt).toContain(outputLanguage === 'en' ? 'do not merely append its unfinished tail' : '不要只续写未写完的尾部');
+    expect(prompt).not.toMatch(/declaration|声明/);
     expect(tape.buildOutputLimitPrompt({...question, intent, priorConclusion: 'Existing answer'})).toBeUndefined();
   });
 

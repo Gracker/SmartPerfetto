@@ -4,25 +4,13 @@
 
 import type {AgentRuntimeAnalysisResult} from '../agent/core/orchestratorTypes';
 import {localize, type OutputLanguage} from '../agentv3/outputLanguage';
-import {assessFinalReportContract, type FinalReportContractAssessmentResult} from './finalReportContractGate';
-import {assessFinalInvestigationContract, type FinalInvestigationContractResult} from './finalInvestigationContractGate';
-import type {StoredSourceClaimVerificationResult} from './codebase/sourceClaimVerifier';
-import {isUnusedSourceDecision} from './codebase/sourceUseDecision';
-import {isSemanticClaimIssueCode, SEMANTIC_UNDECLARED_CLAIM_ISSUE_CODE} from './finalSemanticIssueCodes';
-import {claimReferences} from './analysisInvestigationPresentation';
-import {claimReferenceIssueCode} from '../types/claimVerification';
-import {hasCurrentAuthoredFinalDelivery} from './security/conclusionProtocolProjection';
-import {isAuthoredFinalSubmissionMode} from '../agentRuntime/finalSubmissionImplementation';
 import type {IdentityResolutionV1} from '../types/identityContract';
 import {
-  analysisDeliveryFingerprint,
   sameAnalysisCandidate,
   type AnalysisAssuranceStatus,
   type AnalysisDeliveryAssurance,
   type AnalysisDeliveryContext,
   type AnalysisRecoveryKind,
-  type AnalysisMissingReportSection,
-  type AnalysisVerificationBinding,
 } from '../types/analysisDelivery';
 
 export type FinalResultQualityIssueCode =
@@ -33,22 +21,16 @@ export type FinalResultQualityIssueCode =
   | 'sparse_unverified_conclusion'
   | 'quick_full_report_shape'
   | 'quick_verifier_failed'
-  | 'verifier_contradicted_claim'
-  | 'scene_contract_incomplete'
   | 'comparison_identity_incomplete'
   | 'source_claim_binding_invalid'
   | 'sdk_incomplete'
   | 'runtime_fallback'
-  | 'completion_not_checked'
-  | 'missing_submission'
-  | 'transport_failure'
-  | 'report_assessment_not_checked';
+  | 'completion_not_checked';
 
 export interface FinalResultQualityIssue {
   code: FinalResultQualityIssueCode;
   message: string;
   recoveryKind?: AnalysisRecoveryKind;
-  missingSections?: AnalysisMissingReportSection[];
 }
 
 export interface FinalResultComparisonIdentity {
@@ -104,76 +86,6 @@ export function completeFinalResultComparisonIdentity(input: {
   return conclusion ? `${conclusion}\n\n${identitySection}` : identitySection;
 }
 
-/** Describe typed failures without treating rejected declarations as missing evidence. */
-function describeContradictedClaims(
-  verification: NonNullable<AgentRuntimeAnalysisResult['claimVerificationResult']>,
-): string {
-  const results = verification.claimResults || [];
-  const claimIds = new Set(results.map(claim => claim.claimId).filter(id => typeof id === 'string' && id.trim().length > 0));
-  const bindingIssues = verification.issues.filter(issue => issue.severity === 'error' && issue.code === 'binding_ineligible');
-  const bindingIds = new Set(bindingIssues.filter(issue => claimIds.has(issue.claimId)).map(issue => issue.claimId));
-  let globalBindingFailure = bindingIssues.some(issue => !claimIds.has(issue.claimId));
-  const mismatchedIds = new Set<string>();
-  const missingIds = new Set<string>();
-  const rejectedPropositionIds = new Set<string>();
-  // A reference status is a failure only when the verifier recorded it as an
-  // error for that claim. Advisory (warning) mismatches stay out of the `!`
-  // message; a claim whose unsupported status no issue of its own explains
-  // (older shapes) still falls back to its reference statuses.
-  const errorCodesByClaim = new Map<string, Set<string>>();
-  for (const issue of verification.issues) {
-    if (issue.severity !== 'error' || !claimIds.has(issue.claimId)) continue;
-    const codes = errorCodesByClaim.get(issue.claimId) ?? new Set<string>();
-    codes.add(issue.code);
-    errorCodesByClaim.set(issue.claimId, codes);
-  }
-  const referenceFailureCounts = (claim: (typeof results)[number], status: 'value_mismatch' | 'missing') => {
-    const codes = errorCodesByClaim.get(claim.claimId);
-    return codes ? codes.has(claimReferenceIssueCode(status)) : claim.status === 'unsupported';
-  };
-  for (const claim of results) {
-    const references = claimReferences(verification, claim);
-    const proof = claim.deterministicProof;
-    const bindingFailure = bindingIds.has(claim.claimId) || references.some(ref => ref.status === 'ineligible') ||
-      (proof?.status === 'rejected' && proof.reason === 'binding_ineligible');
-    if (bindingFailure) {
-      if (claimIds.has(claim.claimId)) bindingIds.add(claim.claimId);
-      else globalBindingFailure = true;
-    }
-    if (!claimIds.has(claim.claimId)) continue;
-    if (references.some(ref => ref.status === 'value_mismatch') && referenceFailureCounts(claim, 'value_mismatch')) {
-      mismatchedIds.add(claim.claimId);
-    }
-    // A binding rejection can retain a compatibility "missing" reference; it
-    // never establishes absence, nor hides a separate recorded value mismatch.
-    if (!bindingFailure && references.some(ref => ref.status === 'missing') && referenceFailureCounts(claim, 'missing')) {
-      missingIds.add(claim.claimId);
-    }
-    if (proof?.status === 'rejected' && proof.reason !== 'binding_ineligible') rejectedPropositionIds.add(claim.claimId);
-  }
-  for (const id of bindingIds) missingIds.delete(id);
-  const semanticInconsistentIds = new Set(verification.issues
-    .filter(issue => issue.severity === 'error' && isSemanticClaimIssueCode(issue.code) && claimIds.has(issue.claimId))
-    .map(issue => issue.claimId));
-  const displayMismatchIds = new Set(verification.issues
-    .filter(issue => issue.severity === 'error' && issue.code === 'numeric_presentation_mismatch' && claimIds.has(issue.claimId))
-    .map(issue => issue.claimId));
-  // A warning since undeclared assertions stopped failing the gate on their
-  // own; still named when another check fails.
-  const undeclaredAssertions = verification.issues.some(issue => issue.code === SEMANTIC_UNDECLARED_CLAIM_ISSUE_CODE);
-  const details = [
-    ...(bindingIds.size ? [`${bindingIds.size} 条断言的声明或绑定无效，相关断言未通过核验准入`] : []),
-    ...(globalBindingFailure ? ['声明或绑定校验存在未关联到具体断言的错误'] : []),
-    ...(mismatchedIds.size ? [`${mismatchedIds.size} 条断言的引用值与证据不符`] : []),
-    ...(rejectedPropositionIds.size ? [`${rejectedPropositionIds.size} 条断言的命题未通过确定性证明`] : []),
-    ...(displayMismatchIds.size ? [`${displayMismatchIds.size} 条断言的正文数值与原始证据的换算或舍入结果不符`] : []),
-    ...(missingIds.size ? [`${missingIds.size} 条断言的引用未找到所需证据`] : []),
-    ...(semanticInconsistentIds.size ? [`${semanticInconsistentIds.size} 条断言的正文表述与其声明不一致`] : []),
-    ...(undeclaredAssertions ? ['正文包含未声明的断言'] : []),
-  ];
-  return `${details.length ? details.join('；') : '断言核验存在未通过的检查，具体原因尚未归类'}；请展开核验详情并结合证据判断。`;
-}
-
 export interface FinalResultQualityInput {
   result: AgentRuntimeAnalysisResult;
   context?: AnalysisDeliveryContext;
@@ -186,46 +98,6 @@ export interface FinalResultQualityAssessment {
   issues: FinalResultQualityIssue[];
   selectedIssue?: FinalResultQualityIssue;
   assurance: AnalysisDeliveryAssurance;
-  report: FinalReportContractAssessmentResult;
-  investigation?: FinalInvestigationContractResult;
-  sourceClaimVerification?: StoredSourceClaimVerificationResult;
-}
-
-function verifiedEvidenceRenderedOutput(
-  result: AgentRuntimeAnalysisResult,
-  context: Exclude<AnalysisDeliveryContext, {entry: 'historical_restore'}>,
-): boolean {
-  const proof = context.evidenceRenderedProof;
-  if (!proof || !sameAnalysisCandidate(proof.candidate, context.acceptedCandidate, result.conclusion)) return false;
-  const claims = result.conclusionContract?.claims ?? [];
-  if (proof.kind === 'acknowledgement') {
-    return context.turnIntent?.status === 'resolved' &&
-      context.turnIntent.taskKind === 'acknowledgement' &&
-      context.turnIntent.deliverable === 'answer' &&
-      proof.intentFingerprint === analysisDeliveryFingerprint(context.turnIntent) &&
-      proof.evidence === 'not_applicable' && claims.length === 0 &&
-      (result.claimSupport?.length ?? 0) === 0 && result.findings.length === 0 &&
-      (result.claimVerificationResult?.checkedClaimCount ?? 0) === 0 &&
-      (result.claimVerificationResult?.unsupportedClaimCount ?? 0) === 0 &&
-      result.claimVerificationResult?.status !== 'failed';
-  }
-  const verification = result.claimVerificationResult;
-  if (!context.evidenceFingerprint || proof.evidenceFingerprint !== context.evidenceFingerprint ||
-    proof.claimsFingerprint !== analysisDeliveryFingerprint(claims) ||
-    proof.verificationFingerprint !== analysisDeliveryFingerprint(verification) ||
-    claims.length === 0 || new Set(proof.claimIds).size !== claims.length ||
-    proof.claimIds.length !== claims.length || !claims.every(claim =>
-      typeof claim.id === 'string' && claim.id.trim().length > 0 && proof.claimIds.includes(claim.id)) ||
-    verification?.status !== 'passed' || verification.checkedClaimCount !== claims.length ||
-    verification.unsupportedClaimCount !== 0 || verification.claimResults.length !== claims.length
-  ) return false;
-  return claims.every(claim => {
-    const checked = verification.claimResults.filter(item => item.claimId === claim.id);
-    return checked.length === 1 && checked[0].status === 'verified' &&
-      checked[0].referenceResults?.some(reference => reference.status === 'matched') &&
-      (claim.kind !== 'causal' || result.claimSupport?.some(support =>
-        support.claimId === claim.id && support.relationEvaluation === 'verified'));
-  });
 }
 
 function comparisonIdentityStatus(
@@ -251,19 +123,6 @@ function comparisonIdentityStatus(
   return valid ? 'passed' : 'failed';
 }
 
-function currentVerificationBinding(
-  result: AgentRuntimeAnalysisResult,
-  context: Exclude<AnalysisDeliveryContext, {entry: 'historical_restore'}>,
-  binding: AnalysisVerificationBinding | undefined,
-  verification: unknown,
-): boolean {
-  return Boolean(binding && context.evidenceFingerprint &&
-    sameAnalysisCandidate(binding.candidate, context.acceptedCandidate, result.conclusion) &&
-    binding.claimsFingerprint === analysisDeliveryFingerprint(result.conclusionContract?.claims ?? []) &&
-    binding.evidenceFingerprint === context.evidenceFingerprint &&
-    binding.verificationFingerprint === analysisDeliveryFingerprint(verification));
-}
-
 /** Body wording never proves or repairs process identity. */
 export function assessFinalResultComparisonIdentity(
   _conclusion: string,
@@ -277,7 +136,14 @@ export function assessFinalResultComparisonIdentity(
   };
 }
 
-/** Collect evidence failures before deciding which issue to display or recover. */
+/**
+ * Collect delivery failures before deciding which issue to display or recover.
+ *
+ * Model-authored declarations, their repair and the semantic review are
+ * retired, so claim, report-coverage and investigation-coverage assurance have
+ * no checking mechanism: a new finalization records them `not_applicable`.
+ * Completion, comparison identity and the source citation annotation remain.
+ */
 export function assessFinalResultQualityAssessment(
   input: FinalResultQualityInput,
 ): FinalResultQualityAssessment {
@@ -285,66 +151,24 @@ export function assessFinalResultQualityAssessment(
   // Compatibility callers are drafts. Only explicit finalization may persist a verdict.
   const context = input.context ?? {entry: 'runtime_draft' as const};
   const assurance: AnalysisDeliveryAssurance = {
-    schemaVersion: 1, entry: context.entry, completion: 'not_checked', claims: 'not_checked',
-    source: 'not_checked', identity: 'not_applicable', report: 'not_checked',
-  };
-  const emptyReport: FinalReportContractAssessmentResult = {
-    status: 'not_checked', requirements: [], missingSections: [],
+    schemaVersion: 1, entry: context.entry, completion: 'not_checked', claims: 'not_applicable',
+    source: 'not_checked', identity: 'not_applicable', report: 'not_applicable',
+    investigation: 'not_applicable', investigationEvidence: 'not_applicable',
   };
   if (context.entry === 'historical_restore') {
-    return {issues: [], assurance: result.deliveryAssurance ?? assurance, report: emptyReport};
+    return {issues: [], assurance: result.deliveryAssurance ?? assurance};
   }
   const issues: FinalResultQualityIssue[] = [];
-  // The finalizer joins claim_verifier@2 (finite proof plus the one semantic
-  // review) and the source verifier before it calls this gate; the gate reads
-  // those results and never classifies prose itself.
-  const currentTypedVerification = result.claimVerificationResult?.schemaVersion === 'claim_verifier@2';
-  const sourceClaimVerification = result.sourceClaimVerificationResult;
-  const claimVerificationCurrent = currentVerificationBinding(
-    result, context, context.claimVerificationBinding, result.claimVerificationResult,
-  );
-  const sourceBinding = context.sourceVerificationBinding;
-  const sourceVerificationCurrent = claimVerificationCurrent &&
-    currentVerificationBinding(result, context, sourceBinding, sourceClaimVerification) &&
-    sourceBinding?.conclusionContractFingerprint === analysisDeliveryFingerprint(result.conclusionContract) &&
-    Boolean(context.sourceUseFingerprint) && sourceBinding?.sourceUseFingerprint === context.sourceUseFingerprint &&
-    sourceBinding?.sourceUseFingerprint === analysisDeliveryFingerprint(result.sourceUseDecision);
-  if (sourceClaimVerification) {
-    // A weaker-than-linked source claim is delivered but not fully verified
-    // (`coverage_incomplete`, a `~`); only an error, a reference this run never
-    // issued or Trace evidence of another claim, fails the gate.
-    assurance.source = sourceClaimVerification.status === 'partial' ? 'coverage_incomplete' :
-      sourceClaimVerification.status === 'passed' ? sourceVerificationCurrent ? 'passed' : 'not_checked' :
-      sourceClaimVerification.status === 'failed' ? 'failed' : 'not_checked';
-    for (const issue of sourceClaimVerification.issues.filter(issue => issue.severity === 'error')) issues.push({
-      code: 'source_claim_binding_invalid',
-      message: `源码引用绑定无效：${issue.message}`,
-      recoveryKind: 'correct_evidence',
-    });
-  }
-  if (context.entry === 'new_finalization' && context.sourceApplicability === 'not_applicable' &&
-    currentTypedVerification && sourceVerificationCurrent && sourceClaimVerification?.status === 'not_checked' &&
-    Boolean(context.sourceScopeFingerprint) && sourceBinding?.sourceScopeFingerprint === context.sourceScopeFingerprint &&
-    sourceClaimVerification.bindings.length === 0 && sourceClaimVerification.issues.length === 0 &&
-    isUnusedSourceDecision(result.sourceUseDecision) &&
-    (result.sourceReferences === undefined || Array.isArray(result.sourceReferences) && result.sourceReferences.length === 0)) {
+  // The finalizer stores the source citation check of this body only when it
+  // applies; the gate maps that status and never classifies prose itself.
+  const sourceStatus = result.sourceClaimVerificationResult?.status;
+  if (sourceStatus) {
+    // A citation the run's ledger cannot match is an advisory gap, never a failure.
+    assurance.source = sourceStatus === 'passed' ? 'passed' : sourceStatus === 'partial' ? 'coverage_incomplete'
+      : sourceStatus === 'failed' ? 'failed' : 'not_checked';
+  } else if (context.entry === 'new_finalization') {
+    // No source access, or access without any written citation: nothing to check.
     assurance.source = 'not_applicable';
-  }
-  const claimVerification = result.claimVerificationResult;
-  if (claimVerification) {
-    const sourceProofCurrent = !claimVerification.claimResults.some(claim =>
-      claim.deterministicProof?.kind === 'source_location') || sourceVerificationCurrent;
-    assurance.claims = claimVerification.status === 'partial' ? 'coverage_incomplete' :
-      claimVerification.status === 'passed' ? claimVerificationCurrent && sourceProofCurrent ? 'passed' : 'not_checked' :
-      claimVerification.status === 'failed' ? 'failed' : 'not_checked';
-    if (claimVerification.status === 'failed' || claimVerification.unsupportedClaimCount > 0 ||
-      claimVerification.claimResults.some(claim => claim.status === 'unsupported')) {
-      assurance.claims = 'failed';
-      const errors = claimVerification.issues.filter(issue => issue.severity === 'error');
-      for (const message of [describeContradictedClaims(claimVerification), ...errors.map(issue => issue.message)]) {
-        issues.push({code: 'verifier_contradicted_claim', message, recoveryKind: 'correct_evidence'});
-      }
-    }
   }
   const identity = input.comparisonIdentity;
   assurance.identity = comparisonIdentityStatus(identity);
@@ -363,12 +187,8 @@ export function assessFinalResultQualityAssessment(
     issues.push({code: 'runtime_fallback', message: '运行时降级内容不是已完成的模型正文。'});
   } else if (receiptCurrent && completion) {
     if (completion.status === 'completed') {
-      if (context.outputOrigin === 'sdk_final' || context.outputOrigin === 'assistant_stream' ||
-          context.outputOrigin === 'model_tool_arguments' && hasCurrentAuthoredFinalDelivery(result, context)) {
+      if (context.outputOrigin === 'sdk_final' || context.outputOrigin === 'assistant_stream') {
         assurance.completion = 'passed';
-      } else if (context.outputOrigin === 'evidence_rendered' && verifiedEvidenceRenderedOutput(result, context)) {
-        assurance.completion = 'passed';
-        if (context.evidenceRenderedProof?.kind === 'acknowledgement') assurance.claims = 'not_applicable';
       }
     } else if (completion.status !== 'unknown') {
       assurance.completion = 'failed';
@@ -379,48 +199,17 @@ export function assessFinalResultQualityAssessment(
       });
     }
   }
-  const finalSubmission = context.finalSubmission;
-  const submissionFailure = finalSubmission && isAuthoredFinalSubmissionMode(finalSubmission.mode)
-    ? finalSubmission.outcome !== 'submitted' ? finalSubmission.outcome
-      : hasCurrentAuthoredFinalDelivery(result, context) ? undefined : 'transport_failure' : undefined;
-  if (submissionFailure) {
-    assurance.completion = 'failed';
-    issues.push({code: submissionFailure,
-      message: submissionFailure === 'missing_submission'
-        ? '模型未通过本次已启用的声明提交运输交付正文。' : '本次声明提交运输未完成。'});
-  }
   if (!result.conclusion.trim()) assurance.completion = 'failed';
 
-  const report = assessFinalReportContract({
-    conclusion: result.conclusion, conclusionContract: result.conclusionContract, context,
-  });
-  assurance.report = report.status;
-  const investigation = assessFinalInvestigationContract({
-    conclusion: result.conclusion, conclusionContract: result.conclusionContract, context,
-  });
-  assurance.investigation = investigation.status;
-  assurance.investigationEvidence = investigation.evidenceStatus;
-  // Investigation gaps are independent assurance. They never restart the runtime
-  // or manufacture an incomplete SDK receipt after a delivered answer.
-  if (report.missingSections.length > 0) issues.push({
-    code: 'scene_contract_incomplete',
-    message: '语义评估确认当前报告缺少已适用的内容要求。',
-    recoveryKind: 'complete_report_content',
-    missingSections: report.missingSections,
-  });
   if (context.entry === 'new_finalization') {
     if (assurance.completion === 'not_checked') issues.push({
       code: 'completion_not_checked', message: '当前正文缺少匹配本次候选的服务器完成证明。',
-    });
-    if (context.turnIntent?.status === 'resolved' && context.turnIntent.deliverable === 'report' &&
-      ['not_checked', 'unavailable', 'coverage_incomplete'].includes(report.status)) issues.push({
-      code: 'report_assessment_not_checked', message: '当前报告的语义覆盖尚未完整核验。',
     });
     if (assurance.identity === 'not_checked') issues.push({
       code: 'comparison_identity_incomplete', message: '双 Trace 对比尚缺两侧身份的核验证据。',
     });
   }
-  return {issues, selectedIssue: issues[0], assurance, report, investigation, sourceClaimVerification};
+  return {issues, selectedIssue: issues[0], assurance};
 }
 
 /** Compatibility projection; callers needing assurance consume the full assessment. */
@@ -438,18 +227,15 @@ export function applyFinalResultQualityGate(input: FinalResultQualityInput): Fin
     sameAnalysisCandidate(context.completion, context.acceptedCandidate, result.conclusion) ? context.completion : undefined;
   result.outputOrigin = current ? context.outputOrigin : undefined;
   result.turnIntent = current ? context.turnIntent : undefined;
-  result.reportAssessment = current ? assessment.report.acceptedAssessment : undefined;
-  result.investigationAssessment = current ? assessment.investigation?.acceptedAssessment : undefined;
-  if (assessment.sourceClaimVerification) {
-    result.sourceClaimVerificationResult = assessment.sourceClaimVerification;
-  }
+  delete result.reportAssessment;
+  // Record-only display of the investigation ledger; it carries no assurance status.
+  result.investigationAssessment = current ? context.investigationAssessment : undefined;
   // Verification is independent annotation on the delivered body. Only an
   // actual delivery/lifecycle failure makes the analysis partial; a failed or
   // unavailable review must not discard the answer, alter native completion,
   // lower its finding confidence or present it as verified.
   const issue = assessment.issues.find(({code}) => code === 'empty_conclusion' ||
-    code === 'sdk_incomplete' || code === 'runtime_fallback' || code === 'completion_not_checked' ||
-    code === 'missing_submission' || code === 'transport_failure');
+    code === 'sdk_incomplete' || code === 'runtime_fallback' || code === 'completion_not_checked');
   if (!issue) return undefined;
   result.partial = true;
   result.confidence = Math.min(result.confidence || 0, 0.55);

@@ -7,19 +7,8 @@ import type {SourceExecutionScopeV1, SourceUseDecisionV1} from '../services/code
 import type {KnowledgeUseRecord} from '../services/knowledge/knowledgeUse';
 import type {ReadonlyStrategyRegistrySnapshot} from '../services/selfEvolution/effectiveRuntimeRegistryContext';
 import type {AnalysisDeliveryContext} from '../types/analysisDelivery';
-import type {DataEnvelope} from '../types/dataContract';
 import type {EvidenceReadRequest, EvidenceReadResolution, EvidenceReadView} from '../services/evidence/evidenceReadView';
 import type {AnalysisTurnIntent} from './analysisTurnIntent';
-import {validateAnalysisRunSelection, type AnalysisRunSelection} from './analysisRunSpec';
-import {dispatchWithModelCallRecord, type IntentTransportInput, type IntentTransportResult} from './intentTransport';
-import {runtimeProviderOrigin} from './runtimePerformance';
-import {currentRuntimePerformanceRecorder} from '../services/selfEvolution/runManifestLifecycle';
-import {readConclusionProtocolProjection, releaseConclusionProtocolProjection,
-  claimConclusionProtocolProjection, bindAuthoredFinalDelivery, hasCurrentAuthoredFinalDelivery,
-  type IssuedConclusionProtocolProjection, type NativeConclusionDeclaration} from '../services/security/conclusionProtocolProjection';
-import {analysisDeliveryFingerprint} from '../types/analysisDelivery';
-import {isAuthoredFinalSubmissionMode} from './finalSubmissionImplementation';
-import {sanitizeSourceUseDecision} from '../services/codebase/sourceUseDecision';
 import {isIssuedInvestigationEvidenceSnapshot,
   type InvestigationEvidenceSnapshot} from '../services/evidence/investigationEvidenceLedger';
 
@@ -37,36 +26,13 @@ export interface RuntimeFinalizationContextInput {
   turnIntent: AnalysisTurnIntent;
   strategyRegistry: ReadonlyStrategyRegistrySnapshot;
   traceIdentity: {currentTraceId?: string; referenceTraceId?: string};
-  /** Canonical per-run UI selection; absent only for legacy or pre-preparation fallback paths. */
-  selection?: AnalysisRunSelection;
   deliveryContext: AnalysisDeliveryContext;
   providerQuery?: FinalizationProviderQuery;
   sourceUse?: SourceUseDecisionV1;
   sourceScope?: SourceExecutionScopeV1;
   /** What the run delivered from its selected knowledge bases; never evidence. */
   knowledgeUse?: KnowledgeUseRecord;
-  protocolProjection?: IssuedConclusionProtocolProjection;
-  /** Captured facts only. Availability is not completeness of capture. */
-  capabilityEvidence?: readonly DataEnvelope[];
   evidenceReadView?: EvidenceReadView;
-  /** Same pinned provider/auth, with a new no-tools request and its own cleanup. */
-  dispatchText?: (input: IntentTransportInput) => Promise<IntentTransportResult>;
-  /** Which provider and model `dispatchText` reaches, for its duration estimate and receipt. */
-  deliveryCall?: FinalizationDeliveryCall;
-}
-
-/** Closed identity of the review transport; an origin only, never a path or credential. */
-export interface FinalizationDeliveryCall {
-  providerOrigin?: string;
-  model?: string;
-}
-
-function closedDeliveryCall(value: FinalizationDeliveryCall | undefined): FinalizationDeliveryCall | undefined {
-  if (!value) return undefined;
-  const providerOrigin = runtimeProviderOrigin(value.providerOrigin);
-  const model = typeof value.model === 'string' && value.model.trim() ? value.model.trim().slice(0, 128) : undefined;
-  return providerOrigin || model ? Object.freeze({...(providerOrigin ? {providerOrigin} : {}), ...(model ? {model} : {})})
-    : undefined;
 }
 
 interface ContextState {
@@ -85,34 +51,12 @@ export interface RuntimeFinalizationContext {
   readonly sourceUse?: SourceUseDecisionV1;
   readonly sourceScope?: Readonly<SourceExecutionScopeV1>;
   readonly knowledgeUse?: Readonly<KnowledgeUseRecord>;
-  readonly capabilityEvidence?: readonly DataEnvelope[];
   readonly investigationEvidence?: InvestigationEvidenceSnapshot;
-  readonly hasSemanticTransport: boolean;
-  readonly deliveryCall?: FinalizationDeliveryCall;
-  /** Input-role selection view; never evidence or a serializable result field. */
-  getSelection(signal: AbortSignal): AnalysisRunSelection | undefined;
   /** Input-role view, never a general exemption from output privacy projection. */
   getProviderQuery(signal: AbortSignal): Readonly<FinalizationProviderQuery> | undefined;
-  getNativeDeclaration(result: AnalysisResult, signal: AbortSignal): NativeConclusionDeclaration | undefined;
   resolveReferences(requests: readonly EvidenceReadRequest[], signal: AbortSignal): Promise<readonly EvidenceReadResolution[]>;
-  dispatchText(input: IntentTransportInput & {signal: AbortSignal}): Promise<IntentTransportResult>;
   /** Cancels in-flight operations and drops closures; does not replace a product run lease. */
   dispose(): void;
-}
-
-/**
- * A report's quality gate fails without its semantic review, so a run that will
- * make that review may spend the rest of its budget on it. Eligibility, not the
- * projected body, decides: an ineligible declaration skips the review entirely.
- */
-export function reportReviewUsesRemainingBudget(input: {
-  semanticCall: boolean;
-  turnIntent?: AnalysisTurnIntent;
-  result: Pick<AnalysisResult, 'conclusionContract'>;
-}): boolean {
-  return input.semanticCall && input.turnIntent?.status === 'resolved' &&
-    input.turnIntent.deliverable === 'report' &&
-    input.result.conclusionContract?.bindingEligibility !== 'ineligible';
 }
 
 /** The run's source and knowledge accessor, as every runtime holds it from its MCP server. */
@@ -240,20 +184,6 @@ export function attachFinalizationContext(result: AnalysisResult, input: Runtime
     input.deliveryContext.acceptedCandidate?.runId !== input.runId) {
     throw new Error('finalization_context_identity_mismatch');
   }
-  const selection = input.selection === undefined ? undefined : validateAnalysisRunSelection(input.selection);
-  if (selection?.present && selection.sideResolution.status === 'resolved' &&
-    selection.sideResolution.traceId !== input.traceIdentity.currentTraceId) {
-    throw new Error('finalization_context_selection_mismatch');
-  }
-  let nativeDeclaration: NativeConclusionDeclaration | undefined;
-  if (input.protocolProjection) {
-    nativeDeclaration = readConclusionProtocolProjection(input.protocolProjection, {
-      result, candidate: input.deliveryContext.acceptedCandidate, runId: input.runId,
-    });
-    if (analysisDeliveryFingerprint(sanitizeSourceUseDecision(input.sourceUse)) !==
-      analysisDeliveryFingerprint(result.sourceUseDecision)) throw new Error('finalization_source_projection_mismatch');
-    claimConclusionProtocolProjection(input.protocolProjection);
-  }
   let investigationEvidence: InvestigationEvidenceSnapshot | undefined;
   try {
     const snapshot = input.evidenceReadView?.investigationEvidence?.();
@@ -262,34 +192,17 @@ export function attachFinalizationContext(result: AnalysisResult, input: Runtime
   } catch {
     // Missing observability cannot replace the actual runtime result or grant coverage.
   }
-  try {
-    const deliveryContext = freezeSnapshot(input.deliveryContext);
-    if (nativeDeclaration) bindAuthoredFinalDelivery({context: deliveryContext, result, nativeDeclaration});
-    const typedSubmission = isAuthoredFinalSubmissionMode(deliveryContext.finalSubmission?.mode);
-    const mayReview = !typedSubmission || deliveryContext.finalSubmission?.outcome === 'submitted' &&
-      hasCurrentAuthoredFinalDelivery(result, deliveryContext);
-    contexts.set(result, {controller: new AbortController(), value: {
-      ...input,
-      dispatchText: mayReview ? input.dispatchText : undefined,
-      investigationEvidence,
-      selection,
-      turnIntent: freezeSnapshot(input.turnIntent),
-      traceIdentity: freezeSnapshot(input.traceIdentity),
-      deliveryContext,
-      providerQuery: input.providerQuery ? freezeSnapshot(input.providerQuery) : undefined,
-      sourceUse: input.sourceUse ? freezeSnapshot(input.sourceUse) : undefined,
-      sourceScope: input.sourceScope ? freezeSnapshot(input.sourceScope) : undefined,
-      knowledgeUse: input.knowledgeUse ? freezeSnapshot(input.knowledgeUse) : undefined,
-      capabilityEvidence: input.capabilityEvidence ? freezeSnapshot(input.capabilityEvidence) : undefined,
-      deliveryCall: closedDeliveryCall(input.deliveryCall),
-    }});
-  } catch (error) {
-    if ((nativeDeclaration?.inputKind === 'model_tool_arguments' || nativeDeclaration?.inputKind === 'assistant_json') &&
-        input.protocolProjection) {
-      releaseConclusionProtocolProjection(input.protocolProjection);
-    }
-    throw error;
-  }
+  contexts.set(result, {controller: new AbortController(), value: {
+    ...input,
+    investigationEvidence,
+    turnIntent: freezeSnapshot(input.turnIntent),
+    traceIdentity: freezeSnapshot(input.traceIdentity),
+    deliveryContext: freezeSnapshot(input.deliveryContext),
+    providerQuery: input.providerQuery ? freezeSnapshot(input.providerQuery) : undefined,
+    sourceUse: input.sourceUse ? freezeSnapshot(input.sourceUse) : undefined,
+    sourceScope: input.sourceScope ? freezeSnapshot(input.sourceScope) : undefined,
+    knowledgeUse: input.knowledgeUse ? freezeSnapshot(input.knowledgeUse) : undefined,
+  }});
 }
 
 /** Call immediately after analyze(), before any result copy or display projection. */
@@ -317,19 +230,8 @@ export function takeFinalizationContext(result: AnalysisResult): RuntimeFinaliza
     get sourceUse() { return current().sourceUse; },
     get sourceScope() { return current().sourceScope; },
     get knowledgeUse() { return current().knowledgeUse; },
-    get capabilityEvidence() { return current().capabilityEvidence; },
     get investigationEvidence() { return current().investigationEvidence; },
-    get hasSemanticTransport() { return Boolean(current().dispatchText); },
-    get deliveryCall() { return current().deliveryCall; },
-    getSelection(signal: AbortSignal) { return active(signal).selection; },
     getProviderQuery(signal: AbortSignal) { return active(signal).providerQuery; },
-    getNativeDeclaration(result: AnalysisResult, signal: AbortSignal) {
-      const value = active(signal);
-      return value.protocolProjection ? readConclusionProtocolProjection(value.protocolProjection, {
-        result, candidate: value.deliveryContext.entry === 'historical_restore' ? undefined : value.deliveryContext.acceptedCandidate,
-        runId: value.runId,
-      }) : undefined;
-    },
     async resolveReferences(requests: readonly EvidenceReadRequest[], signal: AbortSignal): Promise<readonly EvidenceReadResolution[]> {
       const value = active(signal);
       const reader = value.evidenceReadView;
@@ -343,27 +245,8 @@ export function takeFinalizationContext(result: AnalysisResult): RuntimeFinaliza
         return requests.map(({key}) => ({key, status: 'incomplete', reason: 'deadline_exceeded'}));
       }
     },
-    async dispatchText(input: IntentTransportInput & {signal: AbortSignal}): Promise<IntentTransportResult> {
-      const value = active(input.signal);
-      if (!value.dispatchText) return {status: 'unavailable', reason: 'invalid_configuration'};
-      const deadlineMs = Math.min(value.deadlineMs, input.deadlineMs);
-      if (!Number.isFinite(deadlineMs)) return {status: 'unavailable', reason: 'invalid_configuration'};
-      if (Date.now() >= deadlineMs) return {status: 'unavailable', reason: 'timeout'};
-      const dispatch = value.dispatchText;
-      try {
-        // The finalizer runs inside the run's manifest scope; its one review is a model call of that run.
-        const recorder = currentRuntimePerformanceRecorder();
-        return await boundedOperation({signal: input.signal, lifetimeSignal: state.controller.signal,
-          deadlineMs, execute: signal => dispatchWithModelCallRecord(recorder, {purpose: 'review', ...value.deliveryCall},
-            {...input, signal, deadlineMs}, dispatch)});
-      } catch (error) {
-        if (!(error instanceof FinalizationDeadlineError)) throw error;
-        return {status: 'unavailable', reason: 'timeout'};
-      }
-    },
     dispose() {
       issuedContexts.delete(context);
-      if (state.value?.protocolProjection) releaseConclusionProtocolProjection(state.value.protocolProjection);
       state.controller.abort(new DOMException('Finalization context disposed', 'AbortError'));
       state.value = undefined;
     },

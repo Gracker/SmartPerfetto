@@ -15,15 +15,6 @@ import {
 } from '../../runtimeToolSpec';
 import { isTraceProcessorQueryCancelledError } from '../../../services/traceProcessorCancellation';
 import {projectRuntimeToolEventPayload} from '../../../services/security/runtimeToolEventProjection';
-import type {OpenAiTypedFinalInvocation, createOpenAiTypedFinalAttempt} from './openAiTypedFinalAdmission';
-
-type TypedFinalAttempt = ReturnType<typeof createOpenAiTypedFinalAttempt>;
-export interface OpenAiToolAdapterOptions {
-  onAdapted?(definition: McpToolDefinition, installed: Tool): void;
-  /** Runtime-owned attempt lookup, never an MCP extra value or a model parameter. */
-  currentFinalAttempt?(): TypedFinalAttempt | undefined;
-}
-
 function getSharedToolSpec(definition: McpToolDefinition): SharedToolSpec {
   if (definition.shared) return definition.shared;
   try {
@@ -65,22 +56,15 @@ function extractOpenAIToolCallId(details: unknown): string | undefined {
  */
 export function createOpenAIToolsFromMcpDefinitions(
   definitions: readonly McpToolDefinition[],
-  options: OpenAiToolAdapterOptions = {},
 ): Tool[] {
   return definitions.map((definition) => {
     const shared = getSharedToolSpec(definition);
-    let installed: Tool;
     const adapted = tool({
       name: definition.name,
       description: shared.description,
       parameters: createJsonSchemaFromZodRawShape(shared.inputSchema) as any,
       strict: true,
       execute: async (args, runContext, details) => {
-        const finalRole = shared.role === 'final_candidate_submission';
-        const attempt = finalRole ? options.currentFinalAttempt?.() : undefined;
-        if (finalRole && !attempt) throw new Error('final_submission_attempt_unavailable');
-        const invocation: OpenAiTypedFinalInvocation | undefined = attempt
-          ? await attempt.stageInvocation({tool: installed, context: runContext, toolCall: details?.toolCall, parsedArguments: args}) : undefined;
         const normalizedArgs = normalizeRuntimeToolArgs(args, shared.inputSchema) as Record<string, unknown>;
         const contextSignal = (runContext?.context as { signal?: AbortSignal } | undefined)?.signal;
         const signal = details?.signal || contextSignal;
@@ -90,10 +74,7 @@ export function createOpenAIToolsFromMcpDefinitions(
           signal,
           toolCallId,
         }));
-        const output = stringifyRuntimeToolResult(result);
-        if (attempt && invocation) attempt.markPrivateHandlerSuccess(invocation,
-          {output, arguments: normalizedArgs});
-        return output;
+        return stringifyRuntimeToolResult(result);
       },
       errorFunction: (_context, error) => {
         if (isTraceProcessorQueryCancelledError(error)) {
@@ -112,8 +93,6 @@ export function createOpenAIToolsFromMcpDefinitions(
     });
     // SDK has now produced its strict schema. Preserve its parser/handler and
     // the shared source schema; only the provider-facing annotations differ.
-    installed = {...adapted, parameters: deduplicateNullableSchemaDescriptions(adapted.parameters)};
-    options.onAdapted?.(definition, installed);
-    return installed;
+    return {...adapted, parameters: deduplicateNullableSchemaDescriptions(adapted.parameters)};
   });
 }

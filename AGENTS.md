@@ -64,10 +64,11 @@ Before feature/bug work, identify affected product surfaces using
 - Fix generators/templates and regenerate their outputs; do not hand-edit
   generated files. After AI Assistant UI changes, verify in dev mode and run
   `./scripts/update-frontend.sh`.
-- Keep final conclusions, evidence/claim verification, identity resolution,
-  reports, snapshots, CLI artifacts and chat projection as separate surfaces.
-  Readability changes must preserve provenance. Model declarations are input
-  to verification, never evidence or authorization.
+- Keep final conclusions, delivery assurance, identity resolution, reports,
+  snapshots, CLI artifacts and chat projection as separate surfaces.
+  Readability changes must preserve provenance. Data accuracy comes from Skills
+  and SQL: fix data acquisition rather than adding per-claim verification. Model
+  prose is never evidence or authorization.
 - Use actual dispatch, collection and streaming state to determine authorship
   and completion. Check real input and context before changing detectors.
   Preserve structured attribution/success facts before transport truncation.

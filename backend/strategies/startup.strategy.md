@@ -153,7 +153,7 @@ final_report_contract:
 
 **Always-inject startup skeleton**
 1. 调用 `startup_analysis` 获取 startup_id、TTID/TTFD、重分类后的 cold/warm/hot、主线程热点和数据质量。
-   平台原始 `original_type` 与 Skill 修正 `startup_type` 必须各有独立事实声明，分别引用原始单元格；不得合并为一条重分类声明。数值重分类标记不是计数，不能替代原始类型声明。
+   正文分别写出平台原始 `original_type` 与 Skill 修正 `startup_type` 及各自来源；不得合并为一条重分类表述。数值重分类标记不是计数，不能替代原始类型。
 2. 调用 `startup_detail` 做阶段分解、四象限、self_ms、线程状态、关键任务和阻塞关系。
 3. 对 startup_detail 的关键 artifact 使用 `fetch_artifact` 读取行数据；摘要或 detail 文本不能替代 artifact 证据。
 4. 冷启动/bindApplication 命中时补 `startup_slow_reasons`；Q4/Sleeping/blocked_functions 命中时补 `blocking_chain_analysis`。

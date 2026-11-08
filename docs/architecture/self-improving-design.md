@@ -160,7 +160,7 @@ Case 知识只来自人工策展：Markdown 经 `npm --prefix backend run ingest
   `finalizeAnalysisResult` 在 contract 完成 owner 投影之后、任何交付绑定之前写入
   `conclusionContract.caseRecommendations`，这是新结果推荐的唯一来源；其 `evidenceRefs` 是签名
   所读的 Trace 证据，`matchedSignatures` 单列签名名。这是签名匹配，不是 claim 验证，报告也
-  这样标注。召回失败只记日志（固定文案），结果不带推荐。召回不进入语义复核，也不决定报告
+  这样标注。召回失败只记日志（固定文案），结果不带推荐。召回不参与交付保证，也不决定报告
   要求：模型在写答案时看不到命中，scrolling 因此不再有引用 case 的要求，`strong_case_retrieval`
   条件已退役（自定义策略仍声明时按 `invalid_condition` 处理）。CLI、对话与 scene run 不召回。
 - `CASE_EVOLUTION_PROMPT_INJECT_ENABLED`：把已准入的 case 作为背景注入 system prompt，需要检索

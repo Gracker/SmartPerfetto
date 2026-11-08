@@ -10,15 +10,15 @@ import {beginRawSqlNativeQuery, createRawSqlNativeProvenance, initializeRawSqlNa
   sealRawSqlNativeQuery, readRawSqlCaptureFields} from '../rawSqlNativeProvenance';
 import {runDeterministicClaimVerifier} from '../../verifier/deterministicClaimVerifier';
 import {SkillExecutor} from '../../skillEngine/skillExecutor';
-import {prepareClaimEvidence, preparedClaimEvidenceSnapshot, preparedEvidenceMatchesInput, evidenceReferenceKey,
-  preparedIdentityResolutions, type PreparedClaimEvidence} from '../claimEvidencePreparation';
+import {prepareClaimEvidence, preparedEvidenceMatchesInput, evidenceReferenceKey,
+  type PreparedClaimEvidence} from '../claimEvidencePreparation';
 import {bindReadResolutionToAnchor, createEvidenceReadView, evidenceReadFailureIsUnreadable, isIssuedEvidenceReadResolution, type EvidenceReadView, type EvidenceReadViewOptions} from '../evidenceReadView';
 import {buildEvidenceContract} from '../evidenceContractBuilder';
 import {runClaimVerification} from '../../verifier/claimVerificationRunner';
 import type {ConclusionContract, ConclusionContractClaimReference} from '../../../agent/core/conclusionContract';
 import type {EvidenceScopeProvenanceV1, IdentityResolutionV1} from '../../../types/identityContract';
 import {createDataEnvelope, type DataEnvelope} from '../../../types/dataContract';
-import {capturedIdentityReadRequests} from '../../processIdentity/capturedIdentity';
+import {capturedIdentityReadRequests, resolveRunCapturedIdentities} from '../../processIdentity/capturedIdentity';
 
 const readOptions: EvidenceReadViewOptions = {ownerKey: 'run:workspace:tenant', allowedTraces: [{traceId: 'trace', traceSide: 'current'}]};
 const field: CapturedFieldSemantics = {unit: 'ms', origin: {kind: 'skill_literal', skillId: 'fixture', stepId: 'table',
@@ -397,8 +397,6 @@ describe('runtime execution evidence read view', () => {
     expect(getCapturedAnchorFacts(anchor)?.row.metric).toBe(2);
     expect(output.claimVerificationResult).toMatchObject({schemaVersion: 'claim_verifier@2', status: 'partial', passed: false});
     expect(output.claimVerificationResult.claimResults[0].deterministicProof).toMatchObject({status: 'proved', kind: 'numeric_cell'});
-    const snapshot = preparedClaimEvidenceSnapshot(preparedEvidence);
-    expect(JSON.parse(JSON.stringify(snapshot)).reads).toHaveLength(1);
     expect(buildEvidenceContract({conclusionContract, preparedEvidence: JSON.parse(JSON.stringify(preparedEvidence)) as PreparedClaimEvidence})
       .anchors.every(item => item.missing)).toBe(true);
     conclusionContract.claims![0].references[0].rowIndex = 3;
@@ -607,96 +605,65 @@ describe('prepared captured identity projection', () => {
     display.meta.identityResolution = {...identity, identityRefId: 'FORGED', status: 'verified', target: {...identity.target, upid: 999}};
     const actual = store.createEvidenceReadView(readOptions);
     const resolveReferences = jest.fn(actual.resolveReferences);
-    const prepared = await prepareClaimEvidence({identityDataEnvelopes: [display, structuredClone(display)],
-      identityTracePin: {currentTraceId: 'trace'}, evidenceReadView: {resolveReferences}});
+    const read = (envelopes: DataEnvelope[]) => resolveRunCapturedIdentities({dataEnvelopes: envelopes,
+      tracePin: {currentTraceId: 'trace'}, resolveReferences: requests => resolveReferences(requests)});
+    const resolved = await read([display, structuredClone(display)]);
     expect(resolveReferences).toHaveBeenCalledTimes(1);
     expect(resolveReferences.mock.calls[0][0]).toMatchObject([{metadataOnly: true, reference: {evidenceRefId: 'data:first'}}]);
-    expect(preparedIdentityResolutions(prepared)).toEqual([identity]);
-    const projected = preparedIdentityResolutions(prepared); projected[0].status = 'error';
-    expect(preparedIdentityResolutions(prepared)).toEqual([identity]);
-    expect(preparedIdentityResolutions(structuredClone(prepared))).toEqual([]);
-    expect(preparedIdentityResolutions(preparedClaimEvidenceSnapshot(prepared) as unknown as PreparedClaimEvidence)).toEqual([]);
-  });
-
-  it('keeps metadata identity reads separate from ineligible claim references', async () => {
-    const store = new ArtifactStore(); const display = envelope(store);
-    const conclusionContract = contract({evidenceRefId: 'data:first', rowIndex: 0, column: 'metric', value: 2});
-    const actual = store.createEvidenceReadView(readOptions);
-    const resolveReferences = jest.fn(actual.resolveReferences);
-    const prepared = await prepareClaimEvidence({conclusionContract, bindingEligibility: 'ineligible',
-      identityDataEnvelopes: [display], identityTracePin: {currentTraceId: 'trace'}, evidenceReadView: {resolveReferences}});
-    expect(resolveReferences).toHaveBeenCalledTimes(1);
-    expect(resolveReferences.mock.calls[0][0]).toHaveLength(1);
-    expect(resolveReferences.mock.calls[0][0][0]).toMatchObject({metadataOnly: true});
-    expect(preparedIdentityResolutions(prepared)).toEqual([identity]);
-    const checked = runClaimVerification({conclusionContract, preparedEvidence: prepared});
-    expect(checked.evidenceContract.anchors.every(anchor => anchor.missing)).toBe(true);
-    expect(checked.claimVerificationResult.claimResults[0].deterministicProof?.status).not.toBe('proved');
-  });
-
-  it('prioritizes claim proof in the same batch and leaves an incomplete identity scan unknown', async () => {
-    const store = new ArtifactStore(); const display = envelope(store);
-    const conclusionContract = contract({evidenceRefId: 'data:first', rowIndex: 0, column: 'metric', value: 2});
-    const view = store.createEvidenceReadView({...readOptions, budget: {maxReferences: 1}});
-    const resolveReferences = jest.fn(view.resolveReferences);
-    const prepared = await prepareClaimEvidence({conclusionContract, identityDataEnvelopes: [display],
-      identityTracePin: {currentTraceId: 'trace'}, evidenceReadView: {resolveReferences}});
-    expect(resolveReferences).toHaveBeenCalledTimes(1);
-    expect(resolveReferences.mock.calls[0][0].map(request => request.metadataOnly)).toEqual([undefined, true]);
-    const checked = runClaimVerification({conclusionContract, preparedEvidence: prepared});
-    expect(checked.evidenceContract.anchors[0].missing).not.toBe(true);
-    expect(getCapturedAnchorFacts(checked.evidenceContract.anchors[0])?.row.metric).toBe(2);
-    expect(checked.claimVerificationResult.claimResults[0].deterministicProof).toMatchObject({kind: 'numeric_cell', status: 'proved'});
-    expect(preparedIdentityResolutions(prepared)).toEqual([]);
+    expect(resolved.identities).toEqual([identity]);
+    resolved.identities[0].status = 'error';
+    expect((await read([display])).identities).toEqual([identity]);
+    expect(resolved.readsFingerprint).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('never restores identity authority from serialized read replies', async () => {
     const store = new ArtifactStore(); const display = envelope(store);
     const view = store.createEvidenceReadView(readOptions);
-    const prepared = await prepareClaimEvidence({identityDataEnvelopes: [display], identityTracePin: {currentTraceId: 'trace'},
-      evidenceReadView: {resolveReferences: async (requests, signal) => structuredClone(await view.resolveReferences(requests, signal))}});
-    expect(preparedIdentityResolutions(prepared)).toEqual([]);
+    const resolved = await resolveRunCapturedIdentities({dataEnvelopes: [display], tracePin: {currentTraceId: 'trace'},
+      resolveReferences: async requests => structuredClone(await view.resolveReferences(requests))});
+    expect(resolved.identities).toEqual([]);
   });
 
   it('does not expose issued identities returned after the read was cancelled', async () => {
     const store = new ArtifactStore(); const display = envelope(store);
     const view = store.createEvidenceReadView(readOptions); const controller = new AbortController();
-    const prepared = await prepareClaimEvidence({identityDataEnvelopes: [display], identityTracePin: {currentTraceId: 'trace'},
-      signal: controller.signal, evidenceReadView: {resolveReferences: async (requests, signal) => {
-        const received = await view.resolveReferences(requests, signal); controller.abort(); return received;
-      }}});
-    expect(preparedIdentityResolutions(prepared)).toEqual([]);
+    const resolved = await resolveRunCapturedIdentities({dataEnvelopes: [display], tracePin: {currentTraceId: 'trace'},
+      signal: controller.signal, resolveReferences: async requests => {
+        const received = await view.resolveReferences(requests, controller.signal); controller.abort(); return received;
+      }});
+    expect(resolved.identities).toEqual([]);
   });
 
   it('retains unsuccessful captured states and rejects conflicting same-ID records in either order', async () => {
     const store = new ArtifactStore(); const ambiguous = {...identity, status: 'ambiguous' as const};
     const first = envelope(store, 'one', ambiguous);
     const view = () => store.createEvidenceReadView(readOptions);
-    const one = await prepareClaimEvidence({identityDataEnvelopes: [first], identityTracePin: {currentTraceId: 'trace'}, evidenceReadView: view()});
-    expect(preparedIdentityResolutions(one)).toEqual([ambiguous]);
+    const read = (envelopes: DataEnvelope[]) => resolveRunCapturedIdentities({dataEnvelopes: envelopes,
+      tracePin: {currentTraceId: 'trace'}, resolveReferences: requests => view().resolveReferences(requests)});
+    expect((await read([first])).identities).toEqual([ambiguous]);
     const second = envelope(store, 'two', identity);
     for (const displays of [[first, second], [second, first]]) {
-      const prepared = await prepareClaimEvidence({identityDataEnvelopes: displays, identityTracePin: {currentTraceId: 'trace'}, evidenceReadView: view()});
-      expect(preparedIdentityResolutions(prepared)).toEqual([]);
+      expect((await read(displays)).identities).toEqual([]);
     }
   });
 
   it('deduplicates matching captured identities across different locators', async () => {
     const store = new ArtifactStore(); const first = envelope(store, 'one'); const second = envelope(store, 'two');
-    const prepared = await prepareClaimEvidence({identityDataEnvelopes: [second, first], identityTracePin: {currentTraceId: 'trace'},
-      evidenceReadView: store.createEvidenceReadView(readOptions)});
-    expect(preparedIdentityResolutions(prepared)).toEqual([identity]);
+    const view = store.createEvidenceReadView(readOptions);
+    const resolved = await resolveRunCapturedIdentities({dataEnvelopes: [second, first], tracePin: {currentTraceId: 'trace'},
+      resolveReferences: requests => view.resolveReferences(requests)});
+    expect(resolved.identities).toEqual([identity]);
   });
 
   it('pins the expected trace before an asynchronous reader can change caller input', async () => {
     const store = new ArtifactStore(); const display = envelope(store);
     const pin = {currentTraceId: 'foreign'};
     const view = store.createEvidenceReadView(readOptions);
-    const prepared = await prepareClaimEvidence({identityDataEnvelopes: [display], identityTracePin: pin,
-      evidenceReadView: {resolveReferences: async (requests, signal) => {
-        pin.currentTraceId = 'trace'; return view.resolveReferences(requests, signal);
-      }}});
-    expect(preparedIdentityResolutions(prepared)).toEqual([]);
+    const resolved = await resolveRunCapturedIdentities({dataEnvelopes: [display], tracePin: pin,
+      resolveReferences: async requests => {
+        pin.currentTraceId = 'trace'; return view.resolveReferences(requests);
+      }});
+    expect(resolved.identities).toEqual([]);
   });
 
   it('exposes only immutable metadata locators, without model-supplied scope/status/rows', () => {

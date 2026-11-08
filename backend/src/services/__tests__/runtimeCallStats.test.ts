@@ -116,7 +116,7 @@ describe('runtime call stats journal and budget', () => {
       estimateMs: 120_000, decision: 'skip'});
     expect(assessDeliveryCallBudget({providerOrigin: 'https://api.z.ai/api/paas/v4', purpose: 'review', inputBytes: 1,
       remainingMs: 150_000, store: null})).toMatchObject({estimateMs: 180_000, decision: 'skip'});
-    expect(assessDeliveryCallBudget({purpose: 'declaration_repair', inputBytes: 1, remainingMs: 90_000, store: null}))
+    expect(assessDeliveryCallBudget({purpose: 'continuation', inputBytes: 1, remainingMs: 90_000, store: null}))
       .toMatchObject({estimateMs: 90_000, decision: 'dispatch'});
   });
 

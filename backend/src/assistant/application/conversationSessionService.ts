@@ -28,13 +28,7 @@ import {
 } from '../../services/security/analysisPrivateContext';
 import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
 import {PublicRequestError} from '../../utils/publicRequestError';
-import {
-  buildReviewNotFinishedResult,
-  mayPersistUnverifiedBody,
-  resolveReviewStopWatchdogMs,
-  ReviewStopController,
-  settlesWithin,
-} from '../../services/reviewStopHandle';
+import {settlesWithin} from '../../utils/settlesWithin';
 import {projectAnalysisFailure} from '../../services/analysisFailureProjection';
 import {parseOutputLanguage} from '../../agentv3/outputLanguage';
 
@@ -69,20 +63,9 @@ export interface ConversationRuntimeInput {
   /**
    * Display-only answer draft (`answer_token` / `answer_segment_reset`) from a
    * draft-capable runtime. Delivered live only: never retained for replay or
-   * written to history, and superseded by provisional_answer / run_completed.
+   * written to history, and superseded by run_completed.
    */
   onAnswerDraft?(update: unknown): void;
-  /**
-   * The finished answer, owner-projected, while its semantic review runs. At
-   * most once per run; `run_completed` carries the same answer with its verdict.
-   */
-  onProvisionalAnswer?(answer: {message: string}): boolean | void;
-  /**
-   * Ends only the semantic review of a delivered answer: the review resolves
-   * `cancelled_by_user` and the run still finalizes and commits its turn.
-   * Owned by the session service's stop state; cancel() remains the full abort.
-   */
-  reviewStopSignal?: AbortSignal;
 }
 
 export interface ConversationRuntimeAdapter {
@@ -94,7 +77,6 @@ export interface ConversationRuntimeAdapter {
 type ConversationSessionEventPayload =
   | {type: 'run_started'; sessionId: string; runId: string}
   | {type: 'runtime_update'; sessionId: string; runId: string; update: unknown}
-  | {type: 'provisional_answer'; sessionId: string; runId: string; message: string; verification: 'pending'}
   | {
       type: 'run_completed';
       sessionId: string;
@@ -183,13 +165,8 @@ export interface StartConversationTurnInput {
   requestId?: string;
 }
 
-/**
- * A stop of a delivered answer returns at once (`review_stop_requested`); the
- * turn then arrives with `run_completed`. Every other stop settles first.
- */
-export type ConversationCancelResult =
-  | {status: 'review_stop_requested'}
-  | {status: 'settled'; outcome: ConversationRuntimeOutcome};
+/** A stop settles the run before it returns. */
+export type ConversationCancelResult = {status: 'settled'; outcome: ConversationRuntimeOutcome};
 
 export interface ConversationTurnReceipt {
   sessionId: string;
@@ -204,8 +181,6 @@ interface ConversationSessionServiceDeps {
   createId?(prefix: 'conversation' | 'run'): string;
   now?(): number;
   cancelSettleTimeoutMs?: number;
-  /** Bound on the commit after a review-only or force stop; see resolveReviewStopWatchdogMs. */
-  reviewStopWatchdogMs?: number;
   onRunStarted?(session: ConversationSession, run: ConversationRun): void;
   onRunSettled?(session: ConversationSession, run: ConversationRun): void;
 }
@@ -274,7 +249,6 @@ export class ConversationSessionService {
   private readonly createId: (prefix: 'conversation' | 'run') => string;
   private readonly now: () => number;
   private readonly cancelSettleTimeoutMs: number;
-  private readonly reviewStopWatchdogMs: number;
   private readonly onRunStarted?: ConversationSessionServiceDeps['onRunStarted'];
   private readonly onRunSettled?: ConversationSessionServiceDeps['onRunSettled'];
   private readonly pendingContexts = new WeakMap<ConversationSession, ConversationPendingContext>();
@@ -282,15 +256,12 @@ export class ConversationSessionService {
   private nextEventSeqId = 0;
   private readonly cancellationRequested = new WeakSet<ConversationRun>();
   private readonly runAuthorizationChecks = new WeakMap<ConversationRun, () => void>();
-  /** Stop state and delivery of each run; never serialized. */
-  private readonly runStops = new WeakMap<ConversationRun, ReviewStopController<ConversationRuntimeOutcome>>();
 
   constructor(deps: ConversationSessionServiceDeps) {
     this.createRuntime = deps.createRuntime;
     this.createId = deps.createId ?? defaultCreateId;
     this.now = deps.now ?? Date.now;
     this.cancelSettleTimeoutMs = deps.cancelSettleTimeoutMs ?? 120_000;
-    this.reviewStopWatchdogMs = deps.reviewStopWatchdogMs ?? resolveReviewStopWatchdogMs();
     this.onRunStarted = deps.onRunStarted;
     this.onRunSettled = deps.onRunSettled;
   }
@@ -308,7 +279,6 @@ export class ConversationSessionService {
     return {success: true, work: projectAssistantWork({sessionId, runId: run?.runId,
       status: session.status, live: Boolean(session.activeRun), startedAt: run?.startedAt,
       completedAt: run?.completedAt, interrupted: session.recoveryStatus === 'interrupted',
-      provisionalDelivered: run ? this.runStops.get(run)?.provisionalDelivered : false,
       hasResult: Boolean(run?.outcome?.message), outcomeKind: run?.outcome?.kind,
       ...(activity?.captureActivity ? {captureActivity: {observation: activity.captureActivity.observation,
         tables: activity.captureActivity.tables, rowSlots: activity.captureActivity.rowSlots,
@@ -548,7 +518,6 @@ export class ConversationSessionService {
 
     const runId = this.createId('run');
     const admittedAt = this.now();
-    const stop = this.createRunStop(session, () => run);
     const privateContext = resolveAnalysisPrivateContext(session);
     const sourceDepth = input.runtimeOptions?.sourceDepth ?? session.sourceDepth;
     const runtimeInput: ConversationRuntimeInput = {
@@ -577,7 +546,7 @@ export class ConversationSessionService {
         this.publish(session!.sessionId, {type: 'runtime_update', sessionId: session!.sessionId, runId, update});
       },
       onAnswerDraft: (update) => {
-        if (!this.isCurrentRun(session!, run) || this.cancellationRequested.has(run) || stop.provisionalDelivered) return;
+        if (!this.isCurrentRun(session!, run) || this.cancellationRequested.has(run)) return;
         // A draft is display-only: a revoked authorization drops it; the run's
         // own path reports the revocation.
         try {
@@ -589,17 +558,6 @@ export class ConversationSessionService {
         this.publish(session!.sessionId, {type: 'runtime_update', sessionId: session!.sessionId, runId, update},
           {liveOnly: true});
       },
-      onProvisionalAnswer: ({message: answer}) => {
-        if (!answer.trim() || stop.provisionalDelivered) return false;
-        if (!this.isCurrentRun(session!, run) || this.cancellationRequested.has(run)) return false;
-        this.runAuthorizationChecks.get(run)?.();
-        if (!this.isCurrentRun(session!, run) || this.cancellationRequested.has(run)) return false;
-        stop.markDelivered(answer);
-        this.publish(session!.sessionId, {type: 'provisional_answer', sessionId: session!.sessionId, runId,
-          message: answer, verification: 'pending'});
-        return true;
-      },
-      reviewStopSignal: stop.signal,
     };
     const run: ConversationRun = {
       runId,
@@ -618,7 +576,6 @@ export class ConversationSessionService {
     // Bind only new turns to the grant checked for this run; older entries keep their original provenance.
     const authorizationFingerprint = session.analysisContextFingerprint;
     run.analysisContextFingerprint = authorizationFingerprint;
-    this.runStops.set(run, stop);
     this.runAuthorizationChecks.set(run, () => {
       try { assertCurrentAnalysisContextAuthorization(authorizationSelection, authorizationScope, authorizationFingerprint); }
       catch (error) { this.pendingContexts.delete(session!); throw error; }
@@ -628,7 +585,6 @@ export class ConversationSessionService {
     try {
       this.onRunStarted?.(session, run);
     } catch (error) {
-      stop.dispose();
       session.activeRun = undefined;
       session.runs.pop();
       if (isNewSession) {
@@ -666,7 +622,7 @@ export class ConversationSessionService {
     }
     const completion = runtimeCompletion
       .then((outcome) => {
-        return this.commitRun(session!, run, outcome, true) ?? {kind: 'cancelled' as const, message: ''};
+        return this.commitRun(session!, run, outcome) ?? {kind: 'cancelled' as const, message: ''};
       })
       .catch((error: unknown) => {
         if (!this.isCurrentRun(session!, run)) return {kind: 'cancelled' as const, message: ''};
@@ -691,7 +647,6 @@ export class ConversationSessionService {
         throw error;
       });
     run.completion = completion;
-    void completion.then(() => stop.dispose(), () => stop.dispose());
 
     return {
       sessionId: session.sessionId,
@@ -714,13 +669,7 @@ export class ConversationSessionService {
     return this.startTurn({...input, analysisContextFingerprint: session.analysisContextFingerprint});
   }
 
-  /**
-   * Stop request for the active run. Before an answer is delivered it is a full
-   * cancel. After delivery the first stop ends only the review and returns at
-   * once; the run commits its normal turn (the watchdog bounds that commit). A
-   * second stop forces: it waits for that commit up to the same watchdog, then
-   * aborts, persisting the read body as an unverified partial turn if needed.
-   */
+  /** Stop request for the active run: a full cancel that settles before it returns. */
   async cancelRun(sessionId: string, runId: string): Promise<ConversationCancelResult> {
     const session = this.sessions.getSession(sessionId);
     if (!session) throw conversationNotFound(sessionId);
@@ -728,31 +677,15 @@ export class ConversationSessionService {
     if (!run || run.runId !== runId) {
       throw new ConversationRequestError('CONVERSATION_RUN_NOT_ACTIVE', `Active conversation run not found: ${runId}`, 409);
     }
-    const stop = this.runStops.get(run);
-    const request = stop?.requestStop() ?? 'full';
-    if (stop?.provisionalDelivered) {
-      if (request === 'review') return {status: 'review_stop_requested'};
-      await stop.awaitCommitOrExpire(run.completion);
-      return {status: 'settled', outcome: run.outcome ?? {kind: 'cancelled', message: ''}};
-    }
-    return {status: 'settled', outcome: await this.cancelUndeliveredRun(session, run)};
+    return {status: 'settled', outcome: await this.cancelActiveRun(session, run)};
   }
 
-  /**
-   * A new turn or steer replaces the active run: stop it and wait for its
-   * terminal commit within one watchdog bound, never a review plus a cancel.
-   */
+  /** A new turn or steer replaces the active run: stop it and wait for its terminal commit. */
   async supersedeRun(sessionId: string, runId: string): Promise<ConversationRuntimeOutcome> {
-    const first = await this.cancelRun(sessionId, runId);
-    if (first.status === 'settled') return first.outcome;
-    const session = this.sessions.getSession(sessionId);
-    const run = session?.runs.find(candidate => candidate.runId === runId);
-    if (!session || !run || session.activeRun !== run) return run?.outcome ?? {kind: 'cancelled', message: ''};
-    const forced = await this.cancelRun(sessionId, runId);
-    return forced.status === 'settled' ? forced.outcome : run.outcome ?? {kind: 'cancelled', message: ''};
+    return (await this.cancelRun(sessionId, runId)).outcome;
   }
 
-  private async cancelUndeliveredRun(session: ConversationSession, run: ConversationRun): Promise<ConversationRuntimeOutcome> {
+  private async cancelActiveRun(session: ConversationSession, run: ConversationRun): Promise<ConversationRuntimeOutcome> {
     this.cancellationRequested.add(run);
     const cancellation = Promise.resolve().then(() => session.runtime.cancel(session.sessionId, run.runId))
       .then(() => run.completion);
@@ -765,43 +698,6 @@ export class ConversationSessionService {
     } finally {
       if (this.isCurrentRun(session, run)) this.settleCancelledRun(session, run);
     }
-  }
-
-  /**
-   * The run's stop controller. Its watchdog fallback keeps the owner-projected
-   * message the user read (the conversation never holds the raw body), and the
-   * privacy rule is per run: registered source counts only when this run used it.
-   */
-  private createRunStop(session: ConversationSession,
-    getRun: () => ConversationRun): ReviewStopController<ConversationRuntimeOutcome> {
-    const abortRuntime = (run: ConversationRun) => {
-      this.cancellationRequested.add(run);
-      void Promise.resolve().then(() => session.runtime.cancel(session.sessionId, run.runId)).catch(() => undefined);
-    };
-    return new ReviewStopController<ConversationRuntimeOutcome>({watchdogMs: this.reviewStopWatchdogMs, owner: {
-      mayPersistPartial: () => mayPersistUnverifiedBody({
-        // A private run's unverified body stays live-only: no watchdog fallback persists it.
-        privateKnowledge: privateContextRestrictsAudience(getRun().privateContext),
-        isCurrent: () => this.isCurrentRun(session, getRun()),
-        assertAuthorized: () => this.runAuthorizationChecks.get(getRun())?.(),
-      }),
-      commitPartial: message => {
-        const run = getRun();
-        const accepted = this.commitRun(session, run, {kind: 'answered', message,
-          finalResult: buildReviewNotFinishedResult({sessionId: session.sessionId, conclusion: message,
-            outputLanguage: session.outputLanguage ?? 'zh-CN'})});
-        if (!accepted) return false;
-        // The finalization that never settled is abandoned; its late result is ignored.
-        abortRuntime(run);
-        return true;
-      },
-      fullCancel: () => {
-        const run = getRun();
-        if (!this.isCurrentRun(session, run)) return run.outcome ?? {kind: 'cancelled', message: ''};
-        abortRuntime(run);
-        return this.settleCancelledRun(session, run);
-      },
-    }});
   }
 
   buildFullAnalysisHandoff(sessionId: string): FullAnalysisHandoff | undefined {
@@ -877,9 +773,8 @@ export class ConversationSessionService {
     session: ConversationSession,
     run: ConversationRun,
     outcome: ConversationRuntimeOutcome,
-    finalized = false,
   ): ConversationRuntimeOutcome | undefined {
-    const accepted = this.completeRun(session, run, outcome, finalized);
+    const accepted = this.completeRun(session, run, outcome);
     if (!accepted) return undefined;
     this.settleRun(session, run);
     if (this.isLatestRun(session, run)) {
@@ -893,14 +788,11 @@ export class ConversationSessionService {
     session: ConversationSession,
     run: ConversationRun,
     outcome: ConversationRuntimeOutcome,
-    finalized: boolean,
   ): ConversationRuntimeOutcome | undefined {
     if (!this.isCurrentRun(session, run)) return undefined;
-    // After delivery the user already holds the answer: a finalized outcome that
-    // reaches the commit wins over a stop. A run that is no longer current (a
-    // replaced session or run) never reaches this point.
-    if (this.cancellationRequested.has(run) && outcome.kind !== 'cancelled' &&
-      !(finalized && this.runStops.get(run)?.provisionalDelivered)) outcome = {kind: 'cancelled', message: ''};
+    // A stop wins over any outcome that reaches the commit after it. A run that
+    // is no longer current (a replaced session or run) never reaches this point.
+    if (this.cancellationRequested.has(run) && outcome.kind !== 'cancelled') outcome = {kind: 'cancelled', message: ''};
     try {this.runAuthorizationChecks.get(run)?.();}
     catch (error) {
       if (outcome.kind !== 'cancelled') throw error;

@@ -27,7 +27,7 @@ SELECT COUNT(*) AS total_frames, COALESCE(SUM(is_jank), 0) AS jank_frames FROM p
 function frameFactExpectation({taskKind = 'fact', deliverable = 'answer', scope = 'bounded_question', withJank = false} = {}) {
   return {schemaVersion: 1, intent: {...(withJank ? {sceneId: 'scrolling'} : {}), taskKind, scope, deliverable},
     facts: ['total_frames', ...(withJank ? ['jank_frames'] : [])].map(column => ({
-      id: column, kind: 'numeric', columns: [column], verification: 'proved', unit: 'frames',
+      id: column, kind: 'numeric', unit: 'frames',
       oracle: {sql: FRAME_FACT_SQL, column, unit: 'frames'},
     }))};
 }
@@ -68,13 +68,13 @@ function createProviderE2eHarness(providerKind) {
     startup: 'tests/e2e/flagship/startup-heavy.expectation.json',
     scrolling: 'tests/e2e/flagship/scrolling-customer.expectation.json',
   };
-  const FLAGSHIP_SUMMARY_SCHEMA = 'agent_sse_flagship_summary@1';
+  const FLAGSHIP_SUMMARY_SCHEMA = 'agent_sse_flagship_summary@2';
   const FLAGSHIP_SUMMARY_DIR = profile.slug === 'glm' ? 'test-output/e2e-baselines' : `test-output/e2e-baselines/${profile.slug}`;
   // A baseline older than this is still compared, but only as visibly stale local diagnosis.
   const FLAGSHIP_BASELINE_STALE_MS = 14 * 24 * 60 * 60 * 1000;
-  const FLAGSHIP_CHECK_GROUPS = ['value', 'proof', 'delivery'];
+  const FLAGSHIP_CHECK_GROUPS = ['value', 'delivery'];
   const FLAGSHIP_FINGERPRINT_KEYS = ['suite', 'runtime', 'traceSha256', 'query', 'expectationHash', 'providerOrigin', 'model',
-    'commit', 'gateSchemaVersion', 'verificationSchemaVersion', 'traceProcessorVersion', 'stdlibRevision'];
+    'commit', 'gateSchemaVersion', 'traceProcessorVersion', 'stdlibRevision'];
   const SEMANTIC_DELTA_QUERIES = [
     {
       id: 'autonomous-diagnosis',
@@ -107,13 +107,12 @@ function createProviderE2eHarness(providerKind) {
     const marker = facts.marker.replace(/'/g, "''");
     return {schemaVersion: 1, intent: {sceneId: 'startup',
       ...(query.kind === 'quantitative-only' ? {taskKind: 'fact', scope: 'bounded_question', deliverable: 'answer'} : {})},
-      facts: [{id: 'source_marker_duration', kind: 'numeric', columns: ['dur', 'dur_ns'], verification: 'proved',
+      facts: [{id: 'source_marker_duration', kind: 'numeric',
         value: facts.durationNs, unit: 'ns', oracle: {
-          sql: `SELECT s.id AS row_id, s.dur AS duration_ns, s.ts AS start_ts, t.upid FROM slice s
+          sql: `SELECT s.dur AS duration_ns FROM slice s
             JOIN thread_track tt ON s.track_id = tt.id JOIN thread t USING(utid) JOIN process p USING(upid)
             WHERE s.name = '${marker}' AND t.name = '${facts.thread}' AND p.name = '${facts.process}'`,
-          column: 'duration_ns', unit: 'ns', anchorMatch: {startTs: 'start_ts', upid: 'upid',
-            nativeRow: {relation: 'slice', idColumn: 'id', oracleColumn: 'row_id'}},
+          column: 'duration_ns', unit: 'ns',
         }}], uncoveredFacets: query.kind === 'quantitative-only' ? undefined : ['source recommendation action semantics']};
   }
 
@@ -147,7 +146,6 @@ function createProviderE2eHarness(providerKind) {
         '--output',
         `test-output/e2e-${profile.slug}-startup-real.json`,
         '--keep-session',
-        '--require-claim-verifier-ok',
         '--require-non-partial',
         '--expectation-json',
         `@${FLAGSHIP_EXPECTATIONS.startup}`,
@@ -219,7 +217,6 @@ function createProviderE2eHarness(providerKind) {
         '--output',
         `test-output/e2e-${profile.slug}-dual-trace-real.json`,
         '--keep-session',
-        '--require-claim-verifier-ok',
         '--require-non-partial',
         '--require-tool',
         'get_comparison_context',
@@ -332,7 +329,7 @@ function createProviderE2eHarness(providerKind) {
       const output = profile.slug === 'glm' ? `test-output/system-analysis/${scenario.id}.json`
         : `test-output/system-analysis/${profile.slug}/${scenario.id}.json`;
       const args = ['--mode', 'full', '--provider-id', 'env', '--trace', scenario.trace, '--query', scenario.query,
-        '--output', output, '--require-non-partial', '--require-claim-verifier-ok', '--expectation-json', `@${expectationPath}`];
+        '--output', output, '--require-non-partial', '--expectation-json', `@${expectationPath}`];
       if (scenario.selectSlice) args.push('--select-slice-json', JSON.stringify(scenario.selectSlice));
       if (scenario.referenceTrace) args.push('--reference-trace', scenario.referenceTrace,
         '--trace-pair-layout', 'horizontal', '--trace-pair-workspace-open', '--trace-pair-active', 'current');
@@ -610,8 +607,8 @@ function createProviderE2eHarness(providerKind) {
     console.log(`The system-analysis suite uses declarative real/constructed fixtures. all/${profile.runtimeGroup} selects OpenAI, Pi and OpenCode; Claude/Qoder require separate runs.`);
     console.log('Use --suite system-analysis --system-scenario <manifest ID> for one diagnostic; it never represents full matrix acceptance.');
     console.log('The flagship suite runs startup/scrolling independent expectation files and writes fingerprinted summaries.');
-    console.log('Without --strict, wrong/undelivered answers and hard flags fail; missing proof remains INCONCLUSIVE.');
-    console.log('--strict requires value, delivery, proof and every hard flag to pass. Delta baselines prove regression status, never current acceptance.');
+    console.log('Without --strict, wrong/undelivered answers and hard flags fail; unmeasured facets remain INCONCLUSIVE.');
+    console.log('--strict requires value, delivery and every hard flag to pass. Delta baselines prove regression status, never current acceptance.');
     console.log('Explicit --output-dir refuses existing reports before dispatch. Source matrices always require an empty/fresh output directory; other legacy default paths retain their behavior.');
     console.log('For a diagnostic source scenario use --preflight --query-id autonomous-diagnosis|quantitative-only|explicit-source-location --condition A0|A2|A3 and one runtime.');
   }
@@ -831,7 +828,6 @@ function createProviderE2eHarness(providerKind) {
       '--output', outputPath,
       '--timeout-ms', String(timeoutMs),
       '--require-non-partial',
-      '--require-claim-verifier-ok',
       '--expectation-json', JSON.stringify(sourceFactExpectation(query)),
       '--forbid-text', PRIVATE_SOURCE_CANARY,
     ];
@@ -874,70 +870,6 @@ function createProviderE2eHarness(providerKind) {
       .trim().slice(0, 1000);
   }
 
-  function nativeOccurrenceForAnchor(anchor, verification) {
-    const proof = verification?.deterministicProof;
-    const rows = proof?.nativeRows;
-    if (rows === undefined || Array.isArray(rows) && rows.length === 0) return {status: 'absent'};
-    if (!Array.isArray(rows) || verification?.status !== 'verified' || proof.status !== 'proved' ||
-        !['numeric_cell', 'captured_cell', 'interval_overlap', 'comparison_delta'].includes(proof.kind) ||
-        verification.propositionCoverage?.status !== 'complete' || verification.propositionCoverage.uncovered?.length !== 0 ||
-        !proof.anchorIds?.includes(anchor.anchorId) || !proof.evidenceRefIds?.includes(anchor.evidenceRefId)) return {status: 'invalid'};
-    const candidates = rows.filter(row => row?.anchorId === anchor.anchorId && row?.evidenceRefId === anchor.evidenceRefId);
-    if (candidates.length !== 1) return {status: 'invalid'};
-    const row = candidates[0];
-    if (!anchor.context?.captureId || row.captureId !== anchor.context.captureId ||
-        row.traceId !== anchor.context.traceId || row.traceSide !== 'current' || anchor.context.traceSide !== 'current' ||
-        typeof row.relation !== 'string' || !/^[a-z_][a-z0-9_]*$/.test(row.relation) ||
-        typeof row.idColumn !== 'string' || !/^[a-z_][a-z0-9_]*$/.test(row.idColumn) ||
-        !Number.isSafeInteger(row.id) || row.id < 0 || !/^[a-f0-9]{64}$/.test(row.schemaFingerprint) ||
-        !verification.referenceCells?.some(cell => cell.anchorId === anchor.anchorId &&
-          cell.evidenceRefId === anchor.evidenceRefId && cell.status === 'matched')) return {status: 'invalid'};
-    return {status: 'valid', row};
-  }
-
-  function sameTraceOccurrence(anchor, oracle, anchorVerification, oracleVerification) {
-    if (anchor.missing || oracle.missing || !anchor.context?.traceId || anchor.context.traceId !== oracle.context?.traceId ||
-        anchor.context.traceSide !== 'current' || oracle.context?.traceSide !== 'current') return false;
-    for (const key of ['upid', 'utid', 'pid', 'tid', 'packageName', 'processName', 'threadName']) {
-      if (anchor.identity?.[key] !== undefined && oracle.identity?.[key] !== undefined &&
-          anchor.identity[key] !== oracle.identity[key]) return false;
-    }
-    for (const key of ['startTs', 'endTs', 'unit']) {
-      if (anchor.timeRange?.[key] !== undefined && oracle.timeRange?.[key] !== undefined &&
-          String(anchor.timeRange[key]) !== String(oracle.timeRange[key])) return false;
-    }
-    const sameCapture = Boolean(anchor.evidenceRefId) && anchor.evidenceRefId === oracle.evidenceRefId;
-    const cells = anchor.cells || [];
-    const oracleCells = oracle.cells || [];
-    const rowConflict = cells.some(cell => oracleCells.some(other =>
-      (sameCapture && Number.isInteger(cell.rowIndex) && Number.isInteger(other.rowIndex) && cell.rowIndex !== other.rowIndex) ||
-      Object.entries(cell.rowSelector || {}).some(([key, value]) =>
-        Object.hasOwn(other.rowSelector || {}, key) && !isDeepStrictEqual(value, other.rowSelector[key]))));
-    if (rowConflict) return false;
-    const native = nativeOccurrenceForAnchor(anchor, anchorVerification);
-    const nativeOracle = nativeOccurrenceForAnchor(oracle, oracleVerification);
-    if (native.status === 'invalid' || nativeOracle.status === 'invalid') return false;
-    if (native.status === 'valid' && nativeOracle.status === 'valid') {
-      return ['traceId', 'traceSide', 'relation', 'idColumn', 'id', 'schemaFingerprint']
-        .every(key => native.row[key] === nativeOracle.row[key]);
-    }
-    if (sameCapture) {
-      // An evidence id identifies a result set. Cross-claim reuse must identify its
-      // actual row, not merely a coincident time or a different row in that set.
-      if (cells.some(cell => oracleCells.some(other =>
-        Number.isInteger(cell.rowIndex) && cell.rowIndex >= 0 && cell.rowIndex === other.rowIndex ||
-        Object.keys(cell.rowSelector || {}).length > 0 && isDeepStrictEqual(cell.rowSelector, other.rowSelector)))) return true;
-      return Boolean(anchor.anchorId) && anchor.anchorId === oracle.anchorId;
-    }
-    // Across independent captures, require the entire physical interval and the
-    // same trace-scoped thread and process. Shared row selectors may not conflict.
-    const validRange = range => range?.unit === 'ns' && /^\d+$/.test(String(range.startTs)) &&
-      /^\d+$/.test(String(range.endTs)) && BigInt(range.endTs) > BigInt(range.startTs);
-    return validRange(anchor.timeRange) && validRange(oracle.timeRange) &&
-      ['upid', 'utid'].every(key => Number.isInteger(anchor.identity?.[key]) && anchor.identity[key] >= 0 &&
-        anchor.identity[key] === oracle.identity?.[key]);
-  }
-
   function evaluateSemanticConditionReport(input) {
     const {report, query, condition, sourceRoot} = input;
     const summary = report?.summary;
@@ -971,41 +903,8 @@ function createProviderE2eHarness(providerKind) {
     const overallTaskChecksPassed = Object.keys(task?.checks || {}).length > 0 &&
       Object.values(task.checks).every(value => value === true);
     const fact = task?.facts?.source_marker_duration;
-    const claims = summary?.terminalAnalysis?.conclusionContract?.claims || [];
-    const supports = summary?.terminalAnalysis?.claimSupport || [];
-    const claimResults = summary?.terminalAnalysis?.claimVerificationResult?.claimResults || [];
-    const claimVerification = claimId => {
-      const matches = claimResults.filter(result => result.claimId === claimId);
-      return matches.length === 1 ? matches[0] : undefined;
-    };
-    const uniqueIds = ids => Array.isArray(ids) && ids.length > 0 &&
-      ids.every(id => typeof id === 'string' && id.length > 0) && new Set(ids).size === ids.length;
-    const oracleClaimIds = new Set(Array.isArray(fact?.matchedClaimIds) ? fact.matchedClaimIds : []);
-    const oracleAnchorIds = new Set(Array.isArray(fact?.matchedAnchorIds) ? fact.matchedAnchorIds : []);
-    // The verifier already matched the independent oracle. Retain that result only
-    // while its exact claim/proof/anchor association is present in this terminal.
-    const oracleAnchors = [...oracleClaimIds].flatMap(claimId => {
-      const declared = claims.filter(claim => claim.id === claimId);
-      const supported = supports.filter(support => support.claimId === claimId);
-      const verification = claimVerification(claimId);
-      const proof = verification?.deterministicProof;
-      if (declared.length !== 1 || declared[0].kind !== 'numeric' || supported.length !== 1 ||
-          verification?.status !== 'verified' || proof?.kind !== 'numeric_cell' || proof.status !== 'proved' ||
-          verification.propositionCoverage?.status !== 'complete' || verification.propositionCoverage.uncovered?.length !== 0) return [];
-      return (supported[0].anchors || []).filter(anchor => oracleAnchorIds.has(anchor.anchorId) &&
-        supported[0].anchors.filter(other => other.anchorId === anchor.anchorId).length === 1 &&
-        !anchor.missing && typeof report?.traceId === 'string' && anchor.context?.traceId === report.traceId &&
-        anchor.context.traceSide === 'current' && proof.anchorIds?.includes(anchor.anchorId) &&
-        proof.evidenceRefIds?.includes(anchor.evidenceRefId) && verification.referenceCells?.some(cell =>
-          cell.anchorId === anchor.anchorId && cell.evidenceRefId === anchor.evidenceRefId && cell.status === 'matched'))
-        .map(anchor => ({claimId, anchor, verification}));
-    });
-    const traceFactPassed = fact?.proposition === 'proved' && fact.matched === true &&
-      task?.checks?.['fact:source_marker_duration'] === true &&
-      summary?.terminalAnalysis?.claimVerificationResult?.schemaVersion === 'claim_verifier@2' &&
-      uniqueIds(fact.matchedClaimIds) && uniqueIds(fact.matchedAnchorIds) &&
-      [...oracleClaimIds].every(claimId => oracleAnchors.some(item => item.claimId === claimId)) &&
-      [...oracleAnchorIds].every(anchorId => oracleAnchors.some(item => item.anchor.anchorId === anchorId));
+    // The answer body states the independently queried marker duration.
+    const traceFactPassed = fact?.matched === true && task?.checks?.['fact:source_marker_duration'] === true;
     const sourceToolCount = ['search_codebase', 'read_codebase_file', 'lookup_app_source']
       .reduce((count, tool) => count + (summary?.toolCallCounts?.[tool] || 0), 0);
     const forbiddenMatches = summary?.forbiddenTextMatches || {};
@@ -1018,20 +917,11 @@ function createProviderE2eHarness(providerKind) {
         '[Code:',
       ].every(text => forbiddenMatches[text] !== true) &&
       (summary?.analysisCompletedSourceReferenceCount || 0) === 0 &&
-      (summary?.analysisCompletedSourceBindingCount || 0) === 0 &&
+      (summary?.analysisCompletedSourceCitationCount || 0) === 0 &&
       sourceToolCount === 0
     );
-    const claimStatuses = Array.isArray(summary?.analysisCompletedSourceClaimStatuses)
-      ? summary.analysisCompletedSourceClaimStatuses
-      : [];
-    // Weaker-than-linked source claims are delivered (not failed); an invalid
-    // reference is the one failure. The oracle-linked claim must independently
-    // meet sourceIdentityPassed below.
-    const sourceBindingPassed =
-      summary?.analysisCompletedSourceClaimVerifierStatus !== 'failed' &&
-      summary?.analysisCompletedSourceReferenceMembershipPassed === true &&
-      claimStatuses.length > 0 &&
-      claimStatuses.every(status => status !== 'invalid');
+    // The citation check against this run's references: an unissued citation is the one failure.
+    const sourceBindingPassed = summary?.analysisCompletedSourceClaimVerifierStatus !== 'failed';
     const sourceUseDecision = summary?.analysisCompletedSourceUseDecision ??
       summary?.terminalAnalysis?.conclusionContract?.sourceUseDecision;
     const references = sourceUseDecision?.references || [];
@@ -1054,30 +944,21 @@ function createProviderE2eHarness(providerKind) {
       reference.lineRange.start <= sourceGroundTruth.lineRange.start &&
       reference.lineRange.end >= sourceGroundTruth.lineRange.end);
     const matchingReferenceIds = new Set(matchingReferences.map(reference => reference.id));
-    const verifiedBindings = summary?.analysisCompletedVerifiedSourceBindings || [];
-    const sourceIdentityPassed = sourceBindingPassed && verifiedBindings.some(binding => {
-      // A body-read source claim bound to Trace evidence of the same claim.
-      if (!['trace_linked', 'source_only'].includes(binding.status) ||
-          !binding.sourceReferenceIds?.some(id => matchingReferenceIds.has(id))) return false;
-      const boundAnchors = supports.filter(support => support.claimId === binding.claimId)
-        .flatMap(support => support.anchors || [])
-        .filter(anchor => binding.traceEvidenceRefIds?.includes(anchor.evidenceRefId));
-      return boundAnchors.some(anchor => oracleAnchors.some(oracle => sameTraceOccurrence(anchor, oracle.anchor,
-        claimVerification(binding.claimId), oracle.verification)));
-    });
+    // The run read the ground-truth source body, and the answer cites it at a location the run returned.
+    const citedReferenceIds = new Set(summary?.analysisCompletedSourceCitedReferenceIds || []);
+    const sourceIdentityPassed = sourceBindingPassed && matchingReferences.length > 0 &&
+      matchingReferences.some(reference => citedReferenceIds.has(reference.id));
     const canaryLine = fs.readFileSync(path.join(sourceRoot, SEMANTIC_DELTA_SOURCE_FILE), 'utf8')
       .split(/\r?\n/).findIndex(line => line.includes(PRIVATE_SOURCE_CANARY)) + 1;
     // Search hits carry their context text to the provider too.
     const privacyCanaryCovered = canaryLine > 0 && fileReferences.some(reference =>
       (isBody(reference) || reference.lookupKind === 'search_hit') &&
       reference.lineRange.start <= canaryLine && reference.lineRange.end >= canaryLine);
-    const quantitativeOutputPassed = traceFactPassed && claims.length > 0 && claims.every(claim =>
-      ['numeric', 'time_range', 'comparison'].includes(claim.kind) && claim.semantics?.scope?.population !== 'codebase');
     const sourceSemanticPassed = query?.kind === 'quantitative-only'
-      ? quantitativeOutputPassed
+      ? traceFactPassed
       : traceFactPassed && sourceIdentityPassed &&
         (summary?.analysisCompletedSourceReferenceCount || 0) > 0 &&
-        (summary?.analysisCompletedSourceBindingCount || 0) > 0 &&
+        (summary?.analysisCompletedSourceCitationCount || 0) > 0 &&
         sourceBindingPassed;
     return {
       privacyPassed,
@@ -1410,13 +1291,12 @@ function createProviderE2eHarness(providerKind) {
       model: provider?.model ?? null,
       commit: git.commit,
       gateSchemaVersion: identity?.gateSchemaVersion ?? null,
-      verificationSchemaVersion: identity?.verificationSchemaVersion ?? null,
       traceProcessorVersion: identity?.traceProcessorVersion ?? null,
       stdlibRevision: identity?.stdlibRevision ?? null,
     };
     const reportAvailable = Boolean(report && groups && typeof groups === 'object');
     // A failure artifact (timeout, lifecycle error) still says INCONCLUSIVE for its older readers;
-    // here a run without judged groups never delivered, which is a failure, not a proof gap.
+    // here a run without judged groups never delivered, which is a failure, not an unmeasured facet.
     const failure = report?.schemaVersion === 'agent_sse_verification_failure@1'
       ? {phase: String(report.phase ?? 'unknown'), errorCode: String(report.errorCode ?? 'unknown')} : undefined;
     return {
@@ -1431,12 +1311,12 @@ function createProviderE2eHarness(providerKind) {
       exitCode,
       strict,
       semanticAcceptance: reportAvailable ? report.semanticAcceptance ?? 'FAILED' : 'FAILED',
-      proofAcceptance: reportAvailable ? report.proofAcceptance ?? 'INCOMPLETE' : 'INCOMPLETE',
       observedChecksPassed: report?.observedChecksPassed === true,
       hardGatesPassed: report?.hardGatesPassed === true,
       completeAcceptance: report?.completeAcceptance === true,
       checkGroups: reportAvailable ? groups : null,
-      facts: Object.fromEntries(Object.entries(report?.taskVerification?.facts ?? {}).map(([id, fact]) => [id, fact?.tier ?? 'none'])),
+      facts: Object.fromEntries(Object.entries(report?.taskVerification?.facts ?? {})
+        .map(([id, fact]) => [id, fact?.matched === true ? 'matched' : 'none'])),
       uncoveredFacets: Array.isArray(report?.uncoveredFacets) ? report.uncoveredFacets : [],
     };
   }
@@ -1487,7 +1367,7 @@ function createProviderE2eHarness(providerKind) {
       }
     }
     const removed = Object.keys(before).filter(key => !(key in after));
-    const factTierChanges = Object.fromEntries([...new Set([...Object.keys(base.facts), ...Object.keys(current.facts)])]
+    const factChanges = Object.fromEntries([...new Set([...Object.keys(base.facts), ...Object.keys(current.facts)])]
       .filter(id => base.facts[id] !== current.facts[id])
       .map(id => [id, {from: base.facts[id] ?? null, to: current.facts[id] ?? null}]));
     const ageMs = now - Date.parse(base.generatedAt);
@@ -1498,9 +1378,8 @@ function createProviderE2eHarness(providerKind) {
       baselineGeneratedAt: base.generatedAt,
       stale: ageMs > FLAGSHIP_BASELINE_STALE_MS,
       commits: {baseline: base.fingerprint.commit, current: current.fingerprint.commit},
-      newFailures, fixed, unchanged, added, removed, factTierChanges,
-      acceptance: {semantic: {from: base.semanticAcceptance, to: current.semanticAcceptance},
-        proof: {from: base.proofAcceptance, to: current.proofAcceptance}},
+      newFailures, fixed, unchanged, added, removed, factChanges,
+      acceptance: {semantic: {from: base.semanticAcceptance, to: current.semanticAcceptance}},
     };
   }
 
@@ -1545,7 +1424,7 @@ function createProviderE2eHarness(providerKind) {
         summary.verdict = verdict;
         writeJson(summaryPath, summary);
         console.log(`[${profile.slug}-e2e] flagship ${suiteName}/${runtimeKind}: semantic=${summary.semanticAcceptance} ` +
-          `proof=${summary.proofAcceptance} exit=${summary.exitCode}` +
+          `exit=${summary.exitCode}` +
           `${summary.delta ? ` delta=${summary.delta.status}${summary.delta.status === 'compared'
             ? ` new=${summary.delta.newFailures.length} fixed=${summary.delta.fixed.length}${summary.delta.stale ? ' STALE_BASELINE' : ''}`
             : `:${summary.delta.reason}`}` : ''} summary=${path.relative(backendRoot, summaryPath)}`);
@@ -1850,7 +1729,6 @@ function createProviderE2eHarness(providerKind) {
     semanticDeltaQueries,
     runSemanticPreflight,
     runSemanticPairedAttempt,
-    sameTraceOccurrence,
     scenarioSliceSelector,
     systemAnalysisScenarios,
     resolveRuntimeKinds,

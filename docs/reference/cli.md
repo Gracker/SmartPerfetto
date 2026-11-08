@@ -89,20 +89,17 @@ Options:
 后续 `ask`、`list`、`report` 也要使用同一目录。共享 SQLite 已有 5 秒锁等待，
 独立目录用于隔离测试状态，不能代替对持续锁冲突的排查。
 
-会话标记：`✓` 已交付且核验通过或不适用；`~` 已交付但仍有未核验项或疑点（例如声明无效、
-语义复核超时或发现矛盾），采信相关结论前可展开核验详情；`!` 分析未完整结束；`✗` 失败。
-核验问题不阻止正文与报告交付，也不会因为分析已完成而自动变成核验通过。
-结论块下方的“断言核验”行分别给出引用匹配、命题证明、整体复核后已核验、矛盾和未标注近似的数值
-（未核验而非矛盾）的断言数；正文含未声明断言这类整条答案的问题列在“另:”之后，它让答案保持未核验
-（`~`）而不算矛盾；语义复核未完成的原因在任何状态下都保留。
-HTML 报告和回执的声明审计使用同一组计数。最终语义复核运行期间，`final_review` 进度行会显示
-开始（含截止时间）和结果。没有 findings 时置信度只是固定基线，
+会话标记：`✓` 已交付且原生完成通过（没有检查机制的维度记为 `not_applicable`）；`~` 已交付但某个
+保证维度为 `failed` 或 `coverage_incomplete`（例如双 Trace 身份不一致，或正文写出了本轮从未返回的
+源码位置），采信前可展开详情；`!` 分析未完整结束；`✗` 失败。保证问题不阻止正文与报告交付。
+新回答不带声明断言，因此不显示“断言核验”行，也没有 `final_review` 进度；数值来自 Skill 与 SQL 结果。
+旧版本保存的结果仍显示当时的“断言核验”行与计数。没有 findings 时置信度只是固定基线，
 文本输出不再显示。JSON/NDJSON 的 `complete` 事件带 `deliveryVerdict`
 （`completed`/`unverified`/`partial`/`failed`）。
 
 分析未完成时，CLI 显示终止原因及可用的具体诊断，并区分未生成正文与已有正文但
 原生交付失败。JSON/NDJSON 同样保留 `terminationMessage` 和 `hasConclusion`。
-`quality_gate_failed` 表示空正文或原生交付失败，不用于声明或证据核验疑点。
+`quality_gate_failed` 表示空正文或原生交付失败，不用于交付保证疑点。
 总轮次预算大于一时预留一次无工具总结；触顶后基于已有返回数据说明发现、不足及
 下一步，仍标记 `partial` / `max_turns`。原截止时间、授权和显式费用预算继续生效。
 OpenCode 按观察到的实际轮次停止，若已过冲到没有剩余额度则保留结果而不追加调用。
@@ -472,15 +469,15 @@ CLI 文件存储在：
 ```
 
 根目录默认是 `~/.smartperfetto`，可用 `--session-dir` 或环境变量 `SMARTPERFETTO_HOME` 改到别处（前者优先）。
-`claim-support`、`claim-verification`、`identity-resolutions` 保存断言支撑、核验结果和身份解析；
-`investigation-assessment`、`delivery-assurance` 保存调查义务评估和交付核验状态；`analysis-receipt`
+`claim-support`、`claim-verification` 保存历史的断言支撑与核验结论（新回答不带声明断言，分别写入空列表和
+`null`）；`identity-resolutions` 保存身份解析；`investigation-assessment`、`delivery-assurance` 保存调查采集账本和交付保证状态；`analysis-receipt`
 是分析回执；`scene-report.json` 只在场景还原回合中指向报告，其他回合写入显式的“无”。
 `runtime-performance.json` 只记录计时，`tool-results.json` 只记录工具结果交接事实（不含载荷值；私有回合
 去掉 Skill id），两者仅在 runtime 提供时生成。会话根目录下不带编号的同名文件是最新一轮的副本。
 
-两组 source sidecar 只在本轮有 canonical safe source provenance 时生成。最新文件会随新 turn 替换；一次无源码 turn 会清除过期的“最新” sidecar，但不删除历史 turn 文件。这两组来源元数据只保留安全决策、相对 `CodeRef` 与 mechanism binding，不包含绝对 root、snippet、检索 query 或自由文本 binding reason。分析正文与正式声明可以保留 `provider_send` 已授权的源码摘录；密钥、私有 canary 和绝对 root 仍受输出投影保护。
+两组 source sidecar 只在本轮有 canonical safe source provenance 时生成。最新文件会随新 turn 替换；一次无源码 turn 会清除过期的“最新” sidecar，但不删除历史 turn 文件。这两组来源元数据只保留安全决策、相对 `CodeRef`、引用检查结果与（历史回合的）mechanism binding，不包含绝对 root、snippet、检索 query 或自由文本 binding reason。分析正文可以保留 `provider_send` 已授权的源码摘录；密钥、私有 canary 和绝对 root 仍受输出投影保护。
 
-`conclusion.md` 与 `turns/NNN.md` 保留正文记录。`analysis-evidence.json` 和 `turns/NNN.analysis-evidence.json` 独立保存与同一会话、回合及候选正文绑定的呈现数据。终端、`show` 和 Markdown 导出完整显示声明、引用、核验问题和源码关联；JSON/NDJSON 同时提供结构化详情。损坏或错配的证据包显示为不可用，不借用其他回合的验证结果。这些文件用于展示，不重新签发证据或执行验证。
+`conclusion.md` 与 `turns/NNN.md` 保留正文记录。`analysis-evidence.json` 和 `turns/NNN.analysis-evidence.json` 独立保存与同一会话、回合及候选正文绑定的呈现数据。终端、`show` 和 Markdown 导出显示引用、源码引用检查，以及历史回合保存的声明与核验问题；JSON/NDJSON 同时提供结构化详情。损坏或错配的证据包显示为不可用，不借用其他回合的验证结果。这些文件用于展示，不重新签发证据或执行验证。
 
 `ui-action-proposals.json` 只保存证据回链和 UI 提案元数据，用于报告/后续轮次
 追溯；CLI 不会自动执行跳转、打开表或固定证据。
@@ -630,11 +627,10 @@ REPL 内部命令：
 | `/clear` | 清屏 |
 | `/exit` | 退出 |
 
-回合运行期间 Ctrl-C 归该回合：结论打印后的第一次只停止核验，本轮照常保存；之后再按，或结论出现
-之前的第一次，会中止本轮且不保存并回到提示符；继续按则以 130 退出。没有回合在运行时，1.5 秒内连按两次 Ctrl-C 退出。
+回合运行期间 Ctrl-C 归该回合：第一次按下即中止本轮且不保存并回到提示符；继续按则以 130 退出。没有回合在运行时，1.5 秒内连按两次 Ctrl-C 退出。
 
 ## 系统调查输出
 
-CLI 将系统调查覆盖与系统证据覆盖分别输出；缺失的历史字段显示尚未核验。机器输出的结论记录包含 `investigationAssurance`，不改变原始 conclusion 或 native completion。每轮额外保存 `NNN.investigation-assessment.json` 和 `NNN.delivery-assurance.json`，保留维度状态与证据引用，HTML 报告显示相同调查范围。恢复历史结果不会自动补采证据。
+新回合的调查与调查证据保证记为 `not_applicable`，CLI 不为它们输出覆盖行；历史结果保留已存的覆盖行，缺失字段显示尚未核验。机器输出的结论记录包含 `investigationAssurance`，不改变原始 conclusion 或 native completion。每轮额外保存 `NNN.investigation-assessment.json`（采集账本，仅供展示）和 `NNN.delivery-assurance.json`，HTML 报告显示相同调查范围。恢复历史结果不会自动补采证据。
 
 `stream.jsonl` 里的工具结果是截断过的传输副本。每轮额外保存的 `NNN.tool-results.json` 按调用记录交给 runtime 的内容：工具名、调用 id（runtime 提供时才有）、结果状态、文本字符数与字节数，以及 `vendorOverride` 等受审计字段是否逐字出现在交给模型的文本里。这个文件不含任何 payload 值；私有知识运行还会去掉 Skill id。

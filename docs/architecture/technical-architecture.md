@@ -71,9 +71,9 @@ POST /api/agent/v1/analyze
   -> 符合条件时由产品采集策略声明的场景入口证据
   -> 通过共享 MCP registry 调用 SQL、Skill、知识和计划工具
   -> 已选源码：有界 lookup 或结构化 SourceUseDecision stop
-  -> DataEnvelope + evidence/claim/identity sidecar
+  -> DataEnvelope + evidence/identity 数据
   -> exact runtime result + private finalization context
-  -> product-owned finalizeAnalysisResult：有限证明、最多一次无工具审核、终态
+  -> product-owned finalizeAnalysisResult：canonical 正文、交付保证、终态（不调用模型）
   -> SSE chat projection + HTML report + snapshot + CLI artifact
 ```
 
@@ -194,7 +194,7 @@ processor 的生命周期绑定到启动它的进程。macOS 和 Linux 上以
 Skill/SQL 输出经过 DataEnvelope 后会继续形成：
 
 - evidence contract；
-- deterministic claim verification；
+- 回答所依赖的 Skill 单位与汇总值；
 - process/thread identity resolution；
 - report provenance；
 - analysis-result snapshot；
@@ -231,10 +231,10 @@ SmartPerfetto 维护两类不同对比：
 `existing_only` 不允许补采集。`SourceUseDecisionV1` 记录实际 selected/queried/used、status 和 coverage。
 
 Trace/Skill/SQL 支撑观测，源码正文支持机制分析，`CodeRef` 元数据只负责定位。
-`SourceClaimBindingV1` 声明 claim 与 source/trace 引用的关联，状态由
-`source_claim_verifier@2` 从实际账本计算：`invalid` 表示绑定无效，`unbound`、
-`location_only`、`source_only` 保持 partial；`trace_linked` 表示本轮读过正文，且已关联
-同一 claim 的已核验 Trace 证据，不单独证明一般机制或因果关系。一个
+新回答不携带模型编写的源码绑定：`source_claim_verifier@2` 把正文写出的每个源码位置与本轮
+签发的引用比对，全部匹配为 `passed`，未匹配或有歧义的引用记为提示性的 `coverage_incomplete`，
+没有源码访问或没有写出引用时为 `not_applicable`。匹配不证明一般机制或因果关系。历史结果保留
+逐 claim 的 `SourceClaimBindingV1` 状态。一个
 canonical projector 负责 SSE、report、CLI、snapshot 和 API 的安全 provenance；Web 再缩减为
 当前 run 回执。
 
@@ -301,15 +301,16 @@ persisted analysis_completed + RunManifest + optional snapshot
 | 产品面 | 保留内容 |
 |---|---|
 | SSE / AI chat | 可读结论、必要证据摘要和进度 |
-| HTML report | 证据、claim、identity、背景知识引用和 appendix |
+| HTML report | 证据、交付保证、identity、背景知识引用和 appendix |
 | CLI artifact | turn、report、resume state 和机器可读输出 |
 | analysis-result snapshot | 标准指标、证据引用、comparison 输入 |
 | logical session snapshot | provider/runtime 钉定与产品历史，不跨轮恢复原生 SDK 会话 |
 | source provenance | 安全 SourceUseDecision、相对 `CodeRef` 与 trace-to-mechanism binding；Web 回执不保留 `CodeRef` |
 
 产品层从 exact runtime result 取出私有上下文，再唯一调用 `finalizeAnalysisResult`。
-它保留原命题和采集来源，分别计算完成、声明、证据、源码、身份及报告状态；
-声明按条目核验，交付模型调用按剩余时间准入。细节见 [Agent Runtime](agent-runtime.md#final-result-与质量产物)。
+它保留采集来源且不调用模型：检查原生完成状态与双 Trace 对比身份，标注源码引用，并把
+claim、报告和调查保证记为 `not_applicable`；数据准确性来自 Skill 与 SQL。交付模型调用按
+剩余时间准入。细节见 [Agent Runtime](agent-runtime.md#final-result-与质量产物)。
 
 ## 12. 发布资产
 

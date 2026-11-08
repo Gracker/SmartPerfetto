@@ -169,14 +169,11 @@ OPENAI_CLASSIFIER_TIMEOUT_MS=60000
 }
 ```
 
-## 停止后结论仍在、或提示“正在停止”
+## 停止后仍提示“正在停止”
 
-- 回答已经显示、正在核验时，第一次点“停止”只结束核验：结论照常保存，核验状态为“已按用户要求
-  停止语义复核”（未核验）。按钮随后变为“强制停止”。
-- 再点一次“强制停止”，后端最多等 `SMARTPERFETTO_REVIEW_STOP_WATCHDOG_MS`（默认 15 秒）让本轮
-  保存。仍未保存时，已读到的结论作为未完成核验的回合保存（`terminationReason: review_not_finished`，
-  界面标为未完成）；使用源码或知识库、或授权已撤销的回合不保存正文。
-- 回答出现之前点停止是完整取消，只保留取消标记。
+- 点“停止”会取消本次运行，只保留取消标记。回答之后不再有单独的核验步骤，因此没有“只停核验”
+  或“强制停止”；`SMARTPERFETTO_REVIEW_STOP_WATCHDOG_MS` 已不再读取。
+- 旧版本保存的回合仍可能显示 `terminationReason: review_not_finished`（核验未完成），按原样读取。
 - 停止后立刻发新问题可能得到 409 `CANCELLATION_IN_PROGRESS` 或 `RUN_ALREADY_ACTIVE`：上一轮仍在
   收尾，界面会有界等待后再发送；通过 API 调用时稍后重试即可。
 - CLI 的 Ctrl-C 规则见 [基本使用](../getting-started/usage.md#ui-分析流程)。

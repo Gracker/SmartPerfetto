@@ -41,9 +41,7 @@ import type {AdaptiveRoutingReceiptV1} from '../types/adaptiveRouting';
 import {buildAdaptiveRoutingForTurnIntent} from './adaptiveRoutingProjection';
 import type {AnalysisTurnIntent} from './analysisTurnIntent';
 import type {AnalysisHistoryTurn} from './analysisHistory';
-import type {ConclusionDeclarationSyntax} from '../agent/core/conclusionContract';
-import {assertCapturedAnalysisOutputConfig, assertFinalSubmissionRuntime,
-  type CapturedAnalysisOutputConfig, type FinalSubmissionMode} from './finalSubmissionConfig';
+import {ANALYSIS_OUTPUT_CONFIG} from './finalSubmissionConfig';
 
 export interface RuntimeBudgetInputs {
   model?: string;
@@ -70,10 +68,6 @@ export type AnalysisRunSelection =
     };
 
 export interface AnalysisRunSpec {
-  /** Internal configuration captured once for prompt and missing-declaration delivery in this run. */
-  readonly declarationSyntax: ConclusionDeclarationSyntax;
-  /** Requested/captured output mode; actual adoption belongs to the native attempt receipt. */
-  readonly finalSubmission: FinalSubmissionMode;
   /** Resolved by this run, not accepted from client options or prior snapshots. */
   turnIntent?: AnalysisTurnIntent;
   identity: {
@@ -156,30 +150,6 @@ function denseArray(value: unknown, maxLength: number): unknown[] | undefined {
     (!/^(0|[1-9]\d*)$/.test(key) || Number(key) >= value.length || !descriptors[key].enumerable || !('value' in descriptors[key]))) ||
     Object.keys(value).length !== value.length) throw new Error('analysis_run_selection_invalid');
   return Array.from({length: value.length}, (_, index) => descriptors[String(index)].value);
-}
-
-function sameOwnData(left: unknown, right: unknown): boolean {
-  if (Object.is(left, right)) return true;
-  if (!left || !right || typeof left !== 'object' || typeof right !== 'object' ||
-    Array.isArray(left) !== Array.isArray(right) || Object.getOwnPropertySymbols(left).length ||
-    Object.getOwnPropertySymbols(right).length) return false;
-  if (Array.isArray(left)) {
-    const leftKeys = Object.keys(left);
-    const rightKeys = Object.keys(right);
-    if (left.length !== (right as unknown[]).length || leftKeys.length !== left.length ||
-      rightKeys.length !== (right as unknown[]).length || leftKeys.some((key, index) => key !== String(index)) ||
-      rightKeys.some((key, index) => key !== String(index))) return false;
-  }
-  const leftDescriptors = Object.getOwnPropertyDescriptors(left);
-  const rightDescriptors = Object.getOwnPropertyDescriptors(right);
-  const leftKeys = Object.keys(leftDescriptors).filter(key => key !== 'length').sort();
-  const rightKeys = Object.keys(rightDescriptors).filter(key => key !== 'length').sort();
-  if (leftKeys.length !== rightKeys.length || leftKeys.some((key, index) => key !== rightKeys[index])) return false;
-  return leftKeys.every(key => {
-    const a = leftDescriptors[key];
-    const b = rightDescriptors[key];
-    return a.enumerable && b?.enumerable && 'value' in a && 'value' in b && sameOwnData(a.value, b.value);
-  });
 }
 
 function canonicalString(value: unknown, maxLength: number, required: boolean): string | undefined {
@@ -272,35 +242,7 @@ export function captureAnalysisRunSelection(input: {
   return freezeSelection({present: true, kind: context.kind, context, sideResolution});
 }
 
-/** Revalidates an already-canonical run selection without accepting a transformed value. */
-export function validateAnalysisRunSelection(selection: AnalysisRunSelection): AnalysisRunSelection {
-  const raw = dataRecord(selection, ['present', 'kind', 'context', 'sideResolution']);
-  if (raw.present === false) {
-    if (!exactKeys(raw, ['present'])) throw new Error('analysis_run_selection_invalid');
-    return freezeSelection({present: false});
-  }
-  if (raw.present !== true || !exactKeys(raw, ['present', 'kind', 'context', 'sideResolution'])) {
-    throw new Error('analysis_run_selection_invalid');
-  }
-  const context = canonicalSelectionContext(raw.context as SelectionContext);
-  if (raw.kind !== context.kind || !sameOwnData(context, raw.context)) throw new Error('analysis_run_selection_invalid');
-  const resolution = dataRecord(raw.sideResolution, ['status', 'traceSide', 'traceId']);
-  if (resolution.status === 'unknown') {
-    if (!exactKeys(resolution, ['status'])) throw new Error('analysis_run_selection_invalid');
-    return freezeSelection({present: true, kind: context.kind, context, sideResolution: {status: 'unknown'}});
-  }
-  if (resolution.status !== 'resolved' || !exactKeys(resolution, ['status', 'traceSide', 'traceId']) ||
-    resolution.traceSide !== 'current' || typeof resolution.traceId !== 'string' ||
-    !resolution.traceId.trim() || resolution.traceId !== resolution.traceId.trim()) {
-    throw new Error('analysis_run_selection_invalid');
-  }
-  return freezeSelection({present: true, kind: context.kind, context,
-    sideResolution: {status: 'resolved', traceSide: 'current', traceId: resolution.traceId}});
-}
-
 export interface CreateAnalysisRunSpecInput {
-  /** Captured at the runtime's configuration boundary, before any paid dispatch. */
-  outputConfig: CapturedAnalysisOutputConfig;
   turnIntent?: AnalysisTurnIntent;
   query: string;
   sessionId: string;
@@ -349,7 +291,6 @@ export function canonicalRuntimeKind(value: string): AgentRuntimeKind {
 }
 
 export function createAnalysisRunSpec(input: CreateAnalysisRunSpecInput): AnalysisRunSpec {
-  assertCapturedAnalysisOutputConfig(input.outputConfig);
   const options = input.options ?? {};
   const engineCapabilities = resolveEngineCapabilities(input);
   // The effective selection, then the backend's feature switch on its own.
@@ -381,8 +322,6 @@ export function createAnalysisRunSpec(input: CreateAnalysisRunSpecInput): Analys
   const actualModel = input.resolvedModel ?? (input.resolvedMode === 'quick'
     ? input.budget?.lightModel ?? input.budget?.model
     : input.budget?.model);
-  const {declarationSyntax, finalSubmission} = input.outputConfig;
-  assertFinalSubmissionRuntime(input.outputConfig, runtimeKind);
   const sink = resolveRunManifestAttributionSink(
     options.runManifestAttributionSink,
     currentRunManifestAttributionSink(),
@@ -393,8 +332,7 @@ export function createAnalysisRunSpec(input: CreateAnalysisRunSpecInput): Analys
     providerId: options.providerId ?? null,
     ...(actualModel ? {model: actualModel} : {}),
     outputLanguage: input.outputLanguage,
-    conclusionDeclarationSyntax: declarationSyntax,
-    finalSubmission,
+    finalSubmission: ANALYSIS_OUTPUT_CONFIG.finalSubmission,
   });
   sink?.recordMode({
     requested: options.analysisMode ?? 'auto',
@@ -423,8 +361,6 @@ export function createAnalysisRunSpec(input: CreateAnalysisRunSpecInput): Analys
   }
 
   return {
-    declarationSyntax,
-    finalSubmission,
     ...(input.turnIntent ? {turnIntent: input.turnIntent} : {}),
     identity: {
       sessionId: input.sessionId,

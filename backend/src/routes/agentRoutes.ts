@@ -39,13 +39,7 @@ import {
   resolveCapturedComparisonIdentity,
 } from '../services/comparisonAppendixService';
 import type {FinalResultQualityIssue} from '../services/finalResultQualityGate';
-import {finalizeAnalysisResult, type AnalysisFinalizationOwner, type ProvisionalAnalysisAnswer} from '../services/finalizeAnalysisResult';
-import {
-  buildReviewNotFinishedResult,
-  mayPersistUnverifiedBody,
-  resolveReviewStopWatchdogMs,
-  ReviewStopController,
-} from '../services/reviewStopHandle';
+import {finalizeAnalysisResult, type AnalysisFinalizationOwner} from '../services/finalizeAnalysisResult';
 import {takeFinalizationContext, type RuntimeFinalizationContext} from '../agentRuntime/analysisFinalizationContext';
 import {assertRuntimeTaskWorkRemaining, ensureRuntimeAdmission, forwardRuntimeAdmission} from '../agentRuntime/runtimeTaskDeadline';
 import {resolveRuntimeTurnPolicy} from '../agentRuntime/runtimeTurnPolicy';
@@ -74,7 +68,6 @@ import { sessionContextManager, EnhancedSessionContext } from '../agent/context/
 import { StreamingUpdate, AgentRuntimeAnalysisResult, Hypothesis } from '../agent';
 import type { AnalysisOptions, IOrchestrator, TraceDataset } from '../agent/core/orchestratorTypes';
 import { localize, parseOutputLanguage, type OutputLanguage } from '../agentv3/outputLanguage';
-import { finalReviewProgressUpdate } from '../services/finalizationProgress';
 import { diagnosticLogIdentity } from '../utils/logger';
 import {rowObject} from '../utils/traceProcessorRowUtils';
 import { registerSceneReconstructRoutes } from './agentSceneReconstructRoutes';
@@ -198,7 +191,7 @@ import {
   projectStoredAnalysisResultForOwner,
   projectOwnerFindings,
   projectOwnerConclusion,
-  projectOwnerProvisionalConclusion,
+  projectOwnerAnswerConclusion,
   projectOwnerStructuredValue,
   projectOwnerTerminationMessage,
   projectPrivateTerminationReason,
@@ -250,7 +243,7 @@ import type {
   RunManifestV1,
   RunManifestScope,
 } from '../types/selfEvolution';
-import type {AnalysisReceipt, ProvisionalConclusionEventData} from '../types/dataContract';
+import type {AnalysisReceipt} from '../types/dataContract';
 import type {CapabilityManifestAttributionV1} from '../types/capabilityManifest';
 import type {RequestedSourceDepth} from '../services/codebase/sourceDepthPolicy';
 
@@ -536,30 +529,12 @@ function isSessionRunCancelled(
 interface HttpFinalizationRun {
   owner: AnalysisFinalizationOwner;
   controller: AbortController;
-  /**
-   * Stop state and delivery. Delivery is marked in the same tick the
-   * provisional answer is broadcast (with the canonical, unprojected body);
-   * from then on the first cancel ends only the review (the run still commits
-   * its turn and history equals what the user read) and the second forces.
-   */
-  stop: ReviewStopController<CancelSessionRunResult | undefined>;
-  /** The cancel reason the watchdog's full cancel reports. */
-  stopReason: string;
-  /** The path that owns this run's terminal write; the first claimer wins. */
-  terminal?: 'finalized' | 'review_not_finished';
-  /**
-   * Commits the delivered body as an unverified partial turn. Set by the
-   * executing run before finalization; the watchdog calls it at most once.
-   */
-  commitReviewNotFinished?: (body: string) => boolean;
-  /** Resolves once the executing run released this finalization. */
-  settled: Promise<void>;
+  /** Set once the run claimed its terminal write; the first claimer wins. */
+  terminal?: 'finalized';
   claimTerminal(kind: NonNullable<HttpFinalizationRun['terminal']>): boolean;
   assertCurrent(): void;
   release(): void;
 }
-
-let httpReviewStopWatchdogMs = resolveReviewStopWatchdogMs();
 
 const httpFinalizationRuns = new WeakMap<AnalysisSession, Map<string, HttpFinalizationRun>>();
 // Root lease ownership outlives smart -> deep-dive finalization controller handoffs.
@@ -597,23 +572,8 @@ function createHttpFinalizationRun(
       isCurrentRunOwner(session, runId) && !isSessionRunCancelled(session, runId),
     assertAuthorized: () => assertCurrentAnalysisContextAuthorization(selection, scope, fingerprint),
   };
-  let settle!: () => void;
-  const settled = new Promise<void>(resolve => {settle = resolve;});
-  // The fallback keeps the canonical body with the runtime result's findings
-  // (the report needs them); privacy is decided per session, like every other
-  // durable surface of this route.
-  const stop = new ReviewStopController<CancelSessionRunResult | undefined>({
-    watchdogMs: httpReviewStopWatchdogMs,
-    owner: {
-      mayPersistPartial: () => mayPersistUnverifiedBody({privateKnowledge: sessionRunHasPrivateContext(session, runId),
-        isCurrent: () => !run.terminal && owner.isCurrent(), assertAuthorized: owner.assertAuthorized}),
-      commitPartial: body => run.commitReviewNotFinished?.(body) ?? false,
-      fullCancel: () => !run.terminal && isCurrentRunOwner(session, runId) && !isSessionRunCancelled(session, runId)
-        ? performFullSessionRunCancellation(session, runId, run.stopReason) : undefined,
-    },
-  });
   const run: HttpFinalizationRun = {
-    owner, controller, stop, stopReason: 'Analysis cancelled by user', settled,
+    owner, controller,
     claimTerminal: kind => {
       if (run.terminal) return false;
       run.terminal = kind;
@@ -625,8 +585,6 @@ function createHttpFinalizationRun(
       owner.assertAuthorized();
     },
     release: () => {
-      stop.dispose();
-      settle();
       if (runs.get(runId) === run) runs.delete(runId);
     },
   };
@@ -904,9 +862,6 @@ type CancelSessionRunResult = {
   runStatus?: AnalyzeSessionRunContext['status'];
   outcome:
     | 'cancelled'
-    | 'review_stop_requested'
-    | 'committed'
-    | 'review_not_finished'
     | 'already_cancelled'
     | 'run_not_found'
     | 'run_not_active'
@@ -922,48 +877,13 @@ async function cancelSessionRun(
   const session = assistantAppService.getSession(sessionId);
   if (!session) return undefined;
 
-  let targetRun = resolveSessionRun(session, runId);
+  const targetRun = resolveSessionRun(session, runId);
   if (!targetRun) {
     return {
       session,
       runId,
       outcome: 'run_not_found',
     };
-  }
-  const finalizationRun = httpFinalizationRuns.get(session)?.get(runId);
-  if (
-    finalizationRun?.stop.provisionalDelivered &&
-    !finalizationRun.terminal &&
-    isCurrentRunOwner(session, runId) &&
-    !isSessionRunCancelled(session, runId) &&
-    (targetRun.status === 'pending' || targetRun.status === 'running')
-  ) {
-    // The user already holds the finished answer. The first stop ends only its
-    // review (a review that already ended ignores it): the run keeps session
-    // ownership, commits its turn and publishes analysis_completed. A second
-    // stop forces: it waits for that commit up to the watchdog the first stop
-    // armed, then falls back.
-    finalizationRun.stopReason = reason;
-    const request = finalizationRun.stop.requestStop();
-    session.lastActivityAt = Date.now();
-    if (request === 'review') {
-      return {
-        session,
-        runId,
-        runStatus: 'running',
-        outcome: 'review_stop_requested',
-        reason,
-      };
-    }
-    const expiry = await finalizationRun.stop.awaitCommitOrExpire(finalizationRun.settled);
-    if (expiry?.kind === 'cancelled' && expiry.value) return expiry.value;
-    if (finalizationRun.terminal) {
-      return {session, runId, runStatus: 'completed', reason,
-        outcome: finalizationRun.terminal === 'finalized' ? 'committed' : 'review_not_finished'};
-    }
-    // Otherwise the run ended some other way: report its state now, not the
-    // one read before the wait.
-    targetRun = resolveSessionRun(session, runId) ?? targetRun;
   }
   if (isSessionRunCancelled(session, runId) || targetRun.status === 'cancelled') {
     return {
@@ -1062,33 +982,6 @@ function readRequiredCancellationRunId(value: unknown): string | undefined {
 function projectCancelSessionRunResult(result: CancelSessionRunResult): {status: number; body: Record<string, unknown>} {
   const { session, runId, runStatus, outcome, reason } = result;
   switch (outcome) {
-    case 'review_stop_requested':
-      // Not terminal: analysis_completed still follows with the verdict.
-      return {status: 200, body: {
-        success: true,
-        sessionId: session.sessionId,
-        runId,
-        status: 'review_stop_requested',
-        runStatus,
-        sessionStatus: session.status,
-        outcome,
-        reason,
-      }};
-    case 'committed':
-    case 'review_not_finished':
-      // A force stop found the run committed: its normal turn (`committed`), or,
-      // when it did not commit within the watchdog, the answer the user read
-      // kept as an unverified partial turn. analysis_completed carries either.
-      return {status: 200, body: {
-        success: true,
-        sessionId: session.sessionId,
-        runId,
-        status: 'completed',
-        runStatus,
-        sessionStatus: session.status,
-        outcome,
-        reason,
-      }};
     case 'cancelled':
     case 'already_cancelled':
       return {status: 200, body: {
@@ -2376,7 +2269,6 @@ registerAgentWorkCatalogRoutes(router, (owner, sessionId, runId) => {
   return projectAssistantWork({sessionId, runId: selectedRunId, status: session.status,
     live: Boolean(session.activeRun && session.activeRun.runId === selectedRunId),
     startedAt: run.startedAt, completedAt: run.completedAt,
-    provisionalDelivered: httpFinalizationRuns.get(session)?.get(selectedRunId)?.stop.provisionalDelivered,
     hasResult: Boolean(session.result?.completion?.runId === selectedRunId && session.result?.conclusion),
   });
 });
@@ -4644,8 +4536,8 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
 
     // The runtime's raw conclusion was dropped above and its answer tokens
     // reach clients only as a live-only draft. The answer itself reaches
-    // clients from finalization: a provisional or final conclusion that
-    // replaces the draft, then analysis_completed with the verdict.
+    // clients from finalization: the final conclusion that replaces the
+    // draft, then analysis_completed with its delivery assurance.
     broadcastToAgentDrivenClients(sessionId, normalizedUpdate, runIdForAnalysis);
 
     // Also derive a conversation_step for the timeline/observability layer.
@@ -4914,51 +4806,21 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
     }) : undefined;
     finalizationRun.assertCurrent();
     contextTransferred = true;
-    const {findings, hypotheses, rounds, totalDurationMs, confidence} = result;
-    // Watchdog fallback after a stop: the delivered body as an unverified
-    // partial turn, committed on the same path as a finalized result. Claiming
-    // the terminal write aborts the finalization that never settled.
-    finalizationRun.commitReviewNotFinished = conclusion => {
-      if (!finalizationRun.claimTerminal('review_not_finished')) return false;
-      finalizationRun.controller.abort(new DOMException('Review stop watchdog elapsed', 'AbortError'));
-      completeAgentDrivenSessionWithResult({
-        sessionId, query, traceId, sceneType: sceneIdHint, session, runId: runIdForAnalysis,
-        result: buildReviewNotFinishedResult({sessionId, conclusion, outputLanguage,
-          base: {findings, hypotheses, rounds, totalDurationMs, confidence}}),
-        logComponent: 'AgentDrivenAnalysis',
-        assertCurrent: () => {
-          if (!finalizationRun.owner.isCurrent()) throw new DOMException('Analysis superseded', 'AbortError');
-        },
-      });
-      return true;
-    };
     const finalized = await finalizeAnalysisResult({
       result, context: finalizationContext, owner: finalizationRun.owner, query,
       ...(sceneSeal ? {scene: {seal: sceneSeal, outputLanguage, providerId: options.providerId,
         scope: {runId: runIdForAnalysis, sessionId, traceId,
         ownerKey: sceneRunOwnerKey(session)}}} : {}),
-      dataEnvelopes: rawDataEnvelopes, comparisonReportSection: session.comparisonReportSection,
+      dataEnvelopes: rawDataEnvelopes,
       comparisonIdentity,
       caseRecommendations,
-      // The semantic review can run for minutes after the answer stream ended.
-      onProgress: event => {
-        broadcastToAgentDrivenClients(sessionId, finalReviewProgressUpdate(event, outputLanguage), runIdForAnalysis);
-      },
-      // Scene runs own their terminal delivery; the finalizer also refuses them.
-      ...(options.sceneRunBinding ? {} : {
-        reviewStopSignal: finalizationRun.stop.signal,
-        onProvisionalAnswer: (answer: ProvisionalAnalysisAnswer) =>
-          broadcastAnswer(session, answer.conclusion, finalizationRun, outputLanguage, {provisional: true}),
-      }),
     });
     finalizationRun.assertCurrent();
     result = finalized.result;
-    // No review was dispatched, so no provisional answer is showing: the final
-    // text goes out now, ahead of report and snapshot generation. Its verdict
-    // still arrives only with analysis_completed.
-    if (!options.sceneRunBinding && !finalizationRun.stop.provisionalDelivered) {
-      broadcastAnswer(session, result.conclusion, finalizationRun, outputLanguage, {provisional: false});
-    }
+    // The finalized text goes out now, ahead of report and snapshot generation;
+    // its delivery assurance arrives with analysis_completed. Scene runs own
+    // their terminal delivery.
+    if (!options.sceneRunBinding) broadcastAnswer(session, result.conclusion, finalizationRun, outputLanguage);
     if (finalized.scenePublication && result.sceneTimeline) {
       try {
         const requestedRange = result.sceneTimeline.scanCoverage?.requestedWindow;
@@ -5011,9 +4873,6 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
       assertCurrent: finalizationRun.assertCurrent,
     });
   } catch (error: any) {
-    // The watchdog fallback already committed this run; its aborted
-    // finalization is not a failure.
-    if (finalizationRun.terminal === 'review_not_finished') return;
     if (!finalizationRun.owner.isCurrent()) return;
     const privateKnowledge = sessionRunHasPrivateContext(session, runIdForAnalysis);
     const authorizationChanged = error instanceof AnalysisContextAuthorizationChangedError ||
@@ -5339,30 +5198,22 @@ function dataEnvelopeDedupKey(envelope: DataEnvelope): string | undefined {
 }
 
 /**
- * The answer body, owner-projected exactly as analysis_completed will project
- * it. `provisional`: deliver first, verify after; the finished body is marked
- * as awaiting its verdict and the run's stop becomes review-only. Otherwise it
- * is the finalized body of a run whose review was not dispatched, sent before
- * report and snapshot generation with no pending cue. Private sessions keep
- * either live-only (ring buffer, never the durable event store), so a restart
- * replays no unverified private body; clients then downgrade the cue.
+ * The finalized answer body, owner-projected exactly as analysis_completed will
+ * project it, sent before report and snapshot generation. Private sessions keep
+ * it live-only (ring buffer, never the durable event store).
  */
 function broadcastAnswer(
   session: AnalysisSession,
   body: string,
   run: HttpFinalizationRun,
   outputLanguage: OutputLanguage,
-  options: {provisional: boolean},
 ): boolean {
   const runId = run.owner.runId;
   if (!body.trim() || !isCurrentRunOwner(session, runId) ||
     assistantAppService.getSession(session.sessionId) !== session) return false;
   const privateKnowledge = sessionRunHasPrivateContext(session, runId);
-  const conclusion = projectOwnerProvisionalConclusion(privateKnowledge, session.sessionId, body, outputLanguage);
-  if (options.provisional) run.stop.markDelivered(body);
-  const content: ProvisionalConclusionEventData | {conclusion: string} = options.provisional
-    ? {provisional: true, verification: 'pending', conclusion} : {conclusion};
-  broadcastToAgentDrivenClients(session.sessionId, {type: 'conclusion', content, timestamp: Date.now()},
+  const conclusion = projectOwnerAnswerConclusion(privateKnowledge, session.sessionId, body, outputLanguage);
+  broadcastToAgentDrivenClients(session.sessionId, {type: 'conclusion', content: {conclusion}, timestamp: Date.now()},
     runId, {persist: !privateKnowledge});
   return true;
 }
@@ -7496,7 +7347,6 @@ export const agentRoutesSmartPreviewSelectionTestSeam = {
 
 /** @internal Test seam. */
 export const agentRoutesCancellationTestSeam = {
-  setReviewStopWatchdogMs: (ms: number) => {httpReviewStopWatchdogMs = ms;},
   runAgentDrivenAnalysis,
   createHttpFinalizationRun,
   abortHttpFinalizationRuns,

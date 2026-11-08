@@ -36,23 +36,12 @@ import {
   resolveVerificationSliceSelection,
   installVerificationDiagnostics,
   writeVerificationDiagnostics,
-  prepareAgentSseNativeOracle,
   collectAgentSseOracleEvidence,
   parseArgs as parseVerificationArgs,
   type TerminalAnalysisEvidence,
 } from '../verifyAgentSseScrolling';
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
-import {stepNodesOf} from '../../services/skillEngine/skillSteps';
-import yaml from 'js-yaml';
 import * as nativeCapture from '../../services/evidence/rawSqlNativeProvenance';
-import type {PerfettoSqlDocsAsset} from '../../services/perfettoSqlDocs';
-import type {RunningNativeProcessorObservation, TraceInfo} from '../../services/traceProcessorService';
-import type {AnalysisRunTraceProcessorLeases} from '../../services/analysisRunTraceProcessorLease';
-import {compileAuthoredClaimDocument, AUTHORED_CLAIM_DOCUMENT_VERSION} from '../../agent/core/authoredClaimDocument';
-import {AUTHORED_CLAIM_DOCUMENT_COMPILER_VERSION, createAuthoredFinalSubmissionIssuer, issueAuthoredFinalSubmission,
-  readAuthoredFinalSubmission, revokeAuthoredFinalSubmission} from '../../agentRuntime/authoredFinalSubmission';
-import {buildAuthoredCandidateProtocolDiagnostic} from '../../services/canonicalAnalysisResult';
-import {projectCodeAwareStreamingUpdate} from '../../services/security/codeAwareStreamingUpdateProjection';
 
 describe('transparent verification diagnostics', () => {
   function privateCaptureFixture(directory: string, phase = () => 'analysis_stream') {
@@ -167,15 +156,6 @@ describe('transparent verification diagnostics', () => {
     } finally {target.diagnostics.stop(); fs.rmSync(root, {recursive: true, force: true});}
   });
 
-  it('keeps the source action facet strictly incomplete even when every automatic check passes', () => {
-    const result = evaluateAgentSseAcceptance({strict: true,
-      task: {checkGroups: {value: {marker: true}, proof: {proved: true}, delivery: {delivered: true}}, facts: {},
-        uncoveredFacets: ['source recommendation action semantics']},
-      observedGroups: {}, ungroupedChecks: {}, hardChecks: {notPartial: true}, additionalGatesPassed: true});
-    expect(result).toMatchObject({passed: false, strict: true, completeAcceptance: false,
-      semanticAcceptance: 'INCONCLUSIVE', proofAcceptance: 'PASSED', observedChecksPassed: true,
-      uncoveredFacets: ['source recommendation action semantics']});
-  });
 
   const stops: Array<() => unknown> = [];
   afterEach(() => {stops.splice(0).forEach(stop => stop()); jest.restoreAllMocks();});
@@ -529,47 +509,6 @@ describe('current-trace slice selection resolution', () => {
 describe('owned SSE verifier lifecycle', () => {
   afterEach(() => jest.restoreAllMocks());
 
-  it.each([false, true])('retains issued typed material through actual projection and summary without private payloads: private=%s', async sourceAware => {
-    const documentJson = JSON.stringify({representationVersion: AUTHORED_CLAIM_DOCUMENT_VERSION,
-      contract: {schemaVersion: 'conclusion_contract_v1', mode: 'PRIVATE_MODE_CANARY', conclusions: [], clusters: [],
-        evidenceChain: [], uncertainties: [], nextSteps: [], sourceClaimBindings: [],
-        claims: [{id: 'PRIVATE_ID', text: 'PRIVATE_CLAIM', semantics: false}, null], PRIVATE_DYNAMIC: '/private/source'},
-      bodyParts: ['PUBLIC_BODY_CANARY 中"\\', '\ud83d', '\ude00', 'PRIVATE_BODY_CANARY']}, null, 2);
-    const compiled = compileAuthoredClaimDocument(documentJson);
-    if (compiled.status !== 'compiled') throw new Error('Fixture must compile');
-    const binding = {owner: {}, sessionId: 'typed-sse', runId: 'run', attemptId: 'attempt',
-      providerPin: 'PRIVATE_PIN', authorizationFingerprint: 'PRIVATE_AUTH'};
-    const issuer = createAuthoredFinalSubmissionIssuer({binding, assertCurrent() {}, assertAttemptCurrent() {}});
-    const rawArguments = JSON.stringify({documentJson});
-    const submission = issueAuthoredFinalSubmission(issuer, {dispatchOrdinal: 1, responseId: 'PRIVATE_RESPONSE_ID',
-      callId: 'PRIVATE_CALL_ID', rawArguments, documentJson, compiled});
-    try {
-      const snapshot = readAuthoredFinalSubmission(submission, {binding: {...binding, dispatchOrdinal: 1,
-        responseId: 'PRIVATE_RESPONSE_ID', callId: 'PRIVATE_CALL_ID', representationVersion: AUTHORED_CLAIM_DOCUMENT_VERSION,
-        compilerContractVersion: AUTHORED_CLAIM_DOCUMENT_COMPILER_VERSION}, rawArguments, documentJson,
-        body: compiled.body, rawCanonicalPayload: structuredClone(compiled.rawCanonicalPayload)});
-      const diagnostic = buildAuthoredCandidateProtocolDiagnostic(snapshot);
-      const projected = projectCodeAwareStreamingUpdate('typed-sse', {type: 'progress', timestamp: 1,
-        content: {phase: 'candidate_protocol', candidateProtocolDiagnostic: diagnostic,
-          ...(sourceAware ? {message: 'PRIVATE_SURROUNDING_CANARY'} : {})}}, sourceAware, 'en');
-      expect(projected).not.toBeNull();
-      expect(JSON.stringify(projected)).not.toMatch(/PRIVATE_|PUBLIC_BODY_CANARY|private\/source/);
-      const invalid = {...diagnostic, authoredMaterial: {...diagnostic.authoredMaterial, raw: 'PRIVATE_PAYLOAD'}};
-      const events = [
-        `event: progress\ndata: ${JSON.stringify({phase: 'candidate_protocol', candidateProtocolDiagnostic: invalid})}\n\n`,
-        `event: progress\ndata: ${JSON.stringify(projected!.content)}\n\n`,
-        'event: analysis_completed\ndata: {"success":false,"conclusion":"","partial":true}\n\n',
-      ].join('');
-      jest.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(events));
-      const summary = await collectSseSummary('http://verifier.invalid', 'typed-sse', 1000,
-        {requiredText: [], forbiddenText: []}, {runId: 'run'});
-      expect(summary.candidateProtocolDiagnostics).toEqual([diagnostic]);
-      expect(summary.candidateProtocolDiagnostics?.[0]).toMatchObject({status: 'invalid', claimCount: 2,
-        authoredMaterial: {rawArgumentsUtf8Bytes: Buffer.byteLength(rawArguments), documentInputUtf8Bytes: Buffer.byteLength(documentJson)}});
-      expect(JSON.stringify(summary)).not.toMatch(/PRIVATE_|PUBLIC_BODY_CANARY|private\/source/);
-      expect(summary.terminalAnalysis?.success).toBe(false);
-    } finally {revokeAuthoredFinalSubmission(submission);}
-  });
 
   it('retains at most four shared-schema candidate diagnostics without private surrounding fields or admission authority', async () => {
     const diagnostic = {schemaVersion: 'candidate_protocol_diagnostic@1', stage: 'native', candidateIndex: 1,
@@ -601,17 +540,6 @@ describe('owned SSE verifier lifecycle', () => {
     expect(summary.analysisCompletedPartial).toBe(true);
   });
 
-  it('counts a provisional conclusion apart from the terminal conclusion payload', async () => {
-    const events = 'event: conclusion\ndata: {"data":{"conclusion":"Final body","provisional":true,"verification":"pending"}}\n\n' +
-      'event: analysis_completed\ndata: {"success":true,"conclusion":"Final body"}\n\n';
-    jest.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(events));
-    const summary = await collectSseSummary('http://verifier.invalid', 'session', 1000,
-      {requiredText: [], forbiddenText: []}, {runId: 'run'});
-    expect(summary.provisionalConclusionCount).toBe(1);
-    expect(summary.firstProvisionalConclusionMs).toEqual(expect.any(Number));
-    expect(summary.conclusionCount).toBe(0);
-    expect(summary.analysisCompletedConclusionChars).toBe('Final body'.length);
-  });
 
   it('turns a stalled owned stream into a typed timeout and releases its reader', async () => {
     jest.spyOn(globalThis, 'fetch').mockImplementation(async (_url, options) => new Response(new ReadableStream({
@@ -625,37 +553,20 @@ describe('owned SSE verifier lifecycle', () => {
       expect.objectContaining({signal: expect.any(AbortSignal)}));
   });
 
-  it('extracts actual verified binding identities without persisting private reasons', async () => {
-    const binding = {claimId: 'duration', mechanismStatus: 'compatible',
-      sourceReferenceIds: ['source-ref-v1-issued'], traceEvidenceRefIds: ['data-marker']};
+  it('summarizes the citation-only source check against the returned references', async () => {
     const payload = {success: true, conclusion: 'Safe conclusion.',
       sourceUseDecision: {references: [{id: 'source-ref-v1-issued'}]},
-      sourceClaimVerificationResult: {schemaVersion: 'source_claim_verifier@1', status: 'passed',
-        bindings: [{...binding, reason: 'private source content'}]}};
+      sourceClaimVerificationResult: {schemaVersion: 'source_claim_verifier@2', status: 'partial', bindings: [], claims: [],
+        citations: [{citation: 'Foo.kt:L1', filePath: 'Foo.kt', lineRange: {start: 1, end: 1}, status: 'verified_body',
+          sourceReferenceId: 'source-ref-v1-issued'},
+        {citation: 'Bar.kt:L2', filePath: 'Bar.kt', lineRange: {start: 2, end: 2}, status: 'unmatched'}],
+        issues: [{severity: 'warning', code: 'source_citation_unmatched', message: 'private source content'}]}};
     jest.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(`event: analysis_completed\ndata: ${JSON.stringify(payload)}\n\n`));
     const summary = await collectSseSummary('http://verifier.invalid', 'session', 1000,
       {requiredText: [], forbiddenText: []}, {runId: 'run'});
-    // A historical result reports its stored mechanism status as the row status.
-    const {mechanismStatus, ...identity} = binding;
-    expect(summary.analysisCompletedVerifiedSourceBindings).toEqual([{...identity, status: mechanismStatus}]);
+    expect(summary).toMatchObject({analysisCompletedSourceClaimVerifierStatus: 'partial', analysisCompletedSourceCitationCount: 2,
+      analysisCompletedSourceCitationsMatched: false, analysisCompletedSourceCitedReferenceIds: ['source-ref-v1-issued']});
     expect(JSON.stringify(summary)).not.toContain('private source content');
-  });
-
-  it('reports the current verifier\'s per-claim standing as the row status', async () => {
-    const claim = {claimId: 'duration', status: 'trace_linked',
-      sourceReferenceIds: ['source-ref-v1-issued'], traceEvidenceRefIds: ['data-marker']};
-    const payload = {success: true, conclusion: 'Safe conclusion.',
-      sourceUseDecision: {references: [{id: 'source-ref-v1-issued'}]},
-      sourceClaimVerificationResult: {schemaVersion: 'source_claim_verifier@2', status: 'partial', bindings: [],
-        claims: [claim, {claimId: 'other', status: 'unbound', sourceReferenceIds: [], traceEvidenceRefIds: []}],
-        citations: [], issues: []}};
-    jest.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(`event: analysis_completed\ndata: ${JSON.stringify(payload)}\n\n`));
-    const summary = await collectSseSummary('http://verifier.invalid', 'session', 1000,
-      {requiredText: [], forbiddenText: []}, {runId: 'run'});
-    expect(summary.analysisCompletedSourceClaimStatuses).toEqual(['trace_linked', 'unbound']);
-    // An unbound claim cites nothing, which does not void the membership of the others.
-    expect(summary.analysisCompletedSourceReferenceMembershipPassed).toBe(true);
-    expect(summary.analysisCompletedVerifiedSourceBindings?.[0]).toEqual(claim);
   });
 
   it('retains private tool telemetry and safe actual source use when a failed terminal has no conclusion contract', async () => {
@@ -692,7 +603,6 @@ describe('owned SSE verifier lifecycle', () => {
     }
     const assessment = evaluateAgentSseExpectation({terminal: summary.terminalAnalysis, expectation, traceId: 'trace-current'});
     expect(assessment.checks.taskCompleted).toBe(false);
-    expect(assessment.checks.originalClaimsVerified).toBe(false);
     expect(taskAcceptanceStatus(Object.values(assessment.checks).every(Boolean), assessment.uncoveredFacets).completeAcceptance).toBe(false);
     const wrapper = require('../../../scripts/run-glm-agent-e2e.cjs');
     const evaluated = wrapper.evaluateSemanticConditionReport({condition: 'A2',
@@ -731,37 +641,20 @@ describe('owned SSE verifier lifecycle', () => {
 
 const expectation = parseAgentSseExpectation({schemaVersion: 1,
   intent: {taskKind: 'fact', scope: 'bounded_question', deliverable: 'answer'},
-  facts: [{id: 'frame_count', kind: 'numeric', columns: ['total_frames'], unit: 'frames',
-    verification: 'proved', oracle: {sql: 'SELECT COUNT(*) AS total_frames FROM actual_frame_timeline_slice', column: 'total_frames', unit: 'frames'}}]});
+  facts: [{id: 'frame_count', kind: 'numeric', unit: 'frames',
+    oracle: {sql: 'SELECT COUNT(*) AS total_frames FROM actual_frame_timeline_slice', column: 'total_frames', unit: 'frames'}}]});
 
 function terminalFixture(text = 'There are 1912 frames.'): TerminalAnalysisEvidence {
-  const reference = {evidenceRefId: 'data:frames', rowIndex: 0, column: 'total_frames', value: 1912};
-  const semantics = {schemaVersion: 'claim_semantics@1' as const, predicate: 'numeric.cell',
-    polarity: 'affirmed' as const, discourse: 'asserted' as const, modality: 'certain' as const, quantifier: 'one' as const,
-    scope: {population: 'cited_rows' as const, subjectRefs: [reference]}, numeric: {operator: 'eq' as const, value: 1912, unit: 'frames'}};
   return {
     success: true, conclusion: text,
     completion: {schemaVersion: 1, status: 'completed', runtimeKind: 'openai-agents-sdk', runId: 'run',
       attemptId: 'attempt', candidateRef: 'candidate', conclusionFingerprint: analysisDeliveryFingerprint(text)},
-    deliveryAssurance: {schemaVersion: 1, entry: 'new_finalization', completion: 'passed', claims: 'passed',
-      source: 'not_applicable', identity: 'not_applicable', report: 'not_applicable'},
+    deliveryAssurance: {schemaVersion: 1, entry: 'new_finalization', completion: 'passed', claims: 'not_applicable',
+      source: 'not_applicable', identity: 'not_applicable', report: 'not_applicable',
+      investigation: 'not_applicable', investigationEvidence: 'not_applicable'},
     turnIntent: {schemaVersion: 1, status: 'resolved', source: 'semantic', sceneId: 'scrolling',
       taskKind: 'fact', scope: 'bounded_question', deliverable: 'answer', recommendedComplexity: 'quick',
       evidenceAccess: 'read_new', registryFingerprint: 'registry'},
-    conclusionContract: {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [],
-      clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [],
-      claims: [{id: 'frames', kind: 'numeric', text, references: [reference], semantics}]},
-    claimVerificationResult: {schemaVersion: 'claim_verifier@2', status: 'passed', passed: true, policy: 'record_only',
-      checkedClaimCount: 1, unsupportedClaimCount: 0, issues: [], claimResults: [{claimId: 'frames', status: 'verified',
-        referenceCells: [{anchorId: 'anchor:frames', evidenceRefId: 'data:frames', column: 'total_frames', status: 'matched'}],
-        deterministicProof: {kind: 'numeric_cell', status: 'proved', reason: 'numeric_cell_verified',
-          anchorIds: ['anchor:frames'], evidenceRefIds: ['data:frames']},
-        propositionCoverage: {status: 'complete', covered: ['numeric'], uncovered: [], reason: 'proved'}}]},
-    claimSupport: [{claimId: 'frames', kind: 'numeric', text, semantics, supportLevel: 'verified', anchors: [{
-      anchorId: 'anchor:frames', evidenceRefId: 'data:frames', version: 'evidence_contract@1',
-      context: {traceId: 'trace-current', traceSide: 'current', producerKind: 'execute_sql'},
-      cells: [{column: 'total_frames', rowIndex: 0, value: 1912, actualValue: 1912}],
-    }]}],
   };
 }
 
@@ -819,20 +712,6 @@ describe('system investigation terminal acceptance', () => {
     expect(query.mock.calls.map(call => call[1])).toEqual(['current', 'reference']);
   });
 
-  it('binds reference fact claims to the real reference trace instead of the current trace', () => {
-    const referenceExpected = parseAgentSseExpectation({...expectation, facts: [{...expectation.facts[0],
-      oracle: {...expectation.facts[0].oracle!, traceSide: 'reference'}}]});
-    const terminal = terminalFixture();
-    const anchor = terminal.claimSupport![0].anchors[0];
-    Object.assign(anchor.context, {traceId: 'reference-trace', traceSide: 'reference'});
-    const check = (referenceTraceId?: string) => evaluateAgentSseExpectation({terminal, expectation: referenceExpected,
-      traceId: 'trace-current', referenceTraceId, oracleRows: {frame_count: [{total_frames: 1912}]}}).checks['fact:frame_count'];
-    expect(check('reference-trace')).toBe(true);
-    expect(check()).toBe(false);
-    expect(check('wrong-reference')).toBe(false);
-    anchor.context.traceSide = 'current';
-    expect(check('reference-trace')).toBe(false);
-  });
   it('loads every declarative real/constructed suite through the same closed expectation parser', () => {
     const wrapper = require('../../../scripts/run-glm-agent-e2e.cjs');
     for (const scenario of wrapper.systemAnalysisScenarios()) {
@@ -844,23 +723,23 @@ describe('system investigation terminal acceptance', () => {
   function fixture() {
     const terminal = terminalFixture();
     terminal.turnIntent = {...terminal.turnIntent!, taskKind: 'investigation'};
-    terminal.deliveryAssurance = {...terminal.deliveryAssurance!, investigation: 'passed', investigationEvidence: 'passed'};
+    terminal.deliveryAssurance = {...terminal.deliveryAssurance!, investigation: 'not_applicable', investigationEvidence: 'not_applicable'};
     const record = {recordId: 'capture:0:0', captureId: 'capture', rowIndex: 0, skillId: 'declared-producer', stepId: 'root',
       definitionFingerprint: 'definition-hash', selectedSqlHash: 'sql-hash', traceId: 'trace-current', traceSide: 'current' as const,
       originRunId: 'run', origin: 'current_run' as const, domain: 'thread_state', metricId: 'system.thread.state.duration',
       status: 'observed' as const, window: {start: '100', end: '200'}, upid: 2, utid: 3, value: 100, unit: 'ns'};
-    terminal.investigationAssessment = {schemaVersion: 1, status: 'checked',
+    // The record-only ledger display: acquisition rows and retained records, no assessed content.
+    terminal.investigationAssessment = {schemaVersion: 1, status: 'not_checked',
       binding: {...terminal.completion!, registryFingerprint: terminal.turnIntent.registryFingerprint,
         intentFingerprint: analysisDeliveryFingerprint(terminal.turnIntent),
         conclusionContractFingerprint: analysisDeliveryFingerprint(terminal.conclusionContract),
         requirementsFingerprint: 'requirements-hash', evidenceFingerprint: 'evidence-hash', ledgerFingerprint: 'ledger-hash',
         evidenceRecordsFingerprint: analysisDeliveryFingerprint([record])},
-      requirements: [{requirementId: 'thread_state', domain: 'thread_state', applicability: 'applicable', coverage: 'covered',
-        contentLocations: [{start: 0, end: terminal.conclusion!.length}], evidenceRecordIds: [record.recordId], scopeMatch: 'matched',
-        evidenceStatus: 'observed', acquisition: 'observed'}], evidenceRecords: [record]};
+      ledgerAcquisition: [{requirementId: 'thread_state', domain: 'thread_state', applicability: 'applicable',
+        status: 'observed', declaredMetrics: [record.metricId], observedMetrics: [record.metricId]}],
+      requirements: [], evidenceRecords: [record]};
     const expected = parseAgentSseExpectation({...expectation, intent: {taskKind: 'investigation'}, investigation: {
-      contentAssurance: 'passed', evidenceAssurance: 'passed', assessmentStatus: 'checked', requirements: [{id: 'thread_state',
-        domain: 'thread_state', applicability: 'applicable', coverage: 'covered', acquisition: 'observed', scopeMatch: 'matched',
+      requirements: [{id: 'thread_state', domain: 'thread_state', acquisition: 'observed',
         records: [{metricId: record.metricId, traceSide: 'current', origin: 'current_run', upid: 2, utid: 3,
           window: {start: '100', end: '200'}, oracleScope: {factId: 'frame_count', startColumn: 'start', endColumn: 'end', upidColumn: 'upid', utidColumn: 'utid'}}]}]}});
     const check = () => evaluateAgentSseInvestigationExpectation({terminal, expectation: expected.investigation!, traceId: 'trace-current',
@@ -868,7 +747,7 @@ describe('system investigation terminal acceptance', () => {
     return {terminal, expected, record, check};
   }
 
-  it('accepts exact candidate, requirement and producer record bindings with an independent scope oracle', () => {
+  it('accepts exact candidate, ledger acquisition and producer record bindings with an independent scope oracle', () => {
     expect(Object.values(fixture().check()).every(Boolean)).toBe(true);
   });
 
@@ -900,11 +779,11 @@ describe('system investigation terminal acceptance', () => {
     },
   );
 
-  it('rejects duplicate requirement/record IDs and unbound prose even when content mentions system analysis', () => {
+  it('rejects duplicate ledger rows/record IDs and unbound prose even when content mentions system analysis', () => {
     const first = fixture();
-    first.terminal.investigationAssessment!.requirements = [...first.terminal.investigationAssessment!.requirements,
-      first.terminal.investigationAssessment!.requirements[0]];
-    expect(first.check()['investigation:uniqueRequirements']).toBe(false);
+    first.terminal.investigationAssessment!.ledgerAcquisition = [...first.terminal.investigationAssessment!.ledgerAcquisition!,
+      first.terminal.investigationAssessment!.ledgerAcquisition![0]];
+    expect(first.check()['investigation:requirement:thread_state']).toBe(false);
     const second = fixture();
     second.terminal.investigationAssessment!.evidenceRecords = [second.record, second.record];
     expect(second.check()['investigation:uniqueRecords']).toBe(false);
@@ -918,8 +797,8 @@ describe('system investigation terminal acceptance', () => {
     const {terminal, check} = fixture();
     terminal.investigationAssessment!.evidenceRecords = [];
     expect(Object.values(check()).every(Boolean)).toBe(false);
-    terminal.investigationAssessment!.requirements = terminal.investigationAssessment!.requirements.map(row =>
-      ({...row, acquisition: 'unknown', evidenceStatus: 'unknown'}));
+    terminal.investigationAssessment!.ledgerAcquisition = terminal.investigationAssessment!.ledgerAcquisition!.map(row =>
+      ({...row, status: 'unknown' as const, observedMetrics: []}));
     expect(check()['investigation:requirement:thread_state']).toBe(false);
   });
 
@@ -951,417 +830,8 @@ describe('system investigation terminal acceptance', () => {
   });
 });
 
-describe('independent native row oracle', () => {
-  afterEach(() => {jest.useRealTimers();});
-  const nativeExpectation = () => parseAgentSseExpectation({schemaVersion: 1,
-    intent: {taskKind: 'fact', scope: 'bounded_question', deliverable: 'answer'}, facts: [{
-      id: 'duration', kind: 'numeric', columns: ['dur'], unit: 'ns', value: 42_000_000, verification: 'proved',
-      oracle: {sql: 'SELECT id AS row_id, dur FROM slice WHERE id = 7', column: 'dur', unit: 'ns',
-        anchorMatch: {startTs: 'start_ts', upid: 'upid', nativeRow: {relation: 'slice', idColumn: 'id', oracleColumn: 'row_id'}}},
-    }]});
-  function pinFixture() {
-    const trace = {id: 'trace-current', status: 'ready'} as TraceInfo;
-    const observation: RunningNativeProcessorObservation = Object.freeze({instanceToken: Object.freeze({}),
-      registrationToken: Object.freeze({}), instanceId: 'instance', traceId: trace.id, status: 'trusted',
-      nativeSchemaEligible: true, analysisRunPrivate: false,
-      binarySelection: Object.freeze({source: 'local_binary', selectedPath: '/fixture/binary', selectionOrigin: 'default'})});
-    const service = {getTrace: jest.fn(() => trace), getRunningNativeProcessorObservation: jest.fn(() => observation),
-      getRunningCapabilityTraceProcessorInput: jest.fn(() => observation.binarySelection)};
-    const identity = {source: 'bundled' as const, gitRevision: 'formal-revision', stdlibRevision: 'formal-revision'};
-    const docs = {version: 1, generatedFrom: 'formal-revision', modules: [], symbolToModule: {}, entries: [
-      {id: 'slice', name: 'slice', package: 'prelude', type: 'table', module: '', category: '', description: '',
-        columns: [{name: 'id', type: 'ID'}, {name: 'dur', type: 'DURATION'}]},
-    ]} as PerfettoSqlDocsAsset;
-    const resolveIdentity = jest.fn(async () => identity);
-    const loadDocs = jest.fn(() => docs);
-    const expectation = nativeExpectation();
-    return {trace, observation, service, identity, docs, resolveIdentity, loadDocs, expectation,
-      prepare: () => prepareAgentSseNativeOracle({expectation, traceId: trace.id, service}, {resolveIdentity, loadDocs})};
-  }
-  async function fixture() {
-    const pin = pinFixture();
-    const oracle = await pin.prepare();
-    const terminal = terminalFixture('The observed duration is 42000000 ns.');
-    const claim = terminal.conclusionContract!.claims![0];
-    const support = terminal.claimSupport![0];
-    const anchor = support.anchors[0];
-    const proof = terminal.claimVerificationResult!.claimResults[0];
-    const reference = {...claim.references[0], column: 'dur', value: 42_000_000};
-    claim.references = [reference];
-    claim.semantics!.scope.subjectRefs = [reference];
-    claim.semantics!.numeric = {operator: 'eq', value: 42_000_000, unit: 'ns'};
-    support.semantics = JSON.parse(JSON.stringify(claim.semantics));
-    anchor.context.captureId = 'capture-original';
-    anchor.cells = [{column: 'dur', rowIndex: 0, value: 42_000_000, actualValue: 42_000_000, unit: 'ns'}];
-    proof.referenceCells![0].column = 'dur';
-    proof.deterministicProof!.nativeRows = [{...oracle.schemas.duration,
-      anchorId: anchor.anchorId, evidenceRefId: anchor.evidenceRefId,
-      captureId: anchor.context.captureId, traceSide: 'current', id: 7}];
-    const oracleRows = {duration: [{row_id: 7, dur: 42_000_000, start_ts: '1000', upid: 10}]};
-    return {pin, oracle, terminal, claim, support, anchor, proof, oracleRows,
-      evaluate: () => evaluateAgentSseExpectation({terminal, expectation: pin.expectation, traceId: 'trace-current',
-        oracleRows, oracleNativeSchemas: oracle.schemas})};
-  }
-
-  function groupFixture() {
-    const target = pinFixture();
-    const scope = {tenantId: 'test', workspaceId: 'test', userId: 'test'};
-    let inside = false;
-    const observation = {...target.observation, analysisRunPrivate: true};
-    const entry = {side: 'current', privateProcessor: true, lease: {id: 'oracle-lease', traceId: target.trace.id, mode: 'isolated'},
-      context: {traceId: target.trace.id, leaseId: 'oracle-lease', mode: 'isolated', leaseScope: scope,
-        holder: {holderType: 'agent_run', holderRef: ''}}};
-    target.service.getRunningNativeProcessorObservation.mockImplementation((_id?: string, options?: any) => {
-      if (!inside) return {...target.observation, status: 'tainted'};
-      expect(options.leaseId).toBe(entry.lease.id);
-      expect(options.leaseScope).toBe(scope);
-      return observation;
-    });
-    const query = jest.fn(async (_id: string, _sql: string, options?: any) => {
-      expect(inside).toBe(true);
-      expect(options.leaseId).toBe(entry.lease.id);
-      expect(options.leaseScope).toBe(scope);
-      return {columns: ['dur', 'row_id'], rows: [[42_000_000, 7]]};
-    });
-    const service = {...target.service, query};
-    const release = jest.fn();
-    const run = jest.fn(async (callback: () => Promise<any>) => {
-      inside = true;
-      try {return await callback();} finally {inside = false;}
-    });
-    const group = {entries: [entry], assertCurrent: jest.fn(), run, release} as unknown as AnalysisRunTraceProcessorLeases;
-    const prepareLeases = jest.fn(async (args: any) => {entry.context.holder.holderRef = args.runId; return group;});
-    return {...target, service, scope, entry, group, observation, query, release, run, prepareLeases,
-      collect: (deadlineMs = Date.now() + 1000, signal?: AbortSignal) => collectAgentSseOracleEvidence({
-        expectation: target.expectation, traceId: target.trace.id, service: service as any, scope, deadlineMs, signal,
-      }, {prepareLeases, resolveIdentity: target.resolveIdentity, loadDocs: target.loadDocs})};
-  }
-
-  function pairGroupFixture() {
-    const target = pinFixture();
-    const scope = {tenantId: 'test', workspaceId: 'test', userId: 'test'};
-    const traces = new Map(['current', 'reference'].map(side => [side, {id: `trace-${side}`, status: 'ready'}]));
-    const entries = ['current', 'reference'].map(side => ({side, privateProcessor: true,
-      lease: {id: `lease-${side}`, traceId: `trace-${side}`, mode: 'isolated'},
-      context: {traceId: `trace-${side}`, leaseId: `lease-${side}`, mode: 'isolated', leaseScope: scope,
-        holder: {holderType: 'agent_run', holderRef: 'oracle'}}}));
-    const observations = new Map(entries.map(entry => [entry.context.traceId,
-      {...target.observation, traceId: entry.context.traceId, instanceId: entry.lease.id, analysisRunPrivate: true}]));
-    const service = {getTrace: jest.fn((id: string) => [...traces.values()].find(trace => trace.id === id)),
-      getRunningNativeProcessorObservation: jest.fn((id: string, options: any) => {
-        expect(options.leaseId).toBe(`lease-${id.slice('trace-'.length)}`);
-        return observations.get(id);
-      }), getRunningCapabilityTraceProcessorInput: jest.fn(() => target.observation.binarySelection),
-      query: jest.fn(async (id: string, _sql: string, options: any) => {
-        expect(options.leaseId).toBe(`lease-${id.slice('trace-'.length)}`);
-        return {columns: ['dur', 'row_id'], rows: [[id === 'trace-current' ? 42_000_000 : 24_000_000, id === 'trace-current' ? 7 : 8]]};
-      })};
-    const group = {entries, assertCurrent: jest.fn(), run: jest.fn(async (callback: () => Promise<any>) => callback()), release: jest.fn()};
-    const expected = parseAgentSseExpectation({...target.expectation, facts: [target.expectation.facts[0],
-      {...target.expectation.facts[0], id: 'reference_duration', value: 24_000_000,
-        oracle: {...target.expectation.facts[0].oracle!, traceSide: 'reference'}}]});
-    const prepareLeases = jest.fn(async () => group as unknown as AnalysisRunTraceProcessorLeases);
-    const collect = () => collectAgentSseOracleEvidence({expectation: expected, traceId: 'trace-current', referenceTraceId: 'trace-reference',
-      service: service as any, scope, deadlineMs: Date.now() + 1000},
-      {prepareLeases, resolveIdentity: target.resolveIdentity, loadDocs: target.loadDocs});
-    return {traces, entries, service, group, prepareLeases, collect};
-  }
-
-  it('uses one authentic pair lease group with separate native pins and same-SQL results', async () => {
-    const pair = pairGroupFixture();
-    const result = await pair.collect();
-    expect(result.rows).toEqual({duration: [{dur: 42_000_000, row_id: 7}], reference_duration: [{dur: 24_000_000, row_id: 8}]});
-    expect(result.schemas.duration.traceId).toBe('trace-current');
-    expect(result.schemas.reference_duration.traceId).toBe('trace-reference');
-    expect(pair.prepareLeases).toHaveBeenCalledWith(expect.objectContaining({currentTraceId: 'trace-current', referenceTraceId: 'trace-reference'}));
-    expect(pair.service.query.mock.calls.map(call => call[0])).toEqual(['trace-current', 'trace-reference']);
-    expect(pair.group.release).toHaveBeenCalledTimes(1);
-  });
-
-  it('rejects swapped side leases and a reference registration replaced during the current query', async () => {
-    const swapped = pairGroupFixture();
-    swapped.entries[1].side = 'current';
-    await expect(swapped.collect()).rejects.toThrow('lease unavailable');
-    expect(swapped.group.release).toHaveBeenCalledTimes(1);
-    const replaced = pairGroupFixture();
-    const query = replaced.service.query.getMockImplementation()!;
-    replaced.service.query.mockImplementation(async (...args) => {
-      const result = await query(...args);
-      replaced.traces.set('reference', {id: 'trace-reference', status: 'ready'});
-      return result;
-    });
-    await expect(replaced.collect()).rejects.toThrow('registration changed');
-    expect(replaced.group.release).toHaveBeenCalledTimes(1);
-  });
-
-  it('pins and queries inside one formally prepared oracle group, then releases it without exporting owner tokens', async () => {
-    const target = groupFixture();
-    const result = await target.collect();
-    expect(result.rows.duration).toEqual([{dur: 42_000_000, row_id: 7}]);
-    expect(result.schemas.duration.schemaFingerprint).toMatch(/^[a-f0-9]{64}$/);
-    expect(target.prepareLeases).toHaveBeenCalledTimes(1);
-    expect(target.run).toHaveBeenCalledTimes(1);
-    expect(target.query).toHaveBeenCalledTimes(1);
-    expect(target.query.mock.calls[0][1]).toBe(target.expectation.facts[0].oracle!.sql);
-    expect(target.prepareLeases.mock.calls[0][0]).toMatchObject({currentTraceId: 'trace-current', scope: target.scope,
-      runId: expect.stringMatching(/^verification-oracle-/), sessionId: expect.stringMatching(/^verification-oracle-/), signal: expect.any(AbortSignal)});
-    expect(target.release).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(result)).not.toMatch(/instanceToken|registrationToken|oracle-lease/);
-  });
-
-  it('does not rebuild an oracle group after a query taints it', async () => {
-    const target = groupFixture();
-    target.expectation.facts.push({...target.expectation.facts[0], id: 'second',
-      oracle: {...target.expectation.facts[0].oracle!, sql: 'SELECT id AS row_id, dur FROM slice WHERE id = 8'}});
-    target.query.mockImplementation(async () => {target.observation.status = 'tainted'; return {columns: ['dur', 'row_id'], rows: [[42_000_000, 7]]};});
-    await expect(target.collect()).rejects.toThrow('Task native row oracle unavailable');
-    expect(target.query).toHaveBeenCalledTimes(1);
-    expect(target.prepareLeases).toHaveBeenCalledTimes(1);
-    expect(target.release).toHaveBeenCalledTimes(1);
-  });
-
-  it('keeps the legacy non-native oracle path free of new lease admission', async () => {
-    const target = groupFixture();
-    delete target.expectation.facts[0].oracle!.anchorMatch!.nativeRow;
-    target.query.mockResolvedValue({columns: ['dur', 'row_id'], rows: [[42_000_000, 7]]});
-    expect((await target.collect()).rows.duration).toHaveLength(1);
-    expect(target.prepareLeases).not.toHaveBeenCalled();
-    expect(target.query.mock.calls[0]).toEqual(['trace-current', target.expectation.facts[0].oracle!.sql]);
-  });
-
-  it.each(['query', 'preparation'] as const)('bounds a stalled %s by the original deadline and releases late ownership', async stage => {
-    jest.useFakeTimers({now: 1000});
-    const target = groupFixture();
-    let settle!: (value: any) => void;
-    const pending = new Promise<any>(resolve => {settle = resolve;});
-    if (stage === 'query') target.query.mockReturnValue(pending);
-    else target.prepareLeases.mockReturnValue(pending);
-    const result = target.collect(1100);
-    const rejected = expect(result).rejects.toMatchObject({name: 'TimeoutError'});
-    await jest.advanceTimersByTimeAsync(100);
-    await rejected;
-    expect(target.prepareLeases).toHaveBeenCalledTimes(1);
-    expect(target.prepareLeases.mock.calls[0][0].signal.aborted).toBe(true);
-    settle(stage === 'query' ? {columns: ['dur', 'row_id'], rows: [[42_000_000, 7]]} : target.group);
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(target.release).toHaveBeenCalledTimes(1);
-    if (stage === 'preparation') expect(target.run).not.toHaveBeenCalled();
-  });
-
-  it('does not begin preparation after the original deadline or parent cancellation', async () => {
-    const expired = groupFixture();
-    await expect(expired.collect(Date.now() - 1)).rejects.toMatchObject({name: 'TimeoutError'});
-    expect(expired.prepareLeases).not.toHaveBeenCalled();
-    const cancelled = groupFixture();
-    const controller = new AbortController();
-    controller.abort();
-    await expect(cancelled.collect(Date.now() + 1000, controller.signal)).rejects.toMatchObject({name: 'AbortError'});
-    expect(cancelled.prepareLeases).not.toHaveBeenCalled();
-  });
-
-  it.each(['preparation', 'query', 'outer completion'] as const)(
-    'rejects %s after the absolute deadline even when the timer has not run', async stage => {
-      jest.useFakeTimers({now: 1000});
-      const target = groupFixture();
-      if (stage === 'outer completion') {
-        const run = target.run.getMockImplementation()!;
-        target.run.mockImplementation(async callback => {
-          const result = await run(callback);
-          jest.setSystemTime(1100);
-          return result;
-        });
-      } else if (stage === 'query') {
-        const query = target.query.getMockImplementation()!;
-        target.query.mockImplementation(async (...args) => {
-          const result = await query(...args);
-          jest.setSystemTime(1100);
-          return result;
-        });
-      } else {
-        const prepare = target.prepareLeases.getMockImplementation()!;
-        target.prepareLeases.mockImplementation(async args => {
-          const group = await prepare(args);
-          jest.setSystemTime(1100);
-          return group;
-        });
-      }
-      await expect(target.collect(1100)).rejects.toMatchObject({name: 'TimeoutError'});
-      expect(target.prepareLeases).toHaveBeenCalledTimes(1);
-      expect(target.prepareLeases.mock.calls[0][0].signal.aborted).toBe(true);
-      expect(target.query).toHaveBeenCalledTimes(stage === 'preparation' ? 0 : 1);
-      expect(target.run).toHaveBeenCalledTimes(1);
-      expect(target.release).toHaveBeenCalledTimes(1);
-      expect(jest.getTimerCount()).toBe(0);
-    });
-
-  it('rejects invalid absolute deadlines before preparing an owner', async () => {
-    const target = groupFixture();
-    for (const deadline of [NaN, Infinity, -Infinity]) {
-      await expect(target.collect(deadline)).rejects.toThrow('Task native row oracle deadline invalid');
-    }
-    expect(target.prepareLeases).not.toHaveBeenCalled();
-  });
-
-  it('observes cancellation when the deadline crosses at try entry before the first race', async () => {
-    jest.useFakeTimers({now: 1000});
-    const target = groupFixture();
-    const unhandled = jest.fn();
-    process.on('unhandledRejection', unhandled);
-    // Admission and timer setup see time remaining; try-entry validation sees expiry.
-    const now = jest.spyOn(Date, 'now').mockReturnValueOnce(1000).mockReturnValueOnce(1000).mockReturnValue(1100);
-    try {
-      await expect(target.collect(1100)).rejects.toMatchObject({name: 'TimeoutError'});
-      expect(target.prepareLeases).not.toHaveBeenCalled();
-      expect(target.run).not.toHaveBeenCalled();
-      expect(target.query).not.toHaveBeenCalled();
-      expect(target.release).not.toHaveBeenCalled();
-      expect(jest.getTimerCount()).toBe(0);
-      await jest.advanceTimersByTimeAsync(0);
-      expect(unhandled).not.toHaveBeenCalled();
-    } finally {
-      now.mockRestore();
-      process.removeListener('unhandledRejection', unhandled);
-    }
-  });
-
-  it('preserves a synchronous preparation error without an unhandled rejection or unowned cleanup', async () => {
-    jest.useFakeTimers({now: 1000});
-    const target = groupFixture();
-    const failure = new Error('preparation failed');
-    target.prepareLeases.mockImplementation(() => {throw failure;});
-    const unhandled = jest.fn();
-    process.on('unhandledRejection', unhandled);
-    try {
-      await expect(target.collect(1100)).rejects.toBe(failure);
-      expect(target.prepareLeases).toHaveBeenCalledTimes(1);
-      expect(target.prepareLeases.mock.calls[0][0].signal.aborted).toBe(true);
-      expect(target.run).not.toHaveBeenCalled();
-      expect(target.query).not.toHaveBeenCalled();
-      expect(target.release).not.toHaveBeenCalled();
-      expect(jest.getTimerCount()).toBe(0);
-      await jest.advanceTimersByTimeAsync(0);
-      expect(unhandled).not.toHaveBeenCalled();
-    } finally {
-      process.removeListener('unhandledRejection', unhandled);
-    }
-  });
-
-  it('builds the expected schema from actual identity and formal docs without reading a candidate proof', async () => {
-    const target = pinFixture();
-    const pin = await target.prepare();
-    expect(pin.schemas.duration).toEqual({...nativeCapture.resolveRawSqlNativeRowSchema(target.identity, target.docs, 'slice'), traceId: 'trace-current'});
-    expect(Object.isFrozen(pin.schemas.duration)).toBe(true);
-    expect(target.resolveIdentity).toHaveBeenCalledWith(target.observation.binarySelection);
-    expect(JSON.stringify(pin.schemas)).not.toContain('/fixture/binary');
-  });
-
-  it.each(['instanceToken', 'registrationToken', 'instanceId', 'traceId', 'status', 'nativeSchemaEligible', 'analysisRunPrivate', 'binary'] as const)(
-    'rejects %s drift even when the other instance properties still match', async field => {
-      const target = pinFixture();
-      const pin = await target.prepare();
-      const changed = {...target.observation};
-      if (field === 'instanceToken' || field === 'registrationToken') changed[field] = Object.freeze({});
-      else if (field === 'instanceId' || field === 'traceId') changed[field] = 'other';
-      else if (field === 'status') changed.status = 'tainted';
-      else if (field === 'nativeSchemaEligible') changed.nativeSchemaEligible = false;
-      else if (field === 'analysisRunPrivate') changed.analysisRunPrivate = true;
-      else changed.binarySelection = {...changed.binarySelection, selectedPath: '/another/binary'};
-      target.service.getRunningNativeProcessorObservation.mockReturnValue(changed);
-      await expect(pin.assertCurrent()).rejects.toThrow('Task native row oracle unavailable');
-    });
-
-  it('rejects a replacement registration object or a processor swapped during async identity resolution', async () => {
-    const target = pinFixture();
-    const pin = await target.prepare();
-    target.service.getTrace.mockReturnValue({...target.trace});
-    await expect(pin.assertCurrent()).rejects.toThrow('Task native row oracle unavailable');
-    const swapped = pinFixture();
-    swapped.resolveIdentity.mockImplementation(async () => {
-      swapped.service.getRunningNativeProcessorObservation.mockReturnValue({...swapped.observation, instanceToken: {}});
-      return swapped.identity;
-    });
-    await expect(swapped.prepare()).rejects.toThrow('Task native row oracle unavailable');
-  });
-
-  it.each(['revision', 'duplicateTable', 'multipleIds', 'identity', 'scope', 'missing'] as const)(
-    'fails before analysis when independent %s authority is unavailable', async change => {
-      const target = pinFixture();
-      if (change === 'revision') target.docs.generatedFrom = 'different-revision';
-      if (change === 'duplicateTable') target.docs.entries.push({...target.docs.entries[0]});
-      if (change === 'multipleIds') target.docs.entries[0].columns!.push({name: 'other_id', type: 'ID'});
-      if (change === 'identity') target.resolveIdentity.mockResolvedValue({source: 'custom', binarySha256: 'untrusted'} as any);
-      if (change === 'scope') target.service.getRunningNativeProcessorObservation.mockReturnValue({...target.observation, analysisRunPrivate: true});
-      if (change === 'missing') target.service.getRunningNativeProcessorObservation.mockReturnValue(undefined as any);
-      await expect(target.prepare()).rejects.toThrow('Task native row oracle unavailable');
-    });
-
-  it('uses the issued numeric operand row when the result did not include timestamp or process columns', async () => {
-    const target = await fixture();
-    expect(target.anchor.timeRange).toBeUndefined();
-    expect(target.anchor.identity).toBeUndefined();
-    expect(target.evaluate().facts.duration.proposition).toBe('proved');
-  });
-
-  it.each(['id', 'traceId', 'traceSide', 'relation', 'idColumn', 'schemaFingerprint', 'anchorId', 'evidenceRefId', 'captureId'] as const)(
-    'rejects another %s even when its scalar value is the same 42 ms', async field => {
-      const target = await fixture();
-      const row = target.proof.deterministicProof!.nativeRows![0];
-      if (field === 'id') row.id = 8;
-      else if (field === 'traceSide') row.traceSide = 'reference';
-      else if (field === 'schemaFingerprint') row.schemaFingerprint = '0'.repeat(64);
-      else row[field] = 'other';
-      expect(target.evaluate().facts.duration.matched).toBe(false);
-    });
-
-  it.each(['duplicate', 'missingCapture', 'candidate', 'wrongUnit', 'wrongValue', 'incompleteCoverage'] as const)(
-    'does not let native metadata bypass %s verification', async change => {
-      const target = await fixture();
-      if (change === 'duplicate') target.proof.deterministicProof!.nativeRows!.push({...target.proof.deterministicProof!.nativeRows![0]});
-      if (change === 'missingCapture') delete target.anchor.context.captureId;
-      if (change === 'candidate') target.proof.deterministicProof!.status = 'candidate';
-      if (change === 'wrongUnit') target.claim.semantics!.numeric!.unit = 'frames';
-      if (change === 'wrongValue') target.claim.semantics!.numeric!.value = 43_000_000;
-      if (change === 'incompleteCoverage') target.proof.propositionCoverage!.uncovered.push('typed_proposition');
-      target.support.semantics = JSON.parse(JSON.stringify(target.claim.semantics));
-      expect(target.evaluate().facts.duration.matched).toBe(false);
-    });
-
-  it('keeps the strict legacy timestamp/process fallback and ignores JSON row metadata outside a current proof', async () => {
-    const target = await fixture();
-    const publicCopy = JSON.parse(JSON.stringify(target.proof.deterministicProof!.nativeRows));
-    delete target.proof.deterministicProof!.nativeRows;
-    Object.assign(target.anchor, {nativeRows: publicCopy});
-    expect(target.evaluate().facts.duration.matched).toBe(false);
-    target.anchor.timeRange = {startTs: '1000', endTs: '42001000', unit: 'ns', source: 'row'};
-    target.anchor.identity = {upid: 10};
-    expect(target.evaluate().facts.duration.matched).toBe(true);
-    target.anchor.identity.upid = 11;
-    expect(target.evaluate().facts.duration.matched).toBe(false);
-    target.anchor.identity.upid = 10;
-    target.anchor.timeRange.startTs = '2000';
-    expect(target.evaluate().facts.duration.matched).toBe(false);
-  });
-
-  it.each([{columns: ['dur'], rows: [[42_000_000]]}, {columns: ['dur', 'row_id'], rows: [[42_000_000, '7']]},
-    {columns: ['dur', 'row_id', 'row_id'], rows: [[42_000_000, 7, 8]]}])('rejects an absent, non-native or ambiguous oracle ID', async result => {
-    await expect(collectAgentSseOracleRows(nativeExpectation(), async () => result)).rejects.toThrow('Task fact oracle unavailable');
-  });
-});
 
 describe('Agent SSE verification evidence', () => {
-  it('accepts only an authored native row tuple, never an expected fingerprint copied into configuration', () => {
-    const input = structuredClone(expectation);
-    const nativeRow = {relation: 'slice', idColumn: 'id', oracleColumn: 'row_id'};
-    input.facts[0].oracle!.anchorMatch = {startTs: 'start_ts', upid: 'upid', nativeRow};
-    expect(parseAgentSseExpectation(input).facts[0].oracle?.anchorMatch?.nativeRow).toEqual(nativeRow);
-    for (const invalid of [null, {}, {...nativeRow, idColumn: ''}, {...nativeRow, oracleColumn: 1},
-      {...nativeRow, relation: 'slice; SELECT'}, {...nativeRow, schemaFingerprint: 'public-proof-value'}]) {
-      const changed = structuredClone(input);
-      changed.facts[0].oracle!.anchorMatch!.nativeRow = invalid as any;
-      expect(() => parseAgentSseExpectation(changed)).toThrow('Invalid --expectation-json');
-    }
-  });
 
   it('admits only a ready trace and preserves the processor startup error', () => {
     expect(() => assertVerificationTraceReady('trace', {status: 'ready'})).not.toThrow();
@@ -1427,328 +897,155 @@ describe('Agent SSE verification evidence', () => {
 });
 
 describe('task fact oracle (deterministic composition, not a model semantic benchmark)', () => {
-  it('does not promote reference-only or uncovered facets into full semantic acceptance', () => {
-    expect(taskAcceptanceStatus(true, ['identity: proposition proof unavailable'])).toEqual({
+  it('does not promote uncovered facets into full semantic acceptance', () => {
+    expect(taskAcceptanceStatus(true, ['identity: primary application selection'])).toEqual({
       observedChecksPassed: true, semanticAcceptance: 'INCONCLUSIVE', completeAcceptance: false,
     });
     expect(taskAcceptanceStatus(true, [])).toMatchObject({semanticAcceptance: 'PASSED', completeAcceptance: true});
   });
+
   it.each(['There are 1912 frames.', '共记录 1912 帧。', 'The trace contains 1,912 frames.'])
-    ('accepts equivalent output without titles or a prescribed tool path: %s', text => {
+    ('matches the independently queried value in the answer body without a prescribed tool path: %s', text => {
       const result = evaluate(terminalFixture(text));
       expect(Object.values(result.checks).every(Boolean)).toBe(true);
-      expect(result.facts.frame_count).toMatchObject({matchedClaimIds: ['frames'], matchedAnchorIds: ['anchor:frames']});
+      expect(result.facts.frame_count).toMatchObject({matched: true});
+      expect(result.facts.frame_count.matchedText.join(' ')).toContain('1');
     });
 
-  it('does not accept successful tool counts when no original claims or raw proof exist', () => {
-    const terminal = terminalFixture();
-    terminal.conclusionContract!.claims = [];
-    const result = evaluate(terminal);
-    expect(result.checks.originalClaimsVerified).toBe(false);
-    expect(result.facts.frame_count.matched).toBe(false);
-    expect(result.facts.frame_count.matchedClaimIds).toEqual([]);
-    expect(result.facts.frame_count.matchedAnchorIds).toEqual([]);
+  it('fails a wrong value and never borrows an unrelated matching number with a different unit', () => {
+    expect(evaluate(terminalFixture('There are 9999 frames.')).facts.frame_count.matched).toBe(false);
+    // A frames fact must be written without a time unit; 1912 ms is a different quantity.
+    expect(evaluate(terminalFixture('The longest frame took 1912 ms.')).facts.frame_count.matched).toBe(false);
   });
 
-  it('keeps the wrong proposition 9999 separate from an unrelated correctly cited 1912', () => {
-    const terminal = terminalFixture('There are 9999 frames; 1912 unrelated events were observed.');
-    terminal.conclusionContract!.claims![0].semantics!.numeric!.value = 9999;
-    expect(evaluate(terminal).facts.frame_count.matched).toBe(false);
+  it.each([
+    ['23.11 ms', 23_109_000, 'ns', true], ['23.1 ms', 23_109_000, 'ns', true], ['23109 us', 23_109_000, 'ns', true],
+    ['0.023 s', 23_109_000, 'ns', true], ['23.2 ms', 23_109_000, 'ns', false], ['23 ms', 23_109_000, 'ns', true],
+    ['2.4 ms', 2_400_000, 'ns', true], ['2 ms', 2_400_000, 'ns', false], ['4 s', 4_041_000_000, 'ns', false], ['4041 ms', 4_041_000_000, 'ns', true],
+    ['4.04 秒', 4_041_000_000, 'ns', true], ['12.3%', 12.34, '%', true], ['12.4%', 12.34, '%', false],
+  ] as const)('normalizes units and display rounding: %s for %d %s -> %s', (written, value, unit, matched) => {
+    const target = parseAgentSseExpectation({schemaVersion: 1, intent: {taskKind: 'fact'},
+      facts: [{id: 'value', kind: 'numeric', value, unit}]});
+    const text = `The measured value is ${written}.`;
+    const result = evaluateAgentSseExpectation({terminal: terminalFixture(text), expectation: target, traceId: 'trace-current'});
+    expect(result.facts.value.matched).toBe(matched);
   });
 
-  it('accepts exact numeric strings and artifact references without imposing evidence-id spelling', () => {
-    const terminal = terminalFixture();
-    terminal.conclusionContract!.claims![0].semantics!.numeric!.value = '1912';
-    const reference = terminal.conclusionContract!.claims![0].semantics!.scope.subjectRefs![0];
-    delete reference.evidenceRefId;
-    reference.artifactId = 'artifact:frames';
-    terminal.claimSupport![0].anchors[0].context.artifactId = 'artifact:frames';
-    expect(Object.values(evaluate(terminal).checks).every(Boolean)).toBe(true);
+  it('matches identity and categorical text case-insensitively', () => {
+    const target = parseAgentSseExpectation({schemaVersion: 1, intent: {taskKind: 'fact'},
+      facts: [{id: 'process', kind: 'identity', oracle: {sql: 'SELECT name FROM process', column: 'name'}}]});
+    const run = (text: string) => evaluateAgentSseExpectation({terminal: terminalFixture(text), expectation: target,
+      traceId: 'trace-current', oracleRows: {process: [{name: 'com.example.app'}, {name: 'system_server'}]}});
+    expect(run('The main process is COM.EXAMPLE.APP.').facts.process.matched).toBe(true);
+    expect(run('The main process is not named here.').facts.process.matched).toBe(false);
   });
-
-  it.each(['negated', 'quoted', 'rejected_quote', 'possible'])('does not turn %s language into the requested fact', disposition => {
-    const terminal = terminalFixture();
-    const semantics = terminal.conclusionContract!.claims![0].semantics!;
-    if (disposition === 'negated') semantics.polarity = disposition;
-    else if (disposition === 'possible') semantics.modality = disposition;
-    else semantics.discourse = disposition as 'quoted' | 'rejected_quote';
-    expect(evaluate(terminal).facts.frame_count.matched).toBe(false);
-  });
-
-  it.each(['wrong_trace', 'wrong_unit', 'missing_anchor', 'wrong_cell', 'partial_proof', 'v1', 'stale_body', 'unavailable_assurance'])
-    ('rejects %s even if the aggregate compatibility flag says passed', failure => {
-      const terminal = terminalFixture();
-      if (failure === 'wrong_trace') terminal.claimSupport![0].anchors[0].context.traceId = 'other';
-      if (failure === 'wrong_unit') terminal.conclusionContract!.claims![0].semantics!.numeric!.unit = 'events';
-      if (failure === 'missing_anchor') terminal.claimSupport![0].anchors = [];
-      if (failure === 'wrong_cell') terminal.claimSupport![0].anchors[0].cells![0].actualValue = 9999;
-      if (failure === 'partial_proof') terminal.claimVerificationResult!.claimResults[0].propositionCoverage!.status = 'partial';
-      if (failure === 'v1') terminal.claimVerificationResult!.schemaVersion = 'claim_verifier@1';
-      if (failure === 'stale_body') terminal.conclusion = 'changed after verification';
-      if (failure === 'unavailable_assurance') terminal.deliveryAssurance!.claims = 'unavailable';
-      expect(Object.values(evaluate(terminal).checks).every(Boolean)).toBe(false);
-    });
 
   it('requires independently queried task facts, not a different numeric observation', () => {
     const result = evaluateAgentSseExpectation({terminal: terminalFixture(), expectation, traceId: 'trace-current',
-      oracleRows: {frame_count: [{total_frames: 8}]}});
+      oracleRows: {frame_count: [{total_frames: 2000}]}});
     expect(result.facts.frame_count.matched).toBe(false);
   });
 
   it('checks the semantic scope decision instead of counting plan/tool events', () => {
     const terminal = terminalFixture();
-    terminal.turnIntent = {...terminal.turnIntent!, scope: 'scene_wide', deliverable: 'report'};
+    terminal.turnIntent = {...terminal.turnIntent!, scope: 'scene_wide'};
     expect(evaluate(terminal).checks['intent:scope']).toBe(false);
-    expect(evaluate(terminal).checks['intent:deliverable']).toBe(false);
   });
 
-  it('rejects unknown expectation keys, missing numeric targets, and mutation SQL', () => {
-    expect(() => parseAgentSseExpectation({...expectation, typo: true})).toThrow('Invalid --expectation-json');
-    expect(() => parseAgentSseExpectation({...expectation, intent: {...expectation.intent, scope: 'all'}})).toThrow();
-    expect(() => parseAgentSseExpectation({...expectation, facts: [{...expectation.facts[0], oracle: undefined}]})).toThrow();
-    expect(() => parseAgentSseExpectation({...expectation, facts: [{...expectation.facts[0],
-      oracle: {sql: 'SELECT 1; DROP TABLE process', column: 'total_frames'}}]})).toThrow();
-  });
-
-  it('checks explicit alternative scene labels without relaxing the task or proof requirements', () => {
-    const alternatives = parseAgentSseExpectation({...expectation,
-      intent: {...expectation.intent, allowedSceneIds: ['general', 'linux']}});
-    for (const sceneId of ['general', 'linux', 'scrolling'] as const) {
-      const terminal = terminalFixture();
-      terminal.turnIntent = {...terminal.turnIntent!, sceneId};
-      const result = evaluateAgentSseExpectation({terminal, expectation: alternatives, traceId: 'trace-current',
-        oracleRows: {frame_count: [{total_frames: 1912}]}});
-      expect(result.checks['intent:sceneId']).toBe(sceneId !== 'scrolling');
-      expect(result.checks['intent:taskKind']).toBe(true);
-      expect(result.checkGroups.proof['fact:frame_count:proved']).toBe(true);
-      terminal.turnIntent = {...terminal.turnIntent!, taskKind: 'investigation'};
-      expect(evaluateAgentSseExpectation({terminal, expectation: alternatives, traceId: 'trace-current'})
-        .checks['intent:taskKind']).toBe(false);
+  it('rejects unknown expectation keys, retired proof fields, missing numeric targets, and mutation SQL', () => {
+    for (const fact of [{id: 'x', kind: 'numeric', value: 1, verification: 'proved'}, {id: 'x', kind: 'numeric', value: 1, columns: ['x']},
+      {id: 'x', kind: 'numeric'}, {id: 'x', kind: 'numeric', oracle: {sql: 'DELETE FROM slice', column: 'x'}},
+      {id: 'x', kind: 'numeric', oracle: {sql: 'SELECT 1 AS x', column: 'x', anchorMatch: {startTs: 'ts'}}}]) {
+      expect(() => parseAgentSseExpectation({schemaVersion: 1, intent: {taskKind: 'fact'}, facts: [fact]})).toThrow();
     }
-    expect(agentSseExpectationHash(alternatives)).not.toBe(agentSseExpectationHash(expectation));
-    for (const intent of [
-      {sceneId: 'general', allowedSceneIds: ['general', 'linux']},
-      {allowedSceneIds: []}, {allowedSceneIds: ['general', 'general']},
-      {allowedSceneIds: ['general', 1]}, {allowedSceneIds: [' general']}, {allowedSceneIds: 'general'},
-    ]) expect(() => parseAgentSseExpectation({...expectation, intent})).toThrow('Invalid --expectation-json');
+  });
+
+  it('checks explicit alternative scene labels without relaxing the task', () => {
+    const target = parseAgentSseExpectation({schemaVersion: 1, intent: {allowedSceneIds: ['scrolling', 'jank']}, facts: expectation.facts});
+    expect(evaluateAgentSseExpectation({terminal: terminalFixture(), expectation: target, traceId: 'trace-current',
+      oracleRows: {frame_count: [{total_frames: 1912}]}}).checks['intent:sceneId']).toBe(true);
+    const terminal = terminalFixture();
+    terminal.turnIntent = {...terminal.turnIntent!, sceneId: 'startup'};
+    expect(evaluateAgentSseExpectation({terminal, expectation: target, traceId: 'trace-current',
+      oracleRows: {frame_count: [{total_frames: 1912}]}}).checks['intent:sceneId']).toBe(false);
   });
 
   it('collects real oracle rows and fails closed on unavailable or missing metrics', async () => {
-    const query = jest.fn(async () => ({columns: ['total_frames'], rows: [[1912]]}));
-    await expect(collectAgentSseOracleRows(expectation, query)).resolves.toEqual({frame_count: [{total_frames: 1912}]});
-    expect(query).toHaveBeenCalledTimes(1);
-    await expect(collectAgentSseOracleRows(expectation, async () => ({columns: ['other'], rows: [[1912]]})))
-      .rejects.toThrow('Task fact oracle unavailable');
+    await expect(collectAgentSseOracleRows(expectation, async () => ({columns: ['total_frames'], rows: [[1912]]})))
+      .resolves.toEqual({frame_count: [{total_frames: 1912}]});
+    await expect(collectAgentSseOracleRows(expectation, async () => ({columns: ['other'], rows: [[1]]})))
+      .rejects.toThrow('Task fact oracle unavailable: frame_count');
+    await expect(collectAgentSseOracleRows(expectation, async () => ({columns: [], rows: [], error: 'no table'})))
+      .rejects.toThrow('Task fact oracle unavailable: frame_count');
+  });
+
+  it('queries one oracle SQL per side and checks the reference registration', async () => {
+    const paired = parseAgentSseExpectation({schemaVersion: 1, intent: {taskKind: 'comparison'}, facts: [
+      {id: 'current_frames', kind: 'numeric', oracle: {sql: 'SELECT 1 AS n', column: 'n'}},
+      {id: 'reference_frames', kind: 'numeric', oracle: {sql: 'SELECT 1 AS n', column: 'n', traceSide: 'reference'}}]});
+    const trace = (id: string) => ({id, status: 'ready'});
+    const traces = new Map([['current', trace('current')], ['reference', trace('reference')]]);
+    const query = jest.fn(async (id: string) => ({columns: ['n'], rows: [[id === 'current' ? 1 : 2]]}));
+    const service = {getTrace: (id: string) => traces.get(id), query} as unknown as Parameters<typeof collectAgentSseOracleEvidence>[0]['service'];
+    await expect(collectAgentSseOracleEvidence({expectation: paired, traceId: 'current', referenceTraceId: 'reference',
+      service, deadlineMs: Date.now() + 60_000})).resolves.toEqual({rows: {current_frames: [{n: 1}], reference_frames: [{n: 2}]}});
+    expect(query.mock.calls.map(call => call[0])).toEqual(['current', 'reference']);
+    await expect(collectAgentSseOracleEvidence({expectation: paired, traceId: 'current', service,
+      deadlineMs: Date.now() + 60_000})).rejects.toThrow('reference trace oracle unavailable');
   });
 });
 
-describe('grouped acceptance: wrong answer, unproved answer and undelivered answer stay apart', () => {
-  // The GLM Coding Plan scrolling shape: the value is right and bound to its cell, the finite proof is still a candidate.
-  function unprovedTerminal() {
-    const terminal = terminalFixture();
-    const result = terminal.claimVerificationResult!;
-    Object.assign(result, {status: 'partial', passed: false});
-    Object.assign(result.claimResults[0], {status: 'partial'});
-    result.claimResults[0].deterministicProof!.status = 'candidate';
-    result.claimResults[0].propositionCoverage = {status: 'partial', covered: [], uncovered: ['numeric'], reason: 'candidate'};
-    terminal.deliveryAssurance!.claims = 'coverage_incomplete';
-    return terminal;
-  }
+describe('grouped acceptance: wrong answer and undelivered answer stay apart', () => {
   type Checks = Record<string, boolean>;
-  const accept = (terminal: TerminalAnalysisEvidence, extra: {value?: Checks; delivery?: Checks; proof?: Checks;
+  const accept = (terminal: TerminalAnalysisEvidence, extra: {value?: Checks; delivery?: Checks;
     ungrouped?: Checks; hard?: Checks; strict?: boolean} = {}) => evaluateAgentSseAcceptance({task: evaluate(terminal),
     observedGroups: {value: {hasTerminalConclusionPayload: true, hasNoSseErrors: true, ...extra.value},
-      delivery: {hasAnalysisCompletedEvent: true, ...extra.delivery}, proof: extra.proof},
+      delivery: {hasAnalysisCompletedEvent: true, ...extra.delivery}},
     ungroupedChecks: extra.ungrouped ?? {}, hardChecks: extra.hard ?? {}, strict: extra.strict});
 
-  it('keeps a right but unproved value at the value tier: INCONCLUSIVE, and the run exits by its hard flags', () => {
-    const result = evaluate(unprovedTerminal());
-    expect(result.facts.frame_count).toMatchObject({tier: 'value', matched: true, proposition: 'unknown',
-      matchedClaimIds: ['frames'], matchedAnchorIds: ['anchor:frames']});
-    expect(result.checkGroups.value['fact:frame_count']).toBe(true);
-    expect(result.checkGroups.proof['fact:frame_count:proved']).toBe(false);
-    expect(result.checkGroups.value.deliveryClaimsNotContradicted).toBe(true);
-    expect(result.checkGroups.proof).toMatchObject({originalClaimsVerified: false, deliveryClaimsVerified: false});
-    const observed = accept(unprovedTerminal());
-    expect(observed).toMatchObject({semanticAcceptance: 'INCONCLUSIVE', proofAcceptance: 'INCOMPLETE', observedChecksPassed: true,
-      passed: true, completeAcceptance: false});
-    expect(observed.uncoveredFacets).toEqual(expect.arrayContaining(['frame_count: proposition not proved (tier=value)',
-      'proof check not passed: originalClaimsVerified']));
-    const hard = accept(unprovedTerminal(), {proof: {claimVerifierPassed: false}, hard: {claimVerifierPassed: false}});
-    expect(hard).toMatchObject({semanticAcceptance: 'INCONCLUSIVE', hardGatesPassed: false, passed: false});
-    expect(hard.checkGroups.proof.claimVerifierPassed).toBe(false);
+  it('passes a delivered right answer with retired claim, report and investigation axes not applicable', () => {
+    const result = accept(terminalFixture(), {strict: true});
+    expect(result).toMatchObject({passed: true, completeAcceptance: true, semanticAcceptance: 'PASSED',
+      observedChecksPassed: true, hardGatesPassed: true, uncoveredFacets: []});
+    expect(result.checkGroups).not.toHaveProperty('proof');
+    expect(result).not.toHaveProperty('proofAcceptance');
   });
 
   it('fails a wrong value even when everything else was delivered', () => {
-    const terminal = unprovedTerminal();
-    terminal.conclusionContract!.claims![0].semantics!.numeric!.value = 1913;
-    terminal.claimSupport![0].semantics = JSON.parse(JSON.stringify(terminal.conclusionContract!.claims![0].semantics));
-    const result = evaluate(terminal);
-    expect(result.facts.frame_count).toMatchObject({tier: 'none', matched: false, matchedClaimIds: []});
-    expect(accept(terminal)).toMatchObject({semanticAcceptance: 'FAILED', passed: false});
+    const result = accept(terminalFixture('There are 9999 frames.'));
+    expect(result).toMatchObject({passed: false, semanticAcceptance: 'FAILED'});
+    expect(result.checkGroups.value['fact:frame_count']).toBe(false);
   });
 
-  it('fails contradicted claims or source, and never reads a missing or restored assurance as not contradicted', () => {
-    const contradicted = unprovedTerminal();
-    contradicted.deliveryAssurance!.claims = 'failed';
-    expect(evaluate(contradicted).checkGroups.value.deliveryClaimsNotContradicted).toBe(false);
-    expect(accept(contradicted)).toMatchObject({semanticAcceptance: 'FAILED', passed: false});
-    const source = unprovedTerminal();
-    source.deliveryAssurance!.source = 'failed';
-    expect(accept(source).semanticAcceptance).toBe('FAILED');
-    const restored = unprovedTerminal();
-    restored.deliveryAssurance!.entry = 'historical_restore';
-    expect(evaluate(restored).checkGroups.value).toMatchObject({deliveryClaimsNotContradicted: false, deliverySourceNotContradicted: false});
-    const missing = unprovedTerminal();
+  it('fails a failed source annotation, and never reads a missing or restored assurance as delivered', () => {
+    const failedSource = terminalFixture();
+    failedSource.deliveryAssurance = {...failedSource.deliveryAssurance!, source: 'failed'};
+    expect(accept(failedSource).checkGroups.value.deliverySourceNotContradicted).toBe(false);
+    const restored = terminalFixture();
+    restored.deliveryAssurance = {...restored.deliveryAssurance!, entry: 'historical_restore'};
+    expect(accept(restored).checkGroups.value.deliveryCompletionPassed).toBe(false);
+    const missing = terminalFixture();
     delete missing.deliveryAssurance;
-    expect(evaluate(missing).checkGroups.value).toMatchObject({deliveryClaimsNotContradicted: false, deliverySourceNotContradicted: false});
+    expect(accept(missing).passed).toBe(false);
   });
 
-  it('passes only when value, delivery and proof all hold, and --strict refuses anything less', () => {
-    const proved = evaluate();
-    expect(proved.facts.frame_count).toMatchObject({tier: 'proved', proposition: 'proved'});
-    expect(accept(terminalFixture(), {strict: true})).toMatchObject({semanticAcceptance: 'PASSED', proofAcceptance: 'PASSED',
-      completeAcceptance: true, strict: true, passed: true, uncoveredFacets: []});
-    expect(accept(unprovedTerminal(), {strict: true})).toMatchObject({semanticAcceptance: 'INCONCLUSIVE', strict: true, passed: false});
-    expect(accept(terminalFixture(), {strict: true, delivery: {analysisCompletedNotPartial: false},
-      hard: {analysisCompletedNotPartial: false}})).toMatchObject({semanticAcceptance: 'FAILED', passed: false});
-    expect(evaluateAgentSseAcceptance({observedGroups: {value: {hasNoSseErrors: true}}, ungroupedChecks: {}, hardChecks: {}, strict: true}))
-      .toMatchObject({semanticAcceptance: 'INCONCLUSIVE', uncoveredFacets: ['task semantics not evaluated'], passed: false});
+  it('keeps an unmeasured facet INCONCLUSIVE and --strict refuses it', () => {
+    const result = evaluateAgentSseAcceptance({strict: true,
+      task: {checkGroups: {value: {marker: true}, delivery: {delivered: true}},
+        uncoveredFacets: ['source recommendation action semantics']},
+      observedGroups: {}, ungroupedChecks: {}, hardChecks: {notPartial: true}, additionalGatesPassed: true});
+    expect(result).toMatchObject({passed: false, strict: true, completeAcceptance: false,
+      semanticAcceptance: 'INCONCLUSIVE', observedChecksPassed: true});
+    expect(accept(terminalFixture(), {strict: false, ungrouped: {extra: true}}).passed).toBe(true);
   });
 
   it('blocks an unfinished run in the delivery group and keeps ungrouped observed gates', () => {
-    const observed = accept(terminalFixture(), {delivery: {hasAnalysisCompletedEvent: false}, ungrouped: {'requiresTool:invoke_skill': true}});
-    expect(observed.checkGroups.delivery.hasAnalysisCompletedEvent).toBe(false);
-    expect(observed).toMatchObject({semanticAcceptance: 'FAILED', passed: false});
-    const tool = accept(terminalFixture(), {ungrouped: {'requiresTool:invoke_skill': false}});
-    expect(tool.ungroupedChecks).toEqual({'requiresTool:invoke_skill': false});
-    expect(tool).toMatchObject({semanticAcceptance: 'PASSED', observedChecksPassed: false, passed: false});
-    expect(evaluateAgentSseAcceptance({task: evaluate(), observedGroups: {}, ungroupedChecks: {}, hardChecks: {},
-      additionalGatesPassed: false}).passed)
-      .toBe(false);
-  });
-
-  it('requires a passed report only for report deliverables and blocks a failed report for any deliverable', () => {
-    const answer = terminalFixture();
-    answer.deliveryAssurance!.report = 'not_checked';
-    const answerResult = evaluate(answer);
-    expect(answerResult.checkGroups.delivery).toEqual({deliveryReportNotFailed: true});
-    expect(answerResult.checks.deliveryReportPassed).toBe(false);
-    answer.deliveryAssurance!.report = 'failed';
-    expect(accept(answer).semanticAcceptance).toBe('FAILED');
-    const reportExpectation = parseAgentSseExpectation({...expectation, intent: {...expectation.intent, deliverable: 'report'}});
-    const report = terminalFixture();
-    report.turnIntent = {...report.turnIntent!, deliverable: 'report'};
-    report.deliveryAssurance!.report = 'not_checked';
-    const reportResult = evaluateAgentSseExpectation({terminal: report, expectation: reportExpectation, traceId: 'trace-current',
-      oracleRows: {frame_count: [{total_frames: 1912}]}});
-    expect(reportResult.checkGroups.delivery).toEqual({deliveryReportNotFailed: true, deliveryReportPassed: false});
-  });
-
-  it('keeps every earlier flat check key, so existing readers of the flat union keep their meaning', () => {
-    const result = evaluate(unprovedTerminal());
-    for (const key of ['taskCompleted', 'deliveryCompletionPassed', 'deliveryClaimsPassed', 'deliveryIdentityPassed',
-      'deliverySourcePassed', 'deliveryReportPassed', 'intentResolved', 'originalClaimsVerified', 'intent:taskKind', 'fact:frame_count']) {
-      expect(result.checks).toHaveProperty([key]);
-    }
-    expect(Object.values(result.checks).every(Boolean)).toBe(false);
-    expect(Object.values(evaluate().checks).every(Boolean)).toBe(true);
-    const grouped = {...result.checkGroups.value, ...result.checkGroups.proof, ...result.checkGroups.delivery};
-    for (const [key, value] of Object.entries(grouped)) expect(result.checks[key]).toBe(value);
-  });
-
-  it('accepts a frame count declared as a plain count for a frames oracle', () => {
-    const terminal = unprovedTerminal();
-    terminal.conclusionContract!.claims![0].semantics!.numeric!.unit = 'count';
-    terminal.claimSupport![0].semantics = JSON.parse(JSON.stringify(terminal.conclusionContract!.claims![0].semantics));
-    expect(evaluate(terminal).facts.frame_count.tier).toBe('value');
-  });
-
-  it.each([
-    // Generic declared/cell `count` accepts any counted oracle dimension at 1:1.
-    {declared: 'count', cell: 'count', oracle: 'events', bound: true},
-    // A concrete declaration or cell never accepts a generic or different counted oracle unit.
-    {declared: 'frames', cell: 'frames', oracle: 'count', bound: false},
-    {declared: 'count', cell: 'frames', oracle: 'events', bound: false},
-    {declared: 'events', cell: 'events', oracle: 'frames', bound: false},
-  ] as const)('binds declared $declared and cell $cell against oracle $oracle only one-directionally',
-    ({declared, cell, oracle, bound}) => {
-      const terminal = terminalFixture();
-      terminal.conclusionContract!.claims![0].semantics!.numeric!.unit = declared;
-      terminal.claimSupport![0].semantics = JSON.parse(JSON.stringify(terminal.conclusionContract!.claims![0].semantics));
-      terminal.claimSupport![0].anchors[0].cells![0].unit = cell;
-      const counted = parseAgentSseExpectation({...expectation, facts: [{...expectation.facts[0],
-        oracle: {...expectation.facts[0].oracle!, unit: oracle}}]});
-      const result = evaluateAgentSseExpectation({terminal, expectation: counted, traceId: 'trace-current',
-        oracleRows: {frame_count: [{total_frames: 1912}]}});
-      expect(result.facts.frame_count.tier === 'none').toBe(!bound);
-      expect(result.checks['fact:frame_count']).toBe(bound);
-    });
-
-  function startupTypeFixture(column: string) {
-    const flagship = parseAgentSseExpectation(JSON.parse(fs.readFileSync(
-      path.resolve(__dirname, '../../../tests/e2e/flagship/startup-heavy.expectation.json'), 'utf8')));
-    const startup = {...flagship, facts: flagship.facts.filter(fact => fact.id === 'startup_type')};
-    const terminal = terminalFixture('The platform classified this startup as warm.');
-    const reference = {evidenceRefId: 'data:startup', rowIndex: 0, column, value: 'warm'};
-    const semantics = {...terminal.conclusionContract!.claims![0].semantics!, predicate: 'captured.cell',
-      scope: {population: 'cited_rows' as const, subjectRefs: [reference]}};
-    delete semantics.numeric;
-    terminal.conclusionContract!.claims = [{id: 'type', kind: 'categorical', text: terminal.conclusion!, references: [reference], semantics}];
-    terminal.claimSupport = [{claimId: 'type', kind: 'categorical', text: terminal.conclusion!, semantics: JSON.parse(JSON.stringify(semantics)),
-      supportLevel: 'verified', anchors: [{anchorId: 'anchor:startup', evidenceRefId: 'data:startup', version: 'evidence_contract@1',
-        context: {traceId: 'trace-current', traceSide: 'current', producerKind: 'invoke_skill'},
-        timeRange: {startTs: '564166786132658', endTs: '564168124787136', unit: 'ns', source: 'row'}, identity: {upid: 948},
-        cells: [{column, rowIndex: 0, value: 'warm', actualValue: 'warm'}]}]}];
-    terminal.claimVerificationResult!.claimResults = [{claimId: 'type', status: 'verified',
-      referenceCells: [{anchorId: 'anchor:startup', evidenceRefId: 'data:startup', column, status: 'matched'}],
-      deterministicProof: {kind: 'captured_cell', status: 'proved', reason: 'captured_cell_value_proved',
-        anchorIds: ['anchor:startup'], evidenceRefIds: ['data:startup']},
-      propositionCoverage: {status: 'complete', covered: ['captured_cell'], uncovered: [], reason: 'proved'}}];
-    return {startup, terminal, reference, oracle: {startup_type: 'warm', start_ts: 564166786132658, upid: 948}};
-  }
-
-  it.each(['startup_type', 'original_type'])('binds the platform startup type through %s to the same startup and process', column => {
-    const fixture = startupTypeFixture(column);
-    const {terminal} = fixture;
-    const startup = {...fixture.startup, facts: fixture.startup.facts.map(fact => ({...fact, verification: 'reference_only' as const}))};
-    const check = (rows: Array<Record<string, unknown>>) => evaluateAgentSseExpectation({terminal, expectation: startup,
-      traceId: 'trace-current', oracleRows: {startup_type: rows}});
-    const matched = check([{startup_type: 'warm', start_ts: 564166786132658, upid: 948}]);
-    expect(matched.facts.startup_type).toMatchObject({tier: 'value', matched: true});
-    expect(matched.checkGroups.proof).not.toHaveProperty(['fact:startup_type:proved']);
-    expect(matched.uncoveredFacets).toEqual(['startup_type: proposition proof unavailable']);
-    expect(check([{startup_type: 'cold', start_ts: 564166786132658, upid: 948}]).facts.startup_type.tier).toBe('none');
-    expect(check([{startup_type: 'warm', start_ts: 564166786132658, upid: 949}]).facts.startup_type.tier).toBe('none');
-    expect(check([{startup_type: 'warm', start_ts: 1, upid: 948}]).facts.startup_type.tier).toBe('none');
-  });
-
-  it.each(['startup_type', 'original_type'])('proves %s only with a complete captured-cell proposition and the same oracle identity', column => {
-    const {startup, terminal, reference, oracle} = startupTypeFixture(column);
-    const check = (candidate = terminal, row = oracle) => evaluateAgentSseExpectation({terminal: candidate, expectation: startup,
-      traceId: 'trace-current', oracleRows: {startup_type: [row]}});
-    expect(check().facts.startup_type).toMatchObject({tier: 'proved', proposition: 'proved'});
-    expect(check().checkGroups.proof['fact:startup_type:proved']).toBe(true);
-    expect(check().uncoveredFacets).toEqual([]);
-    for (const row of [{...oracle, startup_type: 'cold'}, {...oracle, upid: 949}, {...oracle, start_ts: 1}]) {
-      expect(check(terminal, row).facts.startup_type.tier).toBe('none');
-    }
-    for (const failure of ['proof_kind', 'proof_status', 'claim_status', 'coverage', 'anchors', 'references', 'subject', 'predicate']) {
-      const candidate = JSON.parse(JSON.stringify(terminal)) as TerminalAnalysisEvidence;
-      const proof = candidate.claimVerificationResult!.claimResults[0];
-      const claim = candidate.conclusionContract!.claims![0];
-      if (failure === 'proof_kind') proof.deterministicProof!.kind = 'numeric_cell';
-      if (failure === 'proof_status') proof.deterministicProof!.status = 'candidate';
-      if (failure === 'claim_status') proof.status = 'partial';
-      if (failure === 'coverage') proof.propositionCoverage!.uncovered.push('subject');
-      if (failure === 'anchors') proof.deterministicProof!.anchorIds = [];
-      if (failure === 'references') proof.referenceCells = [];
-      if (failure === 'subject') claim.semantics!.scope.subjectRefs = [{...reference, rowIndex: 1}];
-      if (failure === 'predicate') claim.semantics!.predicate = 'unknown.category';
-      candidate.claimSupport![0].semantics = JSON.parse(JSON.stringify(claim.semantics!));
-      expect(check(candidate).facts.startup_type.tier).toBe('value');
-      expect(check(candidate).checkGroups.proof['fact:startup_type:proved']).toBe(false);
-    }
+    expect(accept(terminalFixture(), {delivery: {analysisCompletedNotPartial: false}})).toMatchObject({passed: false,
+      semanticAcceptance: 'FAILED'});
+    expect(accept(terminalFixture(), {ungrouped: {requiredTool: false}})).toMatchObject({passed: false,
+      semanticAcceptance: 'PASSED', observedChecksPassed: false});
+    expect(accept(terminalFixture(), {hard: {analysisCompletedNotPartial: false}})).toMatchObject({passed: false,
+      hardGatesPassed: false});
   });
 
   it('fingerprints the run by content, pinned processor revision and stdlib, never by reported version text', async () => {
@@ -1766,7 +1063,7 @@ describe('grouped acceptance: wrong answer, unproved answer and undelivered answ
       resolveTrace: async () => ({status: 'ready', identity: {fingerprintSha256: 'c'.repeat(64),
         fingerprintKind: 'trace_bytes_sha256', traceSide: 'current'}}),
       resolveProcessor: async () => ({source: 'bundled', gitRevision: 'd'.repeat(40), stdlibRevision: 'stdlib-rev', reportedVersion: 'v59'})});
-    expect(identity).toEqual({schemaVersion: 1, gateSchemaVersion: 'agent_sse_gate@2', verificationSchemaVersion: 'claim_verifier@2',
+    expect(identity).toEqual({schemaVersion: 1, gateSchemaVersion: 'agent_sse_gate@3',
       runtime: 'openai-agents-sdk', query: 'q', traceSha256: 'c'.repeat(64), expectationHash: agentSseExpectationHash(expectation),
       traceProcessorVersion: `bundled:${'d'.repeat(40)}`, stdlibRevision: 'stdlib-rev', reportedVersion: 'v59'});
     const failed = await resolveAgentSseRunIdentity({tracePath: '/trace', runtime: 'r', query: 'q'}, {
@@ -1776,152 +1073,26 @@ describe('grouped acceptance: wrong answer, unproved answer and undelivered answ
       traceProcessorVersion: 'unknown:identity_resolution_failed'});
   });
 
-  it('leaves the quick frame expectation and every earlier flat check key in place', () => {
+  it('keeps the quick frame expectation and the value/delivery check keys in place', () => {
     const wrapper = require('../../../scripts/run-glm-agent-e2e.cjs');
     const quick = wrapper.frameFactExpectation({taskKind: 'investigation', withJank: true});
     expect(quick.intent).toEqual({sceneId: 'scrolling', taskKind: 'investigation', scope: 'bounded_question', deliverable: 'answer'});
-    expect(quick.facts.map((fact: any) => [fact.id, fact.columns, fact.verification, fact.unit]))
-      .toEqual([['total_frames', ['total_frames'], 'proved', 'frames'], ['jank_frames', ['jank_frames'], 'proved', 'frames']]);
+    expect(quick.facts.map((fact: any) => [fact.id, fact.unit, fact.oracle.column]))
+      .toEqual([['total_frames', 'frames', 'total_frames'], ['jank_frames', 'frames', 'jank_frames']]);
     const keys = Object.keys(evaluateAgentSseExpectation({expectation: parseAgentSseExpectation(quick), traceId: 'trace'}).checks);
-    expect(keys).toEqual(expect.arrayContaining(['taskCompleted', 'deliveryCompletionPassed', 'deliveryClaimsPassed',
-      'deliveryIdentityPassed', 'deliverySourcePassed', 'deliveryReportPassed', 'intentResolved', 'originalClaimsVerified',
-      'intent:sceneId', 'intent:taskKind', 'intent:scope', 'intent:deliverable', 'fact:total_frames', 'fact:jank_frames']));
+    expect(keys).toEqual(expect.arrayContaining(['taskCompleted', 'deliveryCompletionPassed', 'deliveryIdentityPassed',
+      'deliverySourceNotContradicted', 'intentResolved', 'intent:sceneId', 'intent:taskKind', 'intent:scope', 'intent:deliverable',
+      'fact:total_frames', 'fact:jank_frames']));
+    expect(keys).not.toEqual(expect.arrayContaining(['originalClaimsVerified']));
   });
 
-  it('parses --strict and keeps it away from the scene route', () => {
+  it('parses --strict, keeps it away from the scene route, and refuses the retired claim-verifier flag', () => {
     expect(parseVerificationArgs(['--strict']).strict).toBe(true);
     expect(parseVerificationArgs([]).strict).toBeUndefined();
     expect(() => parseVerificationArgs(['--entry', 'scene-reconstruction', '--strict'])).toThrow('Scene entry cannot borrow');
+    expect(() => parseVerificationArgs(['--require-claim-verifier-ok'])).toThrow();
   });
 });
-
-describe('producer-bound flagship facts', () => {
-  const frameProducer = {skillId: 'scrolling_analysis', stepId: 'frame_timeline_population',
-    metricId: 'render.frame.timeline.trace_frames'};
-  type CellInput = {column: string; producer?: {skillId: string; stepId: string; metricId: string; aggregation?: string};
-    unit?: string; actualValue?: string | number | boolean | null};
-
-  /** The base fixture with the cited column renamed and the cell carrying producer metadata. */
-  function producerFixture(cell: CellInput, options: {unproved?: boolean; extraCells?: CellInput[]} = {}) {
-    const terminal = terminalFixture();
-    const claim = terminal.conclusionContract!.claims![0];
-    const support = terminal.claimSupport![0];
-    for (const reference of [claim.references[0], ...claim.semantics!.scope.subjectRefs!]) reference.column = cell.column;
-    support.semantics = JSON.parse(JSON.stringify(claim.semantics));
-    const all = [cell, ...(options.extraCells ?? [])];
-    support.anchors[0].cells = all.map(item => ({rowIndex: 0, value: item.actualValue ?? 1912,
-      actualValue: item.actualValue ?? 1912, ...(item.unit ? {unit: item.unit} : {}),
-      ...(item.producer ? {producer: item.producer} : {}), column: item.column}));
-    terminal.claimVerificationResult!.claimResults[0].referenceCells = [{anchorId: 'anchor:frames',
-      evidenceRefId: 'data:frames', column: cell.column, status: 'matched'}];
-    if (options.unproved) {
-      Object.assign(terminal.claimVerificationResult!, {status: 'partial', passed: false});
-      Object.assign(terminal.claimVerificationResult!.claimResults[0], {status: 'partial'});
-      terminal.claimVerificationResult!.claimResults[0].deterministicProof!.status = 'candidate';
-      terminal.claimVerificationResult!.claimResults[0].propositionCoverage =
-        {status: 'partial', covered: [], uncovered: ['numeric'], reason: 'candidate'};
-      terminal.deliveryAssurance!.claims = 'coverage_incomplete';
-    }
-    return terminal;
-  }
-  const producerExpectation = (producer: typeof frameProducer | undefined) => parseAgentSseExpectation({...expectation,
-    facts: [{...expectation.facts[0], ...(producer ? {producer} : {})}]});
-  const evaluateProducer = (terminal: ReturnType<typeof producerFixture>, producer: typeof frameProducer | undefined,
-    rows: Array<Record<string, unknown>> = [{total_frames: 1912}]) => evaluateAgentSseExpectation({terminal,
-    expectation: producerExpectation(producer), traceId: 'trace-current', oracleRows: {frame_count: rows}});
-
-  it.each([false, true])('binds a producer tuple across an aliased column at the proved and value tiers (unproved=%s)',
-    unproved => {
-      const terminal = producerFixture({column: 'total_rows', producer: frameProducer, unit: 'frames'}, {unproved});
-      const result = evaluateProducer(terminal, frameProducer);
-      expect(result.facts.frame_count).toMatchObject({tier: unproved ? 'value' : 'proved',
-        matchedClaimIds: ['frames'], matchedAnchorIds: ['anchor:frames']});
-      expect(result.checks['fact:frame_count']).toBe(true);
-    });
-
-  it('keeps the column allowlist fallback for facts without a producer tuple', () => {
-    const whitelisted = producerFixture({column: 'total_frames', producer: frameProducer, unit: 'frames'});
-    expect(evaluateProducer(whitelisted, undefined).facts.frame_count.tier).toBe('proved');
-    // The fallback never consults producer metadata: an out-of-list column stays unbound.
-    const aliased = producerFixture({column: 'total_rows', producer: frameProducer, unit: 'frames'});
-    expect(evaluateProducer(aliased, undefined).facts.frame_count.tier).toBe('none');
-  });
-
-  it.each([
-    ['a wrong value', {rows: [{total_frames: 9999}]}],
-    ['a cross-family cell unit', {cell: {column: 'total_rows', producer: frameProducer, unit: 'ns'}}],
-    ['a producer tuple from another skill with the same metric id', {cell: {column: 'total_rows', unit: 'frames',
-      producer: {skillId: 'thread_system_summary_in_range', stepId: 'summary', metricId: 'render.frame.timeline.trace_frames'}}}],
-    ['a producer tuple from another step of the same skill', {cell: {column: 'total_rows', unit: 'frames',
-      producer: {skillId: 'scrolling_analysis', stepId: 'other_step', metricId: 'render.frame.timeline.trace_frames'}}}],
-    ['a cell with no producer declaration at all', {cell: {column: 'total_rows', unit: 'frames'}}],
-  ] as const)('does not bind %s', (_label, options) => {
-    const rows: Array<Record<string, unknown>> = 'rows' in options ? [...options.rows] : [{total_frames: 1912}];
-    const cell = 'cell' in options ? options.cell : {column: 'total_rows', producer: frameProducer, unit: 'frames'};
-    const terminal = producerFixture(cell);
-    const result = evaluateProducer(terminal, frameProducer, rows);
-    expect(result.facts.frame_count.tier).toBe('none');
-    expect(result.checks['fact:frame_count']).toBe(false);
-  });
-
-  it('does not bind the same row\'s same-valued other metric when the model cites it instead', () => {
-    const terminal = producerFixture({column: 'smooth_frames', unit: 'frames',
-      producer: {...frameProducer, metricId: 'render.frame.timeline.smooth_frames'}},
-      {extraCells: [{column: 'total_rows', unit: 'frames', producer: frameProducer}]});
-    // The identity gate passes for the cited smooth_frames cell; only the producer tuple rejects it.
-    expect(evaluateProducer(terminal, frameProducer).facts.frame_count.tier).toBe('none');
-    const swapped = producerFixture({column: 'total_rows', unit: 'frames', producer: frameProducer},
-      {extraCells: [{column: 'smooth_frames', unit: 'frames',
-        producer: {...frameProducer, metricId: 'render.frame.timeline.smooth_frames'}}]});
-    expect(evaluateProducer(swapped, frameProducer).facts.frame_count.tier).toBe('proved');
-  });
-
-  it('requires the declared aggregation when the fact states one', () => {
-    const declared = {...frameProducer, aggregation: 'trace_wide_all_processes'};
-    const matching = producerFixture({column: 'total_rows', unit: 'frames',
-      producer: {...frameProducer, aggregation: 'trace_wide_all_processes'}});
-    expect(evaluateProducer(matching, declared).facts.frame_count.tier).toBe('proved');
-    const other = producerFixture({column: 'total_rows', unit: 'frames',
-      producer: {...frameProducer, aggregation: 'per_process_max'}});
-    expect(evaluateProducer(other, declared).facts.frame_count.tier).toBe('none');
-  });
-
-  it('rejects malformed producer tuples in the closed expectation schema', () => {
-    for (const producer of [null, {}, {...frameProducer, skillId: ''}, {...frameProducer, metricId: 1},
-      {...frameProducer, aggregation: ' '}, {...frameProducer, extra: true}]) {
-      expect(() => parseAgentSseExpectation({...expectation, facts: [{...expectation.facts[0],
-        producer: producer as any}]})).toThrow('Invalid --expectation-json');
-    }
-  });
-
-  it('validates every flagship producer tuple against the skill YAML that declares it', () => {
-    const files = ['tests/e2e/flagship/startup-heavy.expectation.json', 'tests/e2e/flagship/scrolling-customer.expectation.json'];
-    let producerFacts = 0;
-    for (const file of files) {
-      const flagship = parseAgentSseExpectation(JSON.parse(fs.readFileSync(path.resolve(process.cwd(), file), 'utf8')));
-      for (const fact of flagship.facts) {
-        if (!fact.producer) continue;
-        producerFacts += 1;
-        const declared = fact.producer;
-        const skillFile = ['composite', 'atomic', 'modules', 'comparison', 'deep', 'pipelines']
-          .map(directory => path.join(process.cwd(), 'skills', directory, `${declared.skillId}.skill.yaml`))
-          .find(candidate => fs.existsSync(candidate));
-        expect(skillFile).toBeDefined();
-        const skill = yaml.load(fs.readFileSync(skillFile!, 'utf8')) as any;
-        const step = stepNodesOf(skill).find(entry => entry.node?.id === declared.stepId);
-        expect(step).toBeDefined();
-        const metric = (step!.node?.investigation_evidence?.metrics ?? [])
-          .find((entry: any) => entry.metric_id === declared.metricId);
-        expect(metric).toBeDefined();
-        expect(metric.value).toEqual(expect.any(String));
-        if (declared.aggregation !== undefined) expect(metric.aggregation).toBe(declared.aggregation);
-      }
-    }
-    // The scrolling gate binds by producer; startup stays on the column allowlist to pin the fallback.
-    expect(producerFacts).toBeGreaterThanOrEqual(2);
-  });
-});
-
 
 describe('verification server IPv4 lifecycle', () => {
   const servers: http.Server[] = [];

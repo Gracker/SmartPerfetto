@@ -69,21 +69,3 @@ export function getAuthoredFinalSubmissionModeDescriptor(value: unknown): Author
   const descriptor = getFinalSubmissionModeDescriptor(value);
   return descriptor?.kind === 'typed' ? descriptor : undefined;
 }
-
-export function isAuthoredFinalSubmissionMode(value: unknown): value is AuthoredFinalSubmissionMode {
-  return getAuthoredFinalSubmissionModeDescriptor(value) !== undefined;
-}
-
-/** Expected current implementation; callers must separately check actual SDK/profile facts. */
-export function expectedOpenAiTypedFinalContract(mode: AuthoredFinalSubmissionMode): OpenAiTypedFinalContractIdentity {
-  const descriptor = getAuthoredFinalSubmissionModeDescriptor(mode);
-  if (!descriptor) throw new Error('invalid_final_submission_mode');
-  return OPENAI_TYPED_FINAL_CONTRACTS[descriptor.admissionVersion];
-}
-
-export const OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION = Object.freeze({
-  kind: 'assistant', nativeContract: 'openai_native_completion_observer@1',
-} as const);
-
-export type OpenAiOutputImplementation = typeof OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION |
-  (Readonly<{kind: 'typed'}> & OpenAiTypedFinalContractIdentity);

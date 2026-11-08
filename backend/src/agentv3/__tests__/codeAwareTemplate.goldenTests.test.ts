@@ -34,13 +34,14 @@ describe('typed source contract golden rules', () => {
     expect(guidance).not.toContain('record_source_use_decision');
     expect(guidance).not.toContain('tool-description:start');
   });
-  it.each(['zh', 'en'] as const)('explains provider-visible source binding IDs in the %s contract', language => {
+  it.each(['zh', 'en'] as const)('explains provider-visible source reference IDs in the %s contract', language => {
     const contract = loadPromptTemplate(`prompt-code-reference-contract-${language}`) ?? '';
-    for (const field of ['sourceReferences', 'result.sourceReferences', 'sourceClaimBindings', 'sourceReferenceIds',
-      'traceEvidenceRefIds', 'claimId', 'search_hit', 'read_codebase_file']) expect(contract).toContain(field);
-    // The product computes each source claim's standing; the model declares none.
-    expect(contract).not.toContain('mechanismStatus');
-    expect(contract).not.toContain('source.location');
+    for (const field of ['sourceReferences', 'result.sourceReferences', 'search_hit', 'read_codebase_file']) {
+      expect(contract).toContain(field);
+    }
+    // Answers cite returned locations in the body; no per-claim source binding is declared.
+    for (const retired of ['sourceClaimBindings', 'sourceReferenceIds', 'traceEvidenceRefIds', 'claimId',
+      'mechanismStatus', 'source.location']) expect(contract).not.toContain(retired);
   });
 
   it.each(getRegisteredScenes().map(definition => [definition.scene]))(
@@ -146,7 +147,9 @@ describe('typed source contract golden rules', () => {
     it.each(['zh', 'en'] as const)('loads the %s knowledge-use guidance with its boundary', language => {
       const guidance = loadPromptTemplate(`prompt-knowledge-use-${language}`) ?? '';
       for (const term of ['knowledge_authorization', 'search_knowledge', 'read_knowledge_section', 'kref-',
-        'traceEvidenceRefIds', 'existing_only']) expect(guidance).toContain(term);
+        'existing_only']) expect(guidance).toContain(term);
+      // Knowledge-only facts are presented as such; no claim or binding declaration is requested.
+      for (const term of ['traceEvidenceRefIds', 'sourceClaimBindings', 'subjectRefs']) expect(guidance).not.toContain(term);
       // The retired Wiki connector and its lookup tool are gone from the guidance.
       for (const term of ['android_internals_wiki', 'lookup_blog_knowledge']) expect(guidance).not.toContain(term);
     });

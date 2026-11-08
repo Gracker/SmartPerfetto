@@ -16,4 +16,4 @@ Earlier emitted conclusion or draft:
 Current-run returned data and omission, failure and pending records:
 {{returned_data}}
 
-Write a complete, self-contained answer and preserve the applicable conclusion declaration protocol. Retain each material finding supported by returned evidence, its interval, adjacent readable evidence and source mechanism; deduplicate wording without collapsing distinct findings into one dominant cause. An unfinished investigation still explains each known finding and its gaps; the draft itself is not evidence. Do not remove existing declarations to evade verification; unsupported propositions must remain unknown or unverified. Do not claim that tools can continue running.
+Write a complete, self-contained answer. Retain each material finding supported by returned evidence, its interval, adjacent readable evidence and source mechanism; deduplicate wording without collapsing distinct findings into one dominant cause. An unfinished investigation still explains each known finding and its gaps; the draft itself is not evidence. Unsupported propositions must remain unknown or unverified. Do not claim that tools can continue running.

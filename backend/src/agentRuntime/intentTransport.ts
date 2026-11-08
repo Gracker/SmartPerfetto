@@ -6,13 +6,11 @@ import {
   runtimeModelCallInputBytesBucket,
   runtimeOutcomeFromError,
   startRuntimeModelCall,
-  type RuntimeModelCallPurpose,
   type RuntimeModelCallStart,
   type RuntimeModelCallReasoning,
   type RuntimeModelReasoningEffort,
   type RuntimePerformanceRecorder,
 } from './runtimePerformance';
-import type {OpenAITextRequestPurpose} from '../services/providerManager/openAiChatCompletionsCompat';
 
 export interface IntentTransportInput {
   prompt: string;
@@ -46,24 +44,6 @@ export type IntentTransportUnavailableReason =
 export type IntentTransportResult =
   | {status: 'ok'; text: string; actualModel?: string; modelSource?: 'provider_reported'; finishReason?: string; attempts?: number}
   | {status: 'unavailable'; reason: IntentTransportUnavailableReason; httpStatus?: number; attempts?: number};
-
-/**
- * The one closed mapping from a run's model-call purpose to the provider
- * controls a no-tool text request may carry. An answer turn has none: it keeps
- * the provider's own reasoning policy.
- */
-const OPENAI_TEXT_REQUEST_PURPOSES: Readonly<Record<RuntimeModelCallPurpose, OpenAITextRequestPurpose | undefined>> =
-  Object.freeze({
-    classification: 'classification',
-    review: 'final_semantic',
-    declaration_repair: 'declaration_repair',
-    continuation: 'continuation',
-    answer_turn: undefined,
-  });
-
-export function openAiTextRequestPurposeFor(purpose: RuntimeModelCallPurpose): OpenAITextRequestPurpose | undefined {
-  return OPENAI_TEXT_REQUEST_PURPOSES[purpose];
-}
 
 /** Error codes Node and undici give a request that ran out of time rather than failed. */
 const TIMEOUT_ERROR_CODES = new Set([

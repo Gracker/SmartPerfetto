@@ -5,7 +5,6 @@
 import {isIssuedRunAuthorizationCheck, type RunAuthorizationCheck} from '../agentRuntime/runAuthorizationFence';
 import {OriginalTraceEvidenceRefusal, OriginalTraceEvidenceQueryUnknownError} from '../services/originalTraceEvidence';
 import {createRuntimeToolResult, runtimeToolReceiptMetadata} from '../agentRuntime/runtimeToolResult';
-import {diagnoseConclusionDraft, draftDiagnosticOwnerKey, DRAFT_DECLARATION_MAX_BYTES} from '../services/draftDeclarationDiagnostics';
 import {assertSceneRuntimeCapability} from '../agent/scene/sceneRuntimeBinding';
 import {sceneRunState, type SceneRunContext} from '../agent/scene/sceneRunContext';
 import {projectSceneRunCandidate} from '../agent/scene/sceneTimelineProjection';
@@ -349,13 +348,7 @@ import {
   readAnalysisContextRegistrations,
   type AnalysisContextRegistrations,
 } from '../services/resolvedAnalysisContext';
-import {preserveRuntimeLiteralJson, preserveRuntimeLiteralStrings, type RuntimeToolExtra} from '../agentRuntime/runtimeToolSpec';
-import type {FinalSubmissionMode} from '../agentRuntime/finalSubmissionConfig';
-import {getFinalSubmissionModeDescriptor} from '../agentRuntime/finalSubmissionImplementation';
-import {AUTHORED_FINAL_SUBMISSION_PENDING_ACK} from '../agentRuntime/authoredFinalSubmission';
-import {compileAuthoredClaimDocument, type AuthoredClaimDocumentFailure} from '../agent/core/authoredClaimDocument';
-import {compileAuthoredClaimObject, type AuthoredClaimObjectFailure} from '../agent/core/authoredClaimObject';
-import {authoredClaimObjectSchema} from '../agent/core/authoredClaimObjectSchema';
+import {preserveRuntimeLiteralStrings, type RuntimeToolExtra} from '../agentRuntime/runtimeToolSpec';
 import {isPlaceholderToolString} from '../agentRuntime/toolArgPlaceholders';
 import {
   rethrowIfTraceProcessorQueryCancelled,
@@ -1266,8 +1259,6 @@ function previewFromColumnarData(data: any): Record<string, any> | undefined {
 }
 
 export interface ClaudeMcpServerOptions {
-  /** Internal captured policy. Only an admitted native runtime opts in; never read request JSON or env here. */
-  finalSubmission?: FinalSubmissionMode;
   traceId: string;
   traceProcessorService: TraceProcessorService;
   skillExecutor: SkillExecutor;
@@ -7802,42 +7793,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   registry.registerSdk(recallSimilarResult, 'recall_similar_result', 'public', {evidenceEffect: 'acquire'});
   if (writeAnalysisNote) registry.registerSdk(writeAnalysisNote, 'write_analysis_note', 'internal', {evidenceEffect: 'none'});
   if (fetchArtifact) registry.registerSdk(fetchArtifact, 'fetch_artifact', 'public', {evidenceEffect: 'read_existing'});
-  const checkConclusionDraft = tool(
-    'check_conclusion_draft', requireToolDescription('prompt-draft-declaration-diagnostics-tool-description'),
-    {
-      diagnosticMode: z.enum(['claims_only', 'presentation']).optional().describe(
-        'claims_only checks selected claims without body or presentation. presentation (or omitted mode) requires the complete body.'),
-      body: preserveRuntimeLiteralStrings(z.string().max(DRAFT_DECLARATION_MAX_BYTES).optional().describe(
-        'Complete body for presentation checks; omit in claims_only. Character guard is separate from the 65536-byte UTF-8 input budget.')),
-      declarationJson: z.string().max(DRAFT_DECLARATION_MAX_BYTES).describe(
-        'JSON text for the targeted declaration, not the whole final report. UTF-8 input budget: 65536 bytes; character maxLength alone does not guarantee it fits.'),
-    },
-    async ({diagnosticMode, body, declarationJson}, extra) => {
-      const refusal = (reason: string) => createRuntimeToolResult({diagnosticOnly: true, coverageNotChecked: true,
-        finalCertification: false, state: 'unavailable', reason, success: false}, {isError: true});
-      if (options.conversationTraceAttached === false) return refusal('trace_not_attached');
-      if (artifactAccessPolicy.forbidRows || artifactAccessPolicy.requireSummaryBeforeRows ||
-          artifactAccessPolicy.forbidRowsWhenSummaryComplete) return refusal('artifact_row_access_restricted');
-      const runId = options.runId, sessionId = options.sessionId;
-      const readView = typeof artifactStore?.createEvidenceReadView === 'function' && runId && sessionId ? artifactStore.createEvidenceReadView({
-        currentRunId: runId, ownerKey: draftDiagnosticOwnerKey(runId, sessionId),
-        allowedTraces: [{traceId, traceSide: 'current'}, ...(options.referenceTraceId
-          ? [{traceId: options.referenceTraceId, traceSide: 'reference' as const}] : [])],
-      }) : undefined;
-      const diagnostic = await diagnoseConclusionDraft({diagnosticMode, body, declarationJson, runId, sessionId, readView,
-        signal: (extra as {signal?: AbortSignal} | undefined)?.signal,
-        assertCurrent: () => {
-          options.runAuthorization?.assertCurrentInTurn();
-          if (options.canInvokeTool?.() === false) throw new Error('draft_read_context_closed');
-        }});
-      return createRuntimeToolResult({...diagnostic, success: diagnostic.state === 'diagnosed',
-        ...(diagnostic.state !== 'unavailable' ? {
-          diagnosticGuidance: requireToolDescription('prompt-draft-declaration-diagnostics-feedback'),
-        } : {})},
-        {isError: diagnostic.state !== 'diagnosed'});
-    }, {annotations: {readOnlyHint: true}},
-  );
-  registry.registerSdk(checkConclusionDraft, 'check_conclusion_draft', 'internal', {evidenceEffect: 'read_existing'});
   if (readSessionHistory) registry.registerSdk(readSessionHistory, 'read_session_history', 'public', {evidenceEffect: 'read_existing'});
   if (submitPlan) registry.registerSdk(submitPlan, 'submit_plan', 'internal', {evidenceEffect: 'none'});
   if (updatePlanPhase) registry.registerSdk(updatePlanPhase, 'update_plan_phase', 'internal', {evidenceEffect: 'none'});
@@ -7858,48 +7813,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   if (options.conversationTraceAttached !== false && executeSqlOn) registry.registerSdk(executeSqlOn, 'execute_sql_on', 'internal', {evidenceEffect: 'acquire'});
   if (getComparisonContext) registry.registerSdk(getComparisonContext, 'get_comparison_context', 'internal', {evidenceEffect: 'read_existing'});
 
-  const submissionDescriptor = getFinalSubmissionModeDescriptor(options.finalSubmission ?? 'assistant_text');
-  if (!submissionDescriptor) throw new Error('invalid_final_submission_mode');
-  if (submissionDescriptor.kind === 'typed' && submissionDescriptor.representationVersion === 'authored_claim_document@1') {
-    registry.registerShared({
-      name: 'submit_final_document', role: 'final_candidate_submission', exposure: 'internal', evidenceEffect: 'none',
-      description: requireToolDescription('prompt-submit-final-document-tool-description'),
-      inputSchema: {documentJson: preserveRuntimeLiteralStrings(z.string().describe('The exact complete authored document JSON string.'))},
-      annotations: {readOnlyHint: true},
-      handler: async args => {
-        const rejected = (reason: AuthoredClaimDocumentFailure | 'invalid_arguments' | 'submission_rejected') =>
-          createRuntimeToolResult({kind: 'authored_final_submission', status: 'rejected', reason}, {isError: true});
-        try {
-          if (Object.keys(args).length !== 1 || !Object.prototype.hasOwnProperty.call(args, 'documentJson') ||
-              typeof args.documentJson !== 'string' || args.documentJson.length === 0) return rejected('invalid_arguments');
-          const compiled = compileAuthoredClaimDocument(args.documentJson);
-          if (compiled.status !== 'compiled') return rejected(compiled.code);
-          // No receipt or capability is issued here. Only the actual SDK execute bridge can stage success.
-          return {content: [{type: 'text' as const, text: AUTHORED_FINAL_SUBMISSION_PENDING_ACK}]};
-        } catch {return rejected('submission_rejected');}
-      },
-    });
-  } else if (submissionDescriptor.kind === 'typed' && submissionDescriptor.representationVersion === 'authored_claim_document@2') {
-    registry.registerShared({
-      name: 'submit_final_document', role: 'final_candidate_submission', exposure: 'internal', evidenceEffect: 'none',
-      description: requireToolDescription(submissionDescriptor.sourcePolicy === 'function_or_assistant_json'
-        ? 'prompt-submit-final-document-v2-dual-tool-description' : 'prompt-submit-final-document-v2-tool-description'),
-      inputSchema: {document: preserveRuntimeLiteralJson(authoredClaimObjectSchema)},
-      annotations: {readOnlyHint: true},
-      handler: async args => {
-        const rejected = (reason: AuthoredClaimObjectFailure | 'invalid_arguments' | 'submission_rejected') =>
-          createRuntimeToolResult({kind: 'authored_final_submission', status: 'rejected', reason}, {isError: true});
-        try {
-          if (Object.keys(args).length !== 1 || !Object.prototype.hasOwnProperty.call(args, 'document')) return rejected('invalid_arguments');
-          const compiled = compileAuthoredClaimObject(args.document);
-          if (compiled.status !== 'compiled') return rejected(compiled.code);
-          // Compilation does not issue a receipt, certify claims or complete the native turn.
-          return {content: [{type: 'text' as const, text: AUTHORED_FINAL_SUBMISSION_PENDING_ACK}]};
-        } catch {return rejected('submission_rejected');}
-      },
-    });
-  }
-  const resolvedFinalTool = registry.resolveFinalTool(toolRequestScope);
   const allowedTools = registry.buildAllowedTools(toolRequestScope);
   const toolDefinitions = registry.listForRequest(toolRequestScope);
   const knowledgeAuthorization = describeSelectedKnowledgeBases(knowledgeSourceIds, selectedKnowledgeSources);
@@ -7937,7 +7850,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     server: registry.buildSdkServer({scope: toolRequestScope}),
     allowedTools,
     toolDefinitions,
-    ...(resolvedFinalTool ? {resolvedFinalTool} : {}),
     sourceUse,
     sourceAuthorization,
   };

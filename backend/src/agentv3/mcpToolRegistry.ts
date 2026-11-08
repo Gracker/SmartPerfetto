@@ -93,13 +93,6 @@ export interface McpToolDefinition {
   role?: SharedToolSpec['role'];
 }
 
-/** Registry metadata only. The adapter separately binds its actual installed SDK tool identity. */
-export interface ResolvedFinalTool {
-  readonly role: 'final_candidate_submission';
-  readonly nativeName: string;
-  readonly definition: McpToolDefinition;
-}
-
 export type McpToolRegistration = Omit<McpToolDefinition, 'shared'> & {
   shared?: SharedToolSpec;
 };
@@ -352,17 +345,6 @@ export class McpToolRegistry {
     return this.entries.filter(entry =>
       isToolAllowedForScope(entry, this.requestScope) && isToolAllowedForScope(entry, scope),
     );
-  }
-
-  resolveFinalTool(scope?: ToolRequestScope): ResolvedFinalTool | undefined {
-    const entries = this.listForRequest(scope);
-    const candidates = entries.filter(entry => entry.role === 'final_candidate_submission');
-    if (candidates.length === 0) return undefined;
-    const definition = candidates[0];
-    if (candidates.length !== 1 || entries.filter(entry => entry.name === definition.name).length !== 1) {
-      throw new Error('final_submission_role_not_unique');
-    }
-    return Object.freeze({role: 'final_candidate_submission', nativeName: definition.name, definition});
   }
 
   /** Build the SDK's in-process MCP server. The SDK names the server

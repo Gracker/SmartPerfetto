@@ -26,6 +26,7 @@ import {
   runtimeProviderOrigin,
   type RuntimeModelCallInputBytesBucket,
   type RuntimeModelCallPurpose,
+  type RuntimeModelDispatchPurpose,
   recordRuntimeDeliveryBudget,
   type RuntimePerformanceDeliveryBudgetReceiptV1,
   type RuntimePerformanceModelCallReceiptV1,
@@ -296,7 +297,7 @@ export function recordRuntimeCallStatsFromManifest(
 export interface DeliveryCallBudgetInput {
   providerOrigin?: string;
   model?: string;
-  purpose: RuntimeModelCallPurpose;
+  purpose: RuntimeModelDispatchPurpose;
   inputBytes: number;
   remainingMs: number;
   /**

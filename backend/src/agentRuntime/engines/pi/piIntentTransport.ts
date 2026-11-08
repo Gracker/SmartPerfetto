@@ -5,12 +5,12 @@
 import type {AssistantMessage} from '@earendil-works/pi-ai';
 import {PiModelExecutionConfigurationError, type PiAgentCoreProviderRuntime, type PiStreamPurposePolicy} from './piAgentCoreProvider';
 import {intentTransportTextResult, runIntentTransport, type IntentTransportInput} from '../../intentTransport';
-import type {RuntimeModelCallPurpose} from '../../runtimePerformance';
+import type {RuntimeModelDispatchPurpose} from '../../runtimePerformance';
 import {piReasoningFromPolicyReceipt, piUsageToModelCallUsage} from './piAgentModelCalls';
 
 export interface PiIntentTransportInput extends IntentTransportInput {
   providerRuntime: Pick<PiAgentCoreProviderRuntime, 'model' | 'streamFn' | 'streamFnForPurpose'>;
-  purpose?: RuntimeModelCallPurpose;
+  purpose?: RuntimeModelDispatchPurpose;
   maxOutputTokens?: number;
   sdkIdentity?: PiStreamPurposePolicy['sdkIdentity'];
   onExecutionPolicy?: PiStreamPurposePolicy['onExecutionPolicy'];

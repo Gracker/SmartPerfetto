@@ -8,7 +8,6 @@ import { mergeIsolatedProviderEnv } from '../../../services/providerManager/envI
 import { hasConcreteEnvValue, redactUrlForDiagnostics } from '../../envCredentialSources';
 import { resolveAgentRuntimeBudgetConfig } from '../../../config';
 import {parseOpenAIAnalysisReasoningEffort, type OpenAIAnalysisReasoningEffort} from '../../../services/providerManager/modelExecutionProfile';
-import {captureAnalysisOutputConfig, type CapturedAnalysisOutputConfig} from '../../finalSubmissionConfig';
 import {
   DEFAULT_FULL_REQUEST_TIMEOUT_MS,
   DEFAULT_MAX_RUN_TIMEOUT_MS,
@@ -17,8 +16,6 @@ import {
 } from '../../runtimeLimits';
 
 export interface OpenAIAgentConfig {
-  /** Immutable output choices captured with this provider configuration before classification. */
-  outputConfig: CapturedAnalysisOutputConfig;
   model: string;
   lightModel: string;
   maxOutputTokens?: number;
@@ -45,13 +42,6 @@ export interface OpenAIAgentConfig {
 /** The classifier uses the original configured cap, bounded by its existing stage limit. */
 export function resolveOpenAiClassifierOutputLimit(config: Pick<OpenAIAgentConfig, 'maxOutputTokens'>): number {
   return Math.min(config.maxOutputTokens ?? 2048, 2048);
-}
-
-/** Capture exactly the existing no-tool finalization inputs, retaining their field presence and output identity. */
-export function createOpenAiFinalizationConfig(config: OpenAIAgentConfig) {
-  return Object.freeze({baseURL: config.baseURL, apiKey: config.apiKey,
-    protocol: config.protocol, lightModel: config.model, outputConfig: config.outputConfig,
-    ...(config.maxOutputTokens !== undefined ? {maxOutputTokens: config.maxOutputTokens} : {})});
 }
 
 const DEFAULT_MODEL = 'gpt-5.4-mini';
@@ -108,7 +98,6 @@ export function loadOpenAIConfig(providerId?: string | null, providerScope?: Pro
   const env = createOpenAIEnv(providerId, providerScope);
   const budgetConfig = resolveAgentRuntimeBudgetConfig(env);
   return {
-    outputConfig: captureAnalysisOutputConfig(env),
     model: env.OPENAI_MODEL || DEFAULT_MODEL,
     lightModel: env.OPENAI_LIGHT_MODEL || DEFAULT_LIGHT_MODEL,
     maxOutputTokens: optionalOutputTokenLimit(env.OPENAI_MAX_OUTPUT_TOKENS),

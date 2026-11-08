@@ -9,7 +9,7 @@ describe('conversation stream lifecycle', () => {
     expect(shouldCloseConversationStream({eventType})).toBe(true);
   });
 
-  it.each(['run_started', 'runtime_update', 'provisional_answer'] as const)(
+  it.each(['run_started', 'runtime_update'] as const)(
     'stays open on the non-terminal event %s', (eventType) => {
       expect(shouldCloseConversationStream({eventType})).toBe(false);
     });

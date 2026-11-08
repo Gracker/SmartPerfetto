@@ -25,24 +25,16 @@ SmartPerfetto works best with Android 12+ traces, especially traces that include
 5. Ask a natural-language question.
 6. Wait for SSE streaming output, table evidence, and the final conclusion.
 
-The answer appears as soon as its text is final, marked "Answer ready;
-verification in progress". The one no-tool semantic review keeps running, and
-its verdict then completes the same message without rewriting the text. Stop
-during that review ends only the review: the answer is still saved, with its
-verification recorded as stopped at the user's request (unverified). Pressing
-Stop again forces the run to end; SmartPerfetto still waits a few seconds for
-the answer to be saved. If saving does not finish in that time, the answer you
-read is kept as an unverified, incomplete turn (for registered source or
-knowledge, it is not kept). If the run fails or disconnects before the verdict,
-the answer stays and is marked as not verified.
+The final answer appears as soon as the run finishes, before the report is
+generated; delivery details then complete the same message without rewriting
+the text. There is no separate verification step after the answer. Stop cancels
+the run. If the run fails or disconnects before it completes, the text already
+shown stays and is marked as unfinished.
 
 In the CLI (`smp run`, `smp ask`, `smp compare`, `smp capture --analyze` and the
-REPL), Ctrl-C works the same way per turn. After the text answer has been
-printed, the first Ctrl-C stops only its verification and the turn is saved.
-Before that answer, or on the next Ctrl-C, the turn is aborted and not saved
-(exit code 130; the REPL returns to its prompt). A further Ctrl-C, or a turn
-that has not stopped within about 2 seconds, exits immediately with 130.
-`--format json`/`ndjson` print no early answer, so their first Ctrl-C aborts.
+REPL), the first Ctrl-C aborts the turn and does not save it (exit code 130; the
+REPL returns to its prompt). A further Ctrl-C, or a turn that has not stopped
+within about 2 seconds, exits immediately with 130.
 Once the turn is saved, Ctrl-C no longer applies to it.
 
 Auto mode first returns a scene inventory for mixed-action traces. The timeline lists detected startup, scrolling, click, navigation, device-state, ANR, and related scenes, then shows scope buttons. Select all scenes or one scene family before SmartPerfetto runs the matching startup, scrolling, click, or other deep-dive analysis.
@@ -208,7 +200,7 @@ Is there a Binder or scheduling problem around this slice?
 
 Follow-up questions reuse the current session. Switching between Chat, Fast, Full, and Auto starts a new backend agent session so lightweight and full contexts do not mix.
 
-`/anr` and `/jank` use the same backend evidence, claim-verification, and report path as ordinary analysis. They are blocked when backend policy disables AI.
+`/anr` and `/jank` use the same backend evidence, finalization, and report path as ordinary analysis. They are blocked when backend policy disables AI.
 
 ## Source And Document Knowledge Bases
 
@@ -249,8 +241,8 @@ status from the calls that actually happened in the run (`pending`,
 `attempted`, `located`, `corroborated`, `not_found_complete`,
 `search_incomplete`, or `not_needed` for a turn that may acquire no evidence),
 and distinguishes selected, queried, and actually used codebases, search
-coverage, and a `corroborated|compatible|ambiguous|unverified` mechanism
-status. Trace proves what happened; a `CodeRef` explains how the implementation
+coverage. Results saved by earlier versions may also show a
+`corroborated|compatible|ambiguous|unverified` mechanism status. Trace proves what happened; a `CodeRef` explains how the implementation
 could cause it. A `CodeRef` alone cannot promote a trace occurrence to a
 verified root cause.
 
@@ -301,11 +293,9 @@ causal explanations.
 
 The conclusion should trace back to tables, time ranges, threads, slices, or Skill results. Suggestions that are not supported by trace data should not be treated as confirmed findings.
 
-The body may display an original `32.57614380379747 ms` as `32.6 ms`. New declarations can use `numeric.presentation` to bind a body literal to its evidence cell, display unit and decimal places. The backend checks it before semantic review: `32.7 ms` cannot pass through model agreement. Raw citations and propositions still retain exact values or exact unit equivalents; display checking never repairs a wrong declaration.
+Numbers come from Skill and SQL results. The answer prefers the units and totals a Skill reports over values re-derived from raw rows, shows the operands of derived values, and marks rounded values as approximate; one `130 ms` component cannot stand in for a `380 ms` total. An "abnormal" judgement needs a stated metric, scope and threshold. The backend does not re-check each number: a wrong value is fixed in the Skill or SQL that produced it. Results saved by earlier versions keep their stored claim verification and numeric display checks.
 
-Correct formatting and correct meaning are separate checks. Subject, aggregate versus component, scope and causality still require semantic review; one `130 ms` component cannot prove a `380 ms` total. Unresolved bindings, unknown units and unavailable review remain unverified. Older declarations without bindings may still use “about `32.6 ms`”; unmarked faithful rounding retains the existing narrowly scoped display-warning path and never automatically verifies the claim.
-
-The final conclusion is the primary deliverable: an overview can lead, followed by all material findings, evidence and uncertainty. Quick/full budgets share one conclusion contract without a fixed word, table-row or claim-count limit. Intermediate table previews only limit display. The model retains locators for all evidence artifacts, including later, empty and unavailable results, for authorized on-demand reads. Actual provider or review capacity limits remain explicit incomplete states, never a partial answer presented as complete and verified.
+The final conclusion is the primary deliverable: an overview can lead, followed by all material findings, evidence and uncertainty. Quick/full budgets share one conclusion contract without a fixed word or table-row limit. Intermediate table previews only limit display. The model retains locators for all evidence artifacts, including later, empty and unavailable results, for authorized on-demand reads. Actual provider capacity limits remain explicit incomplete states, never a partial answer presented as complete.
 
 ## Generated Reports
 
@@ -315,4 +305,4 @@ After agent analysis completes, the backend generates an HTML report. The UI rea
 
 System analysis applies to relevant performance scenes. Each turn identifies target tasks, time windows and dependencies before explaining relevant frequency, system utilization, quadrants, preemption and scheduling observations. CPU placement ratios and observed priority alone do not establish scheduling policy, preemption motive or a bottleneck.
 
-The UI, HTML report and CLI distinguish system investigation coverage from system evidence coverage. The former evaluates whether the answer explains applicable dimensions; the latter requires trusted acquisition records. A checked explanation may explicitly identify insufficient evidence. Historical results without these fields display Not checked; restoring or comparing saved results does not trigger new trace acquisition. Bounded questions and existing-evidence-only requests retain their original scope.
+Investigation obligations guide which evidence the run acquires; the backend does not grade the answer's coverage of them, so new results show no system investigation or system evidence coverage line. Results saved by earlier versions keep the coverage lines they recorded, and those without these fields display Not checked; restoring or comparing saved results does not trigger new trace acquisition. Bounded questions and existing-evidence-only requests retain their original scope.

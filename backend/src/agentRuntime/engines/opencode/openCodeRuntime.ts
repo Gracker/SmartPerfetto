@@ -77,21 +77,10 @@ import {createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext, toAnal
   type AnalysisHistoryReader} from '../../analysisHistory';
 import {createRuntimeTurnCloseoutTape, resolveRuntimeTurnBudget} from '../../runtimeTurnCloseout';
 import {createRuntimeRunAuthorization, throwIfRunAuthorizationRevoked, type RunAuthorizationCheck} from '../../runAuthorizationFence';
-import {
-  acceptNativeDeclarationCompletion,
-  buildNativeDeclarationCompletionPrompt,
-  nativeDeclarationBodyCanFitOutput,
-  requestNativeDeclarationCompletion,
-  isNativeDeclarationRecoveryBlocked,
-  candidateHasAnswerBody,
-  nativeBodyCompletionNeeded,
-} from '../../runtimeConclusionProtocol';
+import {admitBodyContinuation, candidateHasAnswerBody, nativeBodyCompletionNeeded} from '../../runtimeConclusionProtocol';
 import type {RuntimeToolObserver} from '../../runtimeToolObserver';
 import { getExtendedKnowledgeBase } from '../../../services/sqlKnowledgeBase';
-import {dispatchWithModelCallRecord, openAiTextRequestPurposeFor} from '../../intentTransport';
-import {admitDeliveryCall, deliveryCallFailsOpen} from '../../../services/runtimeCallStats';
 import {projectToolResultForExternalSurface} from '../../../services/rag/toolResultProjectionFilter';
-import {inspectCandidateProtocol} from '../../../services/canonicalAnalysisResult';
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
 import { getProviderService, type ProviderConfig, type ProviderScope } from '../../../services/providerManager';
 import {providerSubprocessEnv} from '../../../services/providerManager/envIsolation';
@@ -106,11 +95,6 @@ import {
   type RuntimePerformanceRun,
 } from '../../runtimePerformance';
 import { createAnalysisRunSpec, type AnalysisRunSpec } from '../../analysisRunSpec';
-import {
-  captureAnalysisOutputConfig,
-  assertFinalSubmissionRuntime,
-  type CapturedAnalysisOutputConfig,
-} from '../../finalSubmissionConfig';
 import {
   buildRuntimeTracePairComparisonContext,
   buildRuntimeTracePairIdentityContext,
@@ -2551,8 +2535,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     traceId: string,
     options?: AnalysisOptions,
   ): Promise<AnalysisResult> {
-    const outputConfig = captureAnalysisOutputConfig(this.env);
-    assertFinalSubmissionRuntime(outputConfig, OPENCODE_RUNTIME_KIND);
     const admittedAt = Date.now();
     options = {
       ...(options ?? {}),
@@ -2591,7 +2573,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
           sessionId,
           traceId,
           options ?? {},
-          outputConfig,
           executionLease,
           runtimePerformance,
           admission.admission,
@@ -2762,7 +2743,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     sessionId: string,
     traceId: string,
     options: AnalysisOptions,
-    outputConfig: CapturedAnalysisOutputConfig,
     executionLease: RuntimeExecutionLease,
     runtimePerformance: RuntimePerformanceRun,
     admission: RuntimeAdmission,
@@ -2861,7 +2841,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     // The MCP server stamps tool captures with the run id finalization reads.
     const runId = options.runId!;
     const prep = await this.prepareAnalysis(
-      query, sessionId, traceId, options, outputConfig,
+      query, sessionId, traceId, options,
       `${modelConfig.model.providerID}/${modelConfig.model.modelID}`,
       turnIntent, turnPolicy, resolver.strategyRegistry, analysisHistoryReader, closeoutTape.observe,
       () => toolAdmissionsOpen && !workSignal.aborted && Date.now() < workDeadlineAt, sceneDeadlineMs, workSignal, runId,
@@ -2903,7 +2883,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     const port = numericEnv(pinnedEnv[OPENCODE_SERVER_PORT_ENV]);
     const timeout = Math.min(serverTimeoutMs, workDeadlineAt - Date.now());
     // SDK maxSteps forces a text-only iteration; it does not guarantee a total call cap.
-    // The native answer and final semantic review share one absolute budget.
+    // The native answer, any no-tool closeout or continuation, and finalization share one absolute budget.
     const deadlineMs = workDeadlineAt;
     let attemptId = crypto.randomUUID();
     let turnLimitReached = false;
@@ -3064,7 +3044,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     }
 
     if (turnLimitReached && turnBudget.deliveryTurns > 0
-      && !isNativeDeclarationRecoveryBlocked(conclusion)
       && actualTurns < turnBudget.totalTurns && Date.now() < deadlineMs) {
       const closeoutPrompt = closeoutTape.buildPrompt({query, priorConclusion: conclusion, outputLanguage});
       if (closeoutPrompt) {
@@ -3092,45 +3071,38 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       }
     }
 
-    // A completed run whose final reply carries no answer body (only a
-    // declaration, or nothing) spends the one delivery call writing the body
-    // from the returned data; the declaration repair below then has no call left.
-    let deliveryCallSpent = false;
-    const remainingDeliveryTurns = () => !turnLimitReached && !deliveryCallSpent && actualTurns < turnBudget.totalTurns
+    // A completed run whose final reply carries no answer body spends the one
+    // delivery call writing the body from the returned data.
+    const remainingDeliveryTurns = !turnLimitReached && actualTurns < turnBudget.totalTurns
       ? turnBudget.deliveryTurns : 0;
     const nativeInfo = acceptedMessage && (isRecord(acceptedMessage.info) ? acceptedMessage.info : acceptedMessage);
     const outputLimitDelivery = turnPolicy.budgetMode === 'full' && turnIntent.taskKind !== 'acknowledgement'
       && nativeInfo?.finish === 'length' && nativeInfo.error == null && !conclusion.trim()
       && Array.isArray(acceptedMessage?.parts) && !acceptedMessage.parts.some(part =>
-        isRecord(part) && part.type === 'tool') && remainingDeliveryTurns() > 0;
-    const continuationPrompt = Date.now() >= deadlineMs || isNativeDeclarationRecoveryBlocked(conclusion) ? undefined : outputLimitDelivery
+        isRecord(part) && part.type === 'tool') && remainingDeliveryTurns > 0;
+    const continuationPrompt = Date.now() >= deadlineMs ? undefined : outputLimitDelivery
       ? closeoutTape.buildOutputLimitPrompt({query, priorConclusion: conclusion, outputLanguage, intent: turnIntent})
       : nativeBodyCompletionNeeded({intent: turnIntent,
         completion: {status: openCodeMessageNativelyCompleted(acceptedMessage) ? 'completed' : 'unknown'},
-        candidate: conclusion, remainingDeliveryTurns: remainingDeliveryTurns()})
+        candidate: conclusion, remainingDeliveryTurns})
         ? closeoutTape.buildEmptyBodyPrompt({query, priorConclusion: conclusion, outputLanguage}) : undefined;
-    const deliveryCall = {providerOrigin: openCodeProviderBaseUrl(modelConfig), model: modelConfig.model.modelID};
-    const admitDelivery = (purpose: 'continuation' | 'declaration_repair', prompt: string) =>
-      admitDeliveryCall(resolveRuntimePerformanceRecorder(options.runManifestAttributionSink), {...deliveryCall, purpose,
-        inputBytes: Buffer.byteLength(prompt) + Buffer.byteLength(prep.systemPrompt),
-        remainingMs: deadlineMs - Date.now(),
-        // Its continuation exists only for a candidate without an answer body.
-        failOpen: deliveryCallFailsOpen(turnIntent, {bodyMissing: purpose === 'continuation'})});
-    if (continuationPrompt && admitDelivery('continuation', continuationPrompt)) {
-      deliveryCallSpent = true;
+    const continueBody = continuationPrompt ? admitBodyContinuation({
+      recorder: resolveRuntimePerformanceRecorder(options.runManifestAttributionSink),
+      deliveryCall: {providerOrigin: openCodeProviderBaseUrl(modelConfig), model: modelConfig.model.modelID},
+      trigger: outputLimitDelivery ? 'output_limit' : 'empty_body',
+      request: {prompt: continuationPrompt, systemPrompt: prep.systemPrompt, signal: workSignal, deadlineMs,
+        outputByteLimit: 64 * 1024},
+      dispatch: input => runOpenCodeIntentTransport({...input, model: modelConfig.model, purpose: 'continuation',
+        createClassifierHost: createNoToolsHost, beforeDispatch}),
+    }) : undefined;
+    if (continueBody) {
       try {
         assertActive();
         actualTurns++;
-        const continued = await dispatchWithModelCallRecord(resolveRuntimePerformanceRecorder(options.runManifestAttributionSink),
-          {purpose: 'continuation', trigger: outputLimitDelivery ? 'output_limit' : 'empty_body', ...deliveryCall},
-          {prompt: continuationPrompt, systemPrompt: prep.systemPrompt, signal: workSignal, deadlineMs,
-            outputByteLimit: 64 * 1024},
-          input => runOpenCodeIntentTransport({...input, model: modelConfig.model, purpose: 'continuation',
-            createClassifierHost: createNoToolsHost, beforeDispatch}));
+        const continued = await continueBody();
         assertActive();
         const completedOutputLimit = continued.status === 'ok' &&
-          ['stop', 'end_turn', 'stop_sequence'].includes(continued.finishReason ?? '') &&
-          inspectCandidateProtocol(continued.text).sidecar.status === 'valid';
+          ['stop', 'end_turn', 'stop_sequence'].includes(continued.finishReason ?? '');
         if (continued.status === 'ok' && candidateHasAnswerBody(continued.text) &&
             (!outputLimitDelivery || completedOutputLimit)) {
           conclusion = continued.text;
@@ -3143,48 +3115,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         // A failed continuation cannot replace the original candidate.
       }
     }
-    const declarationRequest = requestNativeDeclarationCompletion({
-      intent: turnIntent,
-      completion: {status: openCodeMessageNativelyCompleted(acceptedMessage) ? 'completed' : 'unknown'},
-      candidate: conclusion,
-      declarationSyntax: prep.analysisRunSpec.declarationSyntax,
-      remainingDeliveryTurns: remainingDeliveryTurns(),
-      repairInvalid: true,
-    });
-    const declarationOutputLimit = 64 * 1024;
-    const declarationPrompt = declarationRequest &&
-      buildNativeDeclarationCompletionPrompt({request: declarationRequest, intent: turnIntent, outputLanguage});
-    if (declarationRequest && declarationPrompt && nativeDeclarationBodyCanFitOutput(declarationRequest.originalBody, declarationOutputLimit) &&
-        Date.now() < deadlineMs && admitDelivery('declaration_repair', declarationPrompt)) {
-      try {
-        assertActive();
-        actualTurns++;
-        const repaired = await dispatchWithModelCallRecord(resolveRuntimePerformanceRecorder(options.runManifestAttributionSink),
-          {purpose: 'declaration_repair', trigger: declarationRequest.reason, ...deliveryCall},
-          {prompt: declarationPrompt,
-            systemPrompt: prep.systemPrompt, signal: workSignal, deadlineMs,
-            outputByteLimit: declarationOutputLimit},
-          input => runOpenCodeIntentTransport({...input, model: modelConfig.model,
-            purpose: openAiTextRequestPurposeFor('declaration_repair'),
-            createClassifierHost: createNoToolsHost, beforeDispatch}));
-        assertActive();
-        // The accepted candidate is the original body with the completion's declaration.
-        const accepted = repaired.status === 'ok' && acceptNativeDeclarationCompletion({
-          request: declarationRequest, completion: {status: 'completed'}, candidate: repaired.text,
-          outputByteLimit: declarationOutputLimit,
-        });
-        if (accepted) {
-          conclusion = accepted;
-          attemptId = crypto.randomUUID();
-          acceptedMessage = {info: {role: 'assistant', finish: repaired.finishReason ?? 'stop'},
-            parts: [{type: 'text', text: accepted}]};
-        }
-      } catch {
-        executionLease.throwIfAborted();
-        // A failed declaration completion cannot replace the original candidate.
-      }
-    }
-
     const info = acceptedMessage && (isRecord(acceptedMessage.info) ? acceptedMessage.info : acceptedMessage);
     const finish = typeof info?.finish === 'string' ? info.finish : undefined;
     const sdkError = info?.error != null;
@@ -3233,7 +3163,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       entry: 'runtime_draft', acceptedCandidate: completion, completion,
       turnIntent, outputOrigin: result.outputOrigin,
     };
-    const {deliveryContext, protocolProjection} = finalizeOwnerSourceAwareAnalysisResultWithProjection(result, prep.sourceUse, {
+    const {deliveryContext} = finalizeOwnerSourceAwareAnalysisResultWithProjection(result, prep.sourceUse, {
       context: nativeDeliveryContext,
     });
     executionLease.throwIfAborted();
@@ -3272,9 +3202,8 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     const traceIdentity = runTraceIdentity(traceId, options);
     attachFinalizationContext(result, {
       runId, sessionId, deadlineMs, turnIntent, strategyRegistry: resolver.strategyRegistry,
-      selection: prep.analysisRunSpec.selection,
       traceIdentity,
-      deliveryContext, protocolProjection,
+      deliveryContext,
       ...sourceUseFinalizationFields(prep.sourceUse),
       ...(artifactStore ? {evidenceReadView: artifactStore.createEvidenceReadView({
         currentRunId: runId,
@@ -3289,11 +3218,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       ...(result.success && result.completion?.status !== 'failed' && result.completion?.status !== 'cancelled'
         && result.completion?.reason !== 'turn_limit' ? {
         providerQuery: {text: prep.analysisRunSpec.query.text, analysisContextFingerprint: options.analysisContextFingerprint},
-        dispatchText: input => runOpenCodeIntentTransport({
-          ...input, model: modelConfig.model, purpose: openAiTextRequestPurposeFor('review'),
-          createClassifierHost: createNoToolsHost,
-        }),
-        deliveryCall: {providerOrigin: openCodeProviderBaseUrl(modelConfig), model: modelConfig.model.modelID},
       } : {}),
     });
     return result;
@@ -3304,7 +3228,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     sessionId: string,
     traceId: string,
     options: AnalysisOptions,
-    outputConfig: CapturedAnalysisOutputConfig,
     model: string,
     turnIntent: AnalysisTurnIntent,
     turnPolicy: RuntimeTurnPolicy,
@@ -3327,7 +3250,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     const previousTurns = sessionContext.getAllTurns?.() || [];
     const quickMode = turnPolicy.budgetMode === 'quick';
     const analysisRunSpec = createAnalysisRunSpec({
-      outputConfig,
       history: analysisHistoryReader.getTurns(),
       query, sessionId, traceId, options, turnIntent,
       runtimeSelection: this.selection,
@@ -3554,7 +3476,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       const quickMemoryContext = quickMemoryPayload.text;
       return {
         systemPrompt: withConfiguredSystemPrompt(buildQuickSystemPrompt({
-          declarationSyntax: analysisRunSpec.declarationSyntax,
           turnIntent, strategyRegistry, onDemandContext: turnPolicy.onDemandContext,
           ...(comparisonContext ? {comparison: comparisonContext} : {}),
           architecture,
@@ -3619,7 +3540,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       sourceAuthorization,
       ...(comparisonContext ? { comparison: comparisonContext } : {}),
     };
-    const sharedSystemPrompt = buildSystemPrompt({...analysisContext, declarationSyntax: analysisRunSpec.declarationSyntax});
+    const sharedSystemPrompt = buildSystemPrompt(analysisContext);
     return {
       systemPrompt: withConfiguredSystemPrompt(sharedSystemPrompt),
       prompt,

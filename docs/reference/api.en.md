@@ -489,8 +489,7 @@ it the route answers 403.
 The `/conversation` endpoints require `agent:run` and revalidate tenant,
 workspace, and user ownership on every request. `POST /conversation` returns a
 `sessionId` and exact `runId`. A new turn in the same session stops the older
-run before reserving the new run, waiting at most one review-stop watchdog
-bound (see below) for it to commit. Without `traceId`, the runtime exposes no
+run before reserving the new run and waits for its terminal commit. Without `traceId`, the runtime exposes no
 trace tools. Codebase and knowledge-source selections still use the same
 permission, registered-root, rights, and provider-send authorization as
 `/analyze`. Private queries, tool bodies, and errors are projected before SSE
@@ -520,9 +519,10 @@ result.
 
 `GET /conversation/:sessionId/status` returns `work` and `context` metadata.
 It does not restore a runtime, load full history, execute Trace SQL, call a
-model, or extend session liveness. `work.phase` distinguishes analysis, review,
+model, or extend session liveness. `work.phase` distinguishes analysis,
 waiting for input, an available result, a finished run without an available
-result, and interruption. `hasResult` remains separate from execution status.
+result, and interruption (`reviewing` is a legacy value the current backend no
+longer reports). `hasResult` remains separate from execution status.
 Tool activity and capture-registration counts are diagnostic, not proof of
 verification; unobserved counts are not filled with zero. Without an in-process
 session, the pending queue is `availability: unavailable`, not already consumed.
@@ -538,7 +538,7 @@ An `accepted` receipt means queued, with `appliesTo: next_user_turn` and
 `durability: process_memory`. The current run continues; queuing a note never
 starts another turn automatically. On successful admission of the next user
 question, the notes and original question form one frozen request shared by
-intent classification, analysis, final verification, and authorized history.
+intent classification, analysis, finalization, and authorized history.
 The start receipt's `context.consumedContextIds` identifies the notes used in
 that turn. Failed admission retains pending input; an execution failure after
 admission does not replay it automatically. Notes must be submitted again after
@@ -556,32 +556,16 @@ knowledge-source IDs). The client compares it with the current selection in
 memory to restore noninterrupting controls. It is absent from status/catalog
 responses and browser locators and never changes the user's source settings.
 
-When the semantic review is dispatched, the stream first sends one
-`provisional_answer` (`message` is the owner-projected final body,
-`verification: "pending"`): the text is final and readable, but its verdict does
-not exist yet. Clients keep the run active, write no history, and let
-`run_completed` complete the same message with the verdict. The first cancel
-after the answer appeared stops only the review and answers at once with
-`{success: true, sessionId, runId, status: "review_stop_requested"}`; the run
-then commits its turn with the `cancelled_by_user` not-checked reason and the
-stream carries it as `run_completed`, so history matches what the user read. A
-second cancel is a force stop: it waits for that commit up to the same
-watchdog and then answers with the settled outcome kind (`status: "answered"`,
-…, or `"cancelled"`). A cancel before the answer appeared is the full cancel
-and answers `status: "cancelled"`; nothing but the cancelled marker is stored.
-The watchdog (`SMARTPERFETTO_REVIEW_STOP_WATCHDOG_MS`, default 15000, never below
-10000) starts only at such a stop. If the run has not committed when it
-elapses, the body the user read is stored as a partial turn
-(`completion.status: incomplete`, `terminationReason: "review_not_finished"`,
-claim verification `not_checked`) with the run's own source partition, and the
-run is aborted. Private-knowledge runs, runs whose authorization was revoked
-and runs that lost their session keep that body live-only and are cancelled.
-History readers and the preview present such a turn as incomplete. Each run
-has one terminal write: the descriptor and its turn commit in one SQLite
-transaction that refuses a turn already terminal.
-A review is sent only when `✓` is still reachable or an obligation needs it
-(see `/analyze` below). When none is required there is no `provisional_answer` and no review
-progress; the answer arrives with `run_completed`.
+The answer arrives with `run_completed`; the current backend sends no
+`provisional_answer` and no review progress, and there is no review-only stop.
+A cancel settles the run before it answers and returns the settled outcome kind
+(`status: "answered"`, …, or `"cancelled"`); a cancel that wins stores nothing but
+the cancelled marker. Each run has one terminal write: the descriptor and its
+turn commit in one SQLite transaction that refuses a turn already terminal.
+Turns saved by earlier versions may carry
+`terminationReason: "review_not_finished"`; history readers and the preview
+present such a turn as incomplete. Clients may keep handling
+`provisional_answer` and `status: "review_stop_requested"` for legacy servers.
 
 When the runtime declares the `draftAnswerStreaming` capability (currently
 Claude and OpenAI), the answer the model is writing before finalization streams
@@ -590,7 +574,7 @@ live as `runtime_update`: `update.type` is `answer_token` (`content` is
 200 ms / 256 characters) or `answer_segment_reset` (`{runId, attempt}`, which
 revokes the draft shown so far, for example because the model then called a
 tool, continued or retried). The draft is display-only: clients drop events of
-an older `attempt`, `provisional_answer` or `run_completed` replaces it on the
+an older `attempt`, `run_completed` replaces it on the
 same message, and a stop turns it into the cancelled notice. It never enters the
 replay buffer, history or any persistence, so a reconnect does not replay it.
 Other runtimes send no draft. The loading label comes only from `progress`
@@ -668,18 +652,19 @@ new run in the same session receives `409 CANCELLATION_IN_PROGRESS` until the
 cancelled runtime exits, preventing old-run cleanup or continuity state from
 affecting the replacement run.
 
-Deliver first, verify after: when the semantic review is dispatched the stream
-sends one `conclusion` whose `data` is
-`{conclusion, provisional: true, verification: "pending"}`. Its body equals the
-later `analysis_completed` body (the review cannot rewrite it; the terminal
-result may only append completeness notices), but the verdict and terminal
-markers such as `!`/`~` come only from `analysis_completed`. Clients keep the
-run active (loading, stop control, session lock) and replace the same message
-when `analysis_completed` arrives; on `error`, `analysis_cancelled`, or a lost
-stream before that, they keep the text and mark it unverified. The runtime's own
-`conclusion` is not forwarded. For private-knowledge
-sessions the event stays in the in-memory replay buffer and is never written to
-the durable event store. Scene runs do not send it.
+Right after finalization, before report and snapshot generation, the stream
+sends one `conclusion` whose `data` holds only `conclusion` (the finalized,
+owner-projected body). Its body equals the later `analysis_completed` body, but
+delivery assurance and terminal markers such as `!`/`~` come only from
+`analysis_completed`. Clients show it at once as the final answer and keep the
+run active (loading, stop control, session lock) until `analysis_completed`; on
+`error`, `analysis_cancelled`, or a lost stream before that, they keep the text
+and mark it unfinished. The runtime's own `conclusion` is not forwarded. For
+private-knowledge sessions the event stays in the in-memory replay buffer and is
+never written to the durable event store. Scene runs do not send it. The current
+backend no longer sends `conclusion` with `provisional: true` /
+`verification: "pending"`, nor `final_review` progress; clients may keep
+handling them for legacy servers.
 
 Answer draft: for a runtime with the `draftAnswerStreaming` capability
 (currently Claude and OpenAI) the stream sends display-only `answer_token`
@@ -688,7 +673,7 @@ owner-projected, coalesced at about 200 ms / 256 characters) and
 `answer_segment_reset` (`{runId, attempt}`), which revokes the draft shown so
 far: at a model response start, at a tool call after text in the same response,
 and before any continuation or retry. Clients drop events of an older `attempt`
-or another run and clear the draft on a reset; a provisional or final
+or another run and clear the draft on a reset; the final
 `conclusion` replaces it on the same message, and a stop, error or lost stream
 discards it (a stop shows the cancelled notice). The draft is never written to
 browser storage. For every session draft events carry no SSE `id`, never enter
@@ -700,58 +685,33 @@ projection has to redact or drop anything, the run's draft is revoked with an
 `answer_segment_reset` and no further draft follows; the projected body arrives
 at finalization. Other runtimes send no draft.
 
-The review is sent only when `✓` is still reachable or an obligation needs it:
-a report deliverable, a selection, source access or source fields in the
-declaration, a resolved investigation requirement the evidence ledger does not
-rule out, at least one declared claim for which a hypothetical perfect review
-would yield `passed` (`✓` is still reachable), or a zero-claim pure
-acknowledgement. Every other answer (no declaration, a zero-claim factual
-answer, claims no finite proof can establish) gets no review: claim
-verification is `partial` with the not-checked reason `not_required`, and the
-terminal marker is `~`, never `✓`. This skip is an accepted residual: a
-contradiction only the review would find is then not detected (the answer
-stays `~` instead of `!`); a deterministic `unsupported` from finite proof still
-yields `!`. The stream then sends no provisional
-`conclusion` and no review progress; right after finalization, before report and
-snapshot generation, it sends one plain `conclusion` whose `data` holds only
-`conclusion` (no `provisional`/`verification`), and the verdict still arrives
-only with `analysis_completed`. Clients show it at once as the final answer (no
-pending cue) but keep the run active until `analysis_completed` as well.
-Private-knowledge sessions keep it in the in-memory replay buffer as well. An ineligible declaration sends no review
-either and keeps the not-checked reason `invalid_declarations`.
+The finalizer makes no model call and does not verify each claim: data
+accuracy comes from Skills and SQL. New results carry no `claimVerificationResult`
+or `claimSupport`. `deliveryAssurance` checks `completion` (native completion
+facts) and `identity` (dual-trace comparison identity), annotates `source` with
+the citation check below, and records `claims`, `report`, `investigation` and
+`investigationEvidence` as `not_applicable`. The terminal marker is `✓` when
+completion passes; `~` remains for an axis that is `failed` or
+`coverage_incomplete`, and `!` for a partial run. Stored results keep their
+historical claim verification and render it unchanged.
 
-After that `conclusion`, a cancel for the same `runId` stops only the review:
-it returns `200` with the non-terminal `status: "review_stop_requested"` and
-`runStatus: "running"`; the run still completes with the review recorded as
-`not_checked` / `cancelled_by_user` (`~` for answers, `!` for report
-deliverables through `report_assessment_not_checked`), then publishes
-`analysis_completed` and persists as usual. Stop-and-redirect waits for that
-`analysis_completed` before sending the next question. The first cancel after the
-provisional answer is review-only even when the review already finished (then a
-no-op); a second cancel for the same `runId` is a force stop and takes the full
-cancellation (`analysis_cancelled`) only after waiting, up to the review-stop
-watchdog started by the first cancel, for the run to commit. If it committed in
-that window the force stop answers `200` with `status: "completed"`,
-`outcome: "committed"`; if it did not, a non-private run whose authorization
-still holds keeps the body the user read as an unverified partial turn
-(`terminationReason: "review_not_finished"`, published with
-`analysis_completed` and its report) and the cancel answers `200` with
-`status: "completed"`, `outcome: "review_not_finished"`; otherwise the run is
-fully cancelled. In both `completed` cases `analysis_completed` carries the
-turn. The watchdog also applies when no second cancel
-arrives.
+A cancel for the run cancels it fully (`analysis_cancelled`); there is no
+review-only stop. The current backend no longer answers
+`status: "review_stop_requested"` or the force-stop outcomes `committed` /
+`review_not_finished`.
 
 The terminal `analysis_completed` event can include `analysisReceipt`,
-`uiActionProposals`, and safely projected
-`conclusionContract.sourceUseDecision` / `sourceClaimBindings` with
-`sourceClaimVerificationResult`. `sourceUseDecision` distinguishes selected,
+`uiActionProposals`, and safely projected `conclusionContract.sourceUseDecision`
+with `sourceClaimVerificationResult`. `sourceUseDecision` distinguishes selected,
 queried, and used codebases plus status/reason code and search coverage.
-`sourceClaimBindings` links a claim to this run's source references and
-same-claim Trace evidence. `sourceClaimVerificationResult`
-(`source_claim_verifier@2`) reports `claims[].status` as
-`invalid|unbound|location_only|source_only|trace_linked` and `citations[]`, the
-source locations written in the body matched against this run's references
-(`verified_body|located|unmatched|ambiguous`); historical results may still be
+`sourceClaimVerificationResult` (`source_claim_verifier@2`) is present only when
+the run had source access and the answer wrote source locations: `citations[]`
+matches each written location against this run's references
+(`verified_body|located|unmatched|ambiguous`). All matched is source `passed`;
+an unmatched or ambiguous citation is an advisory `coverage_incomplete`; without
+access or citations, source is `not_applicable`. New results carry no
+`sourceClaimBindings` or per-claim `claims[].status`; historical results keep
+them (`invalid|unbound|location_only|source_only|trace_linked`) and may still be
 `@1` with `mechanismStatus`. A `CodeRef` explains mechanism and cannot raise
 occurrence or root-cause confidence alone; `metadata_only` is locate-only. The
 projection contains no absolute root, snippet, search query, or model-authored

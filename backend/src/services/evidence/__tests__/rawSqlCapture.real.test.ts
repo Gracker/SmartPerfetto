@@ -33,73 +33,18 @@ import {acquireSelectedEvidenceFoundation} from '../../../agentRuntime/selectedE
 import type {DataEnvelope} from '../../../types/dataContract';
 import {ArtifactStore} from '../../../agentv3/artifactStore';
 import {createClaudeMcpServer} from '../../../agentv3/claudeMcpServer';
-import {parseConclusionContractDeclaration, renderConclusionContractSidecar, type ConclusionContract} from '../../../agent/core/conclusionContract';
-import type {AnalysisResult} from '../../../agent/core/orchestratorTypes';
-import {attachFinalizationContext, takeFinalizationContext} from '../../../agentRuntime/analysisFinalizationContext';
+import {parseConclusionContractDeclaration} from '../../../agent/core/conclusionContract';
 import {buildStrategyRegistrySnapshotFromDefinitions, getRegisteredScenes} from '../../../agentv3/strategyLoader';
-import {analysisDeliveryFingerprint} from '../../../types/analysisDelivery';
-import {defaultDeliveryCallEstimateMs} from '../../runtimeCallStats';
-import {finalizeSourceAwareAnalysisResultWithProjection} from '../../codebase/sourceClaimVerifier';
-import {finalizeAnalysisResult} from '../../finalizeAnalysisResult';
-import {canonicalizeAnalysisResult} from '../../canonicalAnalysisResult';
-import {projectOwnerAnalysisResult, copyAnalysisResultForSnapshot} from '../../security/privateAnalysisProjection';
 import {prepareClaimEvidence} from '../claimEvidencePreparation';
 import {getCapturedAnchorFacts} from '../evidenceCapture';
 import {readRawSqlCaptureMetadata} from '../rawSqlNativeProvenance';
 import {runClaimVerification} from '../../verifier/claimVerificationRunner';
-import type {EvidenceReadView} from '../evidenceReadView';
 
 const loopbackServers = createLoopbackServerFixture();
 
 jest.setTimeout(120_000);
 const processors: WorkingTraceProcessor[] = [];
 afterEach(() => {for (const processor of processors.splice(0)) processor.destroy();});
-
-async function finalizeCapturedNativeResult(contract: ConclusionContract, evidenceReadView: EvidenceReadView,
-  dataEnvelopes: DataEnvelope[], traceId: string, traceSide: 'current' | 'reference'): Promise<AnalysisResult> {
-  const body = contract.claims![0].text;
-  const result: AnalysisResult = {sessionId: `native-final-${randomUUID()}`, conclusion: `${body}\n${renderConclusionContractSidecar(contract)}`,
-    success: true, confidence: 0.8, findings: [], hypotheses: [], rounds: 1, totalDurationMs: 1};
-  const candidate = {runId: 'native-run', attemptId: 'native-attempt', candidateRef: 'native-candidate',
-    conclusionFingerprint: analysisDeliveryFingerprint(result.conclusion)};
-  const nativeDelivery = {entry: 'runtime_draft' as const, acceptedCandidate: candidate, outputOrigin: 'sdk_final' as const,
-    completion: {...candidate, schemaVersion: 1 as const, runtimeKind: 'openai-agents-sdk' as const, status: 'completed' as const}};
-  const projection = finalizeSourceAwareAnalysisResultWithProjection(result, undefined, {context: nativeDelivery});
-  expect(projection.protocolProjection).toBeDefined();
-  const semanticBody = canonicalizeAnalysisResult(result).result.conclusion;
-  const registry = buildStrategyRegistrySnapshotFromDefinitions({definitions: [], overlayGeneration: 'native-final'});
-  const controller = new AbortController();
-  // The semantic review is budget-gated: a bounded-answer review is dispatched
-  // only when the remaining deadline covers its estimate, so keep a budget
-  // derived from the same default the gate falls back to without samples.
-  const reviewBudgetMs = defaultDeliveryCallEstimateMs(undefined) + 30_000;
-  attachFinalizationContext(result, {runId: candidate.runId, sessionId: result.sessionId, deadlineMs: Date.now() + reviewBudgetMs,
-    strategyRegistry: registry, traceIdentity: {currentTraceId: traceSide === 'current' ? traceId : 'unused-current-trace',
-      ...(traceSide === 'reference' ? {referenceTraceId: traceId} : {})}, protocolProjection: projection.protocolProjection,
-    deliveryContext: projection.deliveryContext!, evidenceReadView,
-    turnIntent: {schemaVersion: 1, status: 'resolved', source: 'semantic', registryFingerprint: registry.registryFingerprint,
-      taskKind: 'fact', sceneId: 'general', scope: 'bounded_question', recommendedComplexity: 'quick', deliverable: 'answer', evidenceAccess: 'existing_only'},
-    dispatchText: async () => ({status: 'ok', text: JSON.stringify({schemaVersion: 'final_semantic_response@1',
-      bodyCoverage: {status: 'complete', reviewedSpans: [{start: 0, end: semanticBody.length}]},
-      claims: [{claimId: contract.claims![0].id, consistency: 'consistent',
-        contentLocations: [{start: semanticBody.indexOf(body), end: semanticBody.indexOf(body) + body.length, text: body}], issues: []}],
-      omissions: [], requirements: []})})});
-  const context = takeFinalizationContext(result)!;
-  expect(context.getNativeDeclaration(result, controller.signal)).toBeDefined();
-  const finalized = await finalizeAnalysisResult({result, context,
-    owner: {runId: candidate.runId, signal: controller.signal, isCurrent: () => true, assertAuthorized: () => {}},
-    query: 'What is the captured duration?', dataEnvelopes});
-  expect(finalized.result.claimVerificationResult?.passed).toBe(true);
-  expect(finalized.result.deliveryAssurance?.claims).toBe('passed');
-  // The durable owner surface keeps the review trace and the verification it
-  // produced; the raw projector without an owner audience is strict-only.
-  const projected = projectOwnerAnalysisResult(result.sessionId, finalized.result, 'en');
-  expect(projectOwnerAnalysisResult(result.sessionId, projected, 'en')).toEqual(projected);
-  const exported = JSON.parse(JSON.stringify(copyAnalysisResultForSnapshot(projected))) as AnalysisResult;
-  expect(exported.claimVerificationResult).toEqual(finalized.result.claimVerificationResult);
-  expect(exported.deliveryAssurance?.claims).toBe('passed');
-  return exported;
-}
 
 async function fixture(toolName: 'execute_sql' | 'execute_sql_on') {
   const traceId = `unit-capture-${randomUUID()}`;
@@ -132,7 +77,7 @@ function captureFixture(service: TraceProcessorService, traceId: string, toolNam
     }},
   });
   const handler = mcp.toolDefinitions.find(tool => tool.name === toolName)!.shared.handler;
-  async function execute(sql: string, column: string, expected: number, withExecutionIdentity = true, terminalProjection = false, unit = 'ns',
+  async function execute(sql: string, column: string, expected: number, withExecutionIdentity = true, unit = 'ns',
     executionContext?: 'working' | 'original_trace', signal?: AbortSignal) {
     envelopes.length = 0;
     await handler({sql, ...(traceSide === 'reference' ? {trace: 'reference'} : {}),
@@ -156,8 +101,7 @@ function captureFixture(service: TraceProcessorService, traceId: string, toolNam
       bindingEligibility: 'eligible'});
     const verified = runClaimVerification({conclusionContract: contract, dataEnvelopes: envelopes,
       preparedEvidence: prepared, bindingEligibility: 'eligible'});
-    return {...verified, envelope, ...(terminalProjection ? {terminalResult: await finalizeCapturedNativeResult(contract, view,
-      [...envelopes], traceId, traceSide)} : {})};
+    return {...verified, envelope};
   }
   return {execute};
 }
@@ -212,11 +156,11 @@ describe('pinned native raw SQL -> MCP capture -> numeric proof', () => {
   it('derives a fixed native conversion without borrowing alias units or reviving mutated trust', async () => {
     const {processor, execute} = await fixture('execute_sql');
     for (const alias of ['dur', 'unrelated']) {
-      const expression = await execute(`SELECT dur / 1000000 AS ${alias} FROM slice ${filter}`, alias, 42, true, false, 'ms');
+      const expression = await execute(`SELECT dur / 1000000 AS ${alias} FROM slice ${filter}`, alias, 42, true, 'ms');
       expect(expression.claimVerificationResult.claimResults[0].deterministicProof).toMatchObject({status: 'proved'});
       expect(getCapturedAnchorFacts(expression.claimSupport[0].anchors[0])?.fields[alias]).toMatchObject({unit: 'ms'});
     }
-    const unknown = await execute(`SELECT 42 / 1000000 AS dur_ms FROM slice ${filter}`, 'dur_ms', 0, true, false, 'ms');
+    const unknown = await execute(`SELECT 42 / 1000000 AS dur_ms FROM slice ${filter}`, 'dur_ms', 0, true, 'ms');
     expect(unknown.claimVerificationResult.claimResults[0].deterministicProof?.reason).toBe('unit_authority_unknown');
     await processor.query('CREATE PERFETTO TABLE unit_test_taint AS SELECT 1 AS value');
     await processor.query('DROP TABLE unit_test_taint');
@@ -232,9 +176,9 @@ describe('pinned native raw SQL -> MCP capture -> numeric proof', () => {
       expect(result.claimVerificationResult.claimResults[0].deterministicProof?.nativeRows).toBeUndefined();
       expect(getCapturedAnchorFacts(result.claimSupport[0].anchors[0])?.nativeRow).toBeUndefined();
     }
-    const count = await execute(`SELECT COUNT(*) AS n FROM slice ${filter}`, 'n', 1, true, false, 'count');
+    const count = await execute(`SELECT COUNT(*) AS n FROM slice ${filter}`, 'n', 1, true, 'count');
     expect(count.claimVerificationResult.claimResults[0].deterministicProof).toMatchObject({status: 'proved'});
-    const frames = await execute(`SELECT COUNT(*) AS n FROM slice ${filter}`, 'n', 1, true, false, 'frames');
+    const frames = await execute(`SELECT COUNT(*) AS n FROM slice ${filter}`, 'n', 1, true, 'frames');
     expect(frames.claimVerificationResult.claimResults[0].deterministicProof).toMatchObject({status: 'rejected', reason: 'unit_dimension_mismatch'});
     const start = Number((await processor.query(`SELECT ts FROM slice ${filter}`)).rows[0][0]);
     const clipped = await execute(`SELECT SUM(MIN(ts + dur, ${start + 30_000_000}) - MAX(ts, ${start + 10_000_000})) AS clipped
@@ -249,7 +193,7 @@ describe('pinned native raw SQL -> MCP capture -> numeric proof', () => {
     expect(Number.isSafeInteger(expectedId)).toBe(true);
     expect(expectedId).toBeGreaterThanOrEqual(0);
     for (const projection of ['id, dur', 's.id AS event_id, dur, ts + dur AS end_ts', 's.*']) {
-      const result = await execute(`SELECT ${projection} FROM slice s ${filter}`, 'dur', 42_000_000, true, true);
+      const result = await execute(`SELECT ${projection} FROM slice s ${filter}`, 'dur', 42_000_000, true);
       const anchor = result.claimSupport[0].anchors[0];
       const proof = result.claimVerificationResult.claimResults[0].deterministicProof!;
       expect(proof).toMatchObject({status: 'proved', nativeRows: [{id: expectedId, relation: 'slice', idColumn: 'id',
@@ -258,10 +202,6 @@ describe('pinned native raw SQL -> MCP capture -> numeric proof', () => {
         schemaFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/)}]});
       expect(anchor.context.captureId).toEqual(getCapturedAnchorFacts(anchor)?.captureId);
       expect(result.claimVerificationResult.passed).toBe(false);
-      const terminalProof = result.terminalResult!.claimVerificationResult!.claimResults[0].deterministicProof!;
-      const terminalAnchor = result.terminalResult!.claimSupport![0].anchors[0];
-      expect(terminalProof.nativeRows).toEqual(proof.nativeRows);
-      expect(terminalProof.nativeRows![0].captureId).toBe(terminalAnchor.context.captureId);
     }
     for (const projection of [`${expectedId} AS id, dur`, 'id + 0 AS id, dur', 'dur']) {
       const result = await execute(`SELECT ${projection} FROM slice ${filter}`, 'dur', 42_000_000);
@@ -484,8 +424,8 @@ describe('pinned native raw SQL -> MCP capture -> numeric proof', () => {
             return processor;
           });
           const legitimate = Promise.all([
-            execute(r7ClipSql, 'clipped_dur', 1_000_000, true, false, 'ns', 'original_trace', firstCall.signal),
-            concurrentCapture.execute(r7ClipSql, 'clipped_dur', 1_000_000, true, false, 'ns', 'original_trace', firstCall.signal),
+            execute(r7ClipSql, 'clipped_dur', 1_000_000, true, 'ns', 'original_trace', firstCall.signal),
+            concurrentCapture.execute(r7ClipSql, 'clipped_dur', 1_000_000, true, 'ns', 'original_trace', firstCall.signal),
           ]).then(values => ({values}), (error: unknown) => ({error}));
           try {
             await initializeReturnedPromise;
@@ -528,7 +468,7 @@ describe('pinned native raw SQL -> MCP capture -> numeric proof', () => {
             .toMatchObject({unit: 'ns', origin: {kind: 'native_producer'}});
           // A completed tool's signal is not the run's source-pin lifetime.
           firstCall.abort(new DOMException('Completed tool cleaned up', 'AbortError'));
-          const nextClip = await execute(r7ClipSql, 'clipped_dur', 1_000_000, true, false, 'ns', 'original_trace');
+          const nextClip = await execute(r7ClipSql, 'clipped_dur', 1_000_000, true, 'ns', 'original_trace');
           expect(nextClip.claimVerificationResult.claimResults[0].deterministicProof).toMatchObject({status: 'proved'});
 
           const childKey = TraceProcessorFactory.getStats().processorKeys.find(key => {
@@ -568,7 +508,7 @@ describe('pinned native raw SQL -> MCP capture -> numeric proof', () => {
           const workingShadow = await execute(shadowSql, 'dur', 777);
           expect(workingShadow.envelope.data).toMatchObject({rows: [[selectionId, 777]]});
           expect(workingShadow.claimVerificationResult.claimResults[0].deterministicProof?.reason).toBe('unit_authority_unknown');
-          const originalSlice = await execute(shadowSql, 'dur', duration, true, false, 'ns', 'original_trace');
+          const originalSlice = await execute(shadowSql, 'dur', duration, true, 'ns', 'original_trace');
           expect(originalSlice.envelope.data).toMatchObject({rows: [[selectionId, duration]]});
           expect(originalSlice.claimVerificationResult.claimResults[0].deterministicProof).toMatchObject({status: 'proved'});
           for (const unsupported of [

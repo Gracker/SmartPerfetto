@@ -79,7 +79,7 @@ and frontend readiness.
 | Document knowledge bases | `backend/src/services/knowledge/`, `externalKnowledgeSourceRegistry.ts` | Folder registration/preview, FTS5/BM25 generation indexing, `search_knowledge`/`read_knowledge_section`, `kb:` citations and `knowledge_use@1`, license/consent/scope, retired kinds, and private-content projection |
 | Trace processor | `backend/src/services/traceProcessorService.ts` | Trace loading, RPC management, SQL query execution |
 | Reports | `backend/src/services/htmlReportGenerator.ts` | HTML report generation |
-| Result quality pipeline | `backend/src/services/canonicalAnalysisResult.ts`, `finalizeAnalysisResult.ts`, `finalSemanticAssessment.ts`, `evidence/`, `verifier/`, `analysisResultSnapshotPipeline.ts` | Original propositions, captures, finite proof and at most one semantic review, followed by shared projection/persistence |
+| Result quality pipeline | `backend/src/services/canonicalAnalysisResult.ts`, `finalizeAnalysisResult.ts`, `finalResultQualityGate.ts`, `evidence/`, `analysisResultSnapshotPipeline.ts` | Canonical body, identity resolution, delivery assurance (completion, comparison identity, source citations), followed by shared projection/persistence |
 | CLI | `backend/src/cli-user/` | `smp` / `smartperfetto` commands, session/history/report export |
 | Comparison services | `backend/src/services/comparison*Service.ts` | Shared evidence/report contract for raw-trace and analysis-result comparison |
 
@@ -119,7 +119,7 @@ share a trace prerequisite:
   the model decides whether the question and trace anchors warrant lookup.
   Registration and selection do not require indexing. Actual calls update the
   run ledger continuously. Model-visible references must pass capacity admission
-  and remain bindable in the same run; a model declaration cannot establish use.
+  and remain bindable in the same run; model prose cannot establish use.
 - With a loaded trace, `AIPanel`, the sidebar, and the floating window share the
   page- and trace-scoped `AnalysisBackendConnection`. A completed background
   upload creates only a connection candidate; AI analysis can use the backend
@@ -177,7 +177,7 @@ Strategy frontmatter `investigation_requirements` is separate from report format
 
 Strategy frontmatter `entry_skill` declares a scene's entry Skill: for a resolved `scene_wide` `read_new` investigation with a mounted single trace and no reference/comparison, the product runs it before the model's first turn (only once its identity gate reports `verified`) and hands the result to the model in the bounded `scene_evidence` prompt segment, which is never dropped whole. It shares `skillRunCore` with `invoke_skill` but is not a model tool call and enters neither `toolResults` nor plan call records. Captures enter the investigation ledger; `RuntimePerformance` records the phase and receipt. The body of the strategy detail marked `default` reaches the first turn as the most expendable prompt segment, its title still listed with the other details. See [Agent Runtime Architecture](agent-runtime.en.md).
 
-All runtimes use this pinned-context builder. Missing intent or registry fails explicitly, with no legacy quick/full template fallback. The final conclusion is the primary deliverable; budgets and intermediate table previews do not cap its findings, claims or prose. The input discipline budget is 16,000 estimated tokens, with identity and evidence obligations protected from trimming. Actual output or review capacity limits must remain explicit incomplete states.
+All runtimes use this pinned-context builder. Missing intent or registry fails explicitly, with no legacy quick/full template fallback. The final conclusion is the primary deliverable; budgets and intermediate table previews do not cap its findings or prose. The input discipline budget is 16,000 estimated tokens, with identity and evidence obligations protected from trimming. Actual output capacity limits must remain explicit incomplete states.
 
 In OIDC mode, the static entry point gates startup through `/api/auth/session`
 and does not load the Perfetto bundle until the session is ready. After the
@@ -223,10 +223,9 @@ metadata-only visibility.
 
 4. Single product finalization
    exact runtime result + private context -> finalizeAnalysisResult
-      -> canonical body + original claims + retained execution capture
-      -> finite proof + at most one no-tool semantic review
-      -> completion / report / claim / identity assessments
-      -> SourceUseDecision + source-claim-binding verification
+      -> canonical body (stray model declaration stripped) + identity resolution
+      -> completion / identity assessments (no model call)
+      -> SourceUseDecision + citation-only source check
       -> QueryReviewV1 (review metadata, not standalone evidence)
 
 5. Backend streams output
@@ -234,11 +233,8 @@ metadata-only visibility.
       -> frontend renders progress, tables, thoughts
    draftAnswerStreaming runtime (Claude/OpenAI) -> answer_token draft + answer_segment_reset
       -> owner projection + narrative projection + coalescing -> live only (never replayed or persisted), replaced by conclusion
-   finalizeAnalysisResult dispatches the semantic review -> provisional conclusion (final body, verdict pending)
-   no review required -> plain conclusion after finalization, before report/snapshot generation (no pending cue)
-   stop after the provisional conclusion -> review-only (answered at once), run still commits `~`;
-      second stop -> wait up to the review-stop watchdog, then abort; no commit in time ->
-      read body stored as an unverified partial turn (not for private knowledge / revoked authority)
+   finalizeAnalysisResult -> conclusion after finalization, before report/snapshot generation
+   stop -> cancels the run
 
 6. Finish and report
    finalized result -> analysis_completed -> canonical safe source/CodeRef/patch metadata
@@ -335,8 +331,8 @@ artifacts with different consumers:
 | Artifact | Consumer | Boundary |
 |---|---|---|
 | Visible chat conclusion | Frontend AI panel | Projects the canonical body and actual machine sidecars; separates runtime appendix without mechanically editing prose |
-| HTML report | Browser, export, sharing | Keeps evidence, claim verification, identity resolution, and appendix detail |
-| CLI artifacts | `smp run`, `smp ask`, `smp capture --analyze`, `smp report` | Persists turns, reports, claim verification, and identity files |
+| HTML report | Browser, export, sharing | Keeps evidence, delivery assurance, identity resolution, and appendix detail (historical claim verification when stored) |
+| CLI artifacts | `smp run`, `smp ask`, `smp capture --analyze`, `smp report` | Persists turns, reports, delivery assurance, and identity files |
 | Analysis-result snapshot | Multi-result comparison and later review | Stores conclusion contract, claim support, verification, and identity metadata |
 | Query Review | AI panel, HTML report, artifact | Explains actual reads, filters, outputs, and limitations; it remains review metadata and cannot independently support a diagnosis |
 | Analysis Receipt | AI panel, HTML report, CLI, snapshot | Binds run/session/trace/runtime and summarizes evidence counts, claim audit, quality gates, and actual outputs |
@@ -353,27 +349,20 @@ output, contract/gate, evidence/verification, report generation, snapshot, or
 frontend projection. Do not make chat cleaner by deleting provenance required by
 reports or snapshots.
 
-Typed-intent budget, scope, deliverable and evidence access are independent;
-valid declarations are not truth or authorization. `existing_only` prohibits
-new acquisition, and `read_new` still respects request permissions. Planning and
-source access are on demand. The finalizer preserves original propositions and
-performs at most one no-tool semantic review under the original deadline, pinned
-provider and owner/authorization checks, and sends it only when `✓` is still
-reachable or an obligation needs it: a report, a selection, source access or
-source declarations, an investigation requirement the evidence ledger does not
-rule out, a claim that could still reach `✓` under a perfect review, or a
-zero-claim pure acknowledgement. Every other answer records the not-checked
-reason `not_required` and ends `~` (an accepted residual: a contradiction only
-the review would find goes undetected; a finite-proof `unsupported` still
-yields `!`). The finite proof catalog is defined in
-source; general causality and unknown fields cannot be presented as proved.
+Typed-intent budget, scope, deliverable and evidence access are independent.
+`existing_only` prohibits new acquisition, and `read_new` still respects request
+permissions. Planning and source access are on demand. Data accuracy comes from
+Skills and SQL: the answer is plain text, and the finalizer makes no model call
+and does not verify each claim. New finalizations check `completion` and
+dual-trace `identity`, annotate `source` with a citation-only check, and record
+`claims`, `report`, `investigation` and `investigationEvidence` as
+`not_applicable`. CLI shows `✓` when completion passes; `~` remains for a
+failed or `coverage_incomplete` axis.
 
-Review, declaration repair and continuation compare the time left with an
-estimated duration before dispatch. Insufficient time preserves the answer; a
-skipped review records `budget_insufficient`. Report delivery and missing-body continuation
-remain bounded by the original deadline. Declaration validation is per entry:
-root failures reject the whole declaration, while item failures retain
-`partially_valid` and leave other valid claims eligible for checking. See
+Closeout and continuation calls compare the time left with an estimated
+duration before dispatch. Insufficient time preserves the answer. Report
+delivery and missing-body continuation remain bounded by the original deadline.
+Historical results keep their stored declarations and claim verdicts. See
 [Agent Runtime Architecture](agent-runtime.en.md#final-result-and-quality-artifacts).
 
 Conversation may retain original captures within a logical session's exact
@@ -421,6 +410,6 @@ Scene Reconstruction uses the current Provider and shared Agent investigation lo
 
 ## System investigation contract
 
-`investigation-profiles.yaml` and scene Strategies declare investigation obligations, resolved and pinned to the turn through the registry fingerprint. Shared Skills or trusted equivalent SQL produce scoped original evidence; acquisition records and the final explanation are assessed separately. `investigationAssessment` travels through SSE, reports, snapshots and comparison summaries. `deliveryAssurance.investigation` and `investigationEvidence` remain independent of completion, report and claims.
+`investigation-profiles.yaml` and scene Strategies declare investigation obligations, resolved and pinned to the turn through the registry fingerprint. They guide acquisition: shared Skills or trusted equivalent SQL produce scoped original evidence. `investigationAssessment` records the acquisition ledger for display through SSE, reports, snapshots and comparison summaries; new finalizations record `deliveryAssurance.investigation` and `investigationEvidence` as `not_applicable`, because no mechanism judges answer coverage.
 
-Persisted declarations cannot create acquisition authority. Private projection or changes to the body, claims, identity, intent or evidence invalidate positive investigation assessments and clear stale references. Historical restoration does not acquire new evidence; legacy results remain unknown.
+Persisted model prose cannot create acquisition authority. Private projection or changes to the body, identity, intent or evidence invalidate positive investigation assessments and clear stale references. Historical restoration does not acquire new evidence; legacy results remain unknown.

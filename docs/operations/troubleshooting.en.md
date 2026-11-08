@@ -165,19 +165,14 @@ If fast mode fails on a heavy question, use full mode:
 }
 ```
 
-## The Answer Remains After A Stop, Or "Stopping" Persists
+## A Stop Or "Stopping" Persists
 
-- When the answer is shown and being verified, the first **Stop** ends only
-  the verification: the answer is saved as usual and its verification reads as
-  stopped by the user (unverified). The button then reads **Force stop**.
-- A second press, **Force stop**, waits up to
-  `SMARTPERFETTO_REVIEW_STOP_WATCHDOG_MS` (default 15 s) for the turn to be
-  saved. If it still is not, the answer you read is saved as a turn whose
-  verification did not finish (`terminationReason: review_not_finished`, shown
-  as unfinished); a turn that used source or knowledge, or whose authorization
-  was revoked, keeps no body.
-- A stop before any answer appears is a full cancel that keeps only the cancel
-  marker.
+- **Stop** cancels the run and keeps only the cancel marker. There is no
+  separate verification step after the answer, so there is no review-only stop
+  or **Force stop**; `SMARTPERFETTO_REVIEW_STOP_WATCHDOG_MS` is no longer read.
+- Turns saved by earlier versions may still show
+  `terminationReason: review_not_finished` (unfinished verification); they are
+  read unchanged.
 - A new question sent right after a stop may get 409
   `CANCELLATION_IN_PROGRESS` or `RUN_ALREADY_ACTIVE`: the previous run is still
   settling. The UI waits a bounded time before sending; API callers retry

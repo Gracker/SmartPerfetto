@@ -12,7 +12,7 @@ import { resolveTraceCase } from '../../../tests/helpers/traceCorpus';
 
 const backendRoot = path.resolve(__dirname, '../../..');
 const wrapperPath = path.join(backendRoot, 'scripts/run-quick-agent-e2e.cjs');
-const {frameFactExpectation, buildChildEnv, evaluateSemanticConditionReport, semanticDeltaQueries, semanticConditionArgs, sameTraceOccurrence} = require(path.join(backendRoot, 'scripts/run-glm-agent-e2e.cjs')) as {
+const {frameFactExpectation, buildChildEnv, evaluateSemanticConditionReport, semanticDeltaQueries, semanticConditionArgs} = require(path.join(backendRoot, 'scripts/run-glm-agent-e2e.cjs')) as {
   frameFactExpectation: () => {facts: Array<{id: string; oracle: {sql: string}}>};
   buildChildEnv: (apiKey: string, runtimeKind: string, isolatedRoot: string) => Record<string, string | undefined>;
   evaluateSemanticConditionReport: (input: {report: unknown; query: {kind: string}; condition: string; sourceRoot: string}) => {
@@ -21,7 +21,6 @@ const {frameFactExpectation, buildChildEnv, evaluateSemanticConditionReport, sem
   };
   semanticDeltaQueries: () => Array<{id: string; kind: string; text: string}>;
   semanticConditionArgs: (query: unknown, condition: string, output: string, timeoutMs: number) => string[];
-  sameTraceOccurrence: (anchor: unknown, oracle: unknown, anchorProof?: unknown, oracleProof?: unknown) => boolean;
 };
 const execFileAsync = promisify(execFile);
 const launchLightTracePath = resolveTraceCase('launch_light.pftrace', path.resolve(backendRoot, '..'));
@@ -136,226 +135,63 @@ describe('declarative system-analysis suite', () => {
   });
 });
 
-describe('source binding acceptance', () => {
+describe('source citation acceptance', () => {
   const sourceText = fs.readFileSync(path.join(backendRoot, 'tests/e2e/context-fixtures/app/StartupHooks.kt'), 'utf8');
   const sourceLineCount = sourceText.trimEnd().split(/\r?\n/).length;
   const canaryLine = sourceText.split(/\r?\n/).findIndex(line => line.includes('SEMANTIC_DELTA_PRIVATE_SOURCE_CANARY_NEVER_EMIT')) + 1;
   const requiredSourceRange = JSON.parse(fs.readFileSync(path.resolve(backendRoot,
     '../Trace/constructed/source-analysis-semantic/analysis/expected.json'), 'utf8')).source_trace_ground_truth.lineRange;
-  it('uses the original source oracle query with an explicit native ID column and no copied fingerprint', () => {
+  it('checks the source oracle value against the answer body without row anchors or copied fingerprints', () => {
     const query = semanticDeltaQueries().find(item => item.kind === 'quantitative-only')!;
     const args = semanticConditionArgs(query, 'A0', 'a0.json', 1000);
     const expected = JSON.parse(args[args.indexOf('--expectation-json') + 1]);
-    expect(expected.facts[0].oracle.sql).toContain('s.id AS row_id');
-    expect(expected.facts[0].oracle.anchorMatch).toEqual({startTs: 'start_ts', upid: 'upid',
-      nativeRow: {relation: 'slice', idColumn: 'id', oracleColumn: 'row_id'}});
+    expect(expected.facts[0]).toMatchObject({id: 'source_marker_duration', kind: 'numeric', unit: 'ns',
+      oracle: {column: 'duration_ns', unit: 'ns'}});
+    expect(expected.facts[0].oracle.sql).toContain('s.dur AS duration_ns');
+    expect(expected.facts[0].oracle).not.toHaveProperty('anchorMatch');
     expect(JSON.stringify(expected)).not.toContain('schemaFingerprint');
+    expect(args).not.toContain('--require-claim-verifier-ok');
     expect(args[args.indexOf('--query') + 1]).toBe(query.text);
   });
 
   function fixture() {
     const sourceId = 'source-ref-v1-issued';
-    const oracle = {anchorId: 'oracle-anchor', evidenceRefId: 'data-duration',
-      context: {traceId: 'trace', traceSide: 'current'},
-      timeRange: {startTs: '1000', endTs: '42001000', unit: 'ns'}, identity: {upid: 10, utid: 11},
-      cells: [{column: 'dur', rowSelector: {slice_id: 50, track_id: 5}}]};
     const report: any = {traceId: 'trace', passed: true,
       analysisContext: {codebaseIds: ['selected-source'], setup: {codebases: [{setupMode: 'register-only',
         chunkCount: 0, activeIndexState: 'none', pendingGeneration: false, reindexRequests: 0}]}},
-      taskVerification: {checks: {originalClaimsVerified: true, 'fact:source_marker_duration': true}, facts: {source_marker_duration: {
-        matched: true, proposition: 'proved', matchedClaimIds: ['duration'], matchedAnchorIds: [oracle.anchorId],
-      }}},
-      summary: {analysisCompletedSourceReferenceCount: 1, analysisCompletedSourceBindingCount: 2,
-        analysisCompletedSourceClaimVerifierStatus: 'passed', analysisCompletedSourceReferenceMembershipPassed: true,
-        analysisCompletedSourceClaimStatuses: ['trace_linked', 'location_only'],
-        analysisCompletedVerifiedSourceBindings: [
-          {claimId: 'mapping', status: 'trace_linked', sourceReferenceIds: [sourceId], traceEvidenceRefIds: ['data-mapping']},
-          {claimId: 'location', status: 'location_only', sourceReferenceIds: [sourceId], traceEvidenceRefIds: []},
-        ],
+      taskVerification: {checks: {nonPartial: true, 'fact:source_marker_duration': true},
+        facts: {source_marker_duration: {matched: true}}},
+      summary: {analysisCompletedSourceReferenceCount: 1, analysisCompletedSourceCitationCount: 1,
+        analysisCompletedSourceCitationsMatched: true, analysisCompletedSourceCitedReferenceIds: [sourceId],
+        analysisCompletedSourceClaimVerifierStatus: 'passed',
         analysisCompletedSourceUseDecision: {references: [{id: sourceId, codebaseId: 'selected-source',
-          filePath: 'StartupHooks.kt', lineRange: {start: 1, end: sourceLineCount}, lookupKind: 'body'}]},
-        terminalAnalysis: {conclusionContract: {claims: [{id: 'duration', kind: 'numeric'}, {id: 'mapping', kind: 'numeric'}]},
-          claimVerificationResult: {schemaVersion: 'claim_verifier@2', status: 'passed', passed: true, claimResults: [
-            {claimId: 'duration', status: 'verified', deterministicProof: {kind: 'numeric_cell', status: 'proved',
-              anchorIds: [oracle.anchorId], evidenceRefIds: [oracle.evidenceRefId]},
-              propositionCoverage: {status: 'complete', uncovered: []},
-              referenceCells: [{anchorId: oracle.anchorId, evidenceRefId: oracle.evidenceRefId, column: 'dur', status: 'matched'}]},
-          ]}, claimSupport: [{claimId: 'duration', anchors: [oracle]},
-          {claimId: 'mapping', anchors: [{...structuredClone(oracle), anchorId: 'mapping-anchor', evidenceRefId: 'data-mapping'}]}]},
-      }};
+          filePath: 'StartupHooks.kt', lineRange: {start: 1, end: sourceLineCount}, lookupKind: 'body'}]}}};
     return {report, evaluate: () => evaluateSemanticConditionReport({report, query: {kind: 'explicit-source-location'},
       condition: 'A2', sourceRoot: path.join(backendRoot, 'tests/e2e/context-fixtures/app')})};
   }
 
-  function nativeFixture() {
+  it('accepts a cited body read of the ground-truth source beside the matched Trace fact', () => {
     const target = fixture();
-    const terminal: any = target.report.summary.terminalAnalysis;
-    const oracle = terminal.claimSupport[0].anchors[0];
-    const mapped = terminal.claimSupport[1].anchors[0];
-    for (const anchor of [oracle, mapped]) {
-      delete anchor.timeRange;
-      delete anchor.identity;
-      anchor.context.captureId = `capture-${anchor.anchorId}`;
-    }
-    const proof = (anchor: any, claimId: string) => ({claimId, status: 'verified',
-      referenceCells: [{anchorId: anchor.anchorId, evidenceRefId: anchor.evidenceRefId, column: 'dur', status: 'matched'}],
-      deterministicProof: {kind: 'numeric_cell', status: 'proved', anchorIds: [anchor.anchorId], evidenceRefIds: [anchor.evidenceRefId],
-        nativeRows: [{anchorId: anchor.anchorId, evidenceRefId: anchor.evidenceRefId, captureId: anchor.context.captureId,
-          traceId: 'trace', traceSide: 'current', relation: 'slice', idColumn: 'id', id: 50, schemaFingerprint: 'a'.repeat(64)}]},
-      propositionCoverage: {status: 'complete', uncovered: []}});
-    const oracleProof = proof(oracle, 'duration');
-    const mappedProof = proof(mapped, 'mapping');
-    terminal.claimVerificationResult = {schemaVersion: 'claim_verifier@2', status: 'passed', passed: true,
-      unsupportedClaimCount: 0, claimResults: [oracleProof, mappedProof]};
-    return {...target, oracle, mapped, oracleProof, mappedProof};
-  }
-
-  function pendingFixture() {
-    const lifecycle = require(path.join(backendRoot, 'scripts/llm-execution-lifecycle.cjs'));
-    const context = lifecycle.sourceFacetContext(path.dirname(backendRoot));
-    const report = nativeFixture().report;
-    const request = {schemaVersion: 'llm_execution_target_request@1', nonce: 'a'.repeat(32), side: 'base',
-      pairId: 'source-01', cellId: 'source', repetition: 1, port: 19881,
-      expectedSourceFingerprint: 'b'.repeat(64), observerFingerprint: 'c'.repeat(64),
-      configFingerprint: 'd'.repeat(64), dataRootHash: 'e'.repeat(64), sourceFacet: context.contract};
-    report.executionTarget = {status: 'matched', ...request,
-      origin: 'http://127.0.0.1:19881', processId: 123, sourceFingerprint: request.expectedSourceFingerprint,
-      declaredObserverFingerprint: request.observerFingerprint, declaredConfigFingerprint: request.configFingerprint,
-      runId: 'run', sessionId: 'session'};
-    report.executionTarget.schemaVersion = 'llm_execution_target@1';
-    Object.assign(report, {strict: true, passed: false, completeAcceptance: false, semanticAcceptance: 'INCONCLUSIVE',
-      proofAcceptance: 'PASSED', observedChecksPassed: true, hardGatesPassed: true,
-      checks: {oracle: true}, ungroupedChecks: {},
-      checkGroups: {value: {oracle: true}, proof: {proved: true}, delivery: {native: true}},
-      uncoveredFacets: [lifecycle.SOURCE_FACET.facetId], query: context.inputs.query.text, sessionId: 'session',
-      runIdentity: {runtime: 'openai-agents-sdk', query: context.inputs.query.text, expectationHash: context.contract.expectationHash,
-        traceSha256: context.contract.traceSha256},
-      executionMetrics: {schemaVersion: 'llm_execution_metrics_artifact@1', status: 'sealed',
-        runId: 'run', sessionId: 'session', runtime: 'openai-agents-sdk', sealedAt: 100, wallclockMs: 100}});
-    report.analysisContext.codeAwareMode = 'provider_send';
-    report.taskVerification.uncoveredFacets = [...report.uncoveredFacets];
-    Object.assign(report.summary.terminalAnalysis, {conclusion: 'Synthetic source mechanism and action.',
-      completion: {schemaVersion: 1, status: 'completed', runId: 'run', runtimeKind: 'openai-agents-sdk'}});
-    return {report, request, lifecycle, evaluate: () => lifecycle.evaluateSourceFacetPending(report, request, path.dirname(backendRoot))};
-  }
-
-  it('retains strict source incompleteness while admitting only the closed automatic A2 pending protocol', () => {
-    const target = pendingFixture(), before = structuredClone(target.report);
-    expect(target.evaluate()).toMatchObject({facetId: 'source recommendation action semantics',
-      disposition: 'collected_pending_independent_review', exitCode: 3});
-    expect(target.report).toEqual(before);
-  });
-
-  it.each(['noProtocol', 'extraFacet', 'value', 'unitProof', 'partial', 'wrongTrace', 'wrongWindow', 'wrongSource',
-    'indexed', 'permission', 'canaryLeak', 'noCanaryCoverage', 'extraGate', 'wrongExpectation',
-    'completionRun', 'completionRuntime', 'completionSchema', 'completionLimit', 'metricRuntime'])(
-    'cannot issue a pending source token with %s', change => {
-      const target = pendingFixture(), report = target.report;
-      if (change === 'noProtocol') delete target.request.sourceFacet;
-      if (change === 'extraFacet') report.uncoveredFacets.push('another unknown facet');
-      if (change === 'value') report.taskVerification.facts.source_marker_duration.matched = false;
-      if (change === 'unitProof') report.checkGroups.proof.proved = false;
-      if (change === 'partial') report.summary.analysisCompletedPartial = true;
-      if (change === 'wrongTrace') report.summary.terminalAnalysis.claimSupport[0].anchors[0].context.traceId = 'foreign';
-      if (change === 'wrongWindow') report.summary.terminalAnalysis.claimVerificationResult.claimResults[1].deterministicProof.nativeRows[0].id = 99;
-      if (change === 'wrongSource') report.summary.analysisCompletedSourceUseDecision.references[0].filePath = 'Other.kt';
-      if (change === 'indexed') report.analysisContext.setup.codebases[0].activeIndexState = 'active';
-      if (change === 'permission') report.analysisContext.codeAwareMode = 'off';
-      if (change === 'canaryLeak') report.summary.terminalAnalysis.conclusion += 'SEMANTIC_DELTA_PRIVATE_SOURCE_CANARY_NEVER_EMIT';
-      if (change === 'noCanaryCoverage') report.summary.analysisCompletedSourceUseDecision.references[0].lineRange.start = canaryLine + 1;
-      if (change === 'extraGate') report.ungroupedChecks.additional = false;
-      if (change === 'wrongExpectation') report.runIdentity.expectationHash = 'f'.repeat(64);
-      if (change === 'completionRun') report.summary.terminalAnalysis.completion.runId = 'foreign-run';
-      if (change === 'completionRuntime') report.summary.terminalAnalysis.completion.runtimeKind = 'opencode';
-      if (change === 'completionSchema') delete report.summary.terminalAnalysis.completion.schemaVersion;
-      if (change === 'completionLimit') report.summary.terminalAnalysis.completion.reason = 'turn_limit';
-      if (change === 'metricRuntime') report.runIdentity.runtime = 'opencode';
-      expect(target.evaluate()).toBeUndefined();
-    });
-
-  it.each(['normal', 'cleanupError', 'flushError', 'finallyError', 'nonzero', 'forgedToken', 'changedReport', 'existingReceipt'])(
-    'settles the source receipt only after normal main/finally/cleanup/flush: %s', async change => {
-      const target = pendingFixture(), directory = fs.mkdtempSync(path.join(os.tmpdir(), 'source-settlement-'));
-      const reportPath = path.join(directory, 'report.json');
-      const before = JSON.stringify(target.report);
-      fs.writeFileSync(reportPath, before);
-      const receiptPath = path.join(directory, target.lifecycle.SOURCE_FACET.receiptFile);
-      const settlement = target.lifecycle.createSourceFacetSettlement({repositoryRoot: path.dirname(backendRoot),
-        reportPath, request: target.request});
-      const token = settlement.issue(target.report);
-      const order: string[] = [];
-      if (change === 'changedReport') fs.appendFileSync(reportPath, ' ');
-      if (change === 'existingReceipt') fs.writeFileSync(receiptPath, 'do not overwrite');
-      const finish = async () => {
-        // A rejection from finally never reaches settlement.
-        if (change === 'finallyError') throw new Error('finally');
-        return settlement.settle(change === 'forgedToken' ? {} : token, {
-          cleanup: () => {order.push('cleanup'); if (change === 'cleanupError') throw new Error('cleanup');},
-          flush: async () => {order.push('flush'); if (change === 'flushError') throw new Error('flush');},
-          exitCode: () => change === 'nonzero' ? 1 : undefined});
-      };
-      try {
-        if (change === 'normal') {
-          expect(await finish()).toBe(3);
-          expect(order).toEqual(['cleanup', 'flush']);
-          expect(JSON.parse(fs.readFileSync(receiptPath, 'utf8'))).toMatchObject({exitCode: 3,
-            rawReportSha256: target.lifecycle.hash(before)});
-          expect(fs.readFileSync(reportPath, 'utf8')).toBe(before);
-        } else {
-          await expect(finish()).rejects.toThrow();
-          expect(fs.existsSync(receiptPath)).toBe(change === 'existingReceipt');
-          if (change === 'existingReceipt') expect(fs.readFileSync(receiptPath, 'utf8')).toBe('do not overwrite');
-        }
-      } finally {fs.rmSync(directory, {recursive: true, force: true});}
-    });
-
-  it('joins two current finite proofs by native row identity without changing the source claim status', () => {
-    const target = nativeFixture();
     const before = structuredClone(target.report);
-    expect(target.evaluate()).toMatchObject({sourceIdentityPassed: true, sourceSemanticPassed: true});
+    expect(target.evaluate()).toMatchObject({traceFactPassed: true, sourceBindingPassed: true, sourceIdentityPassed: true,
+      sourceSemanticPassed: true, privacyCanaryCovered: true, uncoveredFacets: ['source recommendation action semantics']});
     expect(target.report).toEqual(before);
-    expect(target.report.summary.analysisCompletedVerifiedSourceBindings[0].status).toBe('trace_linked');
   });
 
-  it('retains the proved Trace fact when other source claims remain partial', () => {
+  it('retains the matched Trace fact when another task check fails', () => {
     const target = fixture();
-    target.report.taskVerification.checks.originalClaimsVerified = false;
-    target.report.summary.terminalAnalysis.claimVerificationResult.status = 'partial';
-    target.report.summary.terminalAnalysis.claimVerificationResult.passed = false;
+    target.report.taskVerification.checks.nonPartial = false;
     expect(target.evaluate()).toMatchObject({traceFactPassed: true, overallTaskChecksPassed: false});
   });
 
-  it.each(['factCheck', 'matched', 'proposition', 'missingClaim', 'duplicateClaim', 'missingProof', 'duplicateProof',
-    'partialProof', 'missingSupport', 'duplicateSupport', 'missingAnchor', 'duplicateAnchor', 'wrongAnchor',
-    'wrongEvidence', 'wrongTrace', 'wrongSide', 'unmatchedCell', 'wrongOracleClaim', 'wrongOracleAnchor'] as const)(
-    'does not retain a Trace fact with a broken %s association', change => {
-      const target = fixture();
-      const report = target.report;
-      const terminal = report.summary.terminalAnalysis;
-      const proof = terminal.claimVerificationResult.claimResults[0];
-      const support = terminal.claimSupport[0];
-      const fact = report.taskVerification.facts.source_marker_duration;
-      if (change === 'factCheck') report.taskVerification.checks['fact:source_marker_duration'] = false;
-      if (change === 'matched') fact.matched = false;
-      if (change === 'proposition') fact.proposition = 'unknown';
-      if (change === 'missingClaim') terminal.conclusionContract.claims.shift();
-      if (change === 'duplicateClaim') terminal.conclusionContract.claims.push({...terminal.conclusionContract.claims[0]});
-      if (change === 'missingProof') terminal.claimVerificationResult.claimResults = [];
-      if (change === 'duplicateProof') terminal.claimVerificationResult.claimResults.push({...proof});
-      if (change === 'partialProof') proof.status = 'partial';
-      if (change === 'missingSupport') terminal.claimSupport.shift();
-      if (change === 'duplicateSupport') terminal.claimSupport.push({...support});
-      if (change === 'missingAnchor') support.anchors = [];
-      if (change === 'duplicateAnchor') support.anchors.push({...support.anchors[0]});
-      if (change === 'wrongAnchor') proof.deterministicProof.anchorIds = ['other'];
-      if (change === 'wrongEvidence') proof.deterministicProof.evidenceRefIds = ['other'];
-      if (change === 'wrongTrace') support.anchors[0].context.traceId = 'other';
-      if (change === 'wrongSide') support.anchors[0].context.traceSide = 'reference';
-      if (change === 'unmatchedCell') proof.referenceCells[0].status = 'missing';
-      if (change === 'wrongOracleClaim') fact.matchedClaimIds = ['other'];
-      if (change === 'wrongOracleAnchor') fact.matchedAnchorIds = ['other'];
-      expect(target.evaluate()).toMatchObject({traceFactPassed: false, sourceSemanticPassed: false});
-    });
+  it.each(['factCheck', 'matched', 'missingFact'] as const)('does not retain a Trace fact with a broken %s', change => {
+    const target = fixture();
+    const task = target.report.taskVerification;
+    if (change === 'factCheck') task.checks['fact:source_marker_duration'] = false;
+    if (change === 'matched') task.facts.source_marker_duration.matched = false;
+    if (change === 'missingFact') delete task.facts.source_marker_duration;
+    expect(target.evaluate()).toMatchObject({traceFactPassed: false, sourceSemanticPassed: false});
+  });
 
   function withMockedVerifier(
     mutate: (report: any, args: string[]) => void,
@@ -371,9 +207,10 @@ describe('source binding acceptance', () => {
       if (args[args.indexOf('--code-aware') + 1] === 'off') {
         report.analysisContext.codebaseIds = [];
         report.summary.analysisCompletedSourceReferenceCount = 0;
-        report.summary.analysisCompletedSourceBindingCount = 0;
-        report.summary.analysisCompletedSourceClaimStatuses = [];
-        report.summary.analysisCompletedVerifiedSourceBindings = [];
+        report.summary.analysisCompletedSourceCitationCount = 0;
+        report.summary.analysisCompletedSourceCitedReferenceIds = [];
+        delete report.summary.analysisCompletedSourceCitationsMatched;
+        delete report.summary.analysisCompletedSourceClaimVerifierStatus;
         report.summary.analysisCompletedSourceUseDecision.references = [];
       } else if (args[args.indexOf('--setup-codebase-mode') + 1] === 'register-and-index') {
         report.analysisContext.setup.codebases[0] = {setupMode: 'register-and-index', chunkCount: 1,
@@ -396,17 +233,17 @@ describe('source binding acceptance', () => {
     }
   }
 
-  it.each(['otherClaimPartial', 'traceFactMissing'] as const)(
+  it.each(['otherCheckFailed', 'traceFactMissing'] as const)(
     'keeps preflight, paired and runtime acceptance failed for %s despite a successful child exit', failure => {
       withMockedVerifier(report => {
-        if (failure === 'otherClaimPartial') report.taskVerification.checks.originalClaimsVerified = false;
+        if (failure === 'otherCheckFailed') report.taskVerification.checks.nonPartial = false;
         else report.taskVerification.facts.source_marker_duration.matched = false;
       }, (wrapper, outputDir) => {
         const preflight = wrapper.runSemanticPreflight({runtime: 'openai-agents-sdk', queryId: 'explicit-source-location',
           condition: 'A2', outputDir, timeoutMs: 1000});
         expect(preflight).toMatchObject({preflightPassed: false, completeAcceptance: false,
-          record: {passed: true, hardAssertions: {traceFactPassed: failure === 'otherClaimPartial',
-            overallTaskChecksPassed: failure !== 'otherClaimPartial'}}});
+          record: {passed: true, hardAssertions: {traceFactPassed: failure === 'otherCheckFailed',
+            overallTaskChecksPassed: failure !== 'otherCheckFailed'}}});
         const paired = wrapper.runSemanticPairedAttempt({runtimeKind: 'openai-agents-sdk', attempt: 1,
           availability: {available: true, apiKey: 'test-only-key'}, outputDir, timeoutMs: 1000});
         expect(paired.hardPassed).toBe(false);
@@ -428,53 +265,28 @@ describe('source binding acceptance', () => {
     });
   });
 
-  it.each(['id', 'relation', 'idColumn', 'traceId', 'traceSide', 'schemaFingerprint', 'anchorId', 'evidenceRefId', 'captureId'] as const)(
-    'does not join a different native %s merely because the duration scalar matches', field => {
-      const target = nativeFixture();
-      const row = target.mappedProof.deterministicProof.nativeRows[0];
-      if (field === 'id') row.id = 51;
-      else if (field === 'schemaFingerprint') row.schemaFingerprint = 'b'.repeat(64);
-      else row[field] = 'different';
-      expect(target.evaluate()).toMatchObject({sourceIdentityPassed: false, sourceSemanticPassed: false});
+  it.each(['uncited', 'otherCitation', 'noCitations'] as const)(
+    'does not establish source identity from a body read the answer does not cite: %s', change => {
+      const target = fixture();
+      const summary = target.report.summary;
+      if (change === 'uncited') summary.analysisCompletedSourceCitedReferenceIds = [];
+      if (change === 'otherCitation') summary.analysisCompletedSourceCitedReferenceIds = ['source-ref-v1-other'];
+      if (change === 'noCitations') {
+        summary.analysisCompletedSourceCitationCount = 0;
+        summary.analysisCompletedSourceCitedReferenceIds = [];
+      }
+      expect(target.evaluate()).toMatchObject({sourceBindingPassed: true, sourceIdentityPassed: false, sourceSemanticPassed: false});
     });
-
-  it.each(['candidate', 'inference', 'missingCapture', 'duplicate', 'unmatchedCell', 'missingNativeRows', 'missingOracleProof'] as const)(
-    'requires both current proofs for the native association: %s', change => {
-      const target = nativeFixture();
-      if (change === 'candidate') target.mappedProof.deterministicProof.status = 'candidate';
-      if (change === 'inference') target.mappedProof.status = 'inference';
-      if (change === 'missingCapture') delete target.mapped.context.captureId;
-      if (change === 'duplicate') target.mappedProof.deterministicProof.nativeRows.push({...target.mappedProof.deterministicProof.nativeRows[0]});
-      if (change === 'unmatchedCell') target.mappedProof.referenceCells[0].status = 'value_mismatch';
-      if (change === 'missingNativeRows') target.mappedProof.deterministicProof.nativeRows = [];
-      expect(sameTraceOccurrence(target.mapped, target.oracle, target.mappedProof,
-        change === 'missingOracleProof' ? undefined : target.oracleProof)).toBe(false);
-    });
-
-  it('accepts a location-only claim beside an oracle-linked source claim without promoting it', () => {
-    const target = fixture();
-    const before = structuredClone(target.report);
-    expect(target.evaluate()).toMatchObject({sourceBindingPassed: true, sourceIdentityPassed: true, sourceSemanticPassed: true,
-      uncoveredFacets: ['source recommendation action semantics']});
-    expect(target.report).toEqual(before);
-  });
-
-  it.each(['location_only', 'unbound'])('does not let a %s target claim establish the oracle association', status => {
-    const target = fixture();
-    target.report.summary.analysisCompletedSourceClaimStatuses[0] = status;
-    target.report.summary.analysisCompletedVerifiedSourceBindings[0].status = status;
-    expect(target.evaluate()).toMatchObject({sourceIdentityPassed: false, sourceSemanticPassed: false});
-  });
 
   it.each(['start', 'end'] as const)('rejects a body read missing the required %s boundary', boundary => {
-    const target = nativeFixture();
+    const target = fixture();
     const reference = target.report.summary.analysisCompletedSourceUseDecision.references[0];
     reference.lineRange[boundary] = requiredSourceRange[boundary] + (boundary === 'start' ? 1 : -1);
     expect(target.evaluate()).toMatchObject({sourceBindingPassed: true, sourceIdentityPassed: false, sourceSemanticPassed: false});
   });
 
   it('counts a read covering the canary independently of complete mechanism coverage', () => {
-    const target = nativeFixture();
+    const target = fixture();
     const reference = target.report.summary.analysisCompletedSourceUseDecision.references[0];
     expect(canaryLine).toBeGreaterThan(0);
     expect(canaryLine).toBeLessThan(requiredSourceRange.end);
@@ -484,7 +296,7 @@ describe('source binding acceptance', () => {
 
   it.each(['miss_canary', 'metadata', 'graph', 'wrong_codebase', 'wrong_file', 'unissued_id', 'inverted', 'zero_start', 'unsafe_end'])(
     'rejects %s when checking source canary coverage', failure => {
-      const target = nativeFixture();
+      const target = fixture();
       const reference = target.report.summary.analysisCompletedSourceUseDecision.references[0];
       if (failure === 'miss_canary') reference.lineRange.end = canaryLine - 1;
       if (failure === 'metadata' || failure === 'graph') reference.lookupKind = failure;
@@ -503,21 +315,13 @@ describe('source binding acceptance', () => {
     expect(target.evaluate()).toMatchObject({sourceBindingPassed: true, sourceIdentityPassed: false, sourceSemanticPassed: false});
   });
 
-  it.each(['thread', 'end', 'row'])('retains strict occurrence identity when the %s differs', field => {
-    const target = fixture();
-    const anchor = target.report.summary.terminalAnalysis.claimSupport[1].anchors[0];
-    if (field === 'thread') anchor.identity.utid = 12;
-    if (field === 'end') anchor.timeRange.endTs = '1100';
-    if (field === 'row') anchor.cells[0].rowSelector.slice_id = 51;
-    expect(target.evaluate()).toMatchObject({sourceBindingPassed: true, sourceIdentityPassed: false, sourceSemanticPassed: false});
-  });
-
-  it.each(['verdict', 'membership'])('requires the current production binding %s', field => {
-    const target = fixture();
-    // `partial` is the ordinary verdict beside a weaker claim; only `failed` (an invalid reference) blocks.
-    if (field === 'verdict') target.report.summary.analysisCompletedSourceClaimVerifierStatus = 'failed';
-    else target.report.summary.analysisCompletedSourceReferenceMembershipPassed = false;
-    expect(target.evaluate()).toMatchObject({sourceBindingPassed: false, sourceIdentityPassed: false, sourceSemanticPassed: false});
+  it('blocks only on an unissued citation; an unmatched one stays advisory', () => {
+    const advisory = fixture();
+    advisory.report.summary.analysisCompletedSourceClaimVerifierStatus = 'partial';
+    expect(advisory.evaluate()).toMatchObject({sourceBindingPassed: true, sourceIdentityPassed: true, sourceSemanticPassed: true});
+    const failed = fixture();
+    failed.report.summary.analysisCompletedSourceClaimVerifierStatus = 'failed';
+    expect(failed.evaluate()).toMatchObject({sourceBindingPassed: false, sourceIdentityPassed: false, sourceSemanticPassed: false});
   });
 });
 
@@ -757,17 +561,16 @@ describe('flagship gate wrapper: file expectations, strict acceptance and regres
   const wrapper = require(path.join(backendRoot, 'scripts/run-glm-agent-e2e.cjs'));
   const fingerprint = {suite: 'scrolling', runtime: 'openai-agents-sdk', traceSha256: 'a'.repeat(64), query: 'q',
     expectationHash: 'b'.repeat(64), providerOrigin: 'https://open.bigmodel.cn', model: 'glm-5.3', commit: 'c'.repeat(40),
-    gateSchemaVersion: 'agent_sse_gate@2', verificationSchemaVersion: 'claim_verifier@2',
+    gateSchemaVersion: 'agent_sse_gate@3',
     traceProcessorVersion: `bundled:${'d'.repeat(40)}`, stdlibRevision: 'stdlib'};
   const report = (overrides: Record<string, unknown> = {}) => ({
-    runIdentity: {schemaVersion: 1, gateSchemaVersion: 'agent_sse_gate@2', verificationSchemaVersion: 'claim_verifier@2',
+    runIdentity: {schemaVersion: 1, gateSchemaVersion: 'agent_sse_gate@3',
       runtime: 'openai-agents-sdk', query: 'q', traceSha256: 'a'.repeat(64), expectationHash: 'b'.repeat(64),
       traceProcessorVersion: `bundled:${'d'.repeat(40)}`, stdlibRevision: 'stdlib', reportedVersion: 'v59'},
-    semanticAcceptance: 'INCONCLUSIVE', proofAcceptance: 'INCOMPLETE', observedChecksPassed: true, hardGatesPassed: true,
-    completeAcceptance: false, uncoveredFacets: ['total_frames: proposition not proved (tier=value)'],
-    checkGroups: {value: {'fact:total_frames': true, taskCompleted: true}, proof: {'fact:total_frames:proved': false},
-      delivery: {hasAnalysisCompletedEvent: true}},
-    taskVerification: {facts: {total_frames: {tier: 'value'}}},
+    semanticAcceptance: 'INCONCLUSIVE', observedChecksPassed: true, hardGatesPassed: true,
+    completeAcceptance: false, uncoveredFacets: ['scrolling root cause semantics'],
+    checkGroups: {value: {'fact:total_frames': true, taskCompleted: true}, delivery: {hasAnalysisCompletedEvent: true}},
+    taskVerification: {facts: {total_frames: {matched: true}}},
     ...overrides,
   });
   const summary = (overrides: Record<string, unknown> = {}, at = Date.parse('2026-10-09T00:00:00Z')) =>
@@ -819,10 +622,10 @@ describe('flagship gate wrapper: file expectations, strict acceptance and regres
       .toEqual({providerOrigin: 'opencode-default', model: 'opencode-runtime-default'});
   });
 
-  it('summarizes a run with its full fingerprint and per-fact tiers', () => {
+  it('summarizes a run with its full fingerprint and per-fact body matches', () => {
     const current = summary();
-    expect(current).toMatchObject({schemaVersion: 'agent_sse_flagship_summary@1', fingerprint, reportAvailable: true,
-      semanticAcceptance: 'INCONCLUSIVE', facts: {total_frames: 'value'}, traceProcessorReportedVersion: 'v59',
+    expect(current).toMatchObject({schemaVersion: 'agent_sse_flagship_summary@2', fingerprint, reportAvailable: true,
+      semanticAcceptance: 'INCONCLUSIVE', facts: {total_frames: 'matched'}, traceProcessorReportedVersion: 'v59',
       report: 'test-output/e2e-glm-scrolling-real.json'});
     expect(Object.keys(current.fingerprint)).toEqual(wrapper.FLAGSHIP_FINGERPRINT_KEYS);
   });
@@ -846,18 +649,18 @@ describe('flagship gate wrapper: file expectations, strict acceptance and regres
   });
 
   it('reports new failures, fixes and unchanged checks across commits and fails only on new failures', () => {
-    const before = summary({checkGroups: {value: {'fact:total_frames': true, taskCompleted: false}, proof: {'fact:total_frames:proved': false},
-      delivery: {hasAnalysisCompletedEvent: true}}, taskVerification: {facts: {total_frames: {tier: 'proved'}}}},
+    const before = summary({checkGroups: {value: {'fact:total_frames': true, taskCompleted: false, nonPartial: true},
+      delivery: {hasAnalysisCompletedEvent: true}}, taskVerification: {facts: {total_frames: {matched: true}}}},
     Date.parse('2026-10-01T00:00:00Z'));
-    const current = {...summary({checkGroups: {value: {'fact:total_frames': false, taskCompleted: true, 'fact:jank_frames': true},
-      proof: {'fact:total_frames:proved': false}, delivery: {}}, taskVerification: {facts: {total_frames: {tier: 'none'}}}}),
+    const current = {...summary({checkGroups: {value: {'fact:total_frames': false, taskCompleted: true, nonPartial: true,
+      'fact:jank_frames': true}, delivery: {}}, taskVerification: {facts: {total_frames: {matched: false}}}}),
     fingerprint: {...fingerprint, commit: '9'.repeat(40)}};
     const delta = wrapper.compareFlagshipSummaries(baseline(before), current, {now: Date.parse('2026-10-09T00:00:00Z')});
     expect(delta).toMatchObject({status: 'compared', evidence: 'regression_delta_only_not_acceptance', stale: false,
       commits: {baseline: 'c'.repeat(40), current: '9'.repeat(40)},
-      newFailures: ['value:fact:total_frames'], fixed: ['value:taskCompleted'], unchanged: ['proof:fact:total_frames:proved'],
+      newFailures: ['value:fact:total_frames'], fixed: ['value:taskCompleted'], unchanged: ['value:nonPartial'],
       added: ['value:fact:jank_frames'], removed: ['delivery:hasAnalysisCompletedEvent'],
-      factTierChanges: {total_frames: {from: 'proved', to: 'none'}}});
+      factChanges: {total_frames: {from: 'matched', to: 'none'}}});
     expect(wrapper.flagshipRunVerdict({...current, exitCode: 1, delta}))
       .toEqual({passed: false, reasons: ['delta_new_failures:1']});
     const steady = wrapper.compareFlagshipSummaries(baseline(before), before, {now: Date.parse('2026-11-01T00:00:00Z')});
@@ -882,7 +685,7 @@ describe('flagship gate wrapper: file expectations, strict acceptance and regres
     const timedOut = wrapper.buildFlagshipSummary({suiteName: 'startup', runtimeKind: 'opencode', exitCode: 1,
       report: {schemaVersion: 'agent_sse_verification_failure@1', phase: 'analysis_stream', errorCode: 'SSE_TIMEOUT',
         semanticAcceptance: 'INCONCLUSIVE', passed: false}, git: {commit: 'unknown', worktreeDirty: null}, strict: false});
-    expect(timedOut).toMatchObject({reportAvailable: false, semanticAcceptance: 'FAILED', proofAcceptance: 'INCOMPLETE',
+    expect(timedOut).toMatchObject({reportAvailable: false, semanticAcceptance: 'FAILED',
       verificationFailure: {phase: 'analysis_stream', errorCode: 'SSE_TIMEOUT'}});
     expect(missing).not.toHaveProperty('verificationFailure');
   });

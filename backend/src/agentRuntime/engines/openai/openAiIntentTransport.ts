@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {ANALYSIS_OUTPUT_CONFIG} from '../../finalSubmissionConfig';
 import {randomUUID} from 'node:crypto';
 import type {OpenAIAgentConfig} from './openAiConfig';
 import {
@@ -155,9 +156,8 @@ type ValidatedIntentConfig = {
  * One request in the pinned native protocol; truncation never starts another
  * call. A transient provider failure (5xx, 408/425/429, a thrown connection
  * error, a stream closed before its terminal event) is retried once inside the
- * same deadline, so the single semantic-review call
- * per captured context survives endpoint hiccups without ever extending the
- * run budget.
+ * same deadline, so a single no-tool call survives endpoint hiccups without
+ * ever extending the run budget.
  */
 export function runOpenAiIntentTransport(input: OpenAiIntentTransportInput) {
   return runIntentTransport(input, async scope => {
@@ -253,12 +253,11 @@ async function dispatchOneRequest(
   };
   // Injected fetch owns its observation (the runtime fences it after compat).
   // The standalone no-tool path uses the same final-body observer directly.
-  const response = await withModelRequestPurpose({purpose: config.purpose === 'final_semantic' ? 'review' : config.purpose},
+  const response = await withModelRequestPurpose({purpose: config.purpose},
     () => {
       try {
-        const purpose = config.purpose === 'final_semantic' ? 'review' : config.purpose;
-        const requestedOutput = input.config.outputConfig;
-        if (purpose && requestedOutput && config.stageCallKey) {
+        const purpose = config.purpose;
+        if (purpose && config.stageCallKey) {
           const commonConfig = buildRuntimeCommonModelConfig(input.config, {
             runtime: 'openai-agents-sdk', sdk: execution.profile.sdk,
           });
@@ -266,7 +265,7 @@ async function dispatchOneRequest(
           const appliedSettings = Object.fromEntries(Object.entries(body)
             .filter(([key]) => !['messages', 'input', 'instructions'].includes(key)));
           const controls = commonConfig && profile ? buildRuntimeAppliedModelControls({
-            requestedOutput, commonConfig, appliedSettings, profiles: [profile],
+            requestedOutput: ANALYSIS_OUTPUT_CONFIG, commonConfig, appliedSettings, profiles: [profile],
           }) : undefined;
           if (controls) recordRuntimeFinalTransportEvent(currentRunManifestAttributionSink(), {
             kind: 'stage_dispatch', stageCallKey: config.stageCallKey, purpose,

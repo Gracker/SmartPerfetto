@@ -198,7 +198,7 @@ describe('Claude intent transport', () => {
   });
 
   it.each([
-    ['classification', 'low'], ['review', 'low'], ['declaration_repair', 'low'],
+    ['classification', 'low'], ['review', 'low'],
     ['continuation', undefined], ['answer_turn', undefined], [undefined, undefined],
   ] as const)('sends effort for purpose %s as %s', async (purpose, effort) => {
     const {input, sdk} = fixture([{type: 'result', subtype: 'success', is_error: false, result: '{}', stop_reason: 'end_turn'}]);

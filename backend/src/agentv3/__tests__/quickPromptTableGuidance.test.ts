@@ -35,13 +35,15 @@ describe('real quick prompt context assembly', () => {
         expect(policy.content).toContain('prefer a compact Markdown table');
         expect(policy.content).toContain('user-requested formats take precedence');
         expect(policy.content).toContain('presentation does not require more queries or a broader report');
-        expect(policy.content).toContain('Every checkable table assertion still needs faithful');
+        expect(policy.content).toContain('Derived differences/percentages retain their operands');
         expect(policy.content).toContain('from a zero or missing baseline');
         expect(policy.content).toContain('Mark rounded table values as approximate');
-        expect(policy.content).toContain('propositions and references exact');
+        // The answer carries no model-authored declaration to keep exact.
+        expect(policy.content).not.toContain('declaration references');
         expect(parts.fullPrompt).toContain('trace-reference');
         expect(parts.fullPrompt).toContain('existing_only');
-        expect(parts.fullPrompt).toContain('conclusion_contract_v1');
+        // The prompt no longer asks for a conclusion declaration.
+        expect(parts.fullPrompt).not.toContain('conclusion_contract_v1');
         expect(buildQuickSystemPrompt(context)).toBe(parts.fullPrompt);
       }
     }

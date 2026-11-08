@@ -3702,6 +3702,7 @@ ${REPORT_DOCUMENT_NO_SCRIPT}
     const { traceId, query, result, hypotheses, dialogue, conversationTimeline, timestamp, queryHistory, conclusionHistory } = data;
     const outputLanguage = data.outputLanguage ?? this.getOutputLanguage();
     const evidencePresentation = this.projectReportEvidence(result);
+    const investigationLines = investigationStatusLines(evidencePresentation?.deliveryAssurance ?? undefined, outputLanguage);
     const htmlLang = outputLanguage === 'en' ? 'en' : 'zh-CN';
     const locale = this.getReportLocale(outputLanguage);
     const dataEnvelopes = this.prepareAgentDrivenEnvelopes(data.dataEnvelopes || []);
@@ -4192,9 +4193,10 @@ ${REPORT_DOCUMENT_NO_SCRIPT}
 
     ${this.renderAnalysisReceiptSection(result.analysisReceipt, outputLanguage)}
     ${renderSceneTimelineHtml({timeline: result.sceneTimeline, reference: result.sceneReport, outputLanguage, backendBaseUrl: data.backendBaseUrl})}
-    <div class="section">
+    ${investigationLines.length || evidencePresentation?.investigationAssessment?.requirements.length ||
+      evidencePresentation?.investigationAssessment?.evidenceRecords?.length ? `<div class="section">
       <h2 class="section-title">${localize(outputLanguage, '系统调查范围与证据', 'System investigation scope and evidence')}</h2>
-      ${investigationStatusLines(evidencePresentation?.deliveryAssurance ?? undefined, outputLanguage).map(line => `<p>${this.escapeHtml(line)}</p>`).join('')}
+      ${investigationLines.map(line => `<p>${this.escapeHtml(line)}</p>`).join('')}
       ${evidencePresentation?.investigationAssessment?.requirements.length ? `
       <details><summary>${localize(outputLanguage, '查看全部调查维度与证据引用', 'All investigation dimensions and evidence references')}</summary>
         <table><thead><tr>
@@ -4231,7 +4233,7 @@ ${REPORT_DOCUMENT_NO_SCRIPT}
             ${this.escapeHtml(row.captureId)} [${row.rowIndex}] / ${this.escapeHtml(row.artifactId ?? row.evidenceRefId ?? '')}</td>
         </tr>`).join('')}</tbody></table>
       </details>` : ''}
-    </div>
+    </div>` : ''}
     ${this.renderUiActionProposalsSection(result.uiActionProposals, outputLanguage)}
 
     <div class="section">
@@ -5308,9 +5310,14 @@ ${REPORT_DOCUMENT_NO_SCRIPT}
     const supportSummary = Array.from(supportCounts.entries())
       .map(([key, count]) => `${key}: ${count}`)
       .join(' · ');
+    // A new answer carries no declared claims: only its identity resolution is
+    // shown, with no claim-verification line. Stored claim records still render.
+    const claimRecords = Boolean(verification) || Boolean(claimSupport?.length);
     // The same claim-count line the CLI prints, then the raw per-status distribution as provenance.
-    const statusLine = claimVerificationStatusLine(summarizeClaimVerification(verification), outputLanguage) ??
-      localize(outputLanguage, '断言核验: 未核验', 'Claim verification: not checked');
+    const statusLine = claimRecords
+      ? claimVerificationStatusLine(summarizeClaimVerification(verification), outputLanguage) ??
+        localize(outputLanguage, '断言核验: 未核验', 'Claim verification: not checked')
+      : undefined;
     const supportById = this.uniqueReportClaimEntries(claimSupport ?? [], claim => claim.claimId);
     const issueRows = (verification?.issues || []).map(issue => `
       <tr>
@@ -5353,8 +5360,9 @@ ${REPORT_DOCUMENT_NO_SCRIPT}
 
     return `
     <div class="section">
-      <h2 class="section-title">${localize(outputLanguage, '断言验证结果', 'Claim Verification')}</h2>
-      <div class="claim-source-note">${this.escapeHtml(statusLine)}</div>
+      <h2 class="section-title">${claimRecords ? localize(outputLanguage, '断言验证结果', 'Claim Verification')
+        : localize(outputLanguage, '身份解析', 'Identity Resolution')}</h2>
+      ${statusLine ? `<div class="claim-source-note">${this.escapeHtml(statusLine)}</div>` : ''}
       ${supportSummary ? `<div class="claim-source-note">${this.escapeHtml(localize(outputLanguage,
         `服务器核验状态分布：${supportSummary}`, `Server verification status distribution: ${supportSummary}`))}</div>` : ''}
       ${claimDetails ? `<div class="claim-source-note">${localize(outputLanguage,

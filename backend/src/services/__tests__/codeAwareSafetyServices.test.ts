@@ -26,10 +26,8 @@ import {
   composeCodeAwareTextProjectionReceipts,
   createCodeAwareStreamingTextProjection,
   isIssuedCodeAwareTextProjectionReceipt,
-  hasExactCodeAwareTextProjectionInput,
   issueCodeAwareStructuredProjectionReceipt,
   projectCodeAwareStructuredText,
-  projectCodeAwareSemanticInputStructure,
   registerCodeAwareCanary,
   registerOnDemandSourceLookupForEcho,
   registerPrivateAnalysisQueryForEcho,
@@ -46,7 +44,6 @@ import {
 import {projectCodeAwareStreamingUpdate, projectOwnerCodeAwareStreamingUpdate} from '../security/codeAwareStreamingUpdateProjection';
 import {projectOwnerDataEnvelopes} from '../security/privateAnalysisProjection';
 import {issuePrivateToolResultNarrationReceipt} from '../../agentv3/toolNarration';
-import {FINAL_SEMANTIC_INPUT_BYTE_LIMIT} from '../finalSemanticLimits';
 import {LLMEchoOutputStream, type CodeRef} from '../security/llmEchoOutputFilter';
 import {
   ExternalKnowledgeSourceRegistry,
@@ -63,50 +60,17 @@ const CODEBASE_SCOPE = {
   userId: 'tester',
 };
 
-describe('typed exact privacy input lineage', () => {
-  it.each(['', 'plain', '\ud800'])('keeps exact input privately without changing legacy receipt shape: %p', input => {
-    const receipt = sanitizeCodeAwareTextWithReceipt(undefined, input);
+describe('text projection receipt composition', () => {
+  it('keeps the legacy receipt shape and composes only a contiguous issued chain', () => {
+    const receipt = sanitizeCodeAwareTextWithReceipt(undefined, 'plain');
     expect(Object.keys(receipt).sort()).toEqual(['disposition', 'inputFingerprint', 'outputFingerprint', 'text']);
-    expect(receipt).toMatchObject({text: input, disposition: 'preserved'});
-    expect(hasExactCodeAwareTextProjectionInput(receipt, input)).toBe(true);
-    expect(hasExactCodeAwareTextProjectionInput({...receipt}, input)).toBe(false);
-    expect(hasExactCodeAwareTextProjectionInput(JSON.parse(JSON.stringify(receipt)), input)).toBe(false);
-  });
-
-  it('rejects a different original despite the same UTF-8 fingerprint', () => {
-    const first = sanitizeCodeAwareTextWithReceipt(undefined, '\ud800');
-    const second = sanitizeCodeAwareTextWithReceipt(undefined, '\ud801');
-    expect(first.inputFingerprint).toBe(second.inputFingerprint);
-    expect(hasExactCodeAwareTextProjectionInput(first, '\ud801')).toBe(false);
-    expect(hasExactCodeAwareTextProjectionInput(second, '\ud800')).toBe(false);
-  });
-
-  it('preserves old hash composition while never restoring exact lineage after a colliding gap', () => {
+    expect(receipt).toMatchObject({text: 'plain', disposition: 'preserved'});
     const first = issueCodeAwareStructuredProjectionReceipt('original', '\ud800');
     const wrongNext = issueCodeAwareStructuredProjectionReceipt('\ud801', 'next');
     const gap = composeCodeAwareTextProjectionReceipts(first, wrongNext);
     expect(gap).toEqual({text: 'next', disposition: 'redacted', inputFingerprint: first.inputFingerprint,
       outputFingerprint: wrongNext.outputFingerprint});
     expect(isIssuedCodeAwareTextProjectionReceipt(gap)).toBe(true);
-    expect(hasExactCodeAwareTextProjectionInput(gap, 'original')).toBe(false);
-    const descendant = composeCodeAwareTextProjectionReceipts(gap, issueCodeAwareStructuredProjectionReceipt('next', 'last'));
-    expect(descendant.text).toBe('last');
-    expect(hasExactCodeAwareTextProjectionInput(descendant, 'original')).toBe(false);
-  });
-
-  it('carries exact input through real owner credential and echo redaction stages', () => {
-    const sessionId = 'typed-owner-exact';
-    registerCodeAwareCanary(sessionId, 'PRIVATE_AUTHORED_MARKER');
-    const input = 'PRIVATE_AUTHORED_MARKER and api_key="private-key-value-123"';
-    try {
-      const first = withOwnerCodeAwareProjection(() => sanitizeCodeAwareStructuredTextWithReceipt(sessionId, input));
-      expect(first.text).not.toContain('PRIVATE_AUTHORED_MARKER');
-      expect(first.text).not.toContain('private-key-value-123');
-      expect(hasExactCodeAwareTextProjectionInput(first, input)).toBe(true);
-      const composed = composeCodeAwareTextProjectionReceipts(first, sanitizeCodeAwareTextWithReceipt(undefined, first.text));
-      expect(hasExactCodeAwareTextProjectionInput(composed, input)).toBe(true);
-      expect(hasExactCodeAwareTextProjectionInput(composed, first.text)).toBe(false);
-    } finally { clearCodeAwareOutputGuards(sessionId); }
   });
 });
 
@@ -2218,28 +2182,6 @@ describe('guard registration capacity', () => {
       registerPrivateAnalysisQueryForEcho(sessions[1], `question ${index} api_key="distinct-secret-${index}-value"`);
     }
     expect(sanitizeOwnerCodeAwareText(sessions[1], 'ordinary model text')).toBe('[PRIVATE_OUTPUT_SUPPRESSED]');
-  });
-});
-
-describe('semantic input structure budget', () => {
-  it('preserves byte-bounded JSON beyond the ordinary output node cap without widening output limits', () => {
-    const input = {records: Array.from({length: 3000}, (_, n) => ({n, unit: 'ms'}))};
-    expect(Buffer.byteLength(JSON.stringify(input))).toBeLessThan(128 * 1024);
-    expect(projectCodeAwareStructuredText(undefined, input).changed).toBe(true);
-    expect(projectCodeAwareSemanticInputStructure(undefined, input)).toEqual({value: input, changed: false, limited: false});
-  });
-  it('keeps depth, oversized strings and semantic structure overflow bounded', () => {
-    let deep: unknown = 'value';
-    for (let i = 0; i < 30; i++) deep = {child: deep};
-    for (const input of [deep, 'x'.repeat(1024 * 1024 + 1),
-      Array.from({length: FINAL_SEMANTIC_INPUT_BYTE_LIMIT + 1}, () => 0)]) {
-      expect(projectCodeAwareSemanticInputStructure(undefined, input)).toMatchObject({changed: true, limited: true});
-    }
-  });
-  it('records owner credential replacement as content change, not capacity loss', () => {
-    const input = {api_key: 'secret-value-for-test'};
-    const projected = withOwnerCodeAwareProjection(() => projectCodeAwareSemanticInputStructure(undefined, input));
-    expect(projected).toEqual({value: {api_key: '[REDACTED_SECRET]'}, changed: true, limited: false});
   });
 });
 

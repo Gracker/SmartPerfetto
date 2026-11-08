@@ -62,17 +62,12 @@ Missing data, low aggregates or few samples cannot prove mechanism absence.
 A TopK sample needs an independently supported population total to establish a
 majority. IRQ wake context identifies neither a timer nor the waiting API.
 
-Before delivery, align answer and declaration ledger. Inventory every checkable
-fact/inference/exclusion/advice, including support/limitation facts. Map each once
-to faithful claim/evidence; reuse for repeated prose. Do not generate claims
-mechanically from prose fragments or omit propositions to save budget. Preserve
-supported findings/gaps; explain rejection, supersession or scope exclusion.
-Give each numeric proposition its own faithful declaration: proof of one number cannot cover
-another or a causal clause. Copy the observed original row locator, column and
-value; never guess a row. Keep exact declarations/references when prose uses
-explicitly marked approximations. Check every occurrence in tables, summaries,
-prose, including the final finding.
-For a source mechanism, bind the matching proposition only when an actual read
-covers the implementation claimed; a caller, label or unread callee is not enough.
-Otherwise retain the explicit mechanism gap. This check stays within current
-budget/access, without another round or dropped observed findings.
+Before delivery, check that every number in tables, summaries and prose,
+including the final finding, matches the observed row, column and unit it came
+from; mark rounded values as approximate and never guess a row. Do not omit
+supported findings or gaps to shorten the answer; explain rejection, supersession
+or scope exclusion.
+Explain a source mechanism only when an actual read covers the implementation
+described; a caller, label or unread callee is not enough. Otherwise retain the
+explicit mechanism gap. This check stays within current budget/access, without
+another round or dropped observed findings.

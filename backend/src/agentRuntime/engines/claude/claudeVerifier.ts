@@ -4,9 +4,9 @@
 
 /**
  * Runtime delivery diagnostics shared by the five agent engines.
- * Only server-owned terminal receipts, submitted obligations and explicitly
- * bound report assessments are evaluated here. Content meaning and evidence
- * support belong to the shared final semantic assessment and finalizer.
+ * Only server-owned terminal receipts and submitted obligations are evaluated
+ * here. Content meaning and evidence support are not judged at runtime; the
+ * shared finalizer records delivery assurance.
  */
 
 import type {Finding} from '../../../agent/types';
@@ -16,12 +16,10 @@ import {getPhaseToolEvidenceStatus} from '../../../agentv3/planToolCallRecorder'
 import {getAnalysisPlanCompletionStatus} from '../../../agentv3/planCompletionStatus';
 import {hasValidPlanSkipDisposition} from '../../../agentv3/planPhaseSemantics';
 import {DEFAULT_OUTPUT_LANGUAGE, localize, type OutputLanguage} from '../../../agentv3/outputLanguage';
-import {assessFinalReportContract} from '../../../services/finalReportContractGate';
 import {sameAnalysisCandidate, type AnalysisDeliveryContext} from '../../../types/analysisDelivery';
 import {renderRequiredLocalizedStrategyTemplate} from '../../../agentv3/localizedStrategyTemplate';
 import {isProductionAgentRuntimeKind} from '../../runtimeKinds';
 import {candidateHasAnswerBody, projectRuntimeCorrectionContext} from '../../runtimeConclusionProtocol';
-import {hasCurrentAuthoredFinalBody} from '../../../services/security/conclusionProtocolProjection';
 
 function nonemptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
@@ -135,22 +133,19 @@ export function generateCorrectionPrompt(
 function assessDeliveryIssues(
   conclusion: string,
   context: AnalysisDeliveryContext | undefined,
-  conclusionContract: unknown,
   outputLanguage: OutputLanguage,
 ): VerificationIssue[] {
   const issues: VerificationIssue[] = [];
   const current = context && context.entry !== 'historical_restore' ? context : undefined;
   const completion = current?.completion;
   const origin = current?.outputOrigin;
-  const authoredBody = Boolean(current && hasCurrentAuthoredFinalBody(conclusion, current));
-  const supportedOrigin = origin === 'sdk_final' || origin === 'assistant_stream' ||
-    origin === 'evidence_rendered' || origin === 'runtime_fallback' || authoredBody;
+  const supportedOrigin = origin === 'sdk_final' || origin === 'assistant_stream' || origin === 'runtime_fallback';
   const nativeKnown = completion?.schemaVersion === 1 &&
     isProductionAgentRuntimeKind(completion.runtimeKind) &&
     sameAnalysisCandidate(completion, current?.acceptedCandidate, conclusion) && supportedOrigin &&
     ['completed', 'incomplete', 'failed', 'cancelled'].includes(completion.status);
   const modelBody = origin === 'sdk_final' || origin === 'assistant_stream';
-  const canContinue = nativeKnown && modelBody && !current?.finalSubmission &&
+  const canContinue = nativeKnown && modelBody &&
     (completion?.status === 'completed' || completion?.status === 'incomplete');
 
   if (!nativeKnown) issues.push({
@@ -160,7 +155,7 @@ function assessDeliveryIssues(
       'The current candidate lacks a matching terminal record or output origin; completion is unconfirmed.'),
   });
   // A declaration alone is not a body: a reply that carries only one gets the same continuation.
-  if (!(authoredBody ? conclusion.trim().length > 0 : candidateHasAnswerBody(conclusion))) issues.push({
+  if (!candidateHasAnswerBody(conclusion)) issues.push({
     type: 'missing_reasoning', severity: 'error',
     message: localize(outputLanguage, '当前候选没有可交付的正文。', 'The current candidate has no deliverable body.'),
     ...(canContinue ? {recoveryKind: 'continue_output' as const} : {}),
@@ -183,17 +178,6 @@ function assessDeliveryIssues(
       });
     }
   }
-  // This consumes the shared assessment's full binding, never section words or query guesses.
-  const report = assessFinalReportContract({conclusion, conclusionContract, context});
-  if (report.missingSections.length > 0) issues.push({
-    type: 'missing_reasoning', severity: 'error',
-    ...(canContinue && completion?.status === 'completed'
-      ? {recoveryKind: 'complete_report_content' as const} : {}),
-    missingSections: report.missingSections.map(({id, label, description}) => ({id, label, description})),
-    message: localize(outputLanguage,
-      '语义评估确认当前报告缺少已适用的内容要求。',
-      'The semantic assessment confirmed missing applicable report content.'),
-  });
   return issues;
 }
 
@@ -212,7 +196,6 @@ export async function verifyConclusion(
     hypotheses?: Hypothesis[];
     outputLanguage?: OutputLanguage;
     deliveryContext?: AnalysisDeliveryContext;
-    conclusionContract?: unknown;
   } = {},
 ): Promise<VerificationResult> {
   const startTime = Date.now();
@@ -220,7 +203,7 @@ export async function verifyConclusion(
   const heuristicIssues = [
     ...verifyPlanAdherence(options.plan ?? null),
     ...(options.hypotheses === undefined ? [] : verifyHypotheses(options.hypotheses)),
-    ...assessDeliveryIssues(conclusion, options.deliveryContext, options.conclusionContract, outputLanguage),
+    ...assessDeliveryIssues(conclusion, options.deliveryContext, outputLanguage),
   ];
   return {
     passed: !heuristicIssues.some(issue => issue.severity === 'error'),
