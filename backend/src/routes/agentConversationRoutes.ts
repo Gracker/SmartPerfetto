@@ -10,6 +10,7 @@ import {projectAssistantWork} from '../assistant/application/assistantWorkProjec
 import type {ConversationContextRequest} from '../assistant/contracts/assistantWorkContract';
 import type {AnalysisOptions} from '../agent/core/orchestratorTypes';
 import {createAgentOrchestrator} from '../agentRuntime';
+import type {AgentRuntimeKind} from '../agentRuntime/runtimeKinds';
 import {toAnalysisHistoryTurn} from '../agentRuntime/analysisHistory';
 import {getConversationSessionStore, type ConversationSessionDescriptor} from '../services/conversationSessionStore';
 import {
@@ -61,6 +62,10 @@ import {sendProviderStoreUnreadableIfPresent} from './providerStoreHttp';
 import {sendPublicRequestError, sendRouteError, type PublicErrorClass} from '../middleware/routeFailure';
 import {ProviderRequestError} from '../services/providerManager/providerRequestError';
 import {resolveProviderRuntimeSnapshot} from '../services/providerManager/providerSnapshot';
+import {
+  reconcileRecordedProviderPin,
+  type RuntimeMigrationContinuityNote,
+} from '../services/providerManager/providerPinContinuity';
 import {parseOutputLanguage, type OutputLanguage} from '../agentv3/outputLanguage';
 import {requireAiEnabledForHttp} from './aiCapabilityPolicyHttp';
 import {AnalyzeOptionsError, normalizeAnalyzeOptions} from './agent/normalizeAnalyzeOptions';
@@ -139,6 +144,7 @@ function sessionDescriptor(session: ConversationSession, run: ConversationRun): 
     userId: session.userId, traceContext: session.traceContext, providerId: session.providerId,
     providerFollowsActive: session.providerFollowsActive ?? true, runtimeKind: session.runtimeKind,
     providerSnapshotHash: session.providerSnapshotHash, analysisContextFingerprint: session.analysisContextFingerprint,
+    ...(session.runtimeMigration ? {runtimeMigration: session.runtimeMigration} : {}),
     outputLanguage: session.outputLanguage, codeAwareMode: session.codeAwareMode,
     codebaseIds: session.codebaseIds, knowledgeSourceIds: session.knowledgeSourceIds,
     ...(session.sourceDepth ? {sourceDepth: session.sourceDepth} : {}),
@@ -421,7 +427,6 @@ async function startConversation(req: express.Request, res: express.Response): P
       providerPin = resolveProviderRuntimeSnapshot(
         providerService,
         effectiveProviderId,
-        undefined,
         providerScope,
       );
     } catch (error) {
@@ -437,16 +442,24 @@ async function startConversation(req: express.Request, res: express.Response): P
       }, [ProviderRequestError, ProviderStoreUnreadableError]);
       return;
     }
+    let runtimeMigration: RuntimeMigrationContinuityNote | undefined;
     if (
       previous?.providerSnapshotHash &&
       previous.providerSnapshotHash !== providerPin.snapshotHash
     ) {
-      res.status(409).json({
-        success: false,
-        code: 'CONVERSATION_PROVIDER_SNAPSHOT_CHANGED',
-        error: 'Start a new conversation after changing the AI provider configuration',
-      });
-      return;
+      const continuity = reconcileRecordedProviderPin(providerService, {
+        providerId: previous.providerId ?? null, runtimeKind: previous.runtimeKind,
+        snapshotHash: previous.providerSnapshotHash, analysisContextFingerprint: previous.analysisContextFingerprint,
+      }, providerPin, {providerScope, currentAnalysisContextFingerprint: analysisContextFingerprint});
+      if (continuity.status !== 'migrated') {
+        res.status(409).json({
+          success: false,
+          code: 'CONVERSATION_PROVIDER_SNAPSHOT_CHANGED',
+          error: 'Start a new conversation after changing the AI provider configuration',
+        });
+        return;
+      }
+      runtimeMigration = continuity.note;
     }
     const turnInput = {
       query,
@@ -457,6 +470,7 @@ async function startConversation(req: express.Request, res: express.Response): P
       providerFollowsActive,
       runtimeKind: providerPin.snapshot.runtimeKind,
       providerSnapshotHash: providerPin.snapshotHash,
+      ...(runtimeMigration ? {runtimeMigration} : {}),
       runtimeOptions,
       analysisContextFingerprint,
       requestId: requestContext.requestId,
@@ -528,7 +542,7 @@ async function readAuthorizedConversationMetadata(req: express.Request, res: exp
   let pin: ReturnType<typeof resolveProviderRuntimeSnapshot>;
   let activeProviderId: string | null | undefined;
   try {
-    pin = resolveProviderRuntimeSnapshot(provider, metadata.providerId, metadata.runtimeKind, owner);
+    pin = resolveProviderRuntimeSnapshot(provider, metadata.providerId, owner);
     if (metadata.providerFollowsActive) activeProviderId = provider.getRawEffectiveProvider(owner)?.id ?? null;
   } catch (error) {
     // A pin that depends on an unreadable providers.json cannot be checked. A
@@ -538,20 +552,28 @@ async function readAuthorizedConversationMetadata(req: express.Request, res: exp
     if (sendProviderStoreUnreadableIfPresent(res, error)) return undefined;
     throw error;
   }
-  if (pin.snapshotHash !== metadata.providerSnapshotHash || pin.snapshot.runtimeKind !== metadata.runtimeKind ||
-    (metadata.providerFollowsActive && activeProviderId !== metadata.providerId)) {
+  const continuity = metadata.providerFollowsActive && activeProviderId !== metadata.providerId
+    ? {status: 'changed' as const}
+    : reconcileRecordedProviderPin(provider, {providerId: metadata.providerId, runtimeKind: metadata.runtimeKind,
+      snapshotHash: metadata.providerSnapshotHash, analysisContextFingerprint: metadata.analysisContextFingerprint},
+    pin, {providerScope: owner, currentAnalysisContextFingerprint: metadata.analysisContextFingerprint});
+  if (continuity.status === 'changed') {
     if (mutation && live) conversationSessionService.discardPendingContext(live);
     res.status(409).json({success: false, code: 'CONVERSATION_PROVIDER_SNAPSHOT_CHANGED',
       error: 'Start a new conversation after changing the AI provider configuration'});
     return undefined;
   }
-  return {metadata, live, stored, owner};
+  const currentPin = continuity.status === 'migrated'
+    ? {runtimeKind: pin.snapshot.runtimeKind, providerSnapshotHash: pin.snapshotHash, runtimeMigration: continuity.note}
+    : undefined;
+  if (live && currentPin) conversationSessionService.rebindProviderPin(live, currentPin);
+  return {metadata, live, stored, owner, currentPin};
 }
 
 async function readAuthorizedConversation(req: express.Request, res: express.Response): Promise<ConversationSession | undefined> {
   const authorized = await readAuthorizedConversationMetadata(req, res);
   if (!authorized) return undefined;
-  const {live, stored, owner} = authorized;
+  const {live, stored, owner, currentPin} = authorized;
   if (live) return live;
   const sessionId = stored!.sessionId;
   const runtimeOptions: AnalysisOptions = {outputLanguage: stored!.outputLanguage, codeAwareMode: stored!.codeAwareMode,
@@ -559,8 +581,9 @@ async function readAuthorizedConversation(req: express.Request, res: express.Res
     sourceDepth: stored!.sourceDepth, analysisContextFingerprint: stored!.analysisContextFingerprint};
   return conversationSessionService.restoreSession(stored!, getConversationSessionStore().listTurns(stored!), {
     query: '', sessionId, owner, traceContext: stored!.traceContext, providerId: stored!.providerId,
-    providerFollowsActive: stored!.providerFollowsActive, runtimeKind: stored!.runtimeKind,
-    providerSnapshotHash: stored!.providerSnapshotHash, analysisContextFingerprint: stored!.analysisContextFingerprint,
+    providerFollowsActive: stored!.providerFollowsActive,
+    ...(currentPin ?? {runtimeKind: stored!.runtimeKind as AgentRuntimeKind, providerSnapshotHash: stored!.providerSnapshotHash}),
+    analysisContextFingerprint: stored!.analysisContextFingerprint,
     runtimeOptions,
   });
 }

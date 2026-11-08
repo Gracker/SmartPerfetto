@@ -3,7 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import type {ApplicationBuildIdentity} from '../services/applicationUpdate/types';
-import type {AgentRuntimeKind} from '../agentRuntime/runtimeKinds';
+import type {AgentRuntimeKind, RecordedRuntimeKind} from '../agentRuntime/runtimeKinds';
 import type {
   RuntimePerformanceReceiptV1,
   RuntimePerformanceRecorder,
@@ -244,7 +244,7 @@ export interface RunManifestV1 {
   sqlStatementCount: number;
   sqlErrorCount: number;
 
-  runtime: AgentRuntimeKind;
+  runtime: RecordedRuntimeKind;
   providerId: string | null;
   /** Non-secret hash of the provider/runtime configuration pinned to this run. */
   providerSnapshotHash?: string;
@@ -414,7 +414,7 @@ export interface EvalCaseV1 {
 }
 
 export interface EvalPinnedEnvironmentV1 {
-  runtime: AgentRuntimeKind;
+  runtime: RecordedRuntimeKind;
   providerId: string | null;
   model?: string;
   outputLanguage: string;
@@ -786,7 +786,7 @@ export interface EvolutionOverlayProvenanceV1 {
     traceProcessorVersion: string;
     perfettoStdlibFingerprint?: string;
     testedMatrix: Array<{
-      runtime: AgentRuntimeKind;
+      runtime: RecordedRuntimeKind;
       providerId?: string;
       model?: string;
     }>;

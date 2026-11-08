@@ -9,13 +9,14 @@ import { spawnSync } from 'child_process';
 import {
   resolveAgentRuntimeSelection,
   resolveAgentRuntimeSelectionForDiagnostics,
-  type BackendAgentRuntimeKind,
   type RuntimeSelection,
 } from '../../agentRuntime/runtimeSelection';
 import {
   getRuntimeDiagnostics,
 } from '../../agentRuntime/runtimeDiagnostics';
+import { runtimeDeprecationNotices } from '../../agentRuntime/legacyRuntimeFallback';
 import type { RuntimeDiagnosticsPayload } from '../../agentRuntime/runtimeDescriptorTypes';
+import type { RecordedRuntimeKind } from '../../agentRuntime/runtimeKinds';
 import {
   EXPERIMENTAL_OPENCODE_RUNTIME_KIND,
   EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
@@ -43,7 +44,7 @@ export interface RuntimeGuardResult {
 
 export interface RuntimeGuardOptions {
   providerId?: string | null;
-  runtimeOverride?: BackendAgentRuntimeKind;
+  runtimeOverride?: RecordedRuntimeKind;
   aiFeature?: AiCapabilityFeature;
 }
 
@@ -85,7 +86,14 @@ function buildSqliteNativeCheck(): DoctorCheck {
 }
 
 const PI_SETUP_HINT =
-  'Configure an active Pi provider (GLM, DeepSeek, Kimi, Kimi Code, MiniMax or custom) or set SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON.';
+  'Configure an active provider (any template or custom), set the Anthropic/OpenAI/Bedrock/Vertex env your endpoint uses, ' +
+  'or set SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON.';
+
+function piSetupHint(diagnostics: RuntimeDiagnosticsPayload): string {
+  return typeof diagnostics.modelUnavailableReason === 'string' && typeof diagnostics.configHint === 'string'
+    ? diagnostics.configHint
+    : PI_SETUP_HINT;
+}
 
 function runtimeNotReadyError(problem: string, remedy: string): Error {
   return new Error([
@@ -117,7 +125,7 @@ export function assertAnalysisRuntimeReady(options: RuntimeGuardOptions = {}): R
     selection.kind === PI_AGENT_CORE_RUNTIME_KIND
   ) {
     if (diagnostics.configured !== true) {
-      throw runtimeNotReadyError('Pi Agent Core runtime is selected but no Pi model is configured.', PI_SETUP_HINT);
+      throw runtimeNotReadyError('Pi Agent Core runtime is selected but no Pi model is configured.', piSetupHint(diagnostics));
     }
     return { selection, diagnostics };
   }
@@ -247,13 +255,14 @@ export function collectDoctorReport(cliHome: string): DoctorReport {
           ? 'Qoder SDK has no explicit PAT or CLI path; local qodercli login fallback will be used if available'
         : selection.kind === PI_AGENT_CORE_RUNTIME_KIND ||
             selection.kind === EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND
-          ? PI_SETUP_HINT
+          ? piSetupHint(runtimeDiagnostics)
           : selection.kind === EXPERIMENTAL_OPENCODE_RUNTIME_KIND ||
             selection.kind === OPENCODE_RUNTIME_KIND
             ? 'OpenCode runtime needs @opencode-ai/sdk and opencode-ai available, plus OpenAI-compatible model configuration'
             : 'OpenAI runtime needs OPENAI_API_KEY or a localhost/OpenAI-compatible provider'
     : 'AI is disabled; runtime credentials are not required for deterministic CLI flows';
 
+  const deprecationNotices = runtimeDeprecationNotices();
   const checks: DoctorCheck[] = [
     {
       name: 'node',
@@ -291,6 +300,14 @@ export function collectDoctorReport(cliHome: string): DoctorReport {
         ...(providerStoreError ? {code: providerStoreError.code} : {}),
       },
     },
+    ...(deprecationNotices.length > 0
+      ? [{
+          name: 'runtime_deprecation',
+          ok: true,
+          status: 'warn' as const,
+          message: deprecationNotices.join(' '),
+        }]
+      : []),
     ...(aiPolicy.aiEnabled && selection.kind === 'claude-agent-sdk'
       ? [buildClaudeSdkBinaryCheck(runtimeDiagnostics.sdkBinary)]
       : []),

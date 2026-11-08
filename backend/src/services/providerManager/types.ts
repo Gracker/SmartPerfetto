@@ -12,6 +12,13 @@ export interface ProviderModels {
 
 export type { AgentRuntimeKind };
 export type OpenAIProtocol = 'responses' | 'chat_completions';
+/**
+ * Which of a dual-surface or custom provider's endpoints Pi Agent Core calls:
+ * its Anthropic-compatible `claudeBaseUrl` or its OpenAI-compatible
+ * `openaiBaseUrl`. Recorded when a profile that ran on a retired runtime is
+ * migrated, so Pi keeps calling the endpoint that runtime called.
+ */
+export type ProviderApiSurface = 'claude' | 'openai';
 
 export interface ProviderConnection {
   /**
@@ -41,13 +48,14 @@ export interface ProviderConnection {
   /** Optional runtime-level system prompt for Qoder. */
   qoderSystemPrompt?: string;
   /**
-   * Backend agent runtime used by this provider.
-   *
-   * When omitted, SmartPerfetto infers the runtime from `ProviderConfig.type`:
-   * Anthropic/Bedrock/Vertex/DeepSeek use the Claude Agent SDK; OpenAI/Ollama
-   * use the OpenAI Agents SDK. Custom providers should set this explicitly.
+   * Backend agent runtime recorded for this provider. Pi Agent Core is the
+   * only selectable runtime: a retired value read from storage or sent by a
+   * client maps to it (see `retiredRuntime.ts`), keeping the endpoint, model
+   * and credential form the retired runtime used.
    */
   agentRuntime?: AgentRuntimeKind;
+  /** The endpoint Pi calls for a dual-surface or custom provider; see ProviderApiSurface. */
+  apiSurface?: ProviderApiSurface;
   /**
    * OpenAI Agents SDK transport surface.
    * - responses: OpenAI Responses API. Best for official OpenAI models.
@@ -117,6 +125,9 @@ export interface ModelOption {
   id: string;
   name: string;
   tier: 'primary' | 'light';
+  /** Declared limits, used for a Pi model the installed pi-ai catalog does not have. */
+  contextWindow?: number;
+  maxTokens?: number;
 }
 
 export interface ProviderTemplate {

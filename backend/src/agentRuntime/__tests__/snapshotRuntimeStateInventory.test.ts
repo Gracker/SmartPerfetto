@@ -12,7 +12,7 @@ import {
   projectSessionFieldsForDurableSnapshot,
   type SessionStateSnapshot,
 } from '../../agentv3/sessionStateSnapshot';
-import type { AgentRuntimeKind } from '../../services/providerManager/types';
+import type { RecordedRuntimeKind } from '../runtimeKinds';
 
 type IsExact<A, B> =
   (<T>() => T extends A ? 1 : 2) extends
@@ -21,8 +21,9 @@ type IsExact<A, B> =
       (<T>() => T extends A ? 1 : 2) ? true : false)
     : false;
 
-const snapshotRuntimeKindMatchesProviderManager:
-  IsExact<NonNullable<SessionStateSnapshot['agentRuntimeKind']>, AgentRuntimeKind> = true;
+// A persisted snapshot keeps any label SmartPerfetto ever recorded (retired kinds included) as provenance.
+const snapshotRuntimeKindMatchesRecordedKinds:
+  IsExact<NonNullable<SessionStateSnapshot['agentRuntimeKind']>, RecordedRuntimeKind> = true;
 
 describe('SessionStateSnapshot runtime state inventory', () => {
   it('removes model-authored intermediate state from private durable fields', () => {
@@ -50,7 +51,7 @@ describe('SessionStateSnapshot runtime state inventory', () => {
   });
 
   it('keeps snapshot runtime kind aligned with Provider Manager', () => {
-    expect(snapshotRuntimeKindMatchesProviderManager).toBe(true);
+    expect(snapshotRuntimeKindMatchesRecordedKinds).toBe(true);
   });
 
   it('normalizes legacy v1 runtime mirrors into canonical engineState', () => {

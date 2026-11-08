@@ -46,7 +46,7 @@ const traceId = 'scene-http-trace';
 const prefix = '/api/agent/v1';
 const envKeys = ['SMARTPERFETTO_API_KEY', 'SMARTPERFETTO_SSO_TRUSTED_HEADERS', 'SMARTPERFETTO_ENTERPRISE',
   'SMARTPERFETTO_ENTERPRISE_DB_PATH', 'SMARTPERFETTO_DATA_DIR', 'UPLOAD_DIR',
-  'SMARTPERFETTO_AGENT_RUNTIME', 'SMARTPERFETTO_AI_ENABLED', 'SMARTPERFETTO_CODE_AWARE',
+  'SMARTPERFETTO_LEGACY_AGENT_RUNTIME', 'SMARTPERFETTO_AI_ENABLED', 'SMARTPERFETTO_CODE_AWARE',
   'SMARTPERFETTO_BACKEND_DATA_DIR', 'SMARTPERFETTO_BACKEND_LOG_DIR', 'PROVIDER_DATA_DIR_OVERRIDE'];
 const originalEnv = new Map(envKeys.map(key => [key, process.env[key]]));
 let dir: string;
@@ -110,7 +110,7 @@ beforeEach(async () => {
   process.env.SMARTPERFETTO_BACKEND_LOG_DIR = path.join(dir, 'logs');
   process.env.UPLOAD_DIR = path.join(dir, 'uploads');
   process.env.PROVIDER_DATA_DIR_OVERRIDE = path.join(dir, 'providers');
-  process.env.SMARTPERFETTO_AGENT_RUNTIME = 'claude-agent-sdk';
+  process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'claude-agent-sdk';
   process.env.SMARTPERFETTO_AI_ENABLED = 'true';
   delete process.env.SMARTPERFETTO_API_KEY;
   resetProviderService();

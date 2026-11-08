@@ -305,7 +305,7 @@ describe('OrchestratorReplayExecutor', () => {
       }),
       resolveCapabilities: () => ({
         schemaVersion: 1,
-        runtime: 'openai-agents-sdk',
+        runtime: 'pi-agent-core',
         tokens: 'soft_response_observed',
         toolCalls: 'hard_realtime',
         wallclock: 'hard_realtime',
@@ -329,7 +329,7 @@ describe('OrchestratorReplayExecutor', () => {
       }),
     });
     const pinned = {
-      runtime: 'openai-agents-sdk' as const,
+      runtime: 'pi-agent-core' as const,
       providerId,
       model: 'gpt-eval',
       outputLanguage: 'zh-CN',

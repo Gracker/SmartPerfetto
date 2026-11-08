@@ -5,6 +5,8 @@
 import type {ProviderScope} from '../providerManager';
 import {getProviderService} from '../providerManager';
 import {resolveProviderRuntimeSnapshot} from '../providerManager/providerSnapshot';
+import {reconcileRecordedProviderPin} from '../providerManager/providerPinContinuity';
+import {isRecordedRuntimeKind} from '../../agentRuntime/runtimeKinds';
 import type {
   ExternalIssueReviewUnavailableReason,
 } from '../../types/externalIssueReporting';
@@ -26,6 +28,12 @@ export type ExternalIssueProviderPinResolution =
       reason: ExternalIssueReviewUnavailableReason;
     };
 
+/**
+ * The provider pin a triage review of `manifest`'s run uses: the run's own
+ * provider snapshot when it is unchanged, or, for a run recorded under a
+ * retired runtime, the current Pi pin when it still calls the same endpoint
+ * and model (the manifest keeps its original label as provenance).
+ */
 export function resolveExternalIssueProviderPin(
   manifest: RunManifestV1,
   providerScope: ProviderScope,
@@ -33,28 +41,33 @@ export function resolveExternalIssueProviderPin(
   if (!manifest.providerSnapshotHash) {
     return {ok: false, reason: 'legacy_provider_pin_missing'};
   }
-  if (
-    manifest.runtime !== 'openai-agents-sdk' &&
-    manifest.runtime !== 'claude-agent-sdk' &&
-    manifest.runtime !== 'pi-agent-core' &&
-    manifest.runtime !== 'opencode'
-  ) {
+  if (!isRecordedRuntimeKind(manifest.runtime) || manifest.runtime === 'qoder-agent-sdk') {
     return {ok: false, reason: 'runtime_not_supported'};
   }
   try {
+    const providerService = getProviderService();
     const current = resolveProviderRuntimeSnapshot(
-      getProviderService(),
+      providerService,
       manifest.providerId,
-      manifest.runtime,
       providerScope,
     );
-    if (current.snapshotHash !== manifest.providerSnapshotHash) {
+    const continuity = reconcileRecordedProviderPin(providerService, {
+      providerId: manifest.providerId,
+      runtimeKind: manifest.runtime,
+      snapshotHash: manifest.providerSnapshotHash,
+    }, current, {providerScope});
+    if (continuity.status === 'changed') {
       return {ok: false, reason: 'provider_snapshot_changed'};
+    }
+    const runtime = current.snapshot.runtimeKind;
+    if (runtime !== 'openai-agents-sdk' && runtime !== 'claude-agent-sdk'
+      && runtime !== 'pi-agent-core' && runtime !== 'opencode') {
+      return {ok: false, reason: 'runtime_not_supported'};
     }
     return {
       ok: true,
       providerId: manifest.providerId,
-      runtime: manifest.runtime,
+      runtime,
       ...(current.snapshot.resolvedModels.light
         ? {model: current.snapshot.resolvedModels.light}
         : {}),

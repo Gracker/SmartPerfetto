@@ -237,7 +237,7 @@ const originalEnterprise = process.env.SMARTPERFETTO_ENTERPRISE;
 const originalEnterpriseDbPath = process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH;
 const originalEnterpriseDataDir = process.env.SMARTPERFETTO_DATA_DIR;
 const originalUploadDir = process.env.UPLOAD_DIR;
-const originalAgentRuntime = process.env.SMARTPERFETTO_AGENT_RUNTIME;
+const originalAgentRuntime = process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME;
 const originalAiEnabled = process.env.SMARTPERFETTO_AI_ENABLED;
 const originalCodeAware = process.env.SMARTPERFETTO_CODE_AWARE;
 const originalOutputLanguage = process.env.SMARTPERFETTO_OUTPUT_LANGUAGE;
@@ -281,7 +281,7 @@ async function registeredTraceFixture(
   jest.spyOn(service, 'query').mockResolvedValue({columns: [], rows: [], durationMs: 1});
   if (executeRuntime) {
     // Hold only the provider execution boundary: request state, leases and ALS remain real.
-    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'claude-agent-sdk';
+    process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'claude-agent-sdk';
     jest.spyOn(ClaudeRuntime.prototype, 'analyze').mockImplementation(async () => await executeRuntime() as AnalysisResult);
   }
   return service;
@@ -452,7 +452,7 @@ afterEach(async () => {
     restoreEnvValue(ENTERPRISE_DB_PATH_ENV, originalEnterpriseDbPath);
     restoreEnvValue(ENTERPRISE_DATA_DIR_ENV, originalEnterpriseDataDir);
     restoreEnvValue('UPLOAD_DIR', originalUploadDir);
-    restoreEnvValue('SMARTPERFETTO_AGENT_RUNTIME', originalAgentRuntime);
+    restoreEnvValue('SMARTPERFETTO_LEGACY_AGENT_RUNTIME', originalAgentRuntime);
     restoreEnvValue('SMARTPERFETTO_AI_ENABLED', originalAiEnabled);
     restoreEnvValue('SMARTPERFETTO_CODE_AWARE', originalCodeAware);
     restoreEnvValue('SMARTPERFETTO_OUTPUT_LANGUAGE', originalOutputLanguage);
@@ -467,9 +467,9 @@ afterEach(async () => {
 });
 
 describe('agent route RBAC', () => {
-  // These cases drive the Claude runtime (ClaudeRuntime spies); the env default is Pi without Claude credentials.
+  // These cases drive the Claude engine (ClaudeRuntime spies), reachable only through the hidden legacy opt-in.
   beforeEach(() => {
-    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'claude-agent-sdk';
+    process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'claude-agent-sdk';
   });
 
   it('runs a no-Trace conversation through the lightweight contract and streams the answer', async () => {
@@ -835,7 +835,7 @@ describe('agent route RBAC', () => {
     }
   });
 
-  it('rejects a same-provider runtime snapshot change between conversation turns', async () => {
+  it('rejects a same-provider configuration snapshot change between conversation turns', async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'conversation-provider-snapshot-'));
     try {
       process.env.PROVIDER_DATA_DIR_OVERRIDE = tmpDir;
@@ -882,8 +882,9 @@ describe('agent route RBAC', () => {
         `/api/agent/v1/conversation/${started.body.sessionId}/stream?runId=${started.body.runId}`,
       ));
 
+      // The runtime choice no longer changes the pin (Pi is the only runtime); an endpoint change does.
       providerService.update(provider.id, {
-        connection: {agentRuntime: 'openai-agents-sdk'},
+        connection: {claudeBaseUrl: 'https://other-gateway.example/anthropic', apiKey: 'test-runtime-provider'},
       }, providerScope);
       const changed = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
         .send({sessionId: started.body.sessionId, query: '第二轮'});
@@ -2003,7 +2004,7 @@ describe('agent route RBAC', () => {
       process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise.sqlite');
       process.env[ENTERPRISE_DATA_DIR_ENV] = path.join(tmpDir, 'data');
       process.env.UPLOAD_DIR = path.join(tmpDir, 'uploads');
-      process.env.SMARTPERFETTO_AGENT_RUNTIME = 'claude-agent-sdk';
+      process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'claude-agent-sdk';
 
       await writeTraceMetadata({
         id: traceId,
@@ -2200,7 +2201,7 @@ describe('agent route RBAC', () => {
         expect.stringContaining('上方/基线 Trace'),
       ]);
     } finally {
-      delete process.env.SMARTPERFETTO_AGENT_RUNTIME;
+      delete process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME;
       setTraceProcessorLeaseStoreForTests(null);
       caseRoots.add(tmpDir);
     }
@@ -2219,7 +2220,7 @@ describe('agent route RBAC', () => {
       process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise.sqlite');
       process.env[ENTERPRISE_DATA_DIR_ENV] = path.join(tmpDir, 'data');
       process.env.UPLOAD_DIR = path.join(tmpDir, 'uploads');
-      process.env.SMARTPERFETTO_AGENT_RUNTIME = 'openai-agents-sdk';
+      process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'openai-agents-sdk';
 
       await writeTraceMetadata({
         id: traceId,
@@ -2339,7 +2340,7 @@ describe('agent route RBAC', () => {
       }, { traceId }).length).toBeGreaterThanOrEqual(1);
     } finally {
       leaseStore?.close();
-      delete process.env.SMARTPERFETTO_AGENT_RUNTIME;
+      delete process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME;
       setTraceProcessorLeaseStoreForTests(null);
       caseRoots.add(tmpDir);
     }
@@ -2921,8 +2922,8 @@ describe('agent route RBAC', () => {
 
   it.each([
     ['the same default runtime', 'claude-agent-sdk'],
-    // A session without a provider profile stays on the runtime it was pinned to.
-    ['a changed default runtime', 'openai-agents-sdk'],
+    // The recorded pin re-resolves to the effective runtime (Pi once the opt-in is gone); history stays.
+    ['the move to Pi after the restart', undefined],
   ])('continues a resumed session in place so the follow-up keeps its history, with %s', async (_label, runtimeAfterRestart) => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-agent-resume-continuity-'));
     const calls: Array<{sessionId: string; options: AnalysisOptions}> = [];
@@ -2947,11 +2948,19 @@ describe('agent route RBAC', () => {
       process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise.sqlite');
       process.env[ENTERPRISE_DATA_DIR_ENV] = path.join(tmpDir, 'data');
       process.env.UPLOAD_DIR = path.join(tmpDir, 'uploads');
-      process.env.SMARTPERFETTO_AGENT_RUNTIME = 'claude-agent-sdk';
+      process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'claude-agent-sdk';
       SessionPersistenceService.resetForTests();
       await writeTraceMetadata({id: traceId, filename: `${traceId}.trace`, size: 11,
         uploadedAt: new Date().toISOString(), status: 'ready', path: tracePath, ...scope});
       setTraceProcessorServiceForTests(await registeredTraceFixture([{traceId, tracePath}]));
+      const {PiAgentCoreRuntime} = await import('../../agentRuntime/engines/pi/piAgentCoreRuntime');
+      jest.spyOn(PiAgentCoreRuntime.prototype, 'analyze').mockImplementation(async function (query, sessionId, runTraceId, options = {}) {
+        calls.push({sessionId, options});
+        sessionContextManager.getOrCreate(sessionId, runTraceId).addTurn(query, {primaryGoal: 'startup',
+          aspects: [], expectedOutputType: 'diagnosis', complexity: 'simple'});
+        return {sessionId, success: true, findings: [], hypotheses: [], conclusion: 'pi answer', confidence: 0.8,
+          rounds: 1, totalDurationMs: 1};
+      });
       jest.spyOn(ClaudeRuntime.prototype, 'analyze').mockImplementation(async function (query, sessionId, runTraceId, options = {}) {
         calls.push({sessionId, options});
         // As the runtime does: the turn lands in the session context that persistence saves.
@@ -2972,7 +2981,8 @@ describe('agent route RBAC', () => {
       // A backend restart loses every in-memory session, possibly under another default runtime.
       agentRoutesCancellationTestSeam.deleteSession(sessionId);
       sessionContextManager.remove(sessionId);
-      process.env.SMARTPERFETTO_AGENT_RUNTIME = runtimeAfterRestart;
+      if (runtimeAfterRestart) process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = runtimeAfterRestart;
+      else delete process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME;
 
       const resumed = await analystHeaders(request(app).post('/api/agent/v1/resume')).send({sessionId, traceId});
       expect(resumed.status).toBe(200);
@@ -2989,7 +2999,7 @@ describe('agent route RBAC', () => {
         .toContain('why is startup slow');
       await waitForCompleted(followUp.body.runId);
     } finally {
-      delete process.env.SMARTPERFETTO_AGENT_RUNTIME;
+      delete process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME;
       caseRoots.add(tmpDir);
     }
   });

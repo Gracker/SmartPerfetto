@@ -11,13 +11,14 @@ import {
   type ProviderConfig,
   type ProviderScope,
 } from '../services/providerManager';
-import { isProductionAgentRuntimeKind } from './runtimeKinds';
-import {
-  type ExperimentalAgentRuntimeKind,
-  resolveExperimentalAgentRuntimeSelection,
-} from './experimentalRuntime';
+import { PI_AGENT_CORE_RUNTIME_KIND, type ExperimentalAgentRuntimeKind, type RecordedRuntimeKind } from './runtimeKinds';
 import { createRuntimeFactoryEnv } from './runtimeFactoryEnv';
-import { defaultEnvRuntimeKind } from './defaultRuntimeKind';
+import {
+  agentRuntimeFromEnv,
+  effectiveAgentRuntimeKind,
+  legacyAgentRuntimeFallback,
+  warnRetiredExperimentalRuntimeEnv,
+} from './legacyRuntimeFallback';
 import { createRuntimeRegistryForSelection } from './runtimeRegistry';
 import {
   assertAiFeatureEnabled,
@@ -43,18 +44,15 @@ export interface CreateAgentOrchestratorInput {
    * null = pin to env/default fallback and ignore Provider Manager.
    */
   providerId?: string | null;
-  runtimeOverride?: BackendAgentRuntimeKind;
+  /** A recorded runtime pin (session snapshot, CLI session); it re-resolves to the effective runtime. */
+  runtimeOverride?: RecordedRuntimeKind;
   providerScope?: ProviderScope;
   aiFeature?: AiCapabilityFeature;
 }
 
-function parseRuntimeEnv(value: string | undefined): BackendAgentRuntimeKind | undefined {
-  return isProductionAgentRuntimeKind(value) ? value : undefined;
-}
-
 export function resolveAgentRuntimeSelection(
   providerId?: string | null,
-  runtimeOverride?: BackendAgentRuntimeKind,
+  runtimeOverride?: RecordedRuntimeKind,
   providerScope?: ProviderScope,
 ): RuntimeSelection {
   const providerSvc = getProviderService();
@@ -91,11 +89,14 @@ export function resolveAgentRuntimeSelectionForDiagnostics(): {
 /**
  * The runtime selection for a provider record already read from the store
  * (undefined: no provider applies), so a caller that also needs the record's
- * env reads the store once.
+ * env reads the store once. The source keeps its precedence (provider record,
+ * recorded pin, env, default), and every source resolves to the one effective
+ * runtime: Pi Agent Core, or the hidden legacy opt-in when it is set. A
+ * recorded retired label keeps its provenance; its execution re-resolves here.
  */
 export function selectRuntimeForProvider(
   provider: ProviderConfig | undefined,
-  runtimeOverride?: BackendAgentRuntimeKind,
+  runtimeOverride?: RecordedRuntimeKind,
 ): RuntimeSelection {
   const providerSvc = getProviderService();
   if (provider) {
@@ -109,26 +110,16 @@ export function selectRuntimeForProvider(
   }
 
   if (runtimeOverride) {
-    return { kind: runtimeOverride, source: 'snapshot' };
+    return { kind: effectiveAgentRuntimeKind(), source: 'snapshot' };
   }
 
-  const explicitRuntime = parseRuntimeEnv(process.env.SMARTPERFETTO_AGENT_RUNTIME);
-  if (explicitRuntime) {
-    return { kind: explicitRuntime, source: 'env' };
+  const envRuntime = agentRuntimeFromEnv();
+  if (envRuntime) {
+    return { kind: envRuntime, source: 'env' };
   }
-  if (process.env.SMARTPERFETTO_AGENT_RUNTIME) {
-    throw new Error(
-      `Unsupported SMARTPERFETTO_AGENT_RUNTIME="${process.env.SMARTPERFETTO_AGENT_RUNTIME}". ` +
-      'Use "claude-agent-sdk", "openai-agents-sdk", "pi-agent-core", "opencode", or "qoder-agent-sdk".'
-    );
-  }
-
-  const experimentalRuntime = resolveExperimentalAgentRuntimeSelection();
-  if (experimentalRuntime) {
-    return experimentalRuntime;
-  }
-
-  return { kind: defaultEnvRuntimeKind(), source: 'default' };
+  warnRetiredExperimentalRuntimeEnv();
+  const legacyRuntime = legacyAgentRuntimeFallback();
+  return legacyRuntime ? { kind: legacyRuntime, source: 'env' } : { kind: PI_AGENT_CORE_RUNTIME_KIND, source: 'default' };
 }
 
 export function createAgentOrchestrator(input: CreateAgentOrchestratorInput): IOrchestrator {

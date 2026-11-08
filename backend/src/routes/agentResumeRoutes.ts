@@ -11,6 +11,9 @@ import { createSessionLogger } from '../services/sessionLogger';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
 import { getProviderService, ProviderStoreUnreadableError } from '../services/providerManager';
 import { resolveProviderRuntimeSnapshot } from '../services/providerManager/providerSnapshot';
+import { reconcileRecordedProviderPin } from '../services/providerManager/providerPinContinuity';
+import { buildAnalysisContextAuthorizationFingerprint } from '../services/resolvedAnalysisContext';
+import { knowledgeScopeFromRequestContext } from '../services/scopedKnowledgeStore';
 import { requireRequestContext } from '../middleware/auth';
 import { sendRouteError } from '../middleware/routeFailure';
 import {
@@ -180,22 +183,29 @@ export function registerAgentResumeRoutes(
           hint: 'This persisted session was created with a Provider Manager profile that no longer exists. Recreate the provider or start a new chat.',
         });
       }
-      const {snapshotHash: restoredProviderSnapshotHash, snapshot: {runtimeKind: restoredRuntimeKind}} =
-        resolveProviderRuntimeSnapshot(
-          providerSvc,
-          restoredProviderId,
-          restoredProviderId ? undefined : snapshotRuntimeKind,
-          providerScope,
-        );
-      const providerSnapshotChanged = Boolean(
+      const restoredPin = resolveProviderRuntimeSnapshot(providerSvc, restoredProviderId, providerScope);
+      const {snapshotHash: restoredProviderSnapshotHash, snapshot: {runtimeKind: restoredRuntimeKind}} = restoredPin;
+      const providerSnapshotHashChanged = Boolean(
         snapshotProviderHash &&
         snapshotProviderHash !== restoredProviderSnapshotHash,
       );
+      // A pin recorded under a retired runtime that still calls the same
+      // endpoint and model is rebound with a continuity note, not a break.
+      const continuity = providerSnapshotHashChanged
+        ? reconcileRecordedProviderPin(providerSvc, {providerId: restoredProviderId, runtimeKind: snapshotRuntimeKind,
+          snapshotHash: snapshotProviderHash as string, analysisContextFingerprint: snapshot?.analysisContextFingerprint},
+        restoredPin,
+        {providerScope, currentAnalysisContextFingerprint: snapshot
+          ? currentAuthorizationFingerprint(snapshot, knowledgeScopeFromRequestContext(requestContext))
+          : undefined})
+        : undefined;
+      const providerSnapshotChanged = providerSnapshotHashChanged && continuity?.status !== 'migrated';
       // A provider change is recorded here, since the resumed session already
       // carries the new hash the next analysis sees.
       const continuityBreaks = continuityBreaksAfterRestore(
         snapshot?.continuityBreaks,
-        providerSnapshotChanged ? snapshotProviderHash : undefined,
+        providerSnapshotHashChanged ? snapshotProviderHash : undefined,
+        continuity?.status === 'migrated' ? continuity.note.fromRuntimeKind : undefined,
       );
       const orchestrator = createAgentOrchestrator({
         traceProcessorService: getTraceProcessorService(),
@@ -399,4 +409,22 @@ export function registerAgentResumeRoutes(
       }, [ProviderStoreUnreadableError]);
     }
   });
+}
+
+/**
+ * The authorization the recorded selection has now: a retired-runtime pin is
+ * rebound only when this equals the fingerprint the session ran under.
+ * Undefined (so the pin reads as changed) when it cannot be computed.
+ */
+function currentAuthorizationFingerprint(
+  selection: Parameters<typeof buildAnalysisContextAuthorizationFingerprint>[0],
+  scope: ReturnType<typeof knowledgeScopeFromRequestContext>,
+): string | undefined {
+  try {
+    return buildAnalysisContextAuthorizationFingerprint(
+      {codeAwareMode: selection.codeAwareMode, codebaseIds: selection.codebaseIds, knowledgeSourceIds: selection.knowledgeSourceIds},
+      scope);
+  } catch {
+    return undefined;
+  }
 }

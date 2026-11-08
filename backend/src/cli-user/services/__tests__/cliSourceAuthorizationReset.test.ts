@@ -87,7 +87,7 @@ let codebaseId: string;
 let observed: ObservedModelInput[];
 let orchestrators: Array<EventEmitter & {cleanupSession: jest.Mock; abortSession: jest.Mock}>;
 const savedEnv = new Map<string, string | undefined>();
-const ENV_KEYS = [ENTERPRISE_DB_PATH_ENV, 'PROVIDER_DATA_DIR_OVERRIDE', 'SMARTPERFETTO_AGENT_RUNTIME',
+const ENV_KEYS = [ENTERPRISE_DB_PATH_ENV, 'PROVIDER_DATA_DIR_OVERRIDE', 'SMARTPERFETTO_LEGACY_AGENT_RUNTIME',
   'SMARTPERFETTO_OUTPUT_LANGUAGE', 'SMARTPERFETTO_CODE_AWARE'];
 
 function renderer(): Renderer {
@@ -117,7 +117,7 @@ beforeEach(() => {
   tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cli-source-gate-')));
   process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'sessions.sqlite');
   process.env.PROVIDER_DATA_DIR_OVERRIDE = path.join(tmpDir, 'providers');
-  process.env.SMARTPERFETTO_AGENT_RUNTIME = 'openai-agents-sdk';
+  process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'openai-agents-sdk';
   process.env.SMARTPERFETTO_OUTPUT_LANGUAGE = 'en';
   delete process.env.SMARTPERFETTO_CODE_AWARE;
   SessionPersistenceService.resetForTests();

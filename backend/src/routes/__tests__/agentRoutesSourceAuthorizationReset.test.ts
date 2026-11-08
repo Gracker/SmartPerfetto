@@ -76,7 +76,7 @@ const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'analys
 const traceId = 'trace-source-authorization-reset';
 const SOURCE_TOOLS = ['find_codebase_files', 'list_codebases', 'locate_trace_anchor', 'read_codebase_file', 'search_codebase'];
 const ENV_KEYS = ['SMARTPERFETTO_API_KEY', 'SMARTPERFETTO_SSO_TRUSTED_HEADERS', ENTERPRISE_FEATURE_FLAG_ENV,
-  ENTERPRISE_DB_PATH_ENV, ENTERPRISE_DATA_DIR_ENV, 'UPLOAD_DIR', 'SMARTPERFETTO_AGENT_RUNTIME',
+  ENTERPRISE_DB_PATH_ENV, ENTERPRISE_DATA_DIR_ENV, 'UPLOAD_DIR', 'SMARTPERFETTO_LEGACY_AGENT_RUNTIME',
   'SMARTPERFETTO_CODE_AWARE', 'SMARTPERFETTO_OUTPUT_LANGUAGE', 'PROVIDER_DATA_DIR_OVERRIDE',
   'SMARTPERFETTO_CODEBASE_ROOTS', 'SMARTPERFETTO_KNOWLEDGE_ROOTS', 'CLAUDE_FULL_PER_TURN_MS',
   'SMARTPERFETTO_BACKEND_LOG_DIR'];
@@ -246,7 +246,7 @@ beforeEach(async () => {
   process.env[ENTERPRISE_DATA_DIR_ENV] = path.join(tmpDir, 'data');
   process.env.UPLOAD_DIR = path.join(tmpDir, 'uploads');
   process.env.PROVIDER_DATA_DIR_OVERRIDE = path.join(tmpDir, 'providers');
-  process.env.SMARTPERFETTO_AGENT_RUNTIME = 'claude-agent-sdk';
+  process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'claude-agent-sdk';
   process.env.SMARTPERFETTO_OUTPUT_LANGUAGE = 'en';
   process.env.SMARTPERFETTO_CODEBASE_ROOTS = roots;
   process.env.SMARTPERFETTO_BACKEND_LOG_DIR = path.join(tmpDir, 'logs');

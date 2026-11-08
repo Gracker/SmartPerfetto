@@ -816,7 +816,7 @@ describe('ConversationSessionService', () => {
       createdAt: 1, lastActivityAt: 2, lastRun: {runId: 'old-run', turnIndex: 0, query: 'first query', status: 'completed', startedAt: 1},
       lastOutcome: {kind: 'answered', message: 'Prior incomplete answer'}};
     const input = {query: '', sessionId: descriptor.sessionId, owner, traceContext: descriptor.traceContext,
-      providerId: descriptor.providerId, runtimeKind: descriptor.runtimeKind, providerSnapshotHash: descriptor.providerSnapshotHash,
+      providerId: descriptor.providerId, runtimeKind: 'openai-agents-sdk' as const, providerSnapshotHash: descriptor.providerSnapshotHash,
       analysisContextFingerprint: fingerprint};
     const turn = toAnalysisHistoryTurn({id: 'old-run', turnIndex: 0, query: 'first query',
       traceId: 'conversation-no-trace:restore-conversation', timestamp: 2,

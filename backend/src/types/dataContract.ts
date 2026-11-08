@@ -23,7 +23,7 @@ import {claimUnitFor} from '../utils/claimUnits';
  */
 
 import { sanitizeQueryReview, type QueryReviewV1 } from './queryReviewContract';
-import type {AgentRuntimeKind} from '../agentRuntime/runtimeKinds';
+import type {RecordedRuntimeKind} from '../agentRuntime/runtimeKinds';
 import type {CapabilityManifestAttributionV1} from './capabilityManifest';
 
 // =============================================================================
@@ -1073,7 +1073,8 @@ export interface ConversationStepEvent {
   timestamp: number;
 }
 
-export type AnalysisReceiptRuntime = AgentRuntimeKind;
+/** The runtime a receipt was produced under; historical receipts keep a retired label as provenance. */
+export type AnalysisReceiptRuntime = RecordedRuntimeKind;
 
 export type AnalysisReceiptGateStatus = 'passed' | 'partial' | 'not_applicable';
 

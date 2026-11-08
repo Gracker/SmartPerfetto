@@ -8,6 +8,7 @@ import path from 'path';
 import { ProviderService } from '../providerService';
 import {
   hashProviderRuntimeSnapshot,
+  legacyProviderRuntimeSnapshot,
   resolveProviderRuntimeSnapshot,
   type ProviderRuntimeSnapshot,
 } from '../providerSnapshot';
@@ -62,10 +63,11 @@ describe('provider runtime snapshot hash', () => {
   };
 
   it('binds only explicit valid analysis effort and preserves the absent env snapshot', () => {
-    const keys = ['SMARTPERFETTO_AGENT_RUNTIME', 'OPENAI_ANALYSIS_REASONING_EFFORT'] as const;
+    const keys = ['SMARTPERFETTO_LEGACY_AGENT_RUNTIME', 'OPENAI_ANALYSIS_REASONING_EFFORT'] as const;
     const original = Object.fromEntries(keys.map(key => [key, process.env[key]]));
     try {
-      process.env.SMARTPERFETTO_AGENT_RUNTIME = 'openai-agents-sdk';
+      // The OpenAI engine (and its effort knob) runs only behind the hidden legacy opt-in.
+      process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'openai-agents-sdk';
       delete process.env.OPENAI_ANALYSIS_REASONING_EFFORT;
       const absent = resolveProviderRuntimeSnapshot(svc, null);
       expect(absent.snapshot.environment).not.toHaveProperty('OPENAI_ANALYSIS_REASONING_EFFORT');
@@ -191,9 +193,9 @@ describe('provider runtime snapshot hash', () => {
     ['AGENT_MAX_RUN_TIMEOUT_MS', 'env'],
     ['OPENAI_MAX_RUN_TIMEOUT_MS', 'env'],
   ] as const)('pins the %s run ceiling in the %s snapshot hash', (key, source) => {
-    const saved = {[key]: process.env[key], SMARTPERFETTO_AGENT_RUNTIME: process.env.SMARTPERFETTO_AGENT_RUNTIME};
+    const saved = {[key]: process.env[key], SMARTPERFETTO_LEGACY_AGENT_RUNTIME: process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME};
     const providerId = source === 'profile' ? svc.create(openAIProvider).id : null;
-    if (source === 'env') process.env.SMARTPERFETTO_AGENT_RUNTIME = 'openai-agents-sdk';
+    process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'openai-agents-sdk';
     try {
       process.env[key] = '3600000';
       const before = resolveProviderRuntimeSnapshot(svc, providerId);
@@ -262,6 +264,8 @@ describe('provider runtime snapshot hash', () => {
   });
 
   it('ignores Pi and OpenCode connection fields that the OpenAI runtime does not consume', () => {
+    process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'openai-agents-sdk';
+    try {
     const provider = svc.create({
       name: 'Custom OpenAI Provider',
       category: 'custom',
@@ -288,9 +292,12 @@ describe('provider runtime snapshot hash', () => {
     expect(after.snapshotHash).toBe(before.snapshotHash);
     expect(after.snapshot.environment.SMARTPERFETTO_OPENCODE_PROJECT_DIR).toBeUndefined();
     expect(after.snapshot.environment.SMARTPERFETTO_PI_AGENT_CORE_MODULE_PATH).toBeUndefined();
+    } finally {
+      delete process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME;
+    }
   });
 
-  it('captures OpenCode runtime snapshots without storing model JSON secrets', () => {
+  it('pins a migrated OpenCode profile as Pi without OpenCode env or secrets', () => {
     const provider = svc.create({
       name: 'OpenCode Provider',
       category: 'custom',
@@ -301,63 +308,18 @@ describe('provider runtime snapshot hash', () => {
         openaiBaseUrl: 'https://api.opencode.example/v1',
         openaiApiKey: 'sk-opencode-openai-secret',
         openCodeSdkModulePath: '/opt/smartperfetto/opencode-sdk.mjs',
-        openCodeModelJson: '{"providerID":"smartperfetto","modelID":"opencode-test","apiKey":"sk-opencode-json-secret"}',
         openCodeSystemPrompt: 'secret opencode system prompt',
       },
     });
 
     const before = resolveProviderRuntimeSnapshot(svc, provider.id);
-    svc.update(provider.id, {
-      connection: {
-        openCodeModelJson: '{"providerID":"smartperfetto","modelID":"opencode-test","apiKey":"sk-opencode-json-secret-v2"}',
-      },
-    });
-    const after = resolveProviderRuntimeSnapshot(svc, provider.id);
-
-    expect(before.snapshot.runtimeKind).toBe('opencode');
-    expect(before.snapshot.baseUrl).toBe('https://api.opencode.example/v1');
-    expect(before.snapshot.resolvedModels).toMatchObject({
-      primary: 'opencode-primary',
-      light: 'opencode-light',
-    });
-    expect(before.snapshotHash).not.toBe(after.snapshotHash);
+    expect(before.snapshot.runtimeKind).toBe('pi-agent-core');
     expect(JSON.stringify(before.snapshot)).not.toContain('sk-opencode-openai-secret');
-    expect(JSON.stringify(before.snapshot)).not.toContain('sk-opencode-json-secret');
     expect(JSON.stringify(before.snapshot)).not.toContain('secret opencode system prompt');
-    expect(before.snapshot.environment.SMARTPERFETTO_OPENCODE_SDK_MODULE_PATH)
-      .toBe('/opt/smartperfetto/opencode-sdk.mjs');
-    expect(before.snapshot.environment.SMARTPERFETTO_OPENCODE_MODEL_JSON).toBeUndefined();
-    expect(before.snapshot.environment.SMARTPERFETTO_OPENCODE_SYSTEM_PROMPT).toBeUndefined();
-    expect(before.snapshot.environment.SMARTPERFETTO_OPENCODE_MCP_COMMAND_JSON).toBeUndefined();
-    expect(before.snapshot.environment.OPENAI_API_KEY).toBeUndefined();
-  });
-
-  it('changes when OpenCode module or system prompt changes', () => {
-    const provider = svc.create({
-      name: 'OpenCode Config Provider',
-      category: 'custom',
-      type: 'custom',
-      models: { primary: 'opencode-primary', light: 'opencode-light' },
-      connection: {
-        agentRuntime: 'opencode',
-        openaiBaseUrl: 'https://api.opencode.example/v1',
-        openaiApiKey: 'sk-opencode-openai-secret',
-        openCodeSdkModulePath: '/opt/opencode-sdk-v1.mjs',
-        openCodeSystemPrompt: 'opencode system prompt v1',
-      },
-    });
-
-    const beforeModule = resolveProviderRuntimeSnapshot(svc, provider.id).snapshotHash;
-    svc.update(provider.id, {
-      connection: { openCodeSdkModulePath: '/opt/opencode-sdk-v2.mjs' },
-    });
-    expect(resolveProviderRuntimeSnapshot(svc, provider.id).snapshotHash).not.toBe(beforeModule);
-
-    const beforeSystemPrompt = resolveProviderRuntimeSnapshot(svc, provider.id).snapshotHash;
-    svc.update(provider.id, {
-      connection: { openCodeSystemPrompt: 'opencode system prompt v2' },
-    });
-    expect(resolveProviderRuntimeSnapshot(svc, provider.id).snapshotHash).not.toBe(beforeSystemPrompt);
+    expect(before.snapshot.environment.SMARTPERFETTO_OPENCODE_SDK_MODULE_PATH).toBeUndefined();
+    // Rotating the key it now sends to the same endpoint changes the pin.
+    svc.update(provider.id, {connection: {openaiApiKey: 'sk-opencode-openai-secret-v2'}});
+    expect(resolveProviderRuntimeSnapshot(svc, provider.id).snapshotHash).not.toBe(before.snapshotHash);
   });
 
   it('captures Pi runtime snapshots without storing model JSON secrets', () => {
@@ -625,7 +587,10 @@ describe('provider runtime snapshot hash', () => {
         },
       });
 
-      const before = resolveProviderRuntimeSnapshot(svc, provider.id);
+      // An untranslatable Qoder profile keeps its fields; its pin before the move is the frozen Qoder snapshot.
+      expect(resolveProviderRuntimeSnapshot(svc, provider.id).snapshot.runtimeKind).toBe('pi-agent-core');
+      const legacy = () => legacyProviderRuntimeSnapshot(svc, provider.id, 'qoder-agent-sdk')!;
+      const before = legacy();
       expect(before.snapshot.runtimeKind).toBe('qoder-agent-sdk');
       expect(before.snapshot.resolvedModels).toEqual({
         primary: 'qoder-connection-model',
@@ -642,39 +607,19 @@ describe('provider runtime snapshot hash', () => {
         QODER_LIGHT_MODEL: 'qoder-light',
         QODER_FULL_PER_TURN_MS: '90000',
         QODER_QUICK_PER_TURN_MS: '45000',
-        QODER_BYOK_PROVIDER: 'deepseek',
-        QODER_BYOK_BASE_URL: 'https://api.deepseek.com/v1',
-        QODER_BYOK_STYLE: 'openai',
       });
+      // The Qoder BYOK overrides were dropped when the profile landed on Pi.
+      expect(svc.getRaw(provider.id)!.custom?.envOverrides).toEqual({});
       expect(before.snapshot.environment.QODER_WORKER_RUNTIME_PATH).toBeUndefined();
       expect(before.snapshot.environment.QODER_PERSONAL_ACCESS_TOKEN).toBeUndefined();
       expect(before.snapshot.environment.SMARTPERFETTO_QODER_SYSTEM_PROMPT).toBeUndefined();
-      expect(before.snapshot.environment.QODER_BYOK_API_KEY).toBeUndefined();
       expect(JSON.stringify(before.snapshot)).not.toContain('qoder-secret-token');
       expect(JSON.stringify(before.snapshot)).not.toContain('secret qoder system prompt');
-      expect(JSON.stringify(before.snapshot)).not.toContain('qoder-byok-secret-v1');
 
       svc.update(provider.id, {
         connection: {qoderSystemPrompt: 'changed secret qoder system prompt'},
       });
-      expect(resolveProviderRuntimeSnapshot(svc, provider.id).snapshotHash)
-        .not.toBe(before.snapshotHash);
-
-      const beforeByokSecret = resolveProviderRuntimeSnapshot(svc, provider.id);
-      svc.update(provider.id, {
-        custom: {
-          envOverrides: {
-            QODER_BYOK_API_KEY: 'qoder-byok-secret-v2',
-            QODER_BYOK_PROVIDER: 'deepseek',
-            QODER_BYOK_BASE_URL: 'https://api.deepseek.com/v1',
-            QODER_BYOK_STYLE: 'openai',
-          },
-        },
-      });
-      const afterByokSecret = resolveProviderRuntimeSnapshot(svc, provider.id);
-      expect(afterByokSecret.snapshotHash).not.toBe(beforeByokSecret.snapshotHash);
-      expect(afterByokSecret.snapshot.secretVersion).not.toBe(beforeByokSecret.snapshot.secretVersion);
-      expect(JSON.stringify(afterByokSecret.snapshot)).not.toContain('qoder-byok-secret-v2');
+      expect(legacy().snapshotHash).not.toBe(before.snapshotHash);
     } finally {
       if (originalWorkerPath === undefined) delete process.env.QODER_WORKER_RUNTIME_PATH;
       else process.env.QODER_WORKER_RUNTIME_PATH = originalWorkerPath;
@@ -706,7 +651,9 @@ describe('provider runtime snapshot hash', () => {
       QODER_CLASSIFIER_TIMEOUT_MS: '30000',
     });
     try {
-      const result = resolveProviderRuntimeSnapshot(svc, null);
+      // The env pin a Qoder setup recorded, recomputed by the frozen Qoder snapshot.
+      const result = legacyProviderRuntimeSnapshot(svc, null, 'qoder-agent-sdk')!;
+      expect(resolveProviderRuntimeSnapshot(svc, null).snapshot.runtimeKind).toBe('pi-agent-core');
       expect(result.snapshot).toMatchObject({
         runtimeKind: 'qoder-agent-sdk',
         resolvedModels: {
@@ -730,7 +677,7 @@ describe('provider runtime snapshot hash', () => {
 
       process.env.QODER_BYOK_BASE_URL =
         'https://user:password@api.deepseek.com/v1?api_key=second#secret';
-      const changedSecret = resolveProviderRuntimeSnapshot(svc, null);
+      const changedSecret = legacyProviderRuntimeSnapshot(svc, null, 'qoder-agent-sdk')!;
       expect(changedSecret.snapshot.environment.QODER_BYOK_BASE_URL)
         .toBe(result.snapshot.environment.QODER_BYOK_BASE_URL);
       expect(changedSecret.snapshot.secretVersion).not.toBe(result.snapshot.secretVersion);

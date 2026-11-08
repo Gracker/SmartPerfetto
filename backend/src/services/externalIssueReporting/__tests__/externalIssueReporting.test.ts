@@ -7,7 +7,7 @@ import {describe, expect, it, jest} from '@jest/globals';
 import type {AnalysisReceiptV2} from '../../../types/dataContract';
 import type {RunManifestV1} from '../../../types/selfEvolution';
 import {getProviderService} from '../../providerManager';
-import {resolveProviderRuntimeSnapshot} from '../../providerManager/providerSnapshot';
+import {legacyProviderRuntimeSnapshot, resolveProviderRuntimeSnapshot} from '../../providerManager/providerSnapshot';
 import type {ExternalIssueSourceRun} from '../sourceRunResolver';
 import {resolveExternalIssueSourceRun} from '../sourceRunResolver';
 import {detectExternalIssueOpportunity} from '../opportunityDetector';
@@ -188,6 +188,13 @@ describe('external issue reporting services', () => {
     workspaceId: 'default-workspace',
     userId: 'dev-user-123',
   };
+  // Runs recorded on the OpenAI engine are reviewed on it only behind the hidden legacy opt-in.
+  const previousLegacyRuntime = process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME;
+  const onLegacyOpenAI = () => { process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'openai-agents-sdk'; };
+  afterEach(() => {
+    if (previousLegacyRuntime === undefined) delete process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME;
+    else process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = previousLegacyRuntime;
+  });
 
   it('detects persisted evidence and execution gaps without reading live session state', () => {
     const opportunity = detectExternalIssueOpportunity(source());
@@ -458,10 +465,10 @@ describe('external issue reporting services', () => {
   });
 
   it('repairs a structurally invalid Agent review once before falling back', async () => {
+    onLegacyOpenAI();
     const exactHash = resolveProviderRuntimeSnapshot(
       getProviderService(),
       null,
-      'openai-agents-sdk',
       providerScope,
     ).snapshotHash;
     const run = source({
@@ -500,12 +507,12 @@ describe('external issue reporting services', () => {
   });
 
   it('stops repair when the sealed Provider snapshot changes between attempts', async () => {
+    onLegacyOpenAI();
     const previousLightModel = process.env.OPENAI_LIGHT_MODEL;
     try {
       const exactHash = resolveProviderRuntimeSnapshot(
         getProviderService(),
         null,
-        'openai-agents-sdk',
         providerScope,
       ).snapshotHash;
       const run = source({manifest: manifest({providerSnapshotHash: exactHash})});
@@ -534,6 +541,7 @@ describe('external issue reporting services', () => {
   });
 
   it('uses bounded non-thinking JSON output for official DeepSeek reviews', async () => {
+    onLegacyOpenAI();
     const previousEnv = {
       OPENAI_API_KEY: process.env.OPENAI_API_KEY,
       OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
@@ -549,7 +557,6 @@ describe('external issue reporting services', () => {
       const exactHash = resolveProviderRuntimeSnapshot(
         getProviderService(),
         null,
-        'openai-agents-sdk',
         providerScope,
       ).snapshotHash;
       const run = source({
@@ -597,6 +604,7 @@ describe('external issue reporting services', () => {
   });
 
   it('retries a compatible endpoint without response_format when JSON mode is unsupported', async () => {
+    onLegacyOpenAI();
     const previousEnv = {
       OPENAI_API_KEY: process.env.OPENAI_API_KEY,
       OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
@@ -612,7 +620,6 @@ describe('external issue reporting services', () => {
       const exactHash = resolveProviderRuntimeSnapshot(
         getProviderService(),
         null,
-        'openai-agents-sdk',
         providerScope,
       ).snapshotHash;
       const run = source({manifest: manifest({providerSnapshotHash: exactHash})});
@@ -658,7 +665,6 @@ describe('external issue reporting services', () => {
     const exactHash = resolveProviderRuntimeSnapshot(
       getProviderService(),
       null,
-      'pi-agent-core',
       providerScope,
     ).snapshotHash;
     const run = source({
@@ -765,24 +771,18 @@ describe('external issue reporting services', () => {
   });
 
   it('pins Agent review to the exact persisted Provider snapshot', () => {
+    onLegacyOpenAI();
     const exactHash = resolveProviderRuntimeSnapshot(
       getProviderService(),
       null,
-      'openai-agents-sdk',
       providerScope,
     ).snapshotHash;
-    const piExactHash = resolveProviderRuntimeSnapshot(
-      getProviderService(),
-      null,
-      'pi-agent-core',
-      providerScope,
-    ).snapshotHash;
-    const openCodeExactHash = resolveProviderRuntimeSnapshot(
+    const openCodeRecordedHash = legacyProviderRuntimeSnapshot(
       getProviderService(),
       null,
       'opencode',
       providerScope,
-    ).snapshotHash;
+    )!.snapshotHash;
 
     expect(resolveExternalIssueProviderPin(
       manifest({providerSnapshotHash: undefined}),
@@ -792,28 +792,18 @@ describe('external issue reporting services', () => {
       manifest({providerSnapshotHash: 'different-provider-hash'}),
       providerScope,
     )).toEqual({ok: false, reason: 'provider_snapshot_changed'});
-    expect(resolveExternalIssueProviderPin(
-      manifest({
-        runtime: 'pi-agent-core',
-        providerSnapshotHash: piExactHash,
-      }),
-      providerScope,
-    )).toEqual(expect.objectContaining({
-      ok: true,
-      providerId: null,
-      runtime: 'pi-agent-core',
-    }));
+    // A run recorded on the retired OpenCode engine whose env names no endpoint Pi can call is not rebound.
     expect(resolveExternalIssueProviderPin(
       manifest({
         runtime: 'opencode',
-        providerSnapshotHash: openCodeExactHash,
+        providerSnapshotHash: openCodeRecordedHash,
       }),
       providerScope,
-    )).toEqual(expect.objectContaining({
-      ok: true,
-      providerId: null,
-      runtime: 'opencode',
-    }));
+    )).toEqual({ok: false, reason: 'provider_snapshot_changed'});
+    expect(resolveExternalIssueProviderPin(
+      manifest({runtime: 'qoder-agent-sdk', providerSnapshotHash: exactHash}),
+      providerScope,
+    )).toEqual({ok: false, reason: 'runtime_not_supported'});
     expect(resolveExternalIssueProviderPin(
       manifest({
         providerId: 'missing-provider-for-external-issue-test',
@@ -829,6 +819,23 @@ describe('external issue reporting services', () => {
       providerId: null,
       runtime: 'openai-agents-sdk',
     }));
+  });
+
+  it('rebinds a run recorded on the retired OpenAI engine to Pi when its endpoint and model are unchanged', () => {
+    const keys = ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL', 'OPENAI_AGENTS_PROTOCOL'] as const;
+    const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+    Object.assign(process.env, {OPENAI_API_KEY: 'sk-review', OPENAI_BASE_URL: 'https://gateway.example/v1',
+      OPENAI_MODEL: 'review-model', OPENAI_AGENTS_PROTOCOL: 'chat_completions'});
+    try {
+      const recordedHash = legacyProviderRuntimeSnapshot(getProviderService(), null, 'openai-agents-sdk', providerScope)!.snapshotHash;
+      expect(resolveExternalIssueProviderPin(manifest({providerSnapshotHash: recordedHash}), providerScope))
+        .toEqual(expect.objectContaining({ok: true, providerId: null, runtime: 'pi-agent-core'}));
+    } finally {
+      for (const key of keys) {
+        if (previous[key] === undefined) delete process.env[key];
+        else process.env[key] = previous[key];
+      }
+    }
   });
 
   it('resolves the exact durable run and fails closed for private or mismatched artifacts', () => {

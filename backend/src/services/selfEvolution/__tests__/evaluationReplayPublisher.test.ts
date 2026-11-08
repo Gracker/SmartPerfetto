@@ -116,7 +116,7 @@ describe('EvaluationReplayPublisher', () => {
       },
     }).id;
     pinned = {
-      runtime: 'openai-agents-sdk',
+      runtime: 'pi-agent-core',
       providerId,
       model: 'gpt-eval',
       outputLanguage: 'zh-CN',

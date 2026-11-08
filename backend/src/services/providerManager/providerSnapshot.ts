@@ -3,8 +3,11 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import crypto from 'crypto';
-import {defaultEnvRuntimeKind} from '../../agentRuntime/defaultRuntimeKind';
+import {effectiveAgentRuntimeKind} from '../../agentRuntime/legacyRuntimeFallback';
 import {piRuntimeFingerprintInput} from '../../agentRuntime/engines/pi/piAgentCoreConfig';
+import {isProductionAgentRuntimeKind, type RecordedRuntimeKind} from '../../agentRuntime/runtimeKinds';
+import {runtimeEnvFor} from './piProviderCatalog';
+import {storedProviderRecord} from './retiredRuntime';
 import {redactUrlForDiagnostics} from '../../agentRuntime/envCredentialSources';
 import { mergeIsolatedProviderEnv } from './envIsolation';
 import { providerNotFound } from './providerRequestError';
@@ -260,19 +263,6 @@ function publicRuntimeEnvironment(
   return picked;
 }
 
-function parseRuntimeEnv(value: string | undefined): AgentRuntimeKind | undefined {
-  switch (value) {
-    case 'claude-agent-sdk':
-    case 'openai-agents-sdk':
-    case 'pi-agent-core':
-    case 'opencode':
-    case 'qoder-agent-sdk':
-      return value;
-    default:
-      return undefined;
-  }
-}
-
 function runtimeEnvironmentKeys(runtimeKind: AgentRuntimeKind): string[] {
   switch (runtimeKind) {
     case 'openai-agents-sdk':
@@ -347,11 +337,13 @@ function inferBaseUrl(runtimeKind: AgentRuntimeKind, env: Record<string, string>
   return env.ANTHROPIC_BASE_URL || env.ANTHROPIC_BEDROCK_BASE_URL;
 }
 
-function envRuntimeSnapshot(runtimeOverride?: AgentRuntimeKind): ProviderRuntimeSnapshot {
-  const runtimeKind = runtimeOverride
-    ?? parseRuntimeEnv(process.env.SMARTPERFETTO_AGENT_RUNTIME)
-    ?? defaultEnvRuntimeKind();
-  const env = process.env;
+/**
+ * The env/default snapshot under `runtimeKind`: the effective runtime for a
+ * current pin (Pi sees the model the env-only setup maps to), or a recorded
+ * retired runtime when a recovered pin's legacy hash is recomputed.
+ */
+function envRuntimeSnapshot(runtimeKind: AgentRuntimeKind): ProviderRuntimeSnapshot {
+  const env = runtimeEnvFor(process.env, null, runtimeKind);
   const timeoutPrefix = runtimeKind === 'qoder-agent-sdk'
     ? 'QODER'
     : runtimeKind === 'openai-agents-sdk' || runtimeKind === 'opencode'
@@ -428,10 +420,9 @@ function providerSecretVersion(
 function providerRuntimeSnapshot(
   providerService: ProviderService,
   provider: ProviderConfig,
-  providerScope?: ProviderScope,
+  runtimeKind: AgentRuntimeKind = providerService.resolveAgentRuntime(provider),
 ): ProviderRuntimeSnapshot {
-  const runtimeKind = providerService.resolveAgentRuntime(provider);
-  const providerEnv = providerService.getEnvForProvider(provider.id, providerScope) ?? null;
+  const providerEnv = providerService.getEnvForProviderUnderRuntime(provider, runtimeKind);
   const env = mergeIsolatedProviderEnv(process.env, providerEnv);
   const nonSecretEnv = publicRuntimeEnvironment(env, runtimeKind);
   const primaryModel = runtimeKind === 'qoder-agent-sdk'
@@ -464,21 +455,59 @@ export function hashProviderRuntimeSnapshot(snapshot: ProviderRuntimeSnapshot): 
   return sha256Hex(canonicalJson(snapshot));
 }
 
+/**
+ * The current pin of a provider (or of env/default for null). It resolves
+ * through the effective runtime like a new run; a session's recorded runtime
+ * label is provenance and never changes the pin.
+ */
 export function resolveProviderRuntimeSnapshot(
   providerService: ProviderService,
   providerId: string | null,
-  runtimeOverride?: AgentRuntimeKind,
   providerScope?: ProviderScope,
 ): ProviderRuntimeSnapshotResolution {
   const snapshot = typeof providerId === 'string'
-    ? (() => {
-        const provider = providerService.getRawProvider(providerId, providerScope);
-        if (!provider) throw providerNotFound(providerId);
-        return providerRuntimeSnapshot(providerService, provider, providerScope);
-      })()
-    : envRuntimeSnapshot(runtimeOverride);
+    ? providerRuntimeSnapshot(providerService, requireProvider(providerService, providerId, providerScope))
+    : envRuntimeSnapshot(effectiveAgentRuntimeKind());
   return {
     snapshot,
     snapshotHash: hashProviderRuntimeSnapshot(snapshot),
   };
+}
+
+function requireProvider(providerService: ProviderService, providerId: string, providerScope?: ProviderScope): ProviderConfig {
+  const provider = providerService.getRawProvider(providerId, providerScope);
+  if (!provider) throw providerNotFound(providerId);
+  return provider;
+}
+
+/**
+ * @internal Test seam by provider id; production reads the record once and calls `legacyRuntimeSnapshotOf`.
+ *
+ * The snapshot hash the current record (or env, for null) had under the
+ * recorded retired runtime, as that runtime computed it: the input of the
+ * continuity check for a pin recorded before Pi became the only runtime.
+ * OpenCode and Qoder keep this frozen computation for one release after
+ * their engines are removed. Undefined for a label that names no engine.
+ */
+export function legacyProviderRuntimeSnapshot(
+  providerService: ProviderService,
+  providerId: string | null,
+  recordedKind: RecordedRuntimeKind,
+  providerScope?: ProviderScope,
+): ProviderRuntimeSnapshotResolution | undefined {
+  return legacyRuntimeSnapshotOf(providerService,
+    typeof providerId === 'string' ? requireProvider(providerService, providerId, providerScope) : undefined, recordedKind);
+}
+
+/** As `legacyProviderRuntimeSnapshot`, for a record the caller already read (undefined: env/default). */
+export function legacyRuntimeSnapshotOf(
+  providerService: ProviderService,
+  provider: ProviderConfig | undefined,
+  recordedKind: RecordedRuntimeKind,
+): ProviderRuntimeSnapshotResolution | undefined {
+  if (!isProductionAgentRuntimeKind(recordedKind)) return undefined;
+  const snapshot = provider
+    ? providerRuntimeSnapshot(providerService, storedProviderRecord(provider), recordedKind)
+    : envRuntimeSnapshot(recordedKind);
+  return {snapshot, snapshotHash: hashProviderRuntimeSnapshot(snapshot)};
 }

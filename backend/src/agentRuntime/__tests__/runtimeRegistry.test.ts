@@ -16,10 +16,10 @@ import {
   PRODUCTION_RUNTIME_DESCRIPTORS,
   getProductionEngineCapabilities,
   isProductionAgentRuntimeKind,
-  listProductionRuntimeKinds,
   runtimeSupportsDraftAnswerStreaming,
   supportsRuntimeProviderType,
 } from '../runtimeDescriptors';
+import {PRODUCTION_RUNTIME_KINDS} from '../runtimeKinds';
 import {
   type EngineCapabilities,
 } from '../runtimeDescriptorTypes';
@@ -58,7 +58,7 @@ describe('runtime registry', () => {
     ];
 
     expect(descriptorKinds).toEqual(expectedKinds);
-    expect(listProductionRuntimeKinds()).toEqual(expectedKinds);
+    expect(PRODUCTION_RUNTIME_KINDS).toEqual(expectedKinds);
     expect(isProductionAgentRuntimeKind('claude-agent-sdk')).toBe(true);
     expect(isProductionAgentRuntimeKind('openai-agents-sdk')).toBe(true);
     expect(isProductionAgentRuntimeKind('pi-agent-core')).toBe(true);
@@ -127,7 +127,7 @@ describe('runtime registry', () => {
   });
 
   it('gates answer drafts on the reset contract: Claude and OpenAI only, never an unknown runtime', () => {
-    expect(listProductionRuntimeKinds().filter(runtimeSupportsDraftAnswerStreaming))
+    expect(PRODUCTION_RUNTIME_KINDS.filter(runtimeSupportsDraftAnswerStreaming))
       .toEqual(['claude-agent-sdk', 'openai-agents-sdk']);
     expect(runtimeSupportsDraftAnswerStreaming(undefined)).toBe(false);
     expect(runtimeSupportsDraftAnswerStreaming(EXPERIMENTAL_OPENCODE_RUNTIME_KIND)).toBe(false);
@@ -148,7 +148,7 @@ describe('runtime registry', () => {
     const traceProcessorService = { kind: 'trace-processor' } as any;
     const registry = createRuntimeRegistry(PRODUCTION_RUNTIME_DESCRIPTORS);
 
-    for (const kind of listProductionRuntimeKinds()) {
+    for (const kind of PRODUCTION_RUNTIME_KINDS) {
       const orchestrator = registry.createOrchestrator(kind, {
         traceProcessorService,
         selection: { kind, source: 'default' },

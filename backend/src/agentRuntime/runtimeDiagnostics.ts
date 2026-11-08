@@ -119,7 +119,7 @@ export function getRuntimeDiagnostics(
   const {createRuntimeFactoryEnv} = require('./runtimeFactoryEnv') as typeof import('./runtimeFactoryEnv');
   const env = selectedProviderId
     ? createRuntimeFactoryEnv({source: 'provider', providerId: selectedProviderId}, undefined, input.env ?? process.env)
-    : input.env ?? process.env;
+    : createRuntimeFactoryEnv({source: selection.source, kind: selection.kind}, undefined, input.env ?? process.env);
 
   if (isProductionAgentRuntimeKind(selection.kind)) {
     const descriptor = getProductionRuntimeDescriptor(selection.kind);

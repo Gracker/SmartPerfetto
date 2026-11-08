@@ -193,15 +193,15 @@ describe('Provider Routes', () => {
       requiredFields: [],
       defaultModels: { primary: '', light: '' },
       availableModels: [],
-      defaultConnection: { agentRuntime: 'claude-agent-sdk' },
+      defaultConnection: { agentRuntime: 'pi-agent-core' },
     });
-    // Each template carries the runtimes its type may select, from the runtime descriptors.
-    const supported = (type: string) => res.body.templates
-      .find((template: { type: string }) => template.type === type).supportedRuntimes;
-    expect(supported('glm')).toEqual(['claude-agent-sdk', 'openai-agents-sdk', 'pi-agent-core']);
-    expect(supported('qwen')).toEqual(['claude-agent-sdk', 'openai-agents-sdk']);
-    expect(supported('custom')).toEqual(
-      ['claude-agent-sdk', 'openai-agents-sdk', 'pi-agent-core', 'opencode', 'qoder-agent-sdk']);
+    // Each template carries the runtimes its type may select: Pi only. The hidden
+    // legacy engines are never offered, and no template defaults to a retired runtime.
+    for (const template of res.body.templates as Array<{type: string; supportedRuntimes: string[];
+      defaultConnection?: {agentRuntime?: string}}>) {
+      expect(template.supportedRuntimes).toEqual(['pi-agent-core']);
+      expect([undefined, 'pi-agent-core']).toContain(template.defaultConnection?.agentRuntime);
+    }
   });
 
   it('lists each provider with the runtimes its type may select', async () => {
@@ -213,7 +213,7 @@ describe('Provider Routes', () => {
     const res = await request(appServer).get('/api/v1/providers');
     expect(res.status).toBe(200);
     const provider = res.body.providers.find((item: {name: string}) => item.name === 'DeepSeek Pi');
-    expect(provider.supportedRuntimes).toEqual(['claude-agent-sdk', 'openai-agents-sdk', 'pi-agent-core']);
+    expect(provider.supportedRuntimes).toEqual(['pi-agent-core']);
     expect(JSON.stringify(provider)).not.toContain('sk-deepseek-test');
   });
 
@@ -336,7 +336,7 @@ describe('Provider Routes', () => {
     expect(effectiveRes.body.source).toBe('provider-manager');
   });
 
-  it('POST /:id/runtime switches provider SDK runtime', async () => {
+  it('POST /:id/runtime accepts a retired runtime and lands on Pi on that runtime\'s endpoint', async () => {
     const createRes = await request(appServer).post('/api/v1/providers').send({
       name: 'DeepSeek Dual',
       category: 'official',
@@ -356,7 +356,8 @@ describe('Provider Routes', () => {
       .send({ agentRuntime: 'openai-agents-sdk' });
 
     expect(runtimeRes.status).toBe(200);
-    expect(runtimeRes.body.provider.connection.agentRuntime).toBe('openai-agents-sdk');
+    expect(runtimeRes.body.provider.connection).toMatchObject({agentRuntime: 'pi-agent-core', apiSurface: 'openai'});
+    expect(runtimeRes.body.provider.supportedRuntimes).toEqual(['pi-agent-core']);
   });
 
   it('POST /:id/runtime rejects unsupported SDK runtime for provider type', async () => {
@@ -377,7 +378,7 @@ describe('Provider Routes', () => {
     expect(runtimeRes.body.error).toMatch(/does not support openai-agents-sdk/);
   });
 
-  it('POST /:id/runtime rejects public Pi runtime for providers without a Pi catalog route', async () => {
+  it('POST /:id/runtime accepts Pi for a provider type without a Pi catalog route', async () => {
     const createRes = await request(appServer).post('/api/v1/providers').send({
       name: 'Qwen Dual',
       category: 'official',
@@ -396,8 +397,8 @@ describe('Provider Routes', () => {
       .post(`/api/v1/providers/${id}/runtime`)
       .send({ agentRuntime: 'pi-agent-core' });
 
-    expect(runtimeRes.status).toBe(400);
-    expect(runtimeRes.body.error).toMatch(/does not support pi-agent-core/);
+    expect(runtimeRes.status).toBe(200);
+    expect(runtimeRes.body.provider.connection.agentRuntime).toBe('pi-agent-core');
   });
 
   it('keeps provider configuration available but blocks connection tests when AI is disabled', async () => {
@@ -468,7 +469,7 @@ describe('Provider Routes', () => {
     expect(JSON.stringify(effectiveRes.body)).not.toContain('sk-pi-secret');
   });
 
-  it('creates and activates custom OpenCode providers without exposing model JSON', async () => {
+  it('maps a custom OpenCode provider to Pi without exposing its secrets', async () => {
     const createRes = await request(appServer).post('/api/v1/providers').send({
       name: 'OpenCode Custom',
       category: 'custom',
@@ -485,8 +486,9 @@ describe('Provider Routes', () => {
       },
     });
     expect(createRes.status).toBe(201);
-    expect(createRes.body.provider.connection.agentRuntime).toBe('opencode');
-    expect(createRes.body.provider.connection.openCodeModelJson).toMatch(/^\*{4}/);
+    expect(createRes.body.provider.connection).toMatchObject({agentRuntime: 'pi-agent-core', apiSurface: 'openai'});
+    expect(createRes.body.provider.connection.openCodeModelJson).toBeUndefined();
+    expect(createRes.body.provider.models.primary).toBe('opencode-test');
     expect(JSON.stringify(createRes.body)).not.toContain('sk-opencode-secret');
 
     const id = createRes.body.provider.id;
@@ -495,11 +497,11 @@ describe('Provider Routes', () => {
 
     const effectiveRes = await request(appServer).get('/api/v1/providers/effective');
     expect(effectiveRes.status).toBe(200);
-    expect(effectiveRes.body.provider.connection.agentRuntime).toBe('opencode');
-    expect(effectiveRes.body.env.SMARTPERFETTO_AGENT_RUNTIME).toBe('opencode');
-    expect(effectiveRes.body.env.SMARTPERFETTO_OPENCODE_MODEL_JSON).toMatch(/^\*{4}/);
-    expect(effectiveRes.body.env.SMARTPERFETTO_OPENCODE_SDK_MODULE_PATH).toBe('/tmp/opencode-sdk/dist/index.js');
+    expect(effectiveRes.body.provider.connection.agentRuntime).toBe('pi-agent-core');
+    expect(effectiveRes.body.env.SMARTPERFETTO_AGENT_RUNTIME).toBe('pi-agent-core');
+    expect(effectiveRes.body.env.SMARTPERFETTO_OPENCODE_SDK_MODULE_PATH).toBeUndefined();
     expect(JSON.stringify(effectiveRes.body)).not.toContain('sk-opencode-secret');
+    expect(JSON.stringify(effectiveRes.body)).not.toContain('sk-opencode-openai');
   });
 
   it('records enterprise audit events for provider management actions', async () => {

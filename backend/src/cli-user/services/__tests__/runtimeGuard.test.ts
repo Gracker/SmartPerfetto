@@ -34,6 +34,7 @@ describe('runtime guard', () => {
     process.env = { ...originalEnv, PROVIDER_DATA_DIR_OVERRIDE: tmpDir };
     delete process.env.SMARTPERFETTO_AI_ENABLED;
     delete process.env.SMARTPERFETTO_AGENT_RUNTIME;
+    delete process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME;
     delete process.env.SMARTPERFETTO_ENABLE_EXPERIMENTAL_AGENT_RUNTIME;
     delete process.env.SMARTPERFETTO_EXPERIMENTAL_AGENT_RUNTIME;
     delete process.env.SMARTPERFETTO_PI_AGENT_CORE_FAKE_STREAM;
@@ -107,11 +108,11 @@ describe('runtime guard', () => {
   test('defaults to Pi Agent Core and names its provider requirement when nothing is configured', () => {
     expect(() => assertAnalysisRuntimeReady()).toThrow(/Pi/);
     expect(collectDoctorReport(tmpDir).checks.find(check => check.name === 'runtime')?.message)
-      .toContain('Pi provider (GLM, DeepSeek, Kimi, Kimi Code, MiniMax or custom)');
+      .toContain('Configure an active provider (any template or custom)');
   });
 
   test('rejects Claude without credentials even when the SDK binary is executable', () => {
-    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'claude-agent-sdk';
+    process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'claude-agent-sdk';
     process.env.CLAUDE_BINARY_PATH = createExecutableStub(tmpDir);
     expect(() => assertAnalysisRuntimeReady()).toThrow('no configured credentials');
     expect(() => assertAnalysisRuntimeReady()).toThrow('Providers');
@@ -159,7 +160,7 @@ describe('runtime guard', () => {
   });
 
   test('rejects Claude runtime when explicit SDK binary path is not executable', () => {
-    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'claude-agent-sdk';
+    process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'claude-agent-sdk';
     process.env.CLAUDE_BINARY_PATH = path.join(tmpDir, 'missing-claude-binary');
     expect(() => assertAnalysisRuntimeReady()).toThrow('native binary is not executable');
   });
@@ -210,12 +211,12 @@ describe('runtime guard', () => {
   });
 
   test('rejects OpenAI runtime without an API key or local endpoint', () => {
-    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'openai-agents-sdk';
+    process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'openai-agents-sdk';
     expect(() => assertAnalysisRuntimeReady()).toThrow('OpenAI runtime is selected');
   });
 
   test('allows OpenAI runtime with a localhost endpoint', () => {
-    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'openai-agents-sdk';
+    process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'openai-agents-sdk';
     process.env.OPENAI_BASE_URL = 'http://localhost:11434/v1';
     const result = assertAnalysisRuntimeReady();
     expect(result.selection.kind).toBe('openai-agents-sdk');
@@ -225,18 +226,20 @@ describe('runtime guard', () => {
     });
   });
 
-  test('does not treat the hidden experimental runtime as Claude SDK', () => {
+  test('ignores the retired experimental runtime switch and selects Pi', () => {
     process.env.SMARTPERFETTO_ENABLE_EXPERIMENTAL_AGENT_RUNTIME = '1';
     process.env.SMARTPERFETTO_EXPERIMENTAL_AGENT_RUNTIME = 'experimental-pi-agent-core';
     process.env.SMARTPERFETTO_PI_AGENT_CORE_FAKE_STREAM = '1';
     const result = assertAnalysisRuntimeReady({ providerId: null });
-    expect(result.selection.kind).toBe('experimental-pi-agent-core');
+    expect(result.selection.kind).toBe('pi-agent-core');
     expect(result.diagnostics).toMatchObject({
-      runtime: 'experimental-pi-agent-core',
+      runtime: 'pi-agent-core',
       configured: true,
-      experimental: true,
+      experimental: false,
       package: '@earendil-works/pi-agent-core',
     });
+    expect(collectDoctorReport(tmpDir).checks.find(check => check.name === 'runtime_deprecation')?.message)
+      .toContain('SMARTPERFETTO_EXPERIMENTAL_AGENT_RUNTIME is retired');
   });
 
   test('allows public Pi agent-core runtime with explicit model JSON', () => {
@@ -254,40 +257,43 @@ describe('runtime guard', () => {
     });
   });
 
-  test('reports the missing opt-in Qoder SDK instead of applying the Claude binary guard', () => {
-    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'qoder-agent-sdk';
-    // Force "not installed" rather than inferring it from this machine. The
-    // detector short-circuits on a configured module path, so a path that does
-    // not exist answers the question the same way on a developer box that ran
-    // `npm run qoder:install` and on one that never did.
-    process.env.SMARTPERFETTO_QODER_SDK_MODULE_PATH = path.join(tmpDir, 'absent-qoder-sdk.js');
-
-    expect(() => assertAnalysisRuntimeReady({ providerId: null })).toThrow(
-      'Qoder Agent SDK runtime is selected but @qoder-ai/qoder-agent-sdk is not installed',
-    );
-  });
-
-  test('doctor reports the opt-in Qoder SDK as missing', () => {
-    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'qoder-agent-sdk';
-    process.env.SMARTPERFETTO_QODER_SDK_MODULE_PATH = path.join(tmpDir, 'absent-qoder-sdk.js');
-
-    const report = collectDoctorReport(tmpDir);
-
-    expect(report.checks.find(check => check.name === 'runtime')).toMatchObject({
-      ok: false,
-      status: 'error',
-      message: expect.stringContaining('Qoder Agent SDK is not installed; review its terms and install the optional SDK explicitly'),
-    });
-    expect(report.checks.find(check => check.name === 'runtime')?.message).not.toContain('Providers');
-  });
-
-  test('uses saved session runtime override instead of current env selection', () => {
-    process.env.ANTHROPIC_API_KEY = 'sk-test';
+  test('maps a retired SMARTPERFETTO_AGENT_RUNTIME to Pi and the doctor reports the deprecation', () => {
     process.env.SMARTPERFETTO_AGENT_RUNTIME = 'openai-agents-sdk';
+    process.env.OPENAI_API_KEY = 'sk-test';
+    process.env.OPENAI_MODEL = 'gpt-5.5';
+    const result = assertAnalysisRuntimeReady({ providerId: null });
+    expect(result.selection).toEqual({kind: 'pi-agent-core', source: 'env'});
+    expect(result.diagnostics).toMatchObject({runtime: 'pi-agent-core', configured: true});
+
+    // A Qoder env names nothing Pi can call: an explicit, actionable refusal rather than a guess.
+    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'qoder-agent-sdk';
+    expect(() => assertAnalysisRuntimeReady({ providerId: null })).toThrow('it used the retired Qoder runtime');
+    const report = collectDoctorReport(tmpDir);
+    expect(report.checks.find(check => check.name === 'runtime_deprecation')).toMatchObject({
+      ok: true,
+      status: 'warn',
+      message: expect.stringContaining('SMARTPERFETTO_AGENT_RUNTIME=qoder-agent-sdk is deprecated'),
+    });
+  });
+
+  test('doctor reports the hidden legacy runtime opt-in as active', () => {
+    process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'openai-agents-sdk';
+    process.env.OPENAI_BASE_URL = 'http://localhost:11434/v1';
+    const report = collectDoctorReport(tmpDir);
+    expect(report.runtime).toMatchObject({kind: 'openai-agents-sdk', source: 'env'});
+    expect(report.checks.find(check => check.name === 'runtime_deprecation')?.message)
+      .toContain('SMARTPERFETTO_LEGACY_AGENT_RUNTIME=openai-agents-sdk is active');
+  });
+
+  test('resolves a saved session runtime pin through the effective runtime', () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-test';
     process.env.CLAUDE_BINARY_PATH = createExecutableStub(tmpDir);
+    const onPi = assertAnalysisRuntimeReady({providerId: null, runtimeOverride: 'claude-agent-sdk'});
+    expect(onPi.selection).toEqual({kind: 'pi-agent-core', source: 'snapshot'});
+    process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'claude-agent-sdk';
     const result = assertAnalysisRuntimeReady({
       providerId: null,
-      runtimeOverride: 'claude-agent-sdk',
+      runtimeOverride: 'pi-agent-core',
     });
     expect(result.selection.kind).toBe('claude-agent-sdk');
     expect(result.selection.source).toBe('snapshot');

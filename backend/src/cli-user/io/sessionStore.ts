@@ -16,14 +16,30 @@ import { atomicWriteFileSync } from '../../utils/atomicFileWriter';
 import type { CliPaths, SessionPaths } from './paths';
 import { ensureSessionLayout, sessionPaths } from './paths';
 import type { CliSessionConfig } from '../types';
+import { isRecordedRuntimeKind } from '../../agentRuntime/runtimeKinds';
 
 export function readConfig(sp: SessionPaths): CliSessionConfig | null {
   if (!fs.existsSync(sp.config)) return null;
+  let config: CliSessionConfig;
   try {
-    return JSON.parse(fs.readFileSync(sp.config, 'utf-8')) as CliSessionConfig;
+    config = JSON.parse(fs.readFileSync(sp.config, 'utf-8')) as CliSessionConfig;
   } catch {
     return null;
   }
+  return withMigratedSessionRuntime(config);
+}
+
+/**
+ * The recorded runtime label is provenance: a resume resolves the effective
+ * runtime (Pi Agent Core, or the hidden legacy opt-in) through the same
+ * selection a provider profile uses, so a retired label is kept as recorded.
+ * An unknown label is dropped so the resume follows its provider/env pin.
+ */
+function withMigratedSessionRuntime(config: CliSessionConfig): CliSessionConfig {
+  const recorded: unknown = config?.agentRuntimeKind;
+  if (recorded === undefined || isRecordedRuntimeKind(recorded)) return config;
+  const {agentRuntimeKind: _unknown, ...rest} = config;
+  return rest;
 }
 
 /** Full write. For incremental updates, callers should readConfig → mutate → writeConfig. */

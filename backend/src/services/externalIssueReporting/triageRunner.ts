@@ -17,7 +17,6 @@ import {
 } from '../../agentv3/claudeConfig';
 import {extractFirstJsonObject} from '../evolutionLifecycle/reviewExecution';
 import {getProviderService, type ProviderScope} from '../providerManager';
-import {mergeIsolatedProviderEnv} from '../providerManager/envIsolation';
 import {readPiAgentCoreModelConfig} from '../../agentRuntime/engines/pi/piAgentCoreConfig';
 import {resolvePiModelRecord} from '../../agentRuntime/engines/pi/piAgentCoreProvider';
 import {buildOpenAIChatCompletionsTokenLimit} from '../providerManager/openAiChatCompletionsCompat';
@@ -27,6 +26,7 @@ import type {
 } from '../../types/externalIssueReporting';
 import type {RunManifestV1} from '../../types/selfEvolution';
 import {resolveExternalIssueProviderPin} from './providerPin';
+import {runtimeEnvFor} from '../providerManager/piProviderCatalog';
 import {buildExternalIssueTriagePrompt} from './triagePrompt';
 import {validateExternalIssueReview} from './reviewValidator';
 
@@ -275,7 +275,8 @@ function resolvePinnedRuntimeEnv(
   const providerEnv = provider
     ? providerService.getEnvForProvider(provider.id, providerScope)
     : null;
-  return mergeIsolatedProviderEnv(process.env, providerEnv);
+  // An env-only Pi pin reads the model its Claude/OpenAI env maps to, as the runtime does.
+  return runtimeEnvFor(process.env, providerEnv, runtime);
 }
 
 async function resolvePiReviewConfig(

@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {randomUUID} from 'crypto';
+import {isRetiredRuntimeKind} from '../../agentRuntime/runtimeKinds';
 
 import type {
   ProviderMutationGenerationVectorV1,
@@ -381,7 +382,6 @@ function stableProviderSnapshot(input: StableProviderSnapshotInput): {
     const resolution = resolveProviderRuntimeSnapshot(
       input.providerService,
       input.pinned.providerId,
-      input.pinned.runtime,
       input.providerScope,
     );
     const after = normalizeGeneration(
@@ -391,7 +391,10 @@ function stableProviderSnapshot(input: StableProviderSnapshotInput): {
     assertNoInFlight(after);
     if (canonicalJsonString(before) !== canonicalJsonString(after)) continue;
     if (resolution.snapshot.runtimeKind !== input.pinned.runtime) {
-      throw new Error('evaluation_environment_runtime_mismatch');
+      // A baseline pinned to a runtime that no longer runs is stale: re-baseline on the current runtime.
+      throw new Error(isRetiredRuntimeKind(input.pinned.runtime)
+        ? 'evaluation_baseline_runtime_retired'
+        : 'evaluation_environment_runtime_mismatch');
     }
     if (resolution.snapshot.providerId !== input.pinned.providerId) {
       throw new Error('evaluation_environment_provider_mismatch');

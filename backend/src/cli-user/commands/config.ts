@@ -17,22 +17,22 @@ export interface ConfigInitCommandArgs {
 const ENV_TEMPLATE = `# SmartPerfetto CLI user environment
 # This file is loaded after backend/.env when no --env-file is passed.
 #
-# First setup: choose ONE provider path. Do not enable Claude-compatible and
-# OpenAI-compatible blocks together.
+# Analysis runs on Pi Agent Core. Choose ONE endpoint below; Pi calls exactly
+# that endpoint with that model and credential. Do not enable the
+# Anthropic-compatible and OpenAI-compatible blocks together. A provider
+# profile (smp provider / Web UI Provider Manager) takes precedence.
 
-# Claude Agent SDK requires explicit API key/auth token or Bedrock/Vertex
-# configuration. A local Claude Code login does not configure this runtime.
-# Leave model envs unset to use SmartPerfetto defaults, or set provider-specific
-# model names when your provider requires them.
-# SMARTPERFETTO_AGENT_RUNTIME=claude-agent-sdk
+# Anthropic or an Anthropic-compatible endpoint. ANTHROPIC_API_KEY is sent as
+# x-api-key; ANTHROPIC_AUTH_TOKEN as Authorization: Bearer. A local Claude Code
+# login does not configure this. Leave model envs unset for SmartPerfetto
+# defaults, or set the model names your provider requires.
 # CLAUDE_MODEL=
 # CLAUDE_LIGHT_MODEL=
 # ANTHROPIC_API_KEY=
 # ANTHROPIC_BASE_URL=
 # ANTHROPIC_AUTH_TOKEN=
 
-# OpenAI / OpenAI-compatible runtime.
-# SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk
+# OpenAI or an OpenAI-compatible endpoint (responses or chat_completions).
 # OPENAI_API_KEY=
 # OPENAI_BASE_URL=https://api.openai.com/v1
 # OPENAI_MODEL=
@@ -40,7 +40,6 @@ const ENV_TEMPLATE = `# SmartPerfetto CLI user environment
 # OPENAI_AGENTS_PROTOCOL=responses
 
 # Ollama / local OpenAI-compatible endpoint example.
-# SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk
 # OPENAI_BASE_URL=http://localhost:11434/v1
 # OPENAI_API_KEY=ollama
 # OPENAI_MODEL=qwen3:8b

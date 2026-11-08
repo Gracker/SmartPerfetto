@@ -44,6 +44,8 @@ import {
   fauxToolCall,
 } from '@earendil-works/pi-ai';
 import {createPiAgentCoreProviderRuntime} from './src/agentRuntime/engines/pi/piAgentCoreProvider.ts';
+import {withEnvOnlyPiModel} from './src/services/providerManager/piProviderCatalog.ts';
+import {parsePiAgentCoreModelConfig} from './src/agentRuntime/engines/pi/piAgentCoreConfig.ts';
 import {runPiIntentTransport} from './src/agentRuntime/engines/pi/piIntentTransport.ts';
 import {zaiCodingCnProvider} from '@earendil-works/pi-ai/providers/zai-coding-cn';
 import {deepseekProvider} from '@earendil-works/pi-ai/providers/deepseek';
@@ -183,7 +185,7 @@ const defaultGlmRequest = await reasoningRequest();
 assert.equal(defaultGlmRequest.thinking, undefined);
 assert.equal(defaultGlmRequest.reasoning_effort, undefined);
 assert.equal((await reasoningRequest({}, {}, 'continuation')).thinking, undefined);
-for (const purpose of ['classification', 'declaration_repair', 'review']) {
+for (const purpose of ['classification', 'review']) {
   const request = await reasoningRequest({}, {}, purpose);
   assert.equal(request.model, 'glm-5.3-flash');
   assert.equal(request.thinking.type, 'enabled'); assert.equal(request.reasoning_effort, 'low');
@@ -194,7 +196,7 @@ for (const purpose of ['classification', 'declaration_repair', 'review']) {
 const authoredReasoning = {thinkingLevel: 'high', model: {
   thinkingLevelMap: {...nativeGlm.thinkingLevelMap, high: 'max'},
 }};
-for (const purpose of ['answer_turn', 'classification', 'declaration_repair', 'continuation', 'review']) {
+for (const purpose of ['answer_turn', 'classification', 'continuation', 'review']) {
   const receipts = [];
   const request = await reasoningRequest(authoredReasoning, {}, purpose, {onExecutionPolicy: value => receipts.push(value)});
   assert.equal(request.thinking.type, 'enabled'); assert.equal(request.reasoning_effort, 'max');
@@ -492,46 +494,27 @@ const privateRuntimeSnapshot = resumedRuntime.takeSnapshot(
 );
 assert.deepEqual(privateRuntimeSnapshot.engineState?.pi, {});
 
-const missingDeclarationBody = runtimeQuestion('runtime-missing-declaration');
-const repairedDeclarationCandidate = declaredRuntimeAnswer(missingDeclarationBody);
-const declarationRuntimeProvider = createRuntimeProvider();
-declarationRuntimeProvider.runtimeFaux.setResponses([
-  runtimeIntentResponse(),
-  fauxAssistantMessage(missingDeclarationBody),
-  fauxAssistantMessage(repairedDeclarationCandidate),
-]);
-const declarationRuntime = createRuntime(declarationRuntimeProvider.loader);
-const declarationResult = await declarationRuntime.analyze(
+// Declarations are retired: an answer without a machine sidecar is delivered as is, with no repair call.
+const plainAnswerBody = runtimeQuestion('runtime-plain-answer');
+const plainRuntimeProvider = createRuntimeProvider();
+plainRuntimeProvider.runtimeFaux.setResponses([runtimeIntentResponse(), fauxAssistantMessage(plainAnswerBody)]);
+const plainRuntime = createRuntime(plainRuntimeProvider.loader);
+const plainResult = await plainRuntime.analyze(
   'Give a concise trace status.',
-  'session-real-declaration-repair',
+  'session-real-plain-answer',
   'trace-pi-real',
-  {analysisMode: 'fast', runId: 'pi-real-declaration-repair'},
+  {analysisMode: 'fast', runId: 'pi-real-plain-answer'},
 );
-assert.equal(declarationRuntimeProvider.runtimeFaux.state.callCount, 3);
-assert.equal(declarationRuntimeProvider.requests.length, 3);
-assert.deepEqual(declarationRuntimeProvider.requests[2].tools, []);
-const declarationPrompt = declarationRuntimeProvider.requests[2].messages.at(-1)?.content?.[0]?.text;
-assert.equal(typeof declarationPrompt, 'string');
-assert.match(declarationPrompt, /missing_declaration/);
-assert.ok(declarationPrompt.includes(JSON.stringify({
-  schemaVersion: 1,
-  kind: 'original_native_candidate',
-  body: missingDeclarationBody,
-})));
-assert.equal(declarationResult.completion?.runId, 'pi-real-declaration-repair');
-assert.equal(declarationResult.completion?.attemptId, '2');
-const repairedProtocol = inspectCandidateProtocol(declarationResult.conclusion);
-assert.equal(repairedProtocol.status, 'valid');
-assert.equal(repairedProtocol.canonicalBody.trim(), missingDeclarationBody);
-const declarationFinalizationContext = takeFinalizationContext(declarationResult);
-assert.ok(declarationFinalizationContext);
+assert.equal(plainRuntimeProvider.runtimeFaux.state.callCount, 2);
+assert.equal(plainRuntimeProvider.requests.length, 2);
+assert.equal(plainResult.completion?.runId, 'pi-real-plain-answer');
 try {
-  assert.equal(
-    declarationFinalizationContext.getNativeDeclaration(declarationResult, new AbortController().signal)?.raw,
-    repairedDeclarationCandidate,
-  );
+  assert.equal(plainResult.success, true);
+  assert.equal(inspectCandidateProtocol(plainResult.conclusion).status, 'absent');
+  assert.equal(plainResult.conclusion.trim(), plainAnswerBody);
+  assert.equal(plainResult.completion?.status, 'completed');
 } finally {
-  declarationFinalizationContext.dispose();
+  takeFinalizationContext(plainResult)?.dispose();
 }
 
 async function withRuntimeDeadline(promise, message) {
@@ -653,6 +636,50 @@ delete process.env.AWS_ACCESS_KEY_ID;
 delete process.env.AWS_SECRET_ACCESS_KEY;
 delete process.env.AWS_REGION;
 delete process.env.AWS_PROFILE;
+
+// Env-only Bedrock enabled without a named credential keeps the retired
+// runtime's AWS default chain: resolved in-process into explicit keys, with no
+// chain-selection key reaching the native client.
+const awsChainDir = await mkdtemp(path.join(os.tmpdir(), 'smartperfetto-pi-aws-chain-'));
+try {
+  await writeFile(path.join(awsChainDir, 'credentials'),
+    '[default]\naws_access_key_id = AKIDDEFAULTCHAIN\naws_secret_access_key = default-chain-secret\n', 'utf8');
+  await writeFile(path.join(awsChainDir, 'config'), '', 'utf8');
+  const chainEnv = {
+    CLAUDE_CODE_USE_BEDROCK: '1', AWS_REGION: 'us-west-2', CLAUDE_MODEL: 'us.anthropic.claude-sonnet-5',
+    AWS_SHARED_CREDENTIALS_FILE: path.join(awsChainDir, 'credentials'),
+    AWS_CONFIG_FILE: path.join(awsChainDir, 'config'), AWS_EC2_METADATA_DISABLED: 'true',
+  };
+  Object.assign(process.env, chainEnv);
+  const envOnly = withEnvOnlyPiModel({...process.env});
+  const chainConfig = parsePiAgentCoreModelConfig(envOnly.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON);
+  assert.deepEqual(chainConfig.route.aws, {region: 'us-west-2', defaultChain: true});
+  const chainRuntime = await createPiAgentCoreProviderRuntime(chainConfig, envOnly);
+  const chainAuthEnv = (await chainRuntime.models.getAuth(chainRuntime.model))?.env ?? {};
+  assert.equal(chainAuthEnv.AWS_ACCESS_KEY_ID, 'AKIDDEFAULTCHAIN');
+  assert.equal(chainAuthEnv.AWS_REGION, 'us-west-2');
+  for (const key of ['AWS_SHARED_CREDENTIALS_FILE', 'AWS_CONFIG_FILE', 'AWS_EC2_METADATA_DISABLED', 'AWS_PROFILE']) {
+    assert.equal(chainAuthEnv[key], undefined, key);
+  }
+  // A chain reads the process env itself: a configuration whose scoped env differs from it never loads.
+  await assert.rejects(createPiAgentCoreProviderRuntime(chainConfig, {AWS_REGION: 'us-west-2'}),
+    /cannot resolve AWS credentials: AWS_CONFIG_FILE/);
+  await assert.rejects(createPiAgentCoreProviderRuntime(chainConfig, {...envOnly, AWS_ROLE_ARN: 'arn:aws:iam::1:role/tenant'}),
+    /cannot resolve AWS credentials: AWS_ROLE_ARN/);
+  // A named profile reads its configuration's own shared files, never the process env's.
+  await writeFile(path.join(awsChainDir, 'scoped-credentials'),
+    '[analysis]\naws_access_key_id = AKIDSCOPEDPROFILE\naws_secret_access_key = scoped-secret\n', 'utf8');
+  const profileConfig = {...chainConfig, route: {...chainConfig.route, aws: {region: 'us-west-2', profile: 'analysis'}}};
+  const profileRuntime = await createPiAgentCoreProviderRuntime(profileConfig, {
+    AWS_REGION: 'us-west-2', AWS_SHARED_CREDENTIALS_FILE: path.join(awsChainDir, 'scoped-credentials'),
+    AWS_CONFIG_FILE: path.join(awsChainDir, 'config'), AWS_EC2_METADATA_DISABLED: 'true',
+  });
+  assert.equal((await profileRuntime.models.getAuth(profileRuntime.model))?.env?.AWS_ACCESS_KEY_ID, 'AKIDSCOPEDPROFILE');
+} finally {
+  for (const key of ['CLAUDE_CODE_USE_BEDROCK', 'AWS_REGION', 'CLAUDE_MODEL', 'AWS_SHARED_CREDENTIALS_FILE',
+    'AWS_CONFIG_FILE', 'AWS_EC2_METADATA_DISABLED']) delete process.env[key];
+  await rm(awsChainDir, {recursive: true, force: true});
+}
 
 const oauth = await createPiAgentCoreProviderRuntime({
   model: {

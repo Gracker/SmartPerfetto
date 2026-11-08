@@ -241,6 +241,8 @@ beforeEach(async () => {
   process.env[ENTERPRISE_MIGRATION_CUTOVER_CONFIRMED_ENV] = 'true';
   process.env.PROVIDER_DATA_DIR_OVERRIDE = tmpDir;
   process.env[SECRET_STORE_MASTER_KEY_ENV] = Buffer.alloc(32, 17).toString('base64');
+  // The Claude engine reads a provider's env only behind the hidden legacy opt-in.
+  process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'claude-agent-sdk';
   resetProviderService();
 });
 
@@ -258,6 +260,7 @@ afterEach(async () => {
   restoreEnvValue(ENTERPRISE_MIGRATION_CUTOVER_CONFIRMED_ENV, originalEnv.cutoverConfirmed);
   restoreEnvValue('PROVIDER_DATA_DIR_OVERRIDE', originalEnv.providerDataDirOverride);
   restoreEnvValue(SECRET_STORE_MASTER_KEY_ENV, originalEnv.secretStoreMasterKey);
+  delete process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME;
   restoreEnvValue('CLAUDE_PRECOMPACT_THRESHOLD', originalEnv.precompactThreshold);
   restoreEnvValue('CLAUDE_PRECOMPACT_WARN_ENABLED', originalEnv.precompactWarnEnabled);
   restoreEnvValue(

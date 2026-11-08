@@ -5,8 +5,11 @@
 import {createHash} from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type {AnalysisOptions} from '../agent/core/orchestratorTypes';
-import type {AgentRuntimeKind} from './providerManager';
-import {isProductionAgentRuntimeKind} from '../agentRuntime/runtimeKinds';
+import {isRecordedRuntimeKind, type RecordedRuntimeKind} from '../agentRuntime/runtimeKinds';
+import {
+  parseRuntimeMigrationContinuityNote,
+  type RuntimeMigrationContinuityNote,
+} from './providerManager/providerPinContinuity';
 import type {AssistantSessionStatus} from '../assistant/application/assistantApplicationService';
 import type {ConversationRuntimeOutcome, ConversationTraceContext} from '../assistant/contracts/conversationContract';
 import type {AnalysisHistoryTurn} from '../agentRuntime/analysisHistory';
@@ -26,9 +29,12 @@ export interface ConversationSessionDescriptor extends ConversationSessionOwner 
   traceContext: ConversationTraceContext;
   providerId: string | null;
   providerFollowsActive: boolean;
-  runtimeKind: AgentRuntimeKind;
+  /** The runtime the pin was recorded under; a retired label is provenance and re-resolves on recovery. */
+  runtimeKind: RecordedRuntimeKind;
   providerSnapshotHash: string;
   analysisContextFingerprint: string;
+  /** Set when recovery rebound a pin recorded under a retired runtime to Pi Agent Core. */
+  runtimeMigration?: RuntimeMigrationContinuityNote;
   outputLanguage?: AnalysisOptions['outputLanguage'];
   codeAwareMode?: AnalysisOptions['codeAwareMode'];
   codebaseIds?: string[];
@@ -68,6 +74,8 @@ function projectedDescriptor(input: ConversationSessionDescriptor): Conversation
     userId: input.userId, providerId: input.providerId, providerFollowsActive: input.providerFollowsActive,
     runtimeKind: input.runtimeKind, providerSnapshotHash: input.providerSnapshotHash,
     analysisContextFingerprint: input.analysisContextFingerprint,
+    ...(parseRuntimeMigrationContinuityNote(input.runtimeMigration)
+      ? {runtimeMigration: parseRuntimeMigrationContinuityNote(input.runtimeMigration)} : {}),
     traceContext: input.traceContext.kind === 'attached' ? {kind: 'attached', traceId: input.traceContext.traceId} : {kind: 'none'},
     outputLanguage: input.outputLanguage, codeAwareMode: input.codeAwareMode,
     codebaseIds: input.codebaseIds ? [...input.codebaseIds] : undefined,
@@ -111,7 +119,7 @@ export class ConversationSessionStore {
     if (parsed.version !== 1 || parsed.sessionId !== sessionId || parsed.userId !== owner.userId ||
       parsed.tenantId !== owner.tenantId || parsed.workspaceId !== owner.workspaceId ||
       !parsed.lastRun?.runId || !Number.isSafeInteger(parsed.lastRun.turnIndex) || parsed.lastRun.turnIndex < 0 ||
-      !Number.isFinite(parsed.lastRun.startedAt) || !parsed.providerSnapshotHash || !isProductionAgentRuntimeKind(parsed.runtimeKind) ||
+      !Number.isFinite(parsed.lastRun.startedAt) || !parsed.providerSnapshotHash || !isRecordedRuntimeKind(parsed.runtimeKind) ||
       (parsed.providerId !== null && typeof parsed.providerId !== 'string') ||
       !parsed.analysisContextFingerprint || !['none', 'attached'].includes(parsed.traceContext?.kind)) {
       throw new Error('conversation_recovery_descriptor_invalid');

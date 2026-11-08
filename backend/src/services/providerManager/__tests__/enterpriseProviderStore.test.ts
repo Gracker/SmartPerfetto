@@ -207,7 +207,7 @@ describe('enterprise provider store', () => {
     const secretFile = await fs.readFile(path.join(secretDir, 'provider-secrets.enc.json'), 'utf-8');
     expect(secretFile).toContain('libsodium-secretbox');
     expect(secretFile).not.toContain('sk-enterprise-secret-a');
-    expect(svc.getEnvForProvider(provider.id, scope('user-a'))!.OPENAI_API_KEY)
+    expect(svc.getEnvForProvider(provider.id, scope('user-a'))!.SMARTPERFETTO_PI_AGENT_CORE_API_KEY)
       .toBe('sk-enterprise-secret-a');
   });
 
@@ -246,8 +246,11 @@ describe('enterprise provider store', () => {
     expect(secretFile).not.toContain('sk-enterprise-opencode-json');
     expect(svc.getEnvForProvider(piProvider.id, scope('user-a'))!.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON)
       .toContain('sk-enterprise-pi-json');
-    expect(svc.getEnvForProvider(openCodeProvider.id, scope('user-a'))!.SMARTPERFETTO_OPENCODE_MODEL_JSON)
+    // An OpenCode model JSON naming no endpoint stays explicit (Pi reports it), its secret still sealed.
+    expect(svc.getRaw(openCodeProvider.id, scope('user-a'))!.connection.openCodeModelJson)
       .toContain('sk-enterprise-opencode-json');
+    expect(svc.getEnvForProvider(openCodeProvider.id, scope('user-a'))!.SMARTPERFETTO_PI_AGENT_CORE_MODEL_UNAVAILABLE)
+      .toBe('opencode_model_json_untranslatable');
   });
 
   it('encrypts custom header and environment values outside policy_json', async () => {
@@ -279,7 +282,7 @@ describe('enterprise provider store', () => {
 
     const raw = svc.getRaw(provider.id, scope('user-a'))!;
     expect(raw.custom?.headers?.Authorization).toBe('Bearer custom-header-secret');
-    expect(svc.getEnvForProvider(provider.id, scope('user-a'))?.OPENAI_API_KEY)
+    expect(svc.getEnvForProvider(provider.id, scope('user-a'))?.SMARTPERFETTO_PI_AGENT_CORE_API_KEY)
       .toBe('custom-env-secret');
   });
 
@@ -300,8 +303,8 @@ describe('enterprise provider store', () => {
 
     expect(svc.list(scope('user-a')).map(provider => provider.id)).toEqual([providerA.id]);
     expect(svc.list(scope('user-b')).map(provider => provider.id)).toEqual([providerB.id]);
-    expect(svc.getEffectiveEnv(scope('user-a'))!.OPENAI_API_KEY).toBe('sk-user-a');
-    expect(svc.getEffectiveEnv(scope('user-b'))!.OPENAI_API_KEY).toBe('sk-user-b');
+    expect(svc.getEffectiveEnv(scope('user-a'))!.SMARTPERFETTO_PI_AGENT_CORE_API_KEY).toBe('sk-user-a');
+    expect(svc.getEffectiveEnv(scope('user-b'))!.SMARTPERFETTO_PI_AGENT_CORE_API_KEY).toBe('sk-user-b');
   });
 
   it('keeps workspace default active when a user activates a personal provider', () => {
@@ -312,8 +315,8 @@ describe('enterprise provider store', () => {
     }, workspaceScope());
     svc.activate(workspaceProvider.id, workspaceScope());
 
-    expect(svc.getEffectiveEnv(scope('user-a'))!.OPENAI_API_KEY).toBe('sk-workspace-default');
-    expect(svc.getEffectiveEnv(scope('user-b'))!.OPENAI_API_KEY).toBe('sk-workspace-default');
+    expect(svc.getEffectiveEnv(scope('user-a'))!.SMARTPERFETTO_PI_AGENT_CORE_API_KEY).toBe('sk-workspace-default');
+    expect(svc.getEffectiveEnv(scope('user-b'))!.SMARTPERFETTO_PI_AGENT_CORE_API_KEY).toBe('sk-workspace-default');
 
     const personalProvider = svc.create({
       ...input,
@@ -322,8 +325,8 @@ describe('enterprise provider store', () => {
     }, scope('user-a'));
     svc.activate(personalProvider.id, scope('user-a'));
 
-    expect(svc.getEffectiveEnv(scope('user-a'))!.OPENAI_API_KEY).toBe('sk-user-a-default');
-    expect(svc.getEffectiveEnv(scope('user-b'))!.OPENAI_API_KEY).toBe('sk-workspace-default');
+    expect(svc.getEffectiveEnv(scope('user-a'))!.SMARTPERFETTO_PI_AGENT_CORE_API_KEY).toBe('sk-user-a-default');
+    expect(svc.getEffectiveEnv(scope('user-b'))!.SMARTPERFETTO_PI_AGENT_CORE_API_KEY).toBe('sk-workspace-default');
 
     const rows = readProviderRows();
     const workspaceRow = rows.find(row => row.id === workspaceProvider.id);
@@ -351,7 +354,7 @@ describe('enterprise provider store', () => {
 
     expect(svc.getRaw(workspaceProvider.id, scope('user-a'))?.id)
       .toBe(workspaceProvider.id);
-    expect(svc.getEnvForProvider(workspaceProvider.id, scope('user-a'))?.OPENAI_API_KEY)
+    expect(svc.getEnvForProvider(workspaceProvider.id, scope('user-a'))?.SMARTPERFETTO_PI_AGENT_CORE_API_KEY)
       .toBe('sk-workspace-default');
 
     expect(() => svc.update(
@@ -436,11 +439,11 @@ describe('enterprise provider store', () => {
 
   it('rotates provider secrets and audits secret lifecycle operations', () => {
     const provider = svc.create(input, scope('user-a'));
-    expect(svc.getEnvForProvider(provider.id, scope('user-a'))!.OPENAI_API_KEY)
+    expect(svc.getEnvForProvider(provider.id, scope('user-a'))!.SMARTPERFETTO_PI_AGENT_CORE_API_KEY)
       .toBe('sk-enterprise-secret-a');
 
     expect(svc.rotateSecret(provider.id, scope('user-a'))).toBe(2);
-    expect(svc.getEnvForProvider(provider.id, scope('user-a'))!.OPENAI_API_KEY)
+    expect(svc.getEnvForProvider(provider.id, scope('user-a'))!.SMARTPERFETTO_PI_AGENT_CORE_API_KEY)
       .toBe('sk-enterprise-secret-a');
 
     const row = readProviderRows()[0];

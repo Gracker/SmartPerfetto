@@ -24,23 +24,33 @@ import type {
 } from './types';
 import {
   assertAgentRuntimeSupported,
-  DUAL_SURFACE_PROVIDER_TYPES,
   isAgentRuntimeKind,
   isDualSurfaceProviderType,
   normalizeBedrockModelId,
+  previousProviderAgentRuntime,
   resolveProviderAgentRuntime,
   sharedKeyShouldUseClaudeAuthToken,
   supportsAgentRuntimeType,
 } from './providerRuntimeMatrix';
+import {PROVIDER_TYPES} from './providerTypes';
+import {officialTemplates} from './templates';
 import type {
   ProviderMutationGenerationVectorV1,
   ProviderMutationLease,
   ProviderMutationOwner,
   ProviderMutationScope,
 } from './providerMutationGeneration';
-import {piCatalogProviderEnv} from './piProviderCatalog';
-import {isPiProviderEnvKey, isQoderByokEnvKey} from './envIsolation';
+import {
+  piCatalogProviderEnv,
+  piEnvForLegacyRoute,
+  providerModelJsonEnv,
+  resolvePiRouteFromLegacyEnv,
+  withVertexHostCredentials,
+  type PiLegacyRouteResolution,
+} from './piProviderCatalog';
+import {isPiProviderEnvKey} from './envIsolation';
 import { withoutRetiredTuning } from './retiredTuning';
+import { withRequestedAgentRuntime } from './retiredRuntime';
 
 const SENSITIVE_FIELDS: (keyof ProviderConfig['connection'])[] = [
   'apiKey',
@@ -90,38 +100,34 @@ const ALLOWED_CUSTOM_ENV_OVERRIDES = new Set([
   'OPENAI_AGENTS_PROTOCOL',
 ]);
 
-function assertSafeCustomEnvOverrides(
-  custom: ProviderConfig['custom'],
-  runtime: AgentRuntimeKind,
-): void {
-  for (const [key, value] of Object.entries(custom?.envOverrides ?? {})) {
-    const piRuntimeOverride = runtime === 'pi-agent-core' && isPiProviderEnvKey(key);
-    const qoderByokOverride = runtime === 'qoder-agent-sdk' && isQoderByokEnvKey(key);
-    if (!ALLOWED_CUSTOM_ENV_OVERRIDES.has(key) && !piRuntimeOverride && !qoderByokOverride) {
+/**
+ * Overrides a custom profile may carry: the listed Claude/OpenAI/AWS keys
+ * (inputs of its Pi route) and Pi's own provider keys. A record property, so
+ * provider management never depends on the hidden legacy opt-in.
+ */
+function assertSafeCustomEnvOverrides(custom: ProviderConfig['custom']): void {
+  for (const key of Object.keys(custom?.envOverrides ?? {})) {
+    if (!ALLOWED_CUSTOM_ENV_OVERRIDES.has(key) && !isPiProviderEnvKey(key)) {
       throw invalidProviderRequest(`Custom provider env override is not allowed: ${key}`);
     }
-    if (qoderByokOverride && key === 'QODER_BYOK_BASE_URL') {
-      let url: URL;
-      try {
-        url = new URL(value);
-      } catch {
-        throw invalidProviderRequest(
-          'QODER_BYOK_BASE_URL must be an HTTP(S) URL without credentials, query, or fragment',
-        );
-      }
-      if (
-        (url.protocol !== 'http:' && url.protocol !== 'https:')
-        || url.username
-        || url.password
-        || url.search
-        || url.hash
-      ) {
-        throw invalidProviderRequest(
-          'QODER_BYOK_BASE_URL must be an HTTP(S) URL without credentials, query, or fragment',
-        );
-      }
-    }
   }
+}
+
+function assertApiSurface(surface: unknown): void {
+  if (surface !== undefined && surface !== null && surface !== 'claude' && surface !== 'openai') {
+    throw invalidProviderRequest('connection.apiSurface must be "claude" or "openai"');
+  }
+}
+
+/** Limits a provider template declares for the profile's primary model, used when the Pi catalog lacks it. */
+function templateModelLimits(provider: ProviderConfig): {contextWindow?: number; maxTokens?: number} | undefined {
+  const option = officialTemplates.find(template => template.type === provider.type)
+    ?.availableModels.find(model => model.id === provider.models.primary);
+  if (!option?.contextWindow && !option?.maxTokens) return undefined;
+  return {
+    ...(option.contextWindow ? {contextWindow: option.contextWindow} : {}),
+    ...(option.maxTokens ? {maxTokens: option.maxTokens} : {}),
+  };
 }
 
 function maskValue(value: string): string {
@@ -238,15 +244,7 @@ export class ProviderService {
     return this.store.get(id, scope);
   }
 
-  private static VALID_TYPES: ProviderType[] = [
-    'anthropic',
-    'bedrock',
-    'vertex',
-    ...DUAL_SURFACE_PROVIDER_TYPES,
-    'openai',
-    'ollama',
-    'custom',
-  ];
+  private static VALID_TYPES: readonly ProviderType[] = PROVIDER_TYPES;
 
   create(input: ProviderCreateInput, scope?: ProviderScope): ProviderConfig {
     if (!isPlainJsonObject(input as unknown)) throw invalidProviderRequest('Request body must be an object');
@@ -260,10 +258,12 @@ export class ProviderService {
     }
     if (!isPlainJsonObject(input.connection as unknown)) throw invalidProviderRequest('connection is required');
     this.assertRuntimeSupported(input.type, input.connection.agentRuntime);
-    assertSafeCustomEnvOverrides(
-      input.custom,
-      resolveProviderAgentRuntime({type: input.type, connection: input.connection}),
+    assertApiSurface(input.connection.apiSurface);
+    const requested = withRequestedAgentRuntime(
+      {type: input.type, connection: input.connection, models: input.models, custom: input.custom},
+      'Provider create',
     );
+    assertSafeCustomEnvOverrides(requested.custom);
 
     const now = new Date().toISOString();
     const provider: ProviderConfig = {
@@ -274,10 +274,10 @@ export class ProviderService {
       isActive: false,
       createdAt: now,
       updatedAt: now,
-      models: input.models,
-      connection: input.connection,
+      models: requested.models,
+      connection: requested.connection,
       ...(input.tuning ? { tuning: withoutRetiredTuning(input.tuning) } : {}),
-      ...(input.custom ? { custom: input.custom } : {}),
+      ...(requested.custom ? { custom: requested.custom } : {}),
     };
 
     return this.runProviderMutation(
@@ -324,16 +324,18 @@ export class ProviderService {
           if (input.connection.agentRuntime !== undefined) {
             this.assertRuntimeSupported(existing.type, merged.agentRuntime);
           }
+          assertApiSurface(merged.apiSurface);
           updated.connection = merged;
         }
         if (input.tuning !== undefined) updated.tuning = withoutRetiredTuning(input.tuning) ?? undefined;
         if (input.custom !== undefined) {
           updated.custom = input.custom ?? undefined;
         }
-        assertSafeCustomEnvOverrides(updated.custom, resolveProviderAgentRuntime(updated));
+        const migrated = withRequestedAgentRuntime(updated, 'Provider update');
+        assertSafeCustomEnvOverrides(migrated.custom);
 
-        this.store.set(updated, scope);
-        return updated;
+        this.store.set(migrated, scope);
+        return migrated;
       },
     );
   }
@@ -417,6 +419,7 @@ export class ProviderService {
     }
   }
 
+  /** A retired runtime is accepted with a warning and lands on Pi, keeping the endpoint it used. */
   switchAgentRuntime(id: string, runtime: AgentRuntimeKind, scope?: ProviderScope): ProviderConfig {
     if (!isAgentRuntimeKind(runtime)) {
       throw invalidProviderRequest(`Invalid agent runtime: ${runtime}`);
@@ -579,17 +582,33 @@ export class ProviderService {
     env.OPENAI_AGENTS_PROTOCOL = this.resolveOpenAIProtocol(provider);
   }
 
+  /**
+   * Pi's env for a provider: an explicit model JSON is the user's override; a
+   * profile that already ran on Pi keeps its frozen catalog route; every other
+   * profile gets the Pi route that calls what its previous runtime called,
+   * derived from the env that runtime would receive. Derived on each read and
+   * never persisted, so later edits to the provider keep applying.
+   */
   private applyPiAgentCoreConnection(env: Record<string, string>, provider: ProviderConfig): void {
     if (provider.connection.piAgentCoreModulePath) {
       env.SMARTPERFETTO_PI_AGENT_CORE_MODULE_PATH = provider.connection.piAgentCoreModulePath;
     }
+    const previous = previousProviderAgentRuntime(provider);
     if (provider.connection.piAgentCoreModelJson?.trim()) {
-      env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON = provider.connection.piAgentCoreModelJson;
-    } else {
+      Object.assign(env, providerModelJsonEnv(provider.connection.piAgentCoreModelJson));
+    } else if (previous === 'pi-agent-core') {
       Object.assign(env, piCatalogProviderEnv(provider));
+    } else {
+      Object.assign(env, piEnvForLegacyRoute(this.legacyPiRoute(provider, previous)));
     }
     if (provider.connection.piAgentCoreSystemPrompt) {
       env.SMARTPERFETTO_PI_AGENT_CORE_SYSTEM_PROMPT = provider.connection.piAgentCoreSystemPrompt;
+    }
+    if (provider.type === 'custom' && provider.custom?.envOverrides) {
+      // A profile that ran on Pi kept every allowed override; a derived route takes only Pi's own keys.
+      for (const [key, value] of Object.entries(provider.custom.envOverrides)) {
+        if (previous === 'pi-agent-core' || isPiProviderEnvKey(key)) env[key] = value;
+      }
     }
   }
 
@@ -618,9 +637,38 @@ export class ProviderService {
     }
   }
 
-  private toEnvVars(provider: ProviderConfig): Record<string, string> {
+  /**
+   * The env a provider gives the runtime it runs on now (Pi, or the hidden
+   * legacy opt-in), or, for `runtime`, the env that runtime received before
+   * Pi became the only runtime: the input of the Pi route derivation and of
+   * the legacy snapshot a recovered session is compared against.
+   */
+  getEnvForProviderUnderRuntime(provider: ProviderConfig, runtime: AgentRuntimeKind): Record<string, string> {
+    return this.toEnvVars(provider, runtime);
+  }
+
+  /**
+   * The Pi route a record maps to from the env `runtime` (the retired runtime
+   * it ran on) received: the one derivation both the Pi env and the pin
+   * continuity check read.
+   */
+  legacyPiRoute(provider: ProviderConfig, runtime: AgentRuntimeKind): PiLegacyRouteResolution {
+    const legacyEnv = withVertexHostCredentials(provider.type,
+      this.toEnvVars(provider, runtime) as Record<string, string | undefined>);
+    return resolvePiRouteFromLegacyEnv(legacyEnv, runtime, {
+      provider: `smartperfetto-${provider.type.replace(/_/g, '-')}`,
+      limits: templateModelLimits(provider),
+    });
+  }
+
+  private toEnvVars(provider: ProviderConfig, runtime = this.resolveAgentRuntime(provider)): Record<string, string> {
     const env: Record<string, string> = {};
-    const runtime = this.resolveAgentRuntime(provider);
+    if (runtime === 'pi-agent-core') {
+      // Pi gets its model and key only under its own env; no Claude/OpenAI surface env or tuning knobs.
+      this.applyPiAgentCoreConnection(env, provider);
+      env.SMARTPERFETTO_AGENT_RUNTIME = runtime;
+      return env;
+    }
 
     switch (provider.type as ProviderType) {
       case 'anthropic':
@@ -673,9 +721,6 @@ export class ProviderService {
         if (runtime === 'openai-agents-sdk') {
           env.SMARTPERFETTO_AGENT_RUNTIME = 'openai-agents-sdk';
           this.applyOpenAIConnection(env, provider);
-        } else if (runtime === 'pi-agent-core') {
-          // Pi gets its key only under its own key env; no Claude/OpenAI surface env.
-          this.applyPiAgentCoreConnection(env, provider);
         } else {
           const baseUrl = this.getClaudeBaseUrl(provider);
           if (baseUrl) env.ANTHROPIC_BASE_URL = baseUrl;
@@ -698,8 +743,6 @@ export class ProviderService {
         env.SMARTPERFETTO_AGENT_RUNTIME = runtime;
         if (runtime === 'openai-agents-sdk') {
           this.applyOpenAIConnection(env, provider);
-        } else if (runtime === 'pi-agent-core') {
-          this.applyPiAgentCoreConnection(env, provider);
         } else if (runtime === 'opencode') {
           this.applyOpenCodeConnection(env, provider);
         } else if (runtime === 'qoder-agent-sdk') {
@@ -714,10 +757,7 @@ export class ProviderService {
     }
 
     env.SMARTPERFETTO_AGENT_RUNTIME = runtime;
-    if (runtime === 'pi-agent-core') {
-      // Pi agent-core uses its own model JSON; keep Claude/OpenAI model env
-      // variables unset so downstream diagnostics cannot misclassify it.
-    } else if (runtime === 'opencode') {
+    if (runtime === 'opencode') {
       if (!provider.connection.openCodeModelJson) {
         env.OPENAI_MODEL = provider.models.primary;
         env.OPENAI_LIGHT_MODEL = provider.models.light;
@@ -745,10 +785,7 @@ export class ProviderService {
       if (provider.models.subAgent) env.CLAUDE_SUB_AGENT_MODEL = provider.models.subAgent;
     }
 
-    if (runtime === 'pi-agent-core') {
-      // Runtime-specific Pi tuning is intentionally not mapped to Claude/OpenAI
-      // knobs. Add explicit Pi knobs here only after the adapter supports them.
-    } else if (runtime === 'opencode') {
+    if (runtime === 'opencode') {
       // OpenCode tuning is runtime-specific and intentionally not mapped to
       // Claude/OpenAI loop knobs.
     } else if (runtime === 'qoder-agent-sdk') {

@@ -429,10 +429,10 @@ describe('Agent Routes - Session Lifecycle', () => {
 
   // These runs start real analyses: pin the jest-mocked Claude SDK runtime and
   // send providerId: null so no Provider Manager profile reaches a provider.
-  const previousRuntime = process.env.SMARTPERFETTO_AGENT_RUNTIME;
+  const previousRuntime = process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME;
 
   beforeAll(async () => {
-    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'claude-agent-sdk';
+    process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'claude-agent-sdk';
     app = await loopbackServers.listen(createTestApp());
 
     // A trace that does not load fails the suite: these tests must not pass by skipping.
@@ -450,8 +450,8 @@ describe('Agent Routes - Session Lifecycle', () => {
       });
     }
     if (traceId) await cleanupOwnedResource(() => cleanupTrace(traceId!));
-    if (previousRuntime === undefined) delete process.env.SMARTPERFETTO_AGENT_RUNTIME;
-    else process.env.SMARTPERFETTO_AGENT_RUNTIME = previousRuntime;
+    if (previousRuntime === undefined) delete process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME;
+    else process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = previousRuntime;
   });
 
   it('should create, query status, and delete session', async () => {

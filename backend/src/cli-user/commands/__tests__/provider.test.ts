@@ -24,7 +24,8 @@ describe('provider CLI command', () => {
     process.env = {
       ...originalEnv,
       PROVIDER_DATA_DIR_OVERRIDE: path.join(tmpDir, 'providers'),
-      SMARTPERFETTO_AGENT_RUNTIME: 'claude-agent-sdk',
+      // The Claude engine's binary guard is reachable only behind the hidden legacy opt-in.
+      SMARTPERFETTO_LEGACY_AGENT_RUNTIME: 'claude-agent-sdk',
       CLAUDE_BINARY_PATH: path.join(tmpDir, 'missing-claude-binary'),
     };
     delete process.env.ANTHROPIC_API_KEY;
@@ -121,6 +122,7 @@ describe('provider CLI command', () => {
   );
 
   test('system test uses Pi diagnostics and setup guidance instead of the Claude binary guard', async () => {
+    delete process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME;
     process.env.SMARTPERFETTO_AGENT_RUNTIME = 'pi-agent-core';
     delete process.env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON;
     delete process.env.SMARTPERFETTO_PI_AGENT_CORE_FAKE_STREAM;
@@ -134,24 +136,8 @@ describe('provider CLI command', () => {
     expect(payload.note).not.toContain('Claude Agent SDK native binary');
   });
 
-  test.each([undefined, 'not-json', '{}'])(
-    'system test rejects OpenCode without a parseable model configuration (%s)',
-    async (modelJson) => {
-      process.env.SMARTPERFETTO_AGENT_RUNTIME = 'opencode';
-      if (modelJson !== undefined) process.env.SMARTPERFETTO_OPENCODE_MODEL_JSON = modelJson;
-      const exitCode = await runProviderTestCommand({
-        envFile, sessionDir: path.join(tmpDir, 'home'), format: 'json',
-      });
-      const calls = consoleLogSpy.mock.calls;
-      const payload = JSON.parse(String(calls[calls.length - 1]?.[0] ?? '{}'));
-      expect(exitCode).toBe(1);
-      expect(payload).toMatchObject({ok: false, diagnostics: {runtime: 'opencode'}});
-      expect(payload.note).toContain('SMARTPERFETTO_OPENCODE_MODEL_JSON');
-      expect(payload.note).toContain('smp config init');
-    },
-  );
-
-  test('system test accepts complete OpenCode OpenAI-compatible model configuration', async () => {
+  test('system test maps a retired OpenCode env to Pi and runs its OpenAI-compatible endpoint', async () => {
+    delete process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME;
     process.env.SMARTPERFETTO_AGENT_RUNTIME = 'opencode';
     process.env.OPENAI_MODEL = 'openai-compatible-model';
     process.env.OPENAI_BASE_URL = 'http://127.0.0.1:11434/v1';
@@ -161,14 +147,12 @@ describe('provider CLI command', () => {
     const calls = consoleLogSpy.mock.calls;
     const payload = JSON.parse(String(calls[calls.length - 1]?.[0] ?? '{}'));
     expect(exitCode).toBe(0);
-    expect(payload).toMatchObject({
-      ok: true,
-      diagnostics: {runtime: 'opencode', modelConfigured: true},
-      note: 'OpenCode model configuration detected.',
-    });
+    expect(payload).toMatchObject({ok: true, runtime: {kind: 'pi-agent-core'},
+      diagnostics: {runtime: 'pi-agent-core', modelConfigured: true}});
   });
 
-  test('system test does not expose malformed OpenCode model JSON', async () => {
+  test('system test reports a retired OpenCode model JSON Pi cannot read, without exposing it', async () => {
+    delete process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME;
     process.env.SMARTPERFETTO_AGENT_RUNTIME = 'opencode';
     process.env.SMARTPERFETTO_OPENCODE_MODEL_JSON = '{"apiKey":"sk-opencode-secret",';
     const exitCode = await runProviderTestCommand({
@@ -178,8 +162,8 @@ describe('provider CLI command', () => {
     const payloadText = String(calls[calls.length - 1]?.[0] ?? '{}');
     const payload = JSON.parse(payloadText);
     expect(exitCode).toBe(1);
-    expect(payload).toMatchObject({ok: false, diagnostics: {runtime: 'opencode', configured: false}});
-    expect(payload.note).toContain('invalid or incomplete');
+    expect(payload).toMatchObject({ok: false, diagnostics: {runtime: 'pi-agent-core', configured: false,
+      modelUnavailableReason: 'opencode_model_json_untranslatable'}});
     expect(payloadText).not.toContain('sk-opencode-secret');
   });
 
@@ -221,15 +205,9 @@ describe('provider CLI command', () => {
     expect(payload.error).toContain('AI is disabled by SMARTPERFETTO_AI_ENABLED=false');
   });
 
-  test('system test reports the missing opt-in Qoder SDK without applying the Claude binary guard', async () => {
+  test('system test maps a retired Qoder env to Pi with an explicit gap', async () => {
+    delete process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME;
     process.env.SMARTPERFETTO_AGENT_RUNTIME = 'qoder-agent-sdk';
-    delete process.env.QODER_PERSONAL_ACCESS_TOKEN;
-    delete process.env.QODERCLI_PATH;
-    // Force "not installed" instead of inferring it from this machine: the
-    // detector short-circuits on a configured module path, so a nonexistent one
-    // gives the same answer whether or not `npm run qoder:install` has been run.
-    process.env.SMARTPERFETTO_QODER_SDK_MODULE_PATH = path.join(tmpDir, 'absent-qoder-sdk.js');
-
     const exitCode = await runProviderTestCommand({
       envFile,
       sessionDir: path.join(tmpDir, 'home'),
@@ -242,9 +220,8 @@ describe('provider CLI command', () => {
     expect(payload).toMatchObject({
       ok: false,
       target: 'system',
-      runtime: { kind: 'qoder-agent-sdk' },
-      diagnostics: { runtime: 'qoder-agent-sdk', configured: false, sdkInstalled: false },
+      runtime: { kind: 'pi-agent-core' },
+      diagnostics: { runtime: 'pi-agent-core', configured: false, modelUnavailableReason: 'qoder_untranslatable' },
     });
-    expect(payload.note).toContain('not installed');
   });
 });

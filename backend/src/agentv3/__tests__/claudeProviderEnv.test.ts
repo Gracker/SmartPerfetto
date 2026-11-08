@@ -11,6 +11,7 @@ import { getProviderService, resetProviderService } from '../../services/provide
 
 const ORIGINAL_ENV = {
   PROVIDER_DATA_DIR_OVERRIDE: process.env.PROVIDER_DATA_DIR_OVERRIDE,
+  SMARTPERFETTO_LEGACY_AGENT_RUNTIME: process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME,
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
   ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
@@ -53,6 +54,8 @@ describe('createSdkEnv provider isolation', () => {
     dir = path.join(os.tmpdir(), `claude-provider-env-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     await fsp.mkdir(dir, { recursive: true });
     process.env.PROVIDER_DATA_DIR_OVERRIDE = dir;
+    // The Claude engine runs only behind the hidden legacy opt-in.
+    process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'claude-agent-sdk';
     resetProviderService();
   });
 
@@ -139,7 +142,9 @@ describe('createSdkEnv provider isolation', () => {
     expect(config).not.toHaveProperty('verifierTimeoutMs');
   });
 
-  it('ignores an active OpenAI provider when resolving Claude env without an explicit providerId', () => {
+  it('ignores an active provider on another runtime when resolving Claude env without an explicit providerId', () => {
+    // The active provider runs on Pi (no legacy opt-in), so this engine's env ignores it.
+    delete process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME;
     process.env.ANTHROPIC_API_KEY = 'sk-global-anthropic';
     process.env.ANTHROPIC_BASE_URL = 'https://global-anthropic.example';
 
@@ -202,7 +207,7 @@ describe('createSdkEnv provider isolation', () => {
     );
   });
 
-  it('throws instead of falling back when explicit providerId targets an OpenAI runtime', () => {
+  it('throws instead of falling back when explicit providerId runs on another runtime', () => {
     const svc = getProviderService();
     const p = svc.create({
       name: 'OpenAI Provider',
@@ -215,11 +220,12 @@ describe('createSdkEnv provider isolation', () => {
       },
     });
 
+    delete process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME;
     expect(() => createSdkEnv(p.id)).toThrow(
-      `Provider ${p.id} is configured for openai-agents-sdk, not claude-agent-sdk`,
+      `Provider ${p.id} is configured for pi-agent-core, not claude-agent-sdk`,
     );
     expect(() => resolveRuntimeConfig(baseConfig, p.id)).toThrow(
-      `Provider ${p.id} is configured for openai-agents-sdk, not claude-agent-sdk`,
+      `Provider ${p.id} is configured for pi-agent-core, not claude-agent-sdk`,
     );
   });
 

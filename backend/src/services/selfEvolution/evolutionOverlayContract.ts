@@ -3,7 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {parseStrategyContribution} from '../../agentv3/strategyLoader';
-import {isProductionAgentRuntimeKind} from '../../agentRuntime/runtimeKinds';
+import {isRecordedRuntimeKind} from '../../agentRuntime/runtimeKinds';
 import type {ApplicationBuildIdentity} from '../applicationUpdate/types';
 import type {
   AppliedProposalRevisionV1,
@@ -1122,7 +1122,7 @@ function parseProducedUnder(
     const row = record(item, 'evolution_overlay_tested_matrix_invalid');
     exactKeys(row, ['runtime', 'providerId', 'model'], ['providerId', 'model']);
     if (
-      !isProductionAgentRuntimeKind(row.runtime)
+      !isRecordedRuntimeKind(row.runtime)
       || (row.providerId !== undefined && !nonEmpty(row.providerId))
       || (row.model !== undefined && !nonEmpty(row.model))
     ) {

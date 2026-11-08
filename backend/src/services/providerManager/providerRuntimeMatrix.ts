@@ -3,16 +3,26 @@
 import {
   getProviderTypesForRuntime,
   isProductionAgentRuntimeKind,
-  listProductionRuntimeKinds,
   supportsRuntimeProviderType,
 } from '../../agentRuntime/runtimeDescriptors';
+import {
+  CLAUDE_AGENT_RUNTIME_KIND,
+  OPENAI_AGENT_RUNTIME_KIND,
+  OPENCODE_RUNTIME_KIND,
+  PI_AGENT_CORE_RUNTIME_KIND,
+  QODER_AGENT_RUNTIME_KIND,
+  SELECTABLE_RUNTIME_KINDS,
+  type SelectableAgentRuntimeKind,
+} from '../../agentRuntime/runtimeKinds';
+import {legacyAgentRuntimeFallback} from '../../agentRuntime/legacyRuntimeFallback';
 import type {
   AgentRuntimeKind,
   DualSurfaceProviderType,
   ProviderConfig,
+  ProviderConnection,
   ProviderType,
 } from './types';
-import { DUAL_SURFACE_PROVIDER_TYPES } from './providerTypes';
+import { DUAL_SURFACE_PROVIDER_TYPES, PI_CATALOG_ROUTES } from './providerTypes';
 import { invalidProviderRequest } from './providerRequestError';
 
 export { DUAL_SURFACE_PROVIDER_TYPES };
@@ -25,20 +35,30 @@ export function isDualSurfaceProviderType(type: ProviderType): type is DualSurfa
   return DUAL_SURFACE_PROVIDER_TYPES.includes(type as DualSurfaceProviderType);
 }
 
+/** Types with both an Anthropic-compatible and an OpenAI-compatible endpoint to choose from. */
+export function providerTypeHasApiSurfaceChoice(type: ProviderType): boolean {
+  return type === 'custom' || isDualSurfaceProviderType(type);
+}
+
 export function supportsAgentRuntimeType(type: ProviderType, runtime: AgentRuntimeKind): boolean {
   return supportsRuntimeProviderType(type, runtime);
 }
 
-/** Every production runtime a provider type may select, from the runtime descriptors. */
-export function supportedAgentRuntimesForType(type: ProviderType): AgentRuntimeKind[] {
-  return listProductionRuntimeKinds().filter(runtime => supportsAgentRuntimeType(type, runtime));
+/** The runtimes a provider of this type may select: only selectable kinds its descriptors accept. */
+export function supportedAgentRuntimesForType(type: ProviderType): SelectableAgentRuntimeKind[] {
+  return SELECTABLE_RUNTIME_KINDS.filter(runtime => supportsAgentRuntimeType(type, runtime));
 }
 
 /** A provider-shaped API object with the runtimes its type may select, so clients need no type table. */
-export function withSupportedRuntimes<T extends {type: ProviderType}>(value: T): T & {supportedRuntimes: AgentRuntimeKind[]} {
+export function withSupportedRuntimes<T extends {type: ProviderType}>(value: T): T & {supportedRuntimes: SelectableAgentRuntimeKind[]} {
   return {...value, supportedRuntimes: supportedAgentRuntimesForType(value.type)};
 }
 
+/**
+ * A runtime value recorded for, or requested by, a provider of this type: Pi,
+ * or a retired runtime the type supported (it maps to Pi). Anything else is
+ * invalid.
+ */
 export function assertAgentRuntimeSupported(type: ProviderType, runtime?: unknown): asserts runtime is AgentRuntimeKind | undefined {
   if (runtime === undefined || runtime === null) return;
   if (!isAgentRuntimeKind(runtime)) {
@@ -49,49 +69,66 @@ export function assertAgentRuntimeSupported(type: ProviderType, runtime?: unknow
   }
 }
 
+function surfaceRuntime(surface: ProviderConnection['apiSurface']): AgentRuntimeKind | undefined {
+  if (surface === 'claude') return CLAUDE_AGENT_RUNTIME_KIND;
+  if (surface === 'openai') return OPENAI_AGENT_RUNTIME_KIND;
+  return undefined;
+}
+
+/**
+ * The runtime this record ran on before Pi Agent Core became the only runtime,
+ * which decides the endpoint, protocol, model and credential form Pi keeps:
+ * the recorded `apiSurface`; a retired value still stored (a record read
+ * before its next save); Pi itself for a profile that already ran on Pi (an
+ * explicit model JSON or a frozen catalog route); otherwise the type's former
+ * default.
+ */
+export function previousProviderAgentRuntime(
+  provider?: Pick<ProviderConfig, 'type' | 'connection'> | null,
+): AgentRuntimeKind {
+  const type = (provider?.type ?? 'custom') as ProviderType;
+  const connection = provider?.connection ?? {};
+  const storedRuntime = connection.agentRuntime;
+  assertAgentRuntimeSupported(type, storedRuntime);
+  const surface = providerTypeHasApiSurfaceChoice(type) ? surfaceRuntime(connection.apiSurface) : undefined;
+  if (surface) return surface;
+  if (storedRuntime && storedRuntime !== PI_AGENT_CORE_RUNTIME_KIND) return storedRuntime;
+  if (storedRuntime === PI_AGENT_CORE_RUNTIME_KIND
+    && (connection.piAgentCoreModelJson?.trim() || Object.prototype.hasOwnProperty.call(PI_CATALOG_ROUTES, type))) {
+    return PI_AGENT_CORE_RUNTIME_KIND;
+  }
+
+  switch (type) {
+    case 'openai':
+    case 'ollama':
+      return OPENAI_AGENT_RUNTIME_KIND;
+    case 'custom':
+      // OpenCode/Qoder fields named the runtime only for a record that recorded none.
+      if (!storedRuntime && (connection.openCodeModelJson || connection.openCodeSdkModulePath)) return OPENCODE_RUNTIME_KIND;
+      if (!storedRuntime && (connection.qoderAccessToken || connection.qoderCliPath)) return QODER_AGENT_RUNTIME_KIND;
+      if (connection.openaiProtocol || connection.openaiBaseUrl || connection.openaiApiKey) {
+        const hasClaudeSurface = Boolean(connection.claudeBaseUrl || connection.claudeApiKey || connection.claudeAuthToken);
+        return hasClaudeSurface ? CLAUDE_AGENT_RUNTIME_KIND : OPENAI_AGENT_RUNTIME_KIND;
+      }
+      return CLAUDE_AGENT_RUNTIME_KIND;
+    default:
+      return CLAUDE_AGENT_RUNTIME_KIND;
+  }
+}
+
+/**
+ * The runtime a provider runs on now. The hidden legacy opt-in restores only
+ * the engine a record actually ran on: a record whose previous runtime is a
+ * different engine runs on Pi, whose route preserves that record's own
+ * endpoint and credential, so the opt-in can never move a key to another host.
+ * The recorded value is still validated, so a corrupt record fails closed.
+ */
 export function resolveProviderAgentRuntime(
   provider?: Pick<ProviderConfig, 'type' | 'connection'> | null,
 ): AgentRuntimeKind {
-  const explicitRuntime = provider?.connection.agentRuntime;
-  assertAgentRuntimeSupported(provider?.type ?? 'custom', explicitRuntime);
-  if (explicitRuntime) return explicitRuntime;
-
-  switch (provider?.type as ProviderType | undefined) {
-    case 'openai':
-    case 'ollama':
-      return 'openai-agents-sdk';
-    case 'custom':
-      if (
-        provider?.connection.openCodeModelJson ||
-        provider?.connection.openCodeSdkModulePath
-      ) {
-        return 'opencode';
-      }
-      if (
-        provider?.connection.qoderAccessToken ||
-        provider?.connection.qoderCliPath
-      ) {
-        return 'qoder-agent-sdk';
-      }
-      if (
-        provider?.connection.openaiProtocol ||
-        provider?.connection.openaiBaseUrl ||
-        provider?.connection.openaiApiKey
-      ) {
-        const hasClaudeSurface = Boolean(
-          provider.connection.claudeBaseUrl ||
-          provider.connection.claudeApiKey ||
-          provider.connection.claudeAuthToken,
-        );
-        return hasClaudeSurface ? 'claude-agent-sdk' : 'openai-agents-sdk';
-      }
-      return 'claude-agent-sdk';
-    case 'anthropic':
-    case 'bedrock':
-    case 'vertex':
-    default:
-      return 'claude-agent-sdk';
-  }
+  const previous = previousProviderAgentRuntime(provider);
+  const legacy = legacyAgentRuntimeFallback();
+  return legacy && previous === legacy ? legacy : PI_AGENT_CORE_RUNTIME_KIND;
 }
 
 export function sharedKeyShouldUseClaudeAuthToken(type: ProviderType): boolean {

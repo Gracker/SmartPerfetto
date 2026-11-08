@@ -39,39 +39,64 @@ CLI npm 包是独立终端产品，入口是 `smp` / `smartperfetto`；它不启
 
 ## 运行时选择
 
-优先级从高到低：
+Pi Agent Core（`pi-agent-core`）是唯一可选的 runtime（`runtimeKinds.ts` 的 `SELECTABLE_RUNTIME_KINDS`）。
+`runtimeSelection.ts` 仍按来源优先级给出 selection：请求/会话的 `providerId`、Provider Manager 当前
+active provider、记录下的 runtime pin（session snapshot、CLI session）、`SMARTPERFETTO_AGENT_RUNTIME`、
+默认；每个来源都解析到同一个 effective runtime（`legacyRuntimeFallback.ts` 的 `effectiveAgentRuntimeKind`）。
 
-1. 请求体或会话内的 `providerId`。
-2. Provider Manager 当前 active provider。
-3. `SMARTPERFETTO_AGENT_RUNTIME` env。
-4. 默认：env 中已有 Claude 凭据（Anthropic key/token、Bedrock、Vertex）时为 `claude-agent-sdk`，否则为 `pi-agent-core`。
-
-`SMARTPERFETTO_AGENT_RUNTIME` 只接受 `claude-agent-sdk`、`openai-agents-sdk`、`pi-agent-core`、`opencode` 或 `qoder-agent-sdk`。`deepseek`、`openai` 这类 provider 名称不能写在 runtime env 里；DeepSeek 应通过 Provider Manager 或 Claude/Anthropic-compatible env 配置。
-
-除第 4 步只看 env 是否已有 Claude 凭据外，其他 key（例如 `OPENAI_API_KEY`）不会被用来猜运行时；带 Claude 凭据的旧 env 配置因此保持 `claude-agent-sdk`，不会被静默迁移。Provider Manager 内的 active provider 会优先于 env；双端点 provider 通过 `connection.agentRuntime` 显式决定当前 SDK。
+- `SMARTPERFETTO_AGENT_RUNTIME` 已废弃：曾经有效的值（`claude-agent-sdk`、`openai-agents-sdk`、
+  `pi-agent-core`、`opencode`、`qoder-agent-sdk`、实验 kind）都映射为 effective runtime，并只记录一次
+  废弃警告；未知值（例如 `deepseek` 这类 provider 名称）仍 fail closed。
+  `SMARTPERFETTO_EXPERIMENTAL_AGENT_RUNTIME` 开关已退役并被忽略。
+- 记录在数据里的 runtime 标签（`RECORDED_RUNTIME_KINDS`，含已退役 kind）只作 provenance：会话描述、
+  snapshot、run manifest、receipt、external-issue pin 和 Self-Evolution pin 照常解析；执行时重新解析为
+  effective runtime。固定到已退役 runtime 的 Self-Evolution baseline 报告
+  `evaluation_baseline_runtime_retired`，需要重新建立 baseline。
+- 维护者说明：Claude Agent SDK 与 OpenAI Agents SDK 引擎在本版本内保留一个不写入用户文档、只读
+  进程环境的回退开关 `SMARTPERFETTO_LEGACY_AGENT_RUNTIME=claude-agent-sdk|openai-agents-sdk`。它只恢复
+  provider record 原本运行的那个引擎；原本运行在其他引擎上的 record 仍走 Pi（Pi 路由保持该 record
+  自己的 endpoint 和凭据），因此不会把 key 发到另一家服务。provider env 与 `custom.envOverrides` 都不能
+  携带它；记录下的 pin 走同一个函数，
+  `smp doctor` 与健康检查会报告它处于激活状态。下一版本连同两个引擎一起删除。
 
 每个分析 session 会固定自己的 credential source：具体 Provider Manager profile，或显式的 env/default fallback。恢复历史 session 时不会重新读取后来切换的 active provider；如果快照绑定的 provider 已被删除，后端会 fail-fast，而不是静默回退到另一个 provider。
 
-Provider 默认映射：
+### Provider 到 Pi 模型的映射
 
-| Provider type | Runtime | Protocol |
-|---|---|---|
-| `anthropic` / `bedrock` / `vertex` | `claude-agent-sdk` | Claude/Anthropic |
-| `deepseek` / `glm`（新建模板） | `pi-agent-core` | Pi 内置目录模型 + 该 provider 的 OpenAI-compatible endpoint |
-| `openai` | `openai-agents-sdk` | OpenAI Responses |
-| `ollama` | `openai-agents-sdk` | OpenAI-compatible Chat Completions |
-| `custom` | 由 `connection.agentRuntime` 或 `connection.openaiProtocol` 决定 | 显式配置；OpenCode 和 Qoder 只允许 custom provider |
+`piProviderCatalog.ts` 是唯一的映射：先确定 profile 迁移前运行在哪个 runtime
+（`providerRuntimeMatrix.ts` 的 `previousProviderAgentRuntime`：`apiSurface`、尚未保存的旧
+`agentRuntime`、已在 Pi 上的 profile、否则按类型的原默认值），再由该 runtime 原本收到的 env
+推出 Pi route（`resolvePiRouteFromLegacyEnv`），因此 API、请求 origin（scheme、host、port、base path）、
+模型 ID 和凭据形式都与原 runtime 一致：
 
-Provider connection 支持两套端点字段：
+| 原 runtime | Pi API | origin | 凭据 |
+|---|---|---|---|
+| Claude（Anthropic 或兼容网关） | `anthropic-messages` | `ANTHROPIC_BASE_URL`，默认 `https://api.anthropic.com` | `ANTHROPIC_API_KEY` → `x-api-key`；`ANTHROPIC_AUTH_TOKEN`（双端点 provider 的共享 key）→ 请求头 `Authorization: Bearer`，不写入 model JSON |
+| Claude on Bedrock | `bedrock-converse-stream` | `ANTHROPIC_BEDROCK_BASE_URL`，默认 `bedrock-runtime.<region>.amazonaws.com` | bearer token、显式 key，或 provider record 的 AWS profile（每次请求严格 `fromIni({profile})`，fingerprint 绑定 profile+region） |
+| Claude on Vertex | `anthropic-vertex`（注入 `AnthropicVertex` client 的 anthropic-messages） | `<region>-aiplatform.googleapis.com/v1`（`global` 为 `aiplatform.googleapis.com/v1`） | 仅 `GOOGLE_APPLICATION_CREDENTIALS` 指定的文件 |
+| OpenAI Agents SDK | `openai-responses` 或 `openai-completions`（按 `OPENAI_AGENTS_PROTOCOL`） | `OPENAI_BASE_URL`，默认 `https://api.openai.com/v1` | Bearer；本机 endpoint 无 key 时用占位 key |
+| OpenCode | `openai-completions` | 其 OpenAI-compatible 字段或 model JSON 的 `baseURL` | Bearer |
+| Qoder，或没有 endpoint 的 OpenCode JSON | 无（`SMARTPERFETTO_PI_AGENT_CORE_MODEL_UNAVAILABLE` 给出原因） | — | — |
+| 已在 Pi 上（catalog 类型或显式 JSON） | 不变（冻结的 `PI_CATALOG_ROUTES` catalog reference 或用户 JSON） | 不变 | 不变 |
 
-| 字段 | Runtime | 映射到 env |
-|---|---|---|
-| `claudeBaseUrl` / `claudeApiKey` / `claudeAuthToken` | `claude-agent-sdk` | `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` |
-| `openaiBaseUrl` / `openaiApiKey` / `openaiProtocol` | `openai-agents-sdk` | `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_AGENTS_PROTOCOL` |
-| `piAgentCoreModulePath` / `piAgentCoreModelJson` / `piAgentCoreSystemPrompt` | `pi-agent-core` | `SMARTPERFETTO_PI_AGENT_CORE_MODULE_PATH` / `SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON` / `SMARTPERFETTO_PI_AGENT_CORE_SYSTEM_PROMPT` |
-| `openCodeSdkModulePath` / `openCodeModelJson` / `openCodeSystemPrompt` 加 OpenAI-compatible 端点字段 | `opencode` | `SMARTPERFETTO_OPENCODE_SDK_MODULE_PATH` / `SMARTPERFETTO_OPENCODE_MODEL_JSON` / `SMARTPERFETTO_OPENCODE_SYSTEM_PROMPT`；没有 model JSON 时使用 `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL` |
-| `qoderAccessToken` / `qoderCliPath` / `qoderModel` / `qoderSystemPrompt` | `qoder-agent-sdk` | `QODER_PERSONAL_ACCESS_TOKEN` / `QODERCLI_PATH` / `QODER_MODEL` / `SMARTPERFETTO_QODER_SYSTEM_PROMPT` |
-| `baseUrl` / `apiKey` | legacy/shared | 作为旧配置兼容或双协议共享 key |
+创建 provider runtime 时（`piAgentCoreProvider.ts` 的 `resolvePiRouteModel`），installed pi-ai catalog
+在同一 host、同一 API 下有该模型时使用目录条目（只替换为 route 的 base URL）；否则在原 API 上合成：
+reasoning 关闭、费用为 0、限制取同 host 的目录条目、模板声明或保守默认（context 128000；输出
+Anthropic/Bedrock/Vertex 32000、OpenAI 16384），Anthropic-compatible 网关不发送 `eager_input_streaming`。
+合成模型只在 env 时派生，从不持久化；显式 `piAgentCoreModelJson` 仍是用户覆盖。
+
+Provider profile 在读取时由 `retiredRuntime.ts` 的 `withMigratedAgentRuntime` 迁移（与
+`withoutRetiredTuning` 并列）：旧 `agentRuntime` → `pi-agent-core`，双端点/custom 类型记录 `apiSurface`，
+删除只属于 OpenCode/Qoder 的字段；幂等，下一次正常保存时写回。API、`POST /:id/runtime` 写入的旧值
+记录警告后按同一规则落到 Pi。无法换算的 Qoder 或无 endpoint 的 OpenCode profile 保留原标签并显式报错。
+
+### 恢复时的连续性
+
+记录在旧 runtime 下的 pin，只有同时满足以下条件才视为兼容（`providerPinContinuity.ts`）：用当前
+record 在记录的旧 runtime 下重算的 legacy hash 等于记录的 hash；effective 请求 origin 不变；model ID
+不变；`analysisContextFingerprint` 不变。兼容时 pin 重新绑定到新 hash，并记录连续性说明（对话描述的
+`runtimeMigration`，session snapshot 的 `retired_runtime_rebound` 条目）；否则沿用原有的显式结果
+（409 或 continuity break）。OpenCode/Qoder 的 legacy hash 计算在删除引擎后保留一个版本。
 
 模型控制由 `modelExecutionProfile.ts` 区分服务端模型能力、实际 SDK 表达能力及已捕获的用户配置，`modelExecutionPolicy.ts` 决定本轮用途允许的参数。匹配依据是实际 endpoint、model ID 和协议，未知 gateway 或尚未建模的协议保持 unknown；已由原生 SDK 验证的合法配置继续保留。不能根据 provider 名称、请求耗时或模型自述推断能力，也不能静默切换 pinned provider/model。
 

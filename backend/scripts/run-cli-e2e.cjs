@@ -70,7 +70,6 @@ async function main() {
     ...process.env,
     HOME: path.join(workRoot, 'user-home'),
     SMARTPERFETTO_HOME: sessionHome,
-    SMARTPERFETTO_AGENT_RUNTIME: 'openai-agents-sdk',
     SMARTPERFETTO_CLI_E2E_FAKE: '1',
     SMARTPERFETTO_CLI_E2E_FAKE_RESPONSE: 'CLI E2E fake conclusion: startup analysis completed.',
     SMARTPERFETTO_CLI_E2E_SECRET: rawSecret,
@@ -84,7 +83,6 @@ async function main() {
   const envFileValues = {
     NODE_ENV: baseEnv.NODE_ENV,
     SMARTPERFETTO_HOME: baseEnv.SMARTPERFETTO_HOME,
-    SMARTPERFETTO_AGENT_RUNTIME: baseEnv.SMARTPERFETTO_AGENT_RUNTIME,
     SMARTPERFETTO_CLI_E2E_FAKE: baseEnv.SMARTPERFETTO_CLI_E2E_FAKE,
     SMARTPERFETTO_CLI_E2E_FAKE_RESPONSE: baseEnv.SMARTPERFETTO_CLI_E2E_FAKE_RESPONSE,
     OPENAI_API_KEY: baseEnv.OPENAI_API_KEY,
@@ -125,7 +123,8 @@ async function main() {
 
   const doctor = parseJson(runCli('doctor json', ['doctor', '--format', 'json']).stdout);
   assert.equal(doctor.ok, true);
-  assert.equal(doctor.runtime.kind, 'openai-agents-sdk');
+  // Pi Agent Core runs the OpenAI-compatible endpoint the env names.
+  assert.equal(doctor.runtime.kind, 'pi-agent-core');
   assert.equal(doctor.cliHome, sessionHome);
 
   // Env-first entry: invoked from another directory, relative --env-file,
@@ -162,7 +161,7 @@ async function main() {
 
   const providerTest = parseJson(runCli('provider test system', ['provider', 'test', 'system', '--format', 'json']).stdout);
   assert.equal(providerTest.ok, true);
-  assert.equal(providerTest.runtime.kind, 'openai-agents-sdk');
+  assert.equal(providerTest.runtime.kind, 'pi-agent-core');
 
   const capturePresets = parseJson(runCli('capture presets json', ['capture', 'presets', '--format', 'json']).stdout);
   assert.equal(capturePresets.ok, true);

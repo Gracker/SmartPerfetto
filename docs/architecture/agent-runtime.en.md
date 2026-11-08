@@ -42,38 +42,78 @@ MCP tools, Skills, reports, and session snapshots.
 
 ## Runtime Selection
 
-Priority, highest first:
+Pi Agent Core (`pi-agent-core`) is the only selectable runtime (`SELECTABLE_RUNTIME_KINDS` in
+`runtimeKinds.ts`). `runtimeSelection.ts` still reports the source by precedence: request/session
+`providerId`, the Provider Manager active provider, a recorded runtime pin (session snapshot, CLI
+session), `SMARTPERFETTO_AGENT_RUNTIME`, then the default; every source resolves to one effective
+runtime (`effectiveAgentRuntimeKind` in `legacyRuntimeFallback.ts`).
 
-1. `providerId` from the request or session.
-2. The Provider Manager active provider.
-3. `SMARTPERFETTO_AGENT_RUNTIME`.
-4. Default: `claude-agent-sdk` when env already carries Claude credentials (Anthropic key/token, Bedrock, Vertex), otherwise `pi-agent-core`.
+- `SMARTPERFETTO_AGENT_RUNTIME` is deprecated: every value it once accepted (`claude-agent-sdk`,
+  `openai-agents-sdk`, `pi-agent-core`, `opencode`, `qoder-agent-sdk`, the experimental kinds) maps
+  to the effective runtime with one deprecation warning; unknown values such as a provider name like
+  `deepseek` still fail closed. The `SMARTPERFETTO_EXPERIMENTAL_AGENT_RUNTIME` switches are retired and
+  ignored.
+- Runtime labels recorded in data (`RECORDED_RUNTIME_KINDS`, retired kinds included) are provenance:
+  conversation descriptors, snapshots, run manifests, receipts, the external-issue pin, and
+  Self-Evolution pins still parse; execution re-resolves them to the effective runtime. A
+  Self-Evolution baseline pinned to a retired runtime reports `evaluation_baseline_runtime_retired`
+  and needs a new baseline.
+- Maintainer note: for this release the Claude Agent SDK and OpenAI Agents SDK engines stay reachable
+  through an undocumented opt-in read only from the process environment,
+  `SMARTPERFETTO_LEGACY_AGENT_RUNTIME=claude-agent-sdk|openai-agents-sdk`. It restores only the
+  engine a provider record actually ran on; a record that ran on another engine stays on Pi, whose
+  route keeps that record's own endpoint and credential, so a key never moves to another service.
+  Provider env and `custom.envOverrides` can never carry it; recorded pins resolve through
+  the same function; `smp doctor` and runtime health report it as active. It is removed with both
+  engines in the next release.
 
-`SMARTPERFETTO_AGENT_RUNTIME` only accepts `claude-agent-sdk`,
-`openai-agents-sdk`, `pi-agent-core`, `opencode`, or `qoder-agent-sdk`. Provider names such as
-`deepseek` or `openai` are not valid runtime values. Provider Manager active profiles
-override env fallback, and a resumed session keeps the provider/runtime it was
-created with.
+Each analysis session pins its credential source: a specific Provider Manager profile, or the
+explicit env/default fallback. Resuming a session does not re-read a later active provider; a
+snapshot whose provider was deleted fails fast instead of falling back to another provider.
 
-Provider mapping:
+### Provider to Pi model mapping
 
-| Provider type | Runtime | Protocol |
-|---|---|---|
-| `anthropic` / `bedrock` / `vertex` | `claude-agent-sdk` | Claude/Anthropic |
-| `deepseek` / `glm` (new templates) | `pi-agent-core` | Pi builtin catalog model + the provider's OpenAI-compatible endpoint |
-| `openai` | `openai-agents-sdk` | OpenAI Responses |
-| `ollama` | `openai-agents-sdk` | OpenAI-compatible Chat Completions |
-| `custom` | selected by `connection.agentRuntime` or `connection.openaiProtocol` | explicit configuration; OpenCode and Qoder are custom-only |
+`piProviderCatalog.ts` is the single mapping. It first decides which runtime a profile ran on before
+the move (`previousProviderAgentRuntime` in `providerRuntimeMatrix.ts`: `apiSurface`, a retired
+`agentRuntime` not yet saved back, a profile already on Pi, otherwise the type's former default), then
+derives the Pi route from the env that runtime received (`resolvePiRouteFromLegacyEnv`). The API,
+request origin (scheme, host, port, base path), model ID, and credential form therefore match the old
+runtime:
 
-Provider connection fields map to runtime-specific env:
+| Previous runtime | Pi API | Origin | Credential |
+|---|---|---|---|
+| Claude (Anthropic or a compatible gateway) | `anthropic-messages` | `ANTHROPIC_BASE_URL`, default `https://api.anthropic.com` | `ANTHROPIC_API_KEY` → `x-api-key`; `ANTHROPIC_AUTH_TOKEN` (a dual-surface provider's shared key) → an `Authorization: Bearer` request header, never written into the model JSON |
+| Claude on Bedrock | `bedrock-converse-stream` | `ANTHROPIC_BEDROCK_BASE_URL`, default `bedrock-runtime.<region>.amazonaws.com` | bearer token, explicit keys, or the provider record's AWS profile (strict `fromIni({profile})` per request; the fingerprint binds profile+region) |
+| Claude on Vertex | `anthropic-vertex` (anthropic-messages with an injected `AnthropicVertex` client) | `<region>-aiplatform.googleapis.com/v1` (`aiplatform.googleapis.com/v1` for `global`) | only the file named by `GOOGLE_APPLICATION_CREDENTIALS` |
+| OpenAI Agents SDK | `openai-responses` or `openai-completions` (per `OPENAI_AGENTS_PROTOCOL`) | `OPENAI_BASE_URL`, default `https://api.openai.com/v1` | Bearer; a placeholder key for a local endpoint without one |
+| OpenCode | `openai-completions` | its OpenAI-compatible fields or the model JSON's `baseURL` | Bearer |
+| Qoder, or an OpenCode JSON without an endpoint | none (`SMARTPERFETTO_PI_AGENT_CORE_MODEL_UNAVAILABLE` names the reason) | — | — |
+| Already on Pi (catalog type or explicit JSON) | unchanged (the frozen `PI_CATALOG_ROUTES` catalog reference or the user's JSON) | unchanged | unchanged |
 
-| Fields | Runtime | Env |
-|---|---|---|
-| `claudeBaseUrl` / `claudeApiKey` / `claudeAuthToken` | `claude-agent-sdk` | `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` |
-| `openaiBaseUrl` / `openaiApiKey` / `openaiProtocol` | `openai-agents-sdk` | `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_AGENTS_PROTOCOL` |
-| `piAgentCoreModulePath` / `piAgentCoreModelJson` / `piAgentCoreSystemPrompt` | `pi-agent-core` | `SMARTPERFETTO_PI_AGENT_CORE_MODULE_PATH` / `SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON` / `SMARTPERFETTO_PI_AGENT_CORE_SYSTEM_PROMPT` |
-| `openCodeSdkModulePath` / `openCodeModelJson` / `openCodeSystemPrompt` plus OpenAI-compatible endpoint fields | `opencode` | `SMARTPERFETTO_OPENCODE_SDK_MODULE_PATH` / `SMARTPERFETTO_OPENCODE_MODEL_JSON` / `SMARTPERFETTO_OPENCODE_SYSTEM_PROMPT` plus `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL` when model JSON is omitted |
-| `qoderAccessToken` / `qoderCliPath` / `qoderModel` / `qoderSystemPrompt` | `qoder-agent-sdk` | `QODER_PERSONAL_ACCESS_TOKEN` / `QODERCLI_PATH` / `QODER_MODEL` / `SMARTPERFETTO_QODER_SYSTEM_PROMPT` |
+When the provider runtime is created (`resolvePiRouteModel` in `piAgentCoreProvider.ts`), the installed
+pi-ai catalog supplies the model if it serves this ID with this API on this host (only the route's base
+URL replaces its own); otherwise the model is synthesized on the previous API with reasoning off, zero
+cost, and limits from a same-host catalog entry, the template, or conservative defaults (context
+128000; output 32000 for Anthropic/Bedrock/Vertex, 16384 for OpenAI), and an Anthropic-compatible
+gateway receives no `eager_input_streaming`. The synthesized model is derived at env time and never
+persisted; an explicit `piAgentCoreModelJson` remains the user's override.
+
+Provider profiles migrate on read through `withMigratedAgentRuntime` in `retiredRuntime.ts` (next to
+`withoutRetiredTuning`): a retired `agentRuntime` becomes `pi-agent-core`, dual-surface and custom types
+record `apiSurface`, and fields only OpenCode or Qoder read are dropped. It is idempotent, and the next
+normal save writes it back. A retired value written through the API or `POST /:id/runtime` logs a
+warning and lands on Pi the same way. An untranslatable Qoder profile or endpoint-less OpenCode profile
+keeps its label and fails explicitly.
+
+### Continuity on recovery
+
+A pin recorded under a retired runtime is compatible only when all of these hold
+(`providerPinContinuity.ts`): the legacy hash recomputed from the current record under the recorded
+runtime equals the recorded hash; the effective request origin is unchanged; the model ID is unchanged;
+and `analysisContextFingerprint` is unchanged. A compatible pin is rebound to the new hash with a
+continuity note (`runtimeMigration` on the conversation descriptor, a `retired_runtime_rebound` entry on
+the session snapshot); anything else keeps the existing explicit outcome (409 or a continuity break).
+The OpenCode/Qoder legacy-hash computation stays for one release after their engines are removed.
 
 `modelExecutionProfile.ts` separates documented server capabilities, actual SDK expression capabilities and captured authored settings; `modelExecutionPolicy.ts` selects controls by call purpose. Matching uses the actual endpoint, exact model ID and protocol. Unknown gateways or unmodeled protocols remain unknown, and native configurations already validated by their SDK remain intact. Provider names, latency and model self-descriptions do not establish capabilities or authorize switching the pinned provider/model.
 

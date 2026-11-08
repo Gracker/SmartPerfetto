@@ -7,6 +7,7 @@ jest.mock('../providerEndpointRequest', () => ({
   requestProviderEndpoint: (...args: unknown[]) => mockRequestProviderEndpoint(...args),
 }));
 
+import {piModelUnavailableHint} from '../../../agentRuntime/engines/pi/piAgentCoreConfig';
 import { testProviderConnection } from '../connectionTester';
 import type { ProviderConfig } from '../types';
 
@@ -16,7 +17,12 @@ describe('Provider connection tester', () => {
     'PROVIDER_TEST_REQUEST_TIMEOUT_MS',
     'PROVIDER_TEST_TOTAL_TIMEOUT_MS',
     'PROVIDER_TEST_RESPONSE_BODY_TIMEOUT_MS',
+    'SMARTPERFETTO_LEGACY_AGENT_RUNTIME',
   ];
+  /** The Claude/OpenAI engines' own probes run only under the hidden legacy opt-in. */
+  const legacy = (runtime: 'claude-agent-sdk' | 'openai-agents-sdk') => {
+    process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = runtime;
+  };
 
   beforeEach(() => {
     mockRequestProviderEndpoint.mockImplementation(async (url: string, init: RequestInit) => {
@@ -38,10 +44,11 @@ describe('Provider connection tester', () => {
 
   it.each([401, 403])('guides rejected Anthropic and OpenAI credentials to Web settings (%s)', async (status) => {
     globalThis.fetch = jest.fn(async () => jsonResponse({}, status)) as any;
-    for (const provider of [openAIProvider(), {
+    for (const [runtime, provider] of [['openai-agents-sdk', openAIProvider()], ['claude-agent-sdk', {
       ...openAIProvider(), type: 'anthropic' as const,
       connection: {apiKey: 'invalid-test-key'},
-    }]) {
+    }]] as const) {
+      legacy(runtime);
       const result = await testProviderConnection(provider);
       expect(result.success).toBe(false);
       expect(result.error).toContain(String(status));
@@ -65,6 +72,7 @@ describe('Provider connection tester', () => {
 
   it('provides configuration locations when an Anthropic key is missing', async () => {
     globalThis.fetch = jest.fn() as any;
+    legacy('claude-agent-sdk');
     const result = await testProviderConnection({
       ...openAIProvider(), type: 'anthropic', connection: {},
     });
@@ -93,11 +101,14 @@ describe('Provider connection tester', () => {
     const result = await testProviderConnection(provider);
 
     expect(result.success).toBe(false);
-    expect(result.error).toContain('model JSON is invalid');
+    // Pi rejects its own malformed JSON; an OpenCode JSON it cannot read is reported as untranslatable.
+    expect(result.error).toContain(kind === 'pi' ? 'model JSON is invalid'
+      : piModelUnavailableHint('opencode_model_json_untranslatable'));
     expect(JSON.stringify(result)).not.toContain(secret);
   });
 
   it('returns a bounded failure when an error response body never finishes', async () => {
+    legacy('openai-agents-sdk');
     process.env.PROVIDER_TEST_REQUEST_TIMEOUT_MS = '100';
     process.env.PROVIDER_TEST_TOTAL_TIMEOUT_MS = '500';
     process.env.PROVIDER_TEST_RESPONSE_BODY_TIMEOUT_MS = '20';
@@ -120,6 +131,7 @@ describe('Provider connection tester', () => {
   });
 
   it('returns a bounded failure when fetch ignores abort signals', async () => {
+    legacy('openai-agents-sdk');
     process.env.PROVIDER_TEST_REQUEST_TIMEOUT_MS = '20';
     process.env.PROVIDER_TEST_TOTAL_TIMEOUT_MS = '80';
     process.env.PROVIDER_TEST_RESPONSE_BODY_TIMEOUT_MS = '20';
@@ -135,6 +147,7 @@ describe('Provider connection tester', () => {
   });
 
   it('does not pass OpenAI-compatible providers on /models reachability alone', async () => {
+    legacy('openai-agents-sdk');
     const calls: string[] = [];
     globalThis.fetch = jest.fn(async (url: string) => {
       calls.push(url);
@@ -155,6 +168,7 @@ describe('Provider connection tester', () => {
   });
 
   it('passes chat-completions providers only after a primary model probe succeeds', async () => {
+    legacy('openai-agents-sdk');
     let requestBody: any;
     globalThis.fetch = jest.fn(async (_url: string, init: RequestInit) => {
       requestBody = JSON.parse(String(init.body));
@@ -172,6 +186,7 @@ describe('Provider connection tester', () => {
   });
 
   it('probes GPT-5.6 Chat Completions with max_completion_tokens', async () => {
+    legacy('openai-agents-sdk');
     let requestBody: Record<string, unknown> = {};
     globalThis.fetch = jest.fn(async (_url: string, init: RequestInit) => {
       requestBody = JSON.parse(String(init.body));
@@ -191,6 +206,7 @@ describe('Provider connection tester', () => {
   });
 
   it('passes responses providers only after a primary model probe succeeds', async () => {
+    legacy('openai-agents-sdk');
     let requestUrl = '';
     let requestBody: any;
     globalThis.fetch = jest.fn(async (url: string, init: RequestInit) => {
@@ -211,6 +227,7 @@ describe('Provider connection tester', () => {
   });
 
   it('defaults historical custom OpenAI-compatible providers to chat completions', async () => {
+    legacy('openai-agents-sdk');
     let requestUrl = '';
     globalThis.fetch = jest.fn(async (url: string) => {
       requestUrl = url;
@@ -230,6 +247,7 @@ describe('Provider connection tester', () => {
   });
 
   it('fails Ollama when the configured primary model is not installed', async () => {
+    legacy('openai-agents-sdk');
     globalThis.fetch = jest.fn(async () => jsonResponse({
       models: [{ name: 'qwen3:8b' }],
     })) as any;
@@ -242,6 +260,7 @@ describe('Provider connection tester', () => {
   });
 
   it('fails Ollama when tags list the model but the chat probe fails', async () => {
+    legacy('openai-agents-sdk');
     const calls: string[] = [];
     globalThis.fetch = jest.fn(async (url: string) => {
       calls.push(url);
@@ -262,6 +281,7 @@ describe('Provider connection tester', () => {
   });
 
   it('probes the concrete Ollama tag when primary model omits the tag', async () => {
+    legacy('openai-agents-sdk');
     let requestBody: any;
     globalThis.fetch = jest.fn(async (url: string, init?: RequestInit) => {
       if (url.endsWith('/api/tags')) {
@@ -285,6 +305,7 @@ describe('Provider connection tester', () => {
   });
 
   it('fails Ollama when an untagged primary model matches multiple installed tags', async () => {
+    legacy('openai-agents-sdk');
     globalThis.fetch = jest.fn(async () => jsonResponse({
       models: [{ name: 'qwen3:8b' }, { name: 'qwen3:14b' }],
     })) as any;
@@ -315,6 +336,7 @@ describe('Provider connection tester', () => {
   });
 
   it('fails Vertex connection tests on unauthenticated 401 or 403 responses', async () => {
+    legacy('claude-agent-sdk');
     globalThis.fetch = jest.fn(async () => jsonResponse({
       error: { message: 'Request had invalid authentication credentials.' },
     }, 401)) as any;
@@ -349,75 +371,18 @@ describe('Provider connection tester', () => {
     expect(result.error).toContain('Pi Agent Core model JSON is invalid');
   });
 
-  it('validates custom OpenCode providers with model JSON locally without network fetch', async () => {
+  it.each([
+    ['OpenCode', () => customOpenCodeProvider(), 'opencode_model_json_untranslatable'],
+    ['Qoder', () => customQoderProvider(), 'qoder_untranslatable'],
+  ])('tests a retired %s profile through Pi, reporting it explicitly without a network probe', async (_name, provider, reason) => {
     globalThis.fetch = jest.fn() as any;
 
-    const result = await testProviderConnection(customOpenCodeProvider());
-
-    expect(result).toMatchObject({
-      success: true,
-      modelVerified: false,
-      error: 'OpenCode provider configuration is syntactically valid; runtime smoke runs during analysis.',
-    });
-    expect(globalThis.fetch).not.toHaveBeenCalled();
-  });
-
-  it('accepts custom OpenCode providers backed by OpenAI-compatible fields', async () => {
-    const result = await testProviderConnection(customOpenCodeProvider({
-      models: {
-        primary: 'opencode-model',
-        light: 'opencode-light',
-      },
-      connection: {
-        agentRuntime: 'opencode',
-        openaiBaseUrl: 'https://example.test/v1',
-        openaiApiKey: 'sk-test',
-        openaiProtocol: 'chat_completions',
-      },
-    }));
-
-    expect(result).toMatchObject({
-      success: true,
-      modelVerified: false,
-      error: 'OpenCode will use the OpenAI-compatible provider fields through its server runtime.',
-    });
-  });
-
-  it('fails custom OpenCode providers with invalid model JSON', async () => {
-    const result = await testProviderConnection(customOpenCodeProvider({
-      connection: {
-        agentRuntime: 'opencode',
-        openCodeModelJson: '{"modelID":',
-      },
-    }));
+    const result = await testProviderConnection(provider());
 
     expect(result.success).toBe(false);
-    expect(result.error).toContain('OpenCode model JSON is invalid');
-  });
-
-  it('validates custom Qoder providers locally without an Anthropic network probe', async () => {
-    globalThis.fetch = jest.fn() as any;
-
-    const result = await testProviderConnection(customQoderProvider());
-
-    expect(result).toMatchObject({
-      success: true,
-      modelVerified: false,
-      error: 'Qoder provider configuration is syntactically valid; SDK and authentication smoke checks run during analysis.',
-    });
+    expect(result.error).toContain(piModelUnavailableHint(reason));
+    expect(result.error).not.toContain('qoder-test-token');
     expect(globalThis.fetch).not.toHaveBeenCalled();
-  });
-
-  it('accepts a custom Qoder provider that relies on the installed SDK and local qodercli login', async () => {
-    const result = await testProviderConnection(customQoderProvider({
-      connection: { agentRuntime: 'qoder-agent-sdk' },
-    }));
-
-    expect(result).toMatchObject({
-      success: true,
-      modelVerified: false,
-      error: 'Qoder provider configuration is syntactically valid; analysis will verify the installed SDK and local qodercli login.',
-    });
   });
 });
 

@@ -47,7 +47,7 @@ import {
   isAiFeatureEnabled,
 } from './aiCapabilityPolicy';
 import {getProviderService, type ProviderScope} from './providerManager';
-import {mergeIsolatedProviderEnv} from './providerManager/envIsolation';
+import {runtimeEnvFor} from './providerManager/piProviderCatalog';
 import {readPiAgentCoreModelConfig} from '../agentRuntime/engines/pi/piAgentCoreConfig';
 import {createPiAgentCoreProviderRuntime} from '../agentRuntime/engines/pi/piAgentCoreProvider';
 import {runPiIntentTransport} from '../agentRuntime/engines/pi/piIntentTransport';
@@ -92,7 +92,8 @@ export function resolveOneShotProvider(input: {
     if (runtime !== 'claude-agent-sdk' && runtime !== 'pi-agent-core') return {kind: 'resolved', runtime};
     const providerEnv = provider ? svc.getEnvForProviderConfig(provider) : null;
     if (runtime === 'pi-agent-core') {
-      return {kind: 'resolved', runtime, pi: {env: mergeIsolatedProviderEnv(process.env, providerEnv)}};
+      // An env-only Pi call reads the model its Claude/OpenAI env maps to, as the runtime does.
+      return {kind: 'resolved', runtime, pi: {env: runtimeEnvFor(process.env, providerEnv, runtime)}};
     }
     return {
       kind: 'resolved',

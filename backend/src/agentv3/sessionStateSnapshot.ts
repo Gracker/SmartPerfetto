@@ -34,6 +34,7 @@ import {
   type SourceUseDecisionV1,
 } from '../services/codebase/sourceUseDecision';
 import type { AgentRuntimeKind } from '../services/providerManager/types';
+import {isProductionAgentRuntimeKind, isRecordedRuntimeKind, type RecordedRuntimeKind} from '../agentRuntime/runtimeKinds';
 import type {OutputLanguage} from './outputLanguage';
 import {analysisHasPrivateContext, privateContextRestrictsAudience} from '../services/security/analysisPrivateContext';
 import type {AnalysisPrivateContextMarker} from '../services/security/analysisPrivateContext';
@@ -115,12 +116,20 @@ export interface SnapshotEngineProviderState {
   providerSnapshotHash?: string | null;
 }
 
-export type ProviderContinuityBreakReason = 'provider_snapshot_hash_mismatch';
+/**
+ * `provider_snapshot_hash_mismatch`: the pin changed and the session continued
+ * on fresh provider state. `retired_runtime_rebound`: a pin recorded under a
+ * retired runtime was verified to call the same endpoint and model, so it was
+ * rebound to the current runtime (a continuity note, not a break).
+ */
+export type ProviderContinuityBreakReason = 'provider_snapshot_hash_mismatch' | 'retired_runtime_rebound';
 
 export interface ProviderContinuityBreak {
   at: number;
   previousProviderHash: string;
   reason: ProviderContinuityBreakReason;
+  /** For `retired_runtime_rebound`: the runtime the pin was recorded under. */
+  fromRuntimeKind?: RecordedRuntimeKind;
 }
 
 function isProviderContinuityBreak(value: unknown): value is ProviderContinuityBreak {
@@ -130,7 +139,8 @@ function isProviderContinuityBreak(value: unknown): value is ProviderContinuityB
     && Number.isFinite(candidate.at)
     && typeof candidate.previousProviderHash === 'string'
     && candidate.previousProviderHash.length > 0
-    && candidate.reason === 'provider_snapshot_hash_mismatch';
+    && (candidate.reason === 'provider_snapshot_hash_mismatch'
+      || (candidate.reason === 'retired_runtime_rebound' && isRecordedRuntimeKind(candidate.fromRuntimeKind)));
 }
 
 /**
@@ -142,12 +152,16 @@ function isProviderContinuityBreak(value: unknown): value is ProviderContinuityB
 export function continuityBreaksAfterRestore(
   existing: unknown,
   changedFromProviderHash: string | null | undefined,
+  reboundFromRuntimeKind?: RecordedRuntimeKind,
 ): ProviderContinuityBreak[] {
   const breaks = Array.isArray(existing) ? existing.filter(isProviderContinuityBreak) : [];
   if (!changedFromProviderHash) return breaks;
   return [
     ...breaks,
-    {at: Date.now(), previousProviderHash: changedFromProviderHash, reason: 'provider_snapshot_hash_mismatch'},
+    reboundFromRuntimeKind
+      ? {at: Date.now(), previousProviderHash: changedFromProviderHash, reason: 'retired_runtime_rebound',
+          fromRuntimeKind: reboundFromRuntimeKind}
+      : {at: Date.now(), previousProviderHash: changedFromProviderHash, reason: 'provider_snapshot_hash_mismatch'},
   ];
 }
 
@@ -338,10 +352,12 @@ export function createQoderSnapshotEngineState(
   };
 }
 
+/** The runtime label a snapshot was recorded under (provenance; execution re-resolves it). */
 export function getSnapshotRuntimeKind(
   snapshot: Pick<SessionStateSnapshot, 'engineState' | 'agentRuntimeKind'> | null | undefined,
-): AgentRuntimeKind | undefined {
-  return snapshot?.engineState?.kind ?? snapshot?.agentRuntimeKind;
+): RecordedRuntimeKind | undefined {
+  const kind: unknown = snapshot?.engineState?.kind ?? snapshot?.agentRuntimeKind;
+  return isRecordedRuntimeKind(kind) ? kind : undefined;
 }
 
 export function getSnapshotRuntimeProviderId(
@@ -450,7 +466,9 @@ export function normalizeSessionStateSnapshot(
         : undefined
     );
 
-  if (!snapshot.engineState && runtimeKind) {
+  // A label without a provider-only engine state (an experimental or unknown
+  // kind) keeps no engine state; recovery re-resolves its pin regardless.
+  if (!snapshot.engineState && runtimeKind && isProductionAgentRuntimeKind(runtimeKind)) {
     normalizedSnapshot = {
       ...snapshot,
       engineState: PROVIDER_ONLY_ENGINE_STATE[runtimeKind]({
@@ -561,7 +579,7 @@ export interface SessionStateSnapshot {
 
   // --- Backend Runtime State (legacy mirrors; use helpers above for reads) ---
   /** Runtime that produced the snapshot. Omitted for legacy Claude-only snapshots. */
-  agentRuntimeKind?: AgentRuntimeKind;
+  agentRuntimeKind?: RecordedRuntimeKind;
   /**
    * Provider profile that supplied runtime credentials.
    * null means the session is pinned to env/default fallback and must not read

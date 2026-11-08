@@ -74,7 +74,9 @@ describe('AnalysisReceipt frontend contract', () => {
       'export interface AdaptiveRoutingReceiptV1',
       'export interface CapabilityManifestAttributionV1',
       'export interface TraceSummaryAttributionV1',
-      'export type AnalysisReceiptRuntime = AgentRuntimeKind;',
+      // A historical receipt keeps the label it was produced under, retired runtimes included.
+      'export type AnalysisReceiptRuntime = RecordedRuntimeKind;',
+      'export type RecordedRuntimeKind = "claude-agent-sdk" | "openai-agents-sdk" | "pi-agent-core" | "opencode" | "qoder-agent-sdk" | "experimental-pi-agent-core" | "experimental-opencode";',
     ]) expect(fragment).toContain(declaration);
     for (const field of [
       'knowledgeReferenceCount?: number;',

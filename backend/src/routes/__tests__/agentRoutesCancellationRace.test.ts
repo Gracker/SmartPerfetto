@@ -69,7 +69,7 @@ const envKeys = [
   ENTERPRISE_DB_PATH_ENV,
   ENTERPRISE_DATA_DIR_ENV,
   'UPLOAD_DIR',
-  'SMARTPERFETTO_AGENT_RUNTIME',
+  'SMARTPERFETTO_LEGACY_AGENT_RUNTIME',
   'SMARTPERFETTO_AI_ENABLED',
 ] as const;
 const originalEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
@@ -143,7 +143,7 @@ describe('agent analyze cancellation races', () => {
       process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise.sqlite');
       process.env[ENTERPRISE_DATA_DIR_ENV] = path.join(tmpDir, 'data');
       process.env.UPLOAD_DIR = path.join(tmpDir, 'uploads');
-      process.env.SMARTPERFETTO_AGENT_RUNTIME = 'claude-agent-sdk';
+      process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'claude-agent-sdk';
       process.env.SMARTPERFETTO_AI_ENABLED = 'true';
       db = openEnterpriseDb();
       db.prepare(`INSERT INTO organizations (id, name, status, plan, created_at, updated_at)
@@ -285,7 +285,7 @@ describe('agent analyze cancellation races', () => {
       process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise.sqlite');
       process.env[ENTERPRISE_DATA_DIR_ENV] = path.join(tmpDir, 'data');
       process.env.UPLOAD_DIR = path.join(tmpDir, 'uploads');
-      process.env.SMARTPERFETTO_AGENT_RUNTIME = 'claude-agent-sdk';
+      process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'claude-agent-sdk';
       process.env.SMARTPERFETTO_AI_ENABLED = 'true';
       const service = new TraceProcessorService(process.env.UPLOAD_DIR);
       const trace = service.registerStoredTrace({id: traceId, filename: `${traceId}.trace`, size: 23, filePath: tracePath});
@@ -468,7 +468,7 @@ describe('agent analyze cancellation races', () => {
         process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise.sqlite');
         process.env[ENTERPRISE_DATA_DIR_ENV] = path.join(tmpDir, 'data');
         process.env.UPLOAD_DIR = path.join(tmpDir, 'uploads');
-        process.env.SMARTPERFETTO_AGENT_RUNTIME = 'claude-agent-sdk';
+        process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'claude-agent-sdk';
         process.env.SMARTPERFETTO_AI_ENABLED = 'true';
         db = openEnterpriseDb();
         db.prepare(`INSERT INTO organizations (id, name, status, plan, created_at, updated_at)
@@ -597,7 +597,7 @@ describe('agent analyze cancellation races', () => {
       process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise.sqlite');
       process.env[ENTERPRISE_DATA_DIR_ENV] = path.join(tmpDir, 'data');
       process.env.UPLOAD_DIR = path.join(tmpDir, 'uploads');
-      process.env.SMARTPERFETTO_AGENT_RUNTIME = 'claude-agent-sdk';
+      process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'claude-agent-sdk';
       process.env.SMARTPERFETTO_AI_ENABLED = 'true';
 
       await writeTraceMetadata({
@@ -705,7 +705,7 @@ describe('agent analyze cancellation races', () => {
       process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise.sqlite');
       process.env[ENTERPRISE_DATA_DIR_ENV] = path.join(tmpDir, 'data');
       process.env.UPLOAD_DIR = path.join(tmpDir, 'uploads');
-      process.env.SMARTPERFETTO_AGENT_RUNTIME = 'claude-agent-sdk';
+      process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'claude-agent-sdk';
       process.env.SMARTPERFETTO_AI_ENABLED = 'true';
 
       await writeTraceMetadata({
@@ -924,7 +924,7 @@ describe('agent analyze cancellation races', () => {
       process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise.sqlite');
       process.env[ENTERPRISE_DATA_DIR_ENV] = path.join(tmpDir, 'data');
       process.env.UPLOAD_DIR = path.join(tmpDir, 'uploads');
-      process.env.SMARTPERFETTO_AGENT_RUNTIME = 'claude-agent-sdk';
+      process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'claude-agent-sdk';
       process.env.SMARTPERFETTO_AI_ENABLED = 'true';
 
       for (const id of [traceId, referenceTraceId]) {

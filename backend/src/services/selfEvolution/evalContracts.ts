@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {isProductionAgentRuntimeKind} from '../../agentRuntime/runtimeKinds';
+import {isRecordedRuntimeKind} from '../../agentRuntime/runtimeKinds';
 import type {
   EvalCaseV1,
   EvalPinnedEnvironmentV1,
@@ -99,7 +99,8 @@ function parsePinned(value: unknown): EvalPinnedEnvironmentV1 {
     'injections',
     'overlayGeneration',
   ], 'eval_pinned_unknown_field');
-  if (!isProductionAgentRuntimeKind(pinned.runtime)) {
+  // A retired label still parses: the replay that would run it reports the baseline stale.
+  if (!isRecordedRuntimeKind(pinned.runtime)) {
     throw new Error('eval_pinned_runtime_invalid');
   }
   if (pinned.providerId !== null && typeof pinned.providerId !== 'string') {

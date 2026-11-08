@@ -2,23 +2,59 @@
 
 [English](configuration.en.md) | [中文](configuration.md)
 
-Claude Agent SDK 在所有运行方式下都需要通过当前运行实例所连接的 Provider Manager 或 env 显式配置凭据。已有 Claude Code 登录态或仅填写 Base URL 都不代表 SDK 已配置。
+分析运行在 Pi Agent Core 上；在所有运行方式下都需要通过当前运行实例所连接的 Provider Manager 或 env 显式配置凭据。已有 Claude Code 登录态或仅填写 Base URL 都不代表模型已配置。
 
 Windows 免安装包用户先按 [Windows 配置与运行指南](windows.md) 完成下载、解压和启动，
 再使用本页的 Provider 字段。不要为普通 Windows 使用流程照抄 Unix 源码命令。
 
 ## 先回答：应该配置哪个 Runtime？
 
-Claude Agent SDK、OpenAI Agents SDK、Pi Agent Core、OpenCode 和 Qoder Agent SDK 是互斥可选的运行路径，不是都要完成的配置清单。第一次配置只选一个来源：
+Pi Agent Core 是唯一的分析 runtime。你配置的是**模型 endpoint**：Pi 调用该 endpoint 的
+接口（Anthropic Messages、OpenAI Responses/Chat Completions、Bedrock 或 Vertex）、模型 ID
+和凭据形式。第一次配置只选一个来源：
 
 | 你现在有什么 | 推荐选择 | 需要配置 |
 |---|---|---|
 | 不想碰 env、正在用 Docker 或免安装包 | UI Provider Manager | 在 `Providers` 页填写 provider key，测试后激活 |
-| Anthropic API key 或 Claude/Anthropic-compatible provider | Claude Agent SDK | `ANTHROPIC_*` + `CLAUDE_*` |
-| OpenAI API key、Ollama 或 OpenAI-compatible provider | OpenAI Agents SDK | `SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk` + `OPENAI_*` |
-| Pi Agent Core model 配置 | Pi Agent Core | custom Provider Manager profile，或 `SMARTPERFETTO_AGENT_RUNTIME=pi-agent-core` + `SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON` |
-| OpenCode model 配置 | OpenCode | custom Provider Manager profile，或 `SMARTPERFETTO_AGENT_RUNTIME=opencode` + OpenAI-compatible 字段或 `SMARTPERFETTO_OPENCODE_MODEL_JSON` |
-| Qoder CLI 登录态或 PAT | Qoder Agent SDK | 显式安装 Qoder SDK 后，使用 custom Provider Manager profile 或 `SMARTPERFETTO_AGENT_RUNTIME=qoder-agent-sdk` |
+| Anthropic API key 或 Claude/Anthropic-compatible provider | Anthropic-compatible endpoint | `ANTHROPIC_*` + `CLAUDE_*` |
+| OpenAI API key、Ollama 或 OpenAI-compatible provider | OpenAI-compatible endpoint | `OPENAI_*`（`OPENAI_AGENTS_PROTOCOL` 选择 `responses` 或 `chat_completions`） |
+| AWS Bedrock 或 Google Vertex | 云厂商 endpoint | Provider Manager 的 Bedrock/Vertex profile，或 `CLAUDE_CODE_USE_BEDROCK` / `CLAUDE_CODE_USE_VERTEX` env |
+| 完整的 Pi model 配置 | 显式 Pi 模型 | custom Provider Manager profile 的 `piAgentCoreModelJson`，或 `SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON` |
+
+### 从旧 runtime 迁移
+
+Claude Agent SDK、OpenAI Agents SDK、OpenCode 和 Qoder Agent SDK 已不再可选，现有配置
+自动迁移，不需要手动修改：
+
+- **Provider profile**：读取时把旧 `agentRuntime` 映射为 `pi-agent-core`，并记录原 runtime
+  使用的 endpoint（`apiSurface`：`claude` 或 `openai`）。Pi 继续调用同一个 Base URL、同一个
+  模型 ID，并保持原凭据形式：`claudeApiKey` / Anthropic 官方 key 发 `x-api-key`，双端点
+  provider 的共享 key 与 `claudeAuthToken` 发 `Authorization: Bearer`，OpenAI-compatible key
+  发 Bearer。迁移只改 runtime 字段并删除 OpenCode/Qoder 专用字段，不保存合成的模型 JSON；
+  下一次正常保存时写回。显式填写的 `piAgentCoreModelJson` 仍是最高优先级的覆盖。
+- **`.env`**：`SMARTPERFETTO_AGENT_RUNTIME` 的旧值（`claude-agent-sdk`、`openai-agents-sdk`、
+  `opencode`、`qoder-agent-sdk`）仍被接受，统一映射为 Pi，并在日志与 `smp doctor` 中提示一次
+  废弃；建议删除该变量。`ANTHROPIC_*`、`OPENAI_*`、Bedrock 和 Vertex env 会被换算成 Pi 模型。
+- **已有会话**：恢复时若 provider 配置、请求地址、模型和授权指纹都未变化，会话会重新绑定到
+  Pi 并记录一条连续性说明；任何一项变化都按原有规则提示新建会话。
+- **模型元数据**：pi-ai 内置目录在同一 host、同一接口下有该模型时使用目录；否则按原接口合成，
+  上下文默认 128000 token，输出上限 Anthropic/Bedrock/Vertex 为 32000、OpenAI 接口为 16384，
+  费用记为 0（只用于展示，不参与任何门控）。
+
+需要人工处理的少数情况：
+
+- OpenCode 的 model JSON 若没有 OpenAI-compatible `baseURL`，或 Qoder profile（使用 Qoder
+  自己的服务）：Pi 无法换算，保持显式报错，需要在 Providers 中填写 Base URL、key 和模型后保存。
+- Bedrock 和 Vertex 的凭据来源与原 Claude runtime 一致：Bedrock 依次使用 bearer token、
+  `AWS_PROFILE`、显式 access key；只用 `.env` 配置且都没有指定时，使用本机的 AWS SDK
+  默认凭据链。Provider Manager 里的 Bedrock profile 必须明确填写其中一种凭据，不会落到
+  服务器自身的 AWS 身份上。Vertex 有 `GOOGLE_APPLICATION_CREDENTIALS` 时用该文件，否则用
+  Google ADC；未设置 `CLOUD_ML_REGION` 时与 Claude Code 一样默认 `us-east5`，并支持
+  `us`/`eu` 多区域和 `ANTHROPIC_VERTEX_BASE_URL`。按模型设置的 `VERTEX_REGION_*` 会被
+  明确报告，需要改用 `CLOUD_ML_REGION`。凭据在进程内解析成显式 key 后才交给 Pi；进程
+  env 中不属于当前选中配置的 AWS 凭据链变量会直接报错。
+- 自己填写的 Pi model JSON 不能指定 AWS profile 或默认凭据链，请改在 Bedrock profile 中填写。
+- Claude 专用调优（effort、预算、sub-agent）不再生效。
 
 如果一个第三方 provider 同时给了 Claude-compatible 和 OpenAI-compatible 两组 endpoint，UI 里可以保存两组地址和同一个共享 key，但运行时仍只会激活其中一侧。只用 `.env` 时，解注释 Claude-compatible block 或 OpenAI-compatible block 其中一个；不要为了“更完整”把两边都打开。
 
@@ -188,19 +224,17 @@ smp config init
 
 ## LLM 配置
 
-SmartPerfetto 后端支持这些 runtime path：
+SmartPerfetto 后端只有一个 runtime：`pi-agent-core`。它复用共享 prompt、SQL/Skill、
+plan/hypothesis 和 finalization/report 管线；后端只在需要时动态加载
+`@earendil-works/pi-agent-core`，不会启用 `.pi` project discovery、package extension、shell
+tool 或 file tool。模型 endpoint 来自 Provider Manager profile、`.env` 中的 Anthropic/OpenAI/
+Bedrock/Vertex 变量，或显式 Pi model JSON。
 
-- `claude-agent-sdk`：env 已有 Claude 凭据时的默认 runtime。适合 Anthropic、Bedrock、Vertex，以及 Anthropic/Claude Code-compatible provider。
-- `openai-agents-sdk`：OpenAI runtime。适合 OpenAI Responses API、Ollama 和支持流式 function/tool calling 的 OpenAI-compatible gateway。
-- `pi-agent-core`：可选 public runtime。真实模型配置下复用 SmartPerfetto 共享 prompt、SQL/Skill、plan/hypothesis 和 finalization/report 管线；后端只在选择这个 runtime 时动态加载 `@earendil-works/pi-agent-core`，不会启用 `.pi` project discovery、package extension、shell tool 或 file tool。
-- `opencode`：可选 public runtime。它会启动加固隔离的 OpenCode server，使用显式 OpenAI-compatible 或 OpenCode model 配置，只暴露 request-scoped SmartPerfetto MCP 工具；不会读取用户自己的 OpenCode CLI 登录态、project config、extension，也不会启用内建 file/shell/web/edit tools。
-- `qoder-agent-sdk`：可选 public runtime。它只暴露 request-scoped SmartPerfetto MCP 工具，支持本机 `qodercli` 登录态或 PAT；每轮都开启新的 provider session，不持久化 opaque state。SDK/CLI 有独立条款，因此 SDK 是显式启用的 optional peer，默认不会安装。
+配置 OpenAI-compatible endpoint 不需要安装或登录 Claude Code；配置 Anthropic endpoint 也不需要 OpenAI key，但本机 Claude Code 登录态不能替代显式凭据。真实模型路径应通过启动/滑动 E2E 验证分析质量；fake-stream 只用于 smoke/test，不能代表等价分析效果。
 
-这些 runtime 是互斥选择的后端编排路径。配置 OpenAI runtime 时不需要先安装或登录 Claude Code；配置 Claude API 时也不需要 OpenAI key，但本机 Claude Code 登录态不能替代 Claude Agent SDK 的显式凭据。Pi Agent Core、OpenCode 和 Qoder 与两者独立。真实模型路径应通过启动/滑动 E2E 验证分析质量；fake-stream 只用于 smoke/test，不能代表等价分析效果。
+模型来源的优先级是：请求/会话里的 `providerId`、Provider Manager 当前 active provider、最后是 `.env`。只用 `.env` 时，若同时存在 Anthropic 与 OpenAI 两类变量，按原规则选择：`SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk`（已废弃但仍被读取）选 OpenAI 一侧，否则有 Anthropic key/token、Bedrock 或 Vertex 时选 Anthropic 一侧，再否则使用 `OPENAI_*`。首次配置不要同时启用 `ANTHROPIC_*` 和 `OPENAI_*`。active Provider Manager profile 会覆盖 `.env` fallback；当前来源可通过带鉴权的 `/api/runtime-health` 中的 `aiEngine.credentialSource` 和 `aiEngine.providerOverridesEnv` 确认。
 
-除默认值只看 env 是否已有 Claude 凭据外，运行时选择不会根据“哪个 key 存在”自动猜。优先级是：请求/会话里的 `providerId`、Provider Manager 当前 active provider、`SMARTPERFETTO_AGENT_RUNTIME`、最后是默认值：env 已有 Claude 凭据（Anthropic key/token、Bedrock、Vertex）时为 `claude-agent-sdk`，否则为 `pi-agent-core`。首次配置不要同时启用 `ANTHROPIC_*` 和 `OPENAI_*`；如果高级部署确实同时写了两类 env，但没有设置 `SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk`，实际仍会走 Claude Agent SDK。active Provider Manager profile 会覆盖 `.env` fallback；当前来源可通过带鉴权的 `/api/runtime-health` 中的 `aiEngine.credentialSource` 和 `aiEngine.providerOverridesEnv` 确认。
-
-Perfetto UI 的 Provider Management 支持把同一个 provider 的两组端点一起保存：`claudeBaseUrl` / `claudeApiKey` / `claudeAuthToken` 对应 Claude Code SDK，`openaiBaseUrl` / `openaiApiKey` / `openaiProtocol` 对应 OpenAI SDK。custom provider 也可以选择 `pi-agent-core`，并填写 `piAgentCoreModelJson` 以及可选 module path / system prompt；选择 `opencode`，填写 `openCodeModelJson` / `openCodeSdkModulePath` / `openCodeSystemPrompt`；或选择 `qoder-agent-sdk`，填写 `qoderAccessToken` / `qoderCliPath` 和可选 model/system prompt 字段。AI 输入框旁的 provider switcher 会显示当前 runtime；对 DeepSeek、Qwen、Kimi、MiMo、TokenHub 或 custom 这类双端点 provider，可以在同一个下拉菜单里显式切换 runtime。切换 provider 或 runtime 会开启新的 SDK/server session。
+Perfetto UI 的 Provider Management 支持把同一个 provider 的两组端点一起保存：`claudeBaseUrl` / `claudeApiKey` / `claudeAuthToken` 对应 Anthropic-compatible 接口，`openaiBaseUrl` / `openaiApiKey` / `openaiProtocol` 对应 OpenAI-compatible 接口；`apiSurface`（`claude` 或 `openai`）记录 Pi 调用哪一侧，未设置时按 provider 类型的原默认侧（双端点 provider 为 Anthropic 一侧）。API 只为每种 provider 返回 `supportedRuntimes: ["pi-agent-core"]`；写入旧 runtime 值会记录警告并按上面的迁移规则落到 Pi。custom provider 还可以填写 `piAgentCoreModelJson` 以及可选 module path / system prompt，作为显式覆盖。切换 provider 会开启新的 session。
 
 Enterprise 模式下，Provider Manager 的远端端点默认必须是公网 HTTPS，并会校验 DNS
 解析结果；重定向也必须保持同源。确实需要访问经过审计的内网 Ollama/网关时，使用
@@ -237,8 +271,7 @@ CLAUDE_LIGHT_MODEL=mimo-v2.5
 ```
 
 ```bash
-# OpenAI-compatible / OpenAI Agents SDK
-SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk
+# OpenAI-compatible / OpenAI Responses 或 Chat Completions
 OPENAI_BASE_URL=https://token-plan-sgp.xiaomimimo.com/v1
 OPENAI_API_KEY=your_xiaomi_mimo_api_key_here
 OPENAI_AGENTS_PROTOCOL=chat_completions
@@ -248,7 +281,7 @@ OPENAI_LIGHT_MODEL=mimo-v2.5
 
 当前模板内置的国内主流 Anthropic-compatible / Claude Code-compatible 和 OpenAI-compatible 入口只是公共信息 preset。Provider 模型目录、Base URL 和套餐权限会变化；如果你的账号控制台列出的模型 ID 或专属域名不同，以控制台为准替换对应字段。
 
-下面的表是手动 env 配置和排障参考，不是需要逐项配置的清单。Provider Manager 中可以把同一个 provider 的 Anthropic-compatible URL、OpenAI-compatible URL 和共享 API key 一起预置；用户运行时通过界面选择 SDK Runtime，选择 Claude SDK 就使用 Anthropic-compatible URL，选择 OpenAI Agents SDK 就使用 OpenAI-compatible URL。
+下面的表是手动 env 配置和排障参考，不是需要逐项配置的清单。Provider Manager 中可以把同一个 provider 的 Anthropic-compatible URL、OpenAI-compatible URL 和共享 API key 一起预置；`apiSurface` 决定 Pi 使用 Anthropic-compatible URL 还是 OpenAI-compatible URL。
 
 | Provider | Claude / Anthropic-compatible Base URL | OpenAI-compatible Base URL | 推荐主模型 | 推荐轻模型 |
 |---|---|---|---|---|
@@ -272,10 +305,9 @@ OPENAI_LIGHT_MODEL=mimo-v2.5
 Provider 官方文档可能写 `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_HAIKU_MODEL`，但 SmartPerfetto 后端使用 `CLAUDE_MODEL` / `CLAUDE_LIGHT_MODEL`。模型必须稳定支持流式输出和 tool/function calling。
 如果百度千帆的自定义应用要求额外 `appid` header，请使用千帆默认 appid，或在前面加一层自定义网关；SmartPerfetto env 文件目前不会注入任意 provider header。
 
-OpenAI 官方 API 不需要伪装成 Anthropic 代理，直接走 OpenAI Agents SDK：
+OpenAI 官方 API 不需要伪装成 Anthropic 代理，直接使用 OpenAI Responses 接口：
 
 ```bash
-SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk
 OPENAI_API_KEY=sk-your-openai-key
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_AGENTS_PROTOCOL=responses
@@ -290,7 +322,6 @@ OPENAI_LIGHT_MODEL=gpt-5.4-mini
 Ollama 或 OpenAI-compatible gateway 走 Chat Completions 协议：
 
 ```bash
-SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk
 OPENAI_BASE_URL=http://localhost:11434/v1
 OPENAI_API_KEY=ollama
 OPENAI_AGENTS_PROTOCOL=chat_completions
@@ -298,12 +329,11 @@ OPENAI_MODEL=qwen3:30b
 OPENAI_LIGHT_MODEL=qwen3:30b
 ```
 
-如果第三方 provider 同时提供 Anthropic-compatible 和 OpenAI-compatible endpoint，Provider Manager 里应同时填写两组 Base URL，再用 `agentRuntime` 或前端 switcher 选择当前使用哪一侧。只用 `.env` 时，同一时刻只能通过 `SMARTPERFETTO_AGENT_RUNTIME` 选择一侧：Claude-compatible 走 `ANTHROPIC_*` + `CLAUDE_*` 变量；OpenAI-compatible 走 `OPENAI_*` 变量。
+如果第三方 provider 同时提供 Anthropic-compatible 和 OpenAI-compatible endpoint，Provider Manager 里应同时填写两组 Base URL；`apiSurface` 决定 Pi 调用哪一侧。只用 `.env` 时，同一时刻只启用一侧：Anthropic-compatible 走 `ANTHROPIC_*` + `CLAUDE_*` 变量；OpenAI-compatible 走 `OPENAI_*` 变量。
 
 Pi Agent Core：
 
 ```bash
-SMARTPERFETTO_AGENT_RUNTIME=pi-agent-core
 SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON='{"id":"your-model-id","name":"Your Model","api":"openai-responses","provider":"openai","baseUrl":"https://api.openai.com/v1","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":128000,"maxTokens":4096,"apiKeyEnv":"OPENAI_API_KEY"}'
 # 可选：本地 checkout 或解包后的 npm package
 # SMARTPERFETTO_PI_AGENT_CORE_MODULE_PATH=/absolute/path/to/@earendil-works/pi-agent-core/dist/index.js
@@ -340,88 +370,26 @@ chat/completions 的 OpenAI-compatible gateway 时，把 JSON 里的 `api` 改�
 `AWS_*`、`GOOGLE_*` 或 `AZURE_OPENAI_*` 等 provider 专用变量放在该 profile 的
 custom 环境覆盖中。SmartPerfetto 会在创建 runtime 前清除其他 profile 的凭证，并只把
 当前选中 runtime 的 provider-scoped 云环境传给 Pi。
-Bedrock 为避免 AWS SDK 的默认凭证链重新读取进程环境，只接受 runtime 内显式的
-`AWS_BEARER_TOKEN_BEDROCK`，或 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`
-（可带 `AWS_SESSION_TOKEN`）；`AWS_PROFILE`、ECS container credential、web identity
-和共享 config/credentials 文件模式会 fail closed。Vertex service-account 只检查当前
-profile 通过 `GOOGLE_APPLICATION_CREDENTIALS` 明确指定的精确文件，不探测用户目录 ADC。
+Bedrock 的凭据在进程内解析成显式 key 再交给 Pi，Pi 的 AWS client 不会自己再读进程环境：
+runtime 内的 `AWS_BEARER_TOKEN_BEDROCK`、AWS profile（每次请求严格按该 profile 读取共享
+config/credentials 文件），或 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`（可带
+`AWS_SESSION_TOKEN`）；只启用 Bedrock 而没有指定任何凭据时，使用 AWS SDK 默认凭据链
+（共享文件、SSO、web identity、容器或实例角色）。默认凭据链会读进程 env，所以进程 env 中
+不属于当前选中配置的 AWS 凭据链变量会 fail closed。Vertex 使用当前配置
+`GOOGLE_APPLICATION_CREDENTIALS` 指定的文件；没有指定时使用 Google ADC。
 
-Provider Manager 里 Pi Agent Core 只对 custom provider 开放。删除 custom
-provider，或把 `SMARTPERFETTO_AGENT_RUNTIME` 切回 `claude-agent-sdk` /
-`openai-agents-sdk`，就是回滚路径。
+每种 Provider Manager profile 都在 Pi 上运行；显式 model JSON 只在需要覆盖自动换算时填写。
 
-OpenCode：
-
-```bash
-SMARTPERFETTO_AGENT_RUNTIME=opencode
-# 推荐：需要 OpenCode-specific provider/model wiring 时使用
-SMARTPERFETTO_OPENCODE_MODEL_JSON='{"providerID":"smartperfetto","modelID":"your-model-id","baseUrl":"https://api.openai.com/v1","apiKeyEnv":"OPENAI_API_KEY","smallModel":"your-light-model"}'
-OPENAI_API_KEY=sk-your-provider-key
-# 可选：本地 checkout 或解包后的 npm package
-# SMARTPERFETTO_OPENCODE_SDK_MODULE_PATH=/absolute/path/to/@opencode-ai/sdk/dist/index.js
-# 可选：隔离 project 目录；不设置时 SmartPerfetto 会创建临时目录
-# SMARTPERFETTO_OPENCODE_PROJECT_DIR=/absolute/path/to/empty/project
-# 可选 runtime-level prompt；SmartPerfetto 分析契约仍来自 strategies
-# SMARTPERFETTO_OPENCODE_SYSTEM_PROMPT=
-```
-
-也可以不设置 `SMARTPERFETTO_OPENCODE_MODEL_JSON`，直接用 OpenAI-compatible
-字段配置 OpenCode：
-
-```bash
-SMARTPERFETTO_AGENT_RUNTIME=opencode
-OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_API_KEY=sk-your-provider-key
-OPENAI_MODEL=your-model-id
-OPENAI_LIGHT_MODEL=your-light-model
-```
-
-Provider Manager 里 OpenCode 只对 custom provider 开放。SmartPerfetto 会用隔离
-HOME/config/project state 启动 OpenCode，禁用内建 file/shell/web/edit tools，并
-通过 request-scoped MCP bridge 暴露 SmartPerfetto trace tools。它不会读取你的个人
-OpenCode 登录态或 project extension。删除 custom provider，或把
-`SMARTPERFETTO_AGENT_RUNTIME` 切回 `claude-agent-sdk` / `openai-agents-sdk`，
-就是回滚路径。
+OpenCode 与 Qoder runtime 已退役：`SMARTPERFETTO_AGENT_RUNTIME=opencode|qoder-agent-sdk` 映射为
+Pi。OpenCode 配置中的 OpenAI-compatible 字段（或 model JSON 中的 `baseURL` / `modelID` /
+`apiKey`）会换算为 Pi 的 Chat Completions 模型；Qoder 使用自己的服务，无法换算，需要改为
+Anthropic- 或 OpenAI-compatible endpoint。
 
 ### 运行时与 Provider 诊断
 
-Claude Code 的本地登录态不能作为 SmartPerfetto SDK 已配置的依据。第三方 endpoint 的地址、API key/token 和模型也需要显式配置。SmartPerfetto 不会自动读取 Codex CLI、Gemini CLI 或个人 OpenCode 登录态；那些工具管理的是各自 CLI 的配置文件。`opencode` runtime 只通过 Provider Manager 或 env 显式配置。Qoder 是显式 runtime 集成：安装可选 SDK 后，`qoder-agent-sdk` 可使用本机 `qodercli` 登录态或显式 PAT。
+Claude Code 的本地登录态不能作为 SmartPerfetto 已配置的依据。第三方 endpoint 的地址、API key/token 和模型也需要显式配置。SmartPerfetto 不会自动读取 Codex CLI、Gemini CLI、OpenCode 或 Qoder 的登录态；那些工具管理的是各自 CLI 的配置文件。
 
-Qoder Agent SDK：
-
-```bash
-# 显式安装前先审阅并接受 Qoder SDK/CLI 条款。
-# 使用预装兼容 CLI 时，可先设置 QODER_SKIP_DOWNLOAD=1。
-npm --prefix backend run qoder:install -- --accept-terms
-SMARTPERFETTO_AGENT_RUNTIME=qoder-agent-sdk
-# 可选 PAT；不设置时使用本机 qodercli 登录态。
-# QODER_PERSONAL_ACCESS_TOKEN=your_qoder_pat
-# 可选预装 executable 路径。
-# QODERCLI_PATH=/absolute/path/to/qodercli
-# 可选：从绝对路径加载兼容 SDK entry。
-# SMARTPERFETTO_QODER_SDK_MODULE_PATH=/absolute/path/to/qoder-sdk/dist/index.js
-# 可选 BYOK：三项必须一起配置；base URL、style 和 light model 可省略。
-# BYOK 只配置模型 provider，不替代上面的 Qoder PAT/qodercli 认证。
-# QODER_MODEL=deepseek-flash
-# QODER_LIGHT_MODEL=deepseek-flash
-# QODER_BYOK_API_KEY=your_model_provider_api_key
-# QODER_BYOK_PROVIDER=deepseek
-# QODER_BYOK_BASE_URL=https://api.deepseek.com/v1
-# QODER_BYOK_STYLE=openai
-```
-
-全局 npm CLI 需要把 peer 与 SmartPerfetto 一起安装：
-`npm install -g @gracker/smartperfetto @qoder-ai/qoder-agent-sdk`。
-
-默认 Docker 和 portable 产物不会安装 Qoder SDK。若要在这些部署形态中
-使用，需要在接受条款后构建显式安装 optional peer 的自定义产物。Provider
-Manager 只允许 custom profile 选择 Qoder，并要求 `qoderAccessToken` 或
-`qoderCliPath`；env 模式可以回退到本机 `qodercli` 登录态。custom Qoder
-profile 还可以通过 `custom.envOverrides` 设置 `QODER_BYOK_API_KEY`、
-`QODER_BYOK_PROVIDER`、`QODER_BYOK_BASE_URL` 和 `QODER_BYOK_STYLE`；这些键
-不会被其他 runtime 接受，CLI/module/worker path 也不能经此入口覆盖。
-
-接入 Gemini 等 provider 时，如果账号只提供 OpenAI-compatible API，可以直接使用 `openai-agents-sdk`；如果该接口的 streaming tool call 不稳定，再让代理层暴露 Anthropic Messages 兼容接口，然后配置：
+接入 Gemini 等 provider 时，如果账号只提供 OpenAI-compatible API，可以直接配置 `OPENAI_*`；如果该接口的 streaming tool call 不稳定，再让代理层暴露 Anthropic Messages 兼容接口，然后配置：
 
 ```bash
 ANTHROPIC_BASE_URL=http://localhost:3000
@@ -442,7 +410,7 @@ curl -H "Authorization: Bearer <backend-token>" http://localhost:3000/api/runtim
 |---|---|
 | `aiEngine.credentialSource` | `provider-manager` 表示 UI provider 正在生效；`env-or-default` 表示使用 env/默认配置，不代表凭据已配置 |
 | `aiEngine.providerOverridesEnv` | `true` 表示 `.env` 修改不会影响当前分析，除非停用 active provider |
-| `aiEngine.runtime` | 只能是 `claude-agent-sdk`、`openai-agents-sdk`、`pi-agent-core`、`opencode` 或 `qoder-agent-sdk`，不是 provider 名称 |
+| `aiEngine.runtime` | 正常为 `pi-agent-core`，不是 provider 名称；`aiEngine.diagnostics.modelUnavailableReason` 说明旧配置为何无法换算 |
 | `aiEngine.providerMode` | 显示实际连接族，例如 `anthropic_compatible_proxy` 或 `openai_chat_completions_compatible` |
 | `aiPolicy.aiEnabled` / `aiEngine.aiEnabled` | `false` 表示后端禁止模型分析；`aiPolicy.disabledReason` 会说明来源 |
 
@@ -454,11 +422,9 @@ curl -H "Authorization: Bearer <backend-token>" http://localhost:3000/api/runtim
 | `anthropic_compatible_proxy` | 使用 `ANTHROPIC_BASE_URL` 接入 Claude Code / Anthropic 兼容 provider 或代理 |
 | `aws_bedrock` | 使用 AWS Bedrock |
 | `google_vertex` | 使用 Google Vertex AI |
-| `openai_responses` | 使用 OpenAI Agents SDK + Responses API |
-| `openai_chat_completions_compatible` | 使用 OpenAI Agents SDK + Chat Completions-compatible endpoint |
-| `pi-agent-core` | 使用 Pi Agent Core custom model JSON 和共享 SmartPerfetto 分析管线 |
-| `opencode` | 使用 OpenCode custom model JSON 或 OpenAI-compatible 字段，并复用共享 SmartPerfetto 分析管线 |
-| `qoder` | 通过本机 `qodercli` 登录态、PAT 或显式 CLI path 使用 opt-in Qoder Agent SDK |
+| `openai_responses` | 使用 OpenAI Responses API |
+| `openai_chat_completions_compatible` | 使用 Chat Completions-compatible endpoint |
+| `pi-agent-core` | 使用 Pi Agent Core（由 provider、env 或显式 model JSON 得到模型）和共享 SmartPerfetto 分析管线 |
 | `unconfigured` | 没有显式 provider 凭证；分析前需配置 API key/token 或支持的云平台认证 |
 
 ### 临时禁用模型分析
@@ -481,7 +447,7 @@ SMARTPERFETTO_AI_ENABLED=false
 | `flamegraph_ai_summary` | `POST /api/flamegraph/:traceId/analyze` | 规则兜底总结，`aiSummary.fallbackReason` + `warnings` |
 | `comparison_ai_conclusion` | 分析结果对比的 AI 结论 | 确定性对比结论，`uncertainty` 写明原因 |
 
-除 AI 开关外，模型调用还要求：调用者有 `agent:run` 权限（只有 `trace:read` 的 viewer 得到 `fallbackReason: "permission_denied"`；对比结论沿用创建对比所需的 `comparison:create`），当前 Provider 是 Claude Agent SDK runtime（对比结论另外支持 OpenAI runtime；其他 runtime 一律降级），以及已配置凭证。`SMARTPERFETTO_COMPARISON_AI_DISABLED=true` 只关闭对比结论，与全局开关同时生效。超时分别由 `CRITICAL_PATH_AI_TIMEOUT_MS`、`FLAMEGRAPH_AI_TIMEOUT_MS`（默认 60000）控制。火焰图的热点分析优先使用 Rust 分析器（`FLAMEGRAPH_ANALYZER_BIN` 指定可执行文件，`FLAMEGRAPH_ANALYZER_TIMEOUT_MS` 默认 60000），不可用时回退到 TypeScript 实现，见 [Critical path 与火焰图](critical-path-and-flamegraph.md)。
+除 AI 开关外，模型调用还要求：调用者有 `agent:run` 权限（只有 `trace:read` 的 viewer 得到 `fallbackReason: "permission_denied"`；对比结论沿用创建对比所需的 `comparison:create`），当前 Provider 能解析出 Pi 模型，以及已配置凭证。`SMARTPERFETTO_COMPARISON_AI_DISABLED=true` 只关闭对比结论，与全局开关同时生效。超时分别由 `CRITICAL_PATH_AI_TIMEOUT_MS`、`FLAMEGRAPH_AI_TIMEOUT_MS`（默认 60000）控制。火焰图的热点分析优先使用 Rust 分析器（`FLAMEGRAPH_ANALYZER_BIN` 指定可执行文件，`FLAMEGRAPH_ANALYZER_TIMEOUT_MS` 默认 60000），不可用时回退到 TypeScript 实现，见 [Critical path 与火焰图](critical-path-and-flamegraph.md)。
 
 ## 分析预算与超时
 
@@ -769,7 +735,7 @@ trace 大小、并发 run 与每月 run 配额只约束分析资源，不是按�
 
 ## Runtime 与 Provider 的边界
 
-`SMARTPERFETTO_AGENT_RUNTIME` 只表示后端编排 runtime，只接受 `claude-agent-sdk`、`openai-agents-sdk`、`pi-agent-core`、`opencode` 或 `qoder-agent-sdk`。Provider 名称不能写在这里：例如 DeepSeek 应配置为 Claude/Anthropic-compatible provider，OpenAI/Ollama 应配置为 OpenAI Agents SDK provider，Pi Agent Core/OpenCode/Qoder 应配置为 custom provider 或对应 env block。
+后端编排 runtime 固定为 Pi Agent Core；provider 只决定 endpoint、模型和凭据。`SMARTPERFETTO_AGENT_RUNTIME` 已废弃：只接受曾经有效的 runtime 名称（`claude-agent-sdk`、`openai-agents-sdk`、`pi-agent-core`、`opencode`、`qoder-agent-sdk`），全部映射为 Pi 并提示一次废弃；未知值（例如 `deepseek` 这类 provider 名称）仍会报错。
 
 ## Runtime 并发候选准入
 

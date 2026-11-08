@@ -13,7 +13,7 @@ import {
   providerScopeFromAnalysisOptions,
 } from '../runtimeCommon';
 import { createAnalysisRunSpec } from '../analysisRunSpec';
-import {listProductionRuntimeKinds} from '../runtimeKinds';
+import {PRODUCTION_RUNTIME_KINDS} from '../runtimeKinds';
 
 const claudeSelection: RuntimeSelection = {
   kind: 'claude-agent-sdk',
@@ -302,7 +302,7 @@ describe('AnalysisRunSpec shadow mode', () => {
     });
   });
 
-  it.each(listProductionRuntimeKinds())(
+  it.each(PRODUCTION_RUNTIME_KINDS)(
     'records the final model and canonical runtime for %s',
     runtimeKind => {
       const recordRuntime = jest.fn();

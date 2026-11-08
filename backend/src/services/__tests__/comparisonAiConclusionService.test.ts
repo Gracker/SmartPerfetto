@@ -152,7 +152,7 @@ describe('generateAiComparisonConclusion', () => {
 
   test('uses max_completion_tokens for a GPT-5.6 Chat Completions provider', async () => {
     const envKeys = [
-      'SMARTPERFETTO_AGENT_RUNTIME',
+      'SMARTPERFETTO_LEGACY_AGENT_RUNTIME',
       'OPENAI_API_KEY',
       'OPENAI_BASE_URL',
       'OPENAI_MODEL',
@@ -163,7 +163,7 @@ describe('generateAiComparisonConclusion', () => {
     const originalFetch = globalThis.fetch;
     let requestBody: Record<string, unknown> = {};
 
-    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'openai-agents-sdk';
+    process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'openai-agents-sdk';
     process.env.OPENAI_API_KEY = 'sk-test';
     process.env.OPENAI_BASE_URL = 'https://example.test/v1';
     process.env.OPENAI_MODEL = 'gpt-5.6-sol';
@@ -411,8 +411,9 @@ describe('AI policy and runtime routing of the comparison conclusion', () => {
     expect(client.complete).not.toHaveBeenCalled();
   });
 
-  test('a runtime other than Claude, Pi or OpenAI degrades instead of being sent to Claude', async () => {
+  test('a retired runtime env value takes the Pi path instead of being sent to Claude', async () => {
     process.env.SMARTPERFETTO_AGENT_RUNTIME = 'opencode';
+    delete process.env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON;
     const conclusion = await generateAiComparisonConclusion({
       result: comparisonResult(),
       query: 'compare startup',
@@ -420,7 +421,7 @@ describe('AI policy and runtime routing of the comparison conclusion', () => {
     });
 
     expect(conclusion.source).toBe('deterministic');
-    expect(conclusion.uncertainty.join('\n')).toContain('opencode runtime');
+    expect(conclusion.uncertainty.join('\n')).toContain('Pi comparison conclusion credentials missing');
   });
 
   test('a Pi runtime without a configured model degrades with the Pi reason, never Claude', async () => {

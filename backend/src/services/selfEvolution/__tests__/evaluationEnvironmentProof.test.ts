@@ -104,7 +104,7 @@ describe('evaluation environment proof', () => {
       },
     }).id;
     pinned = {
-      runtime: 'openai-agents-sdk',
+      runtime: 'pi-agent-core',
       providerId,
       model: 'gpt-eval',
       outputLanguage: 'zh-CN',
@@ -183,6 +183,13 @@ describe('evaluation environment proof', () => {
     };
   }
 
+
+  it('reports a baseline pinned to a retired runtime as stale instead of running it on Pi', () => {
+    pinned = {...pinned, runtime: 'openai-agents-sdk'};
+    expect(start).toThrow('evaluation_baseline_runtime_retired');
+    pinned = {...pinned, runtime: 'experimental-opencode'};
+    expect(start).toThrow('evaluation_baseline_runtime_retired');
+  });
   it('binds the proof to a sealed manifest and a stable provider environment', () => {
     const environmentStart = start();
     const proof = finalize(environmentStart, 'run-a');

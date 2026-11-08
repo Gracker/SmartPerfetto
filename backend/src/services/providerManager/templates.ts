@@ -131,7 +131,7 @@ export const officialTemplates: ProviderTemplate[] = [
       { id: 'qwen3.6-flash', name: 'Qwen 3.6 Flash', tier: 'light' },
     ],
     defaultConnection: {
-      agentRuntime: 'claude-agent-sdk',
+      agentRuntime: 'pi-agent-core',
       claudeBaseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic',
       openaiBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       openaiProtocol: 'chat_completions',
@@ -158,7 +158,7 @@ export const officialTemplates: ProviderTemplate[] = [
       { id: 'qwen3.7-plus', name: 'Qwen 3.7 Plus', tier: 'primary' },
     ],
     defaultConnection: {
-      agentRuntime: 'claude-agent-sdk',
+      agentRuntime: 'pi-agent-core',
       claudeBaseUrl: 'https://coding-intl.dashscope.aliyuncs.com/apps/anthropic',
       openaiBaseUrl: 'https://coding-intl.dashscope.aliyuncs.com/v1',
       openaiProtocol: 'chat_completions',
@@ -177,7 +177,7 @@ export const officialTemplates: ProviderTemplate[] = [
       { id: 'kimi-for-coding', name: 'Kimi for Coding', tier: 'primary' },
     ],
     defaultConnection: {
-      agentRuntime: 'claude-agent-sdk',
+      agentRuntime: 'pi-agent-core',
       claudeBaseUrl: 'https://api.kimi.com/coding/',
       openaiBaseUrl: 'https://api.kimi.com/coding/v1',
       openaiProtocol: 'chat_completions',
@@ -197,7 +197,7 @@ export const officialTemplates: ProviderTemplate[] = [
       { id: 'kimi-k2.5', name: 'Kimi K2.5', tier: 'primary' },
     ],
     defaultConnection: {
-      agentRuntime: 'claude-agent-sdk',
+      agentRuntime: 'pi-agent-core',
       claudeBaseUrl: 'https://api.moonshot.cn/anthropic',
       openaiBaseUrl: 'https://api.moonshot.cn/v1',
       openaiProtocol: 'chat_completions',
@@ -225,7 +225,7 @@ export const officialTemplates: ProviderTemplate[] = [
       { id: 'ark-code-latest', name: 'Ark Code Latest', tier: 'primary' },
     ],
     defaultConnection: {
-      agentRuntime: 'claude-agent-sdk',
+      agentRuntime: 'pi-agent-core',
       claudeBaseUrl: 'https://ark.cn-beijing.volces.com/api/coding',
       openaiBaseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3',
       openaiProtocol: 'chat_completions',
@@ -242,7 +242,7 @@ export const officialTemplates: ProviderTemplate[] = [
       { id: 'MiniMax-M2.7-highspeed', name: 'MiniMax M2.7 Highspeed', tier: 'light' },
     ],
     defaultConnection: {
-      agentRuntime: 'claude-agent-sdk',
+      agentRuntime: 'pi-agent-core',
       claudeBaseUrl: 'https://api.minimaxi.com/anthropic',
       openaiBaseUrl: 'https://api.minimaxi.com/v1',
       openaiProtocol: 'chat_completions',
@@ -259,7 +259,7 @@ export const officialTemplates: ProviderTemplate[] = [
       { id: 'mimo-v2.5', name: 'MiMo v2.5', tier: 'light' },
     ],
     defaultConnection: {
-      agentRuntime: 'claude-agent-sdk',
+      agentRuntime: 'pi-agent-core',
       claudeBaseUrl: 'https://token-plan-sgp.xiaomimimo.com/anthropic',
       openaiBaseUrl: 'https://token-plan-sgp.xiaomimimo.com/v1',
       openaiProtocol: 'chat_completions',
@@ -293,7 +293,7 @@ export const officialTemplates: ProviderTemplate[] = [
       { id: 'kimi-k2.7-code-highspeed', name: 'Kimi K2.7 Code HighSpeed', tier: 'light' },
     ],
     defaultConnection: {
-      agentRuntime: 'claude-agent-sdk',
+      agentRuntime: 'pi-agent-core',
       claudeBaseUrl: 'https://api.lkeap.cloud.tencent.com/plan/anthropic',
       openaiBaseUrl: 'https://api.lkeap.cloud.tencent.com/plan/v3',
       openaiProtocol: 'chat_completions',
@@ -312,7 +312,7 @@ export const officialTemplates: ProviderTemplate[] = [
       { id: 'hunyuan-2.0-thinking', name: 'Hunyuan 2.0 Think', tier: 'primary' },
     ],
     defaultConnection: {
-      agentRuntime: 'claude-agent-sdk',
+      agentRuntime: 'pi-agent-core',
       claudeBaseUrl: 'https://api.lkeap.cloud.tencent.com/coding/anthropic',
       openaiBaseUrl: 'https://api.lkeap.cloud.tencent.com/coding/v3',
       openaiProtocol: 'chat_completions',
@@ -328,7 +328,7 @@ export const officialTemplates: ProviderTemplate[] = [
       { id: 'hunyuan-2.0-instruct-20251111', name: 'Hunyuan 2.0 Instruct', tier: 'light' },
     ],
     defaultConnection: {
-      agentRuntime: 'claude-agent-sdk',
+      agentRuntime: 'pi-agent-core',
       claudeBaseUrl: 'https://api.hunyuan.cloud.tencent.com/anthropic',
       openaiBaseUrl: 'https://api.hunyuan.cloud.tencent.com/v1',
       openaiProtocol: 'chat_completions',
@@ -355,7 +355,7 @@ export const officialTemplates: ProviderTemplate[] = [
       { id: 'qianfan-code-latest', name: 'Qianfan Code Latest', tier: 'primary' },
     ],
     defaultConnection: {
-      agentRuntime: 'claude-agent-sdk',
+      agentRuntime: 'pi-agent-core',
       claudeBaseUrl: 'https://qianfan.baidubce.com/anthropic',
       openaiBaseUrl: 'https://qianfan.baidubce.com/v2',
       openaiProtocol: 'chat_completions',
@@ -372,7 +372,7 @@ export const officialTemplates: ProviderTemplate[] = [
       { id: 'step-3.5-flash', name: 'Step 3.5 Flash', tier: 'light' },
     ],
     defaultConnection: {
-      agentRuntime: 'claude-agent-sdk',
+      agentRuntime: 'pi-agent-core',
       claudeBaseUrl: 'https://api.stepfun.com/step_plan',
       openaiBaseUrl: 'https://api.stepfun.com/step_plan/v1',
       openaiProtocol: 'chat_completions',
@@ -409,7 +409,7 @@ export const officialTemplates: ProviderTemplate[] = [
       { id: 'Qwen/Qwen3-30B-A3B-Instruct-2507', name: 'Qwen3 30B Instruct', tier: 'light' },
     ],
     defaultConnection: {
-      agentRuntime: 'claude-agent-sdk',
+      agentRuntime: 'pi-agent-core',
       claudeBaseUrl: 'https://api.siliconflow.com/',
       openaiBaseUrl: 'https://api.siliconflow.com/v1',
       openaiProtocol: 'chat_completions',
@@ -433,7 +433,7 @@ export const officialTemplates: ProviderTemplate[] = [
       { id: 'qwen3-32b', name: 'Qwen3 32B', tier: 'light' },
     ],
     defaultConnection: {
-      agentRuntime: 'claude-agent-sdk',
+      agentRuntime: 'pi-agent-core',
       claudeBaseUrl: 'https://api.modelarts-maas.com/anthropic',
       // https://support.huaweicloud.com/model-call-maas/model-call-021.html
       openaiBaseUrl: 'https://api.modelarts-maas.com/openai/v1',
@@ -458,7 +458,7 @@ export const officialTemplates: ProviderTemplate[] = [
     ],
     defaultConnection: {
       openaiBaseUrl: 'https://api.openai.com/v1',
-      agentRuntime: 'openai-agents-sdk',
+      agentRuntime: 'pi-agent-core',
       openaiProtocol: 'responses',
     },
   },
@@ -470,7 +470,7 @@ export const officialTemplates: ProviderTemplate[] = [
     availableModels: [],
     defaultConnection: {
       openaiBaseUrl: 'http://localhost:11434/v1',
-      agentRuntime: 'openai-agents-sdk',
+      agentRuntime: 'pi-agent-core',
       openaiProtocol: 'chat_completions',
     },
   },
@@ -481,7 +481,7 @@ export const officialTemplates: ProviderTemplate[] = [
     defaultModels: { primary: '', light: '' },
     availableModels: [],
     defaultConnection: {
-      agentRuntime: 'claude-agent-sdk',
+      agentRuntime: 'pi-agent-core',
     },
   },
 ];

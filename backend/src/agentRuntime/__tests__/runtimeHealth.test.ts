@@ -16,6 +16,7 @@ const ENV_KEYS = [
   'PROVIDER_DATA_DIR_OVERRIDE',
   'SMARTPERFETTO_AI_ENABLED',
   'SMARTPERFETTO_AGENT_RUNTIME',
+  'SMARTPERFETTO_LEGACY_AGENT_RUNTIME',
   'SMARTPERFETTO_API_KEY',
   'SMARTPERFETTO_ENTERPRISE',
   'SMARTPERFETTO_OIDC_ISSUER_URL',
@@ -104,7 +105,7 @@ describe('buildRuntimeHealthPayload', () => {
 
   it.each([undefined, 'https://proxy.example/anthropic'])(
     'keeps the backend healthy but Claude unconfigured without credentials (%s)', (baseUrl) => {
-      process.env.SMARTPERFETTO_AGENT_RUNTIME = 'claude-agent-sdk';
+      process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'claude-agent-sdk';
       if (baseUrl) process.env.ANTHROPIC_BASE_URL = baseUrl;
       const payload = buildRuntimeHealthPayload();
       expect(payload.status).toBe('OK');
@@ -175,7 +176,20 @@ describe('buildRuntimeHealthPayload', () => {
     });
   });
 
-  it('reports default Claude runtime diagnostics without leaking credentials', () => {
+  it('runs an env-only Claude setup on Pi as configured, without leaking credentials', () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-claude-secret';
+    process.env.CLAUDE_MODEL = 'claude-test';
+
+    const payload = buildRuntimeHealthPayload(new Date('2026-05-20T00:00:00.000Z'));
+
+    expect(payload.aiEngine).toMatchObject({runtime: 'pi-agent-core', configured: true, source: 'default',
+      envCredentialSources: ['anthropic_api_key']});
+    expect(payload.aiEngine.diagnostics).toMatchObject({runtime: 'pi-agent-core', configured: true, modelConfigured: true});
+    expect(JSON.stringify(payload)).not.toContain('sk-claude-secret');
+  });
+
+  it('reports legacy Claude runtime diagnostics without leaking credentials', () => {
+    process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'claude-agent-sdk';
     process.env.ANTHROPIC_API_KEY = 'sk-claude-secret';
     process.env.CLAUDE_MODEL = 'claude-test';
     process.env.CLAUDE_LIGHT_MODEL = 'claude-light';
@@ -189,7 +203,7 @@ describe('buildRuntimeHealthPayload', () => {
       providerMode: 'anthropic_direct',
       aiEnabled: true,
       configured: true,
-      source: 'default',
+      source: 'env',
       credentialSource: 'env-or-default',
       envCredentialSources: ['anthropic_api_key'],
       providerOverridesEnv: false,
@@ -205,7 +219,7 @@ describe('buildRuntimeHealthPayload', () => {
 
   it('reports AI disabled policy without requiring runtime credentials', () => {
     process.env.SMARTPERFETTO_AI_ENABLED = 'false';
-    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'openai-agents-sdk';
+    process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'openai-agents-sdk';
 
     const payload = buildRuntimeHealthPayload(new Date('2026-05-20T00:00:00.000Z'));
 
@@ -244,7 +258,7 @@ describe('buildRuntimeHealthPayload', () => {
   });
 
   it('reports effective OpenAI env fallback details without leaking URL secrets', () => {
-    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'openai-agents-sdk';
+    process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'openai-agents-sdk';
     process.env.OPENAI_API_KEY = 'sk-env-secret';
     process.env.OPENAI_BASE_URL = 'https://user:pass@env.example/v1?token=secret#hash';
     process.env.OPENAI_AGENTS_PROTOCOL = 'chat_completions';
@@ -279,6 +293,7 @@ describe('buildRuntimeHealthPayload', () => {
   });
 
   it('reports active provider details and marks env credentials as overridden', () => {
+    process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'openai-agents-sdk';
     process.env.OPENAI_API_KEY = 'sk-env-secret';
     process.env.OPENAI_BASE_URL = 'https://env.example/v1';
 
@@ -359,56 +374,23 @@ describe('buildRuntimeHealthPayload', () => {
     expect(JSON.stringify(payload)).not.toContain('sk-pi-secret');
   });
 
-  it('reports public OpenCode runtime diagnostics without leaking model JSON', () => {
+  it('reports a retired OpenCode env on Pi as unconfigured without leaking model JSON', () => {
     process.env.SMARTPERFETTO_AGENT_RUNTIME = 'opencode';
     process.env.SMARTPERFETTO_OPENCODE_MODEL_JSON =
       '{"providerID":"smartperfetto","modelID":"opencode-test","apiKey":"sk-opencode-secret"}';
-    process.env.SMARTPERFETTO_OPENCODE_SDK_MODULE_PATH =
-      '/tmp/opencode-sdk/dist/index.js';
 
     const payload = buildRuntimeHealthPayload(new Date('2026-05-20T00:00:00.000Z'));
 
-    expectRuntimeDiagnosticsShape(payload, 'opencode');
     expect(payload.aiEngine).toMatchObject({
-      runtime: 'opencode',
-      model: 'opencode',
-      providerMode: 'opencode',
-      configured: true,
+      runtime: 'pi-agent-core',
+      configured: false,
       source: 'env',
-      credentialSource: 'env-or-default',
-      envCredentialSources: [
-        'opencode_model_json',
-        'opencode_sdk_module_path',
-      ],
-      providerOverridesEnv: false,
-    });
-    expect(payload.aiEngine.diagnostics).toMatchObject({
-      runtime: 'opencode',
-      configured: true,
-      experimental: false,
-      modelConfigured: true,
-      modulePath: '/tmp/opencode-sdk/dist/index.js',
+      diagnostics: {configured: false, modelUnavailableReason: 'opencode_model_json_untranslatable'},
     });
     expect(JSON.stringify(payload)).not.toContain('sk-opencode-secret');
   });
 
-  it('does not report OpenCode configured from SDK availability without a model', () => {
-    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'opencode';
-    process.env.SMARTPERFETTO_OPENCODE_SDK_MODULE_PATH = '/tmp/opencode-sdk/dist/index.js';
-
-    const payload = buildRuntimeHealthPayload(new Date('2026-05-20T00:00:00.000Z'));
-
-    expect(payload.aiEngine).toMatchObject({
-      runtime: 'opencode',
-      configured: false,
-      diagnostics: {
-        configured: false,
-        modelConfigured: false,
-      },
-    });
-  });
-
-  it('reports an active custom OpenCode provider as configured', () => {
+  it('reports an active OpenCode provider without an endpoint as an explicit Pi gap', () => {
     const provider = getProviderService().create({
       name: 'Configured OpenCode',
       category: 'custom',
@@ -424,10 +406,10 @@ describe('buildRuntimeHealthPayload', () => {
     const payload = buildRuntimeHealthPayload(new Date('2026-05-20T00:00:00.000Z'));
 
     expect(payload.aiEngine).toMatchObject({
-      runtime: 'opencode',
-      configured: true,
+      runtime: 'pi-agent-core',
+      configured: false,
       source: 'provider',
-      diagnostics: {configured: true, modelConfigured: true},
+      diagnostics: {configured: false, modelUnavailableReason: 'opencode_model_json_untranslatable'},
     });
   });
 

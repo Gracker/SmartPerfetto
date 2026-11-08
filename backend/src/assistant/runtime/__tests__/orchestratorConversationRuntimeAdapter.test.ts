@@ -23,7 +23,7 @@ import {createDataEnvelope} from '../../../types/dataContract';
 import * as authorization from '../../../services/resolvedAnalysisContext';
 import {ANSWER_DRAFT_FLUSH_INTERVAL_MS} from '../../../services/answerDraftRelay';
 import {resolveKnowledgeScope} from '../../../services/scopedKnowledgeStore';
-import {listProductionRuntimeKinds} from '../../../agentRuntime/runtimeKinds';
+import {PRODUCTION_RUNTIME_KINDS} from '../../../agentRuntime/runtimeKinds';
 import type {AnalysisOptions, AnalysisResult, IOrchestrator} from '../../../agent/core/orchestratorTypes';
 import {OrchestratorConversationRuntimeAdapter} from '../orchestratorConversationRuntimeAdapter';
 import {conversationRuntimeSessionId} from '../../application/conversationSessionService';
@@ -613,7 +613,7 @@ describe('OrchestratorConversationRuntimeAdapter', () => {
     expect(resolveDurableLearningPermission(receivedOptions!)).toEqual(granted ? {runId: 'run-learning'} : undefined);
   });
 
-  it.each(listProductionRuntimeKinds())(
+  it.each(PRODUCTION_RUNTIME_KINDS)(
     'applies the same conversation contract to %s',
     async () => {
       let receivedOptions: AnalysisOptions | undefined;

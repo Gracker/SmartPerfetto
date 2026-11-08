@@ -2,7 +2,7 @@
 
 [English](configuration.en.md) | [中文](configuration.md)
 
-Claude Agent SDK requires explicit provider credentials through the Provider Manager attached to the running instance or through env in every run mode. Claude Code login and a Base URL alone do not configure the SDK.
+Analysis runs on Pi Agent Core, which requires explicit provider credentials through the Provider Manager attached to the running instance or through env in every run mode. Claude Code login and a Base URL alone do not configure a model.
 
 Windows portable users should complete download, extraction, and startup through the
 [Windows guide](windows.en.md), then use the Provider fields on this page. Do not copy Unix
@@ -10,16 +10,61 @@ source commands into the ordinary Windows portable path.
 
 ## First Answer: Which Runtime Do I Configure?
 
-Claude Agent SDK, OpenAI Agents SDK, Pi Agent Core, OpenCode, and Qoder Agent SDK are alternative runtime paths, not a checklist of required setup steps. Pick one source for your first setup:
+Pi Agent Core is the only analysis runtime. What you configure is the **model endpoint**: Pi
+calls that endpoint's API (Anthropic Messages, OpenAI Responses/Chat Completions, Bedrock, or
+Vertex) with its model ID and credential form. Pick one source for your first setup:
 
 | What you have | Recommended path | What to configure |
 |---|---|---|
 | You do not want to edit env files, or you use Docker/portable packages | UI Provider Manager | Add the provider key on the `Providers` tab, test it, then activate it |
-| Anthropic API key or a Claude/Anthropic-compatible provider | Claude Agent SDK | `ANTHROPIC_*` + `CLAUDE_*` |
-| OpenAI API key, Ollama, or an OpenAI-compatible provider | OpenAI Agents SDK | `SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk` + `OPENAI_*` |
-| Pi Agent Core model configuration | Pi Agent Core | Custom Provider Manager profile or `SMARTPERFETTO_AGENT_RUNTIME=pi-agent-core` + `SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON` |
-| OpenCode model configuration | OpenCode | Custom Provider Manager profile or `SMARTPERFETTO_AGENT_RUNTIME=opencode` + OpenAI-compatible fields or `SMARTPERFETTO_OPENCODE_MODEL_JSON` |
-| Qoder CLI login or PAT | Qoder Agent SDK | Explicitly installed Qoder SDK plus a custom Provider Manager profile or `SMARTPERFETTO_AGENT_RUNTIME=qoder-agent-sdk` |
+| Anthropic API key or a Claude/Anthropic-compatible provider | Anthropic-compatible endpoint | `ANTHROPIC_*` + `CLAUDE_*` |
+| OpenAI API key, Ollama, or an OpenAI-compatible provider | OpenAI-compatible endpoint | `OPENAI_*` (`OPENAI_AGENTS_PROTOCOL` selects `responses` or `chat_completions`) |
+| AWS Bedrock or Google Vertex | Cloud endpoint | A Bedrock/Vertex Provider Manager profile, or `CLAUDE_CODE_USE_BEDROCK` / `CLAUDE_CODE_USE_VERTEX` env |
+| A complete Pi model configuration | Explicit Pi model | `piAgentCoreModelJson` on a custom Provider Manager profile, or `SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON` |
+
+### Migrating from a retired runtime
+
+Claude Agent SDK, OpenAI Agents SDK, OpenCode, and Qoder Agent SDK are no longer selectable.
+Existing configuration migrates automatically; nothing needs editing by hand:
+
+- **Provider profiles**: on read, a retired `agentRuntime` maps to `pi-agent-core` and records
+  the endpoint the old runtime used (`apiSurface`: `claude` or `openai`). Pi keeps calling the
+  same Base URL with the same model ID and the same credential form: `claudeApiKey` and
+  Anthropic's own key send `x-api-key`; a dual-surface provider's shared key and
+  `claudeAuthToken` send `Authorization: Bearer`; OpenAI-compatible keys send Bearer. The
+  migration changes only the runtime field and drops OpenCode/Qoder-only fields; it never
+  stores a synthesized model JSON, and the next normal save writes it back. An explicit
+  `piAgentCoreModelJson` remains the highest-priority override.
+- **`.env`**: old `SMARTPERFETTO_AGENT_RUNTIME` values (`claude-agent-sdk`,
+  `openai-agents-sdk`, `opencode`, `qoder-agent-sdk`) are still accepted, all map to Pi, and log
+  one deprecation warning (also shown by `smp doctor`); remove the variable. `ANTHROPIC_*`,
+  `OPENAI_*`, Bedrock, and Vertex env become a Pi model.
+- **Existing sessions**: on recovery, when the provider configuration, request origin, model,
+  and authorization fingerprint are all unchanged, the session is rebound to Pi with a
+  continuity note; any change keeps the existing "start a new session" outcome.
+- **Model metadata**: the installed pi-ai catalog supplies the model when it serves that ID with
+  the same API on the same host; otherwise the model is synthesized on the old API with a
+  128000-token context, a 32000-token output cap for Anthropic/Bedrock/Vertex or 16384 for
+  OpenAI APIs, and zero cost (display only, never a gate).
+
+The few cases that need attention:
+
+- An OpenCode model JSON without an OpenAI-compatible `baseURL`, or a Qoder profile (Qoder's
+  own service): Pi cannot translate it and reports it explicitly; fill in the Base URL, key,
+  and model in Providers and save.
+- Bedrock and Vertex credentials come from the same sources the Claude runtime used. Bedrock
+  takes a bearer token, then `AWS_PROFILE`, then explicit access keys; an `.env`-only setup that
+  names none uses the host's AWS SDK default chain. A Bedrock Provider Manager profile must name
+  one of those credentials and never falls back to the server's own AWS identity. Vertex uses
+  `GOOGLE_APPLICATION_CREDENTIALS` when set and Google ADC otherwise; without `CLOUD_ML_REGION` it
+  defaults to `us-east5` as Claude Code did, and it honours the `us`/`eu` multi-regions and
+  `ANTHROPIC_VERTEX_BASE_URL`. A per-model `VERTEX_REGION_*` variable is reported explicitly; set
+  `CLOUD_ML_REGION` instead. Credentials are resolved in-process into explicit keys before Pi
+  receives them, and an ambient AWS credential-chain variable that is not part of the selected
+  configuration fails explicitly.
+- A Pi model JSON you write yourself cannot name an AWS profile or credential chain; name the
+  profile on a Bedrock profile instead.
+- Claude-only tuning (effort, budget, sub-agents) no longer applies.
 
 If a third-party provider exposes both Claude-compatible and OpenAI-compatible endpoints, the UI can store both endpoints and one shared key, but only one side is active at runtime. With `.env` only, uncomment either the Claude-compatible block or the OpenAI-compatible block; do not enable both just to be "complete."
 
@@ -231,19 +276,17 @@ evidence semantics.
 
 ## LLM Configuration
 
-SmartPerfetto has these runtime paths:
+SmartPerfetto has one runtime, `pi-agent-core`. It reuses the shared prompt, SQL/Skill,
+planning/hypothesis, and finalization/report pipeline, loads `@earendil-works/pi-agent-core`
+on demand, and does not enable `.pi` project discovery, package extensions, shell tools, or file
+tools. The model endpoint comes from a Provider Manager profile, the Anthropic/OpenAI/Bedrock/
+Vertex variables in `.env`, or an explicit Pi model JSON.
 
-- `claude-agent-sdk`: the default runtime when env carries Claude credentials. Use it for Anthropic, Bedrock, Vertex, and Anthropic/Claude Code-compatible providers.
-- `openai-agents-sdk`: the OpenAI runtime. Use it for OpenAI Responses API, Ollama, and OpenAI-compatible gateways that support streaming function/tool calling.
-- `pi-agent-core`: optional public runtime. With a real model config it reuses SmartPerfetto's shared prompt, SQL/Skill, planning/hypothesis, and finalization/report pipeline. It dynamically loads `@earendil-works/pi-agent-core` and does not enable `.pi` project discovery, package extensions, shell tools, or file tools.
-- `opencode`: optional public runtime. It runs a hardened isolated OpenCode server, feeds it explicit OpenAI-compatible or OpenCode model configuration, and exposes only request-scoped SmartPerfetto MCP tools. It does not read the user's OpenCode CLI login, project config, extensions, or built-in file/shell/web/edit tools.
-- `qoder-agent-sdk`: optional public runtime. It exposes only request-scoped SmartPerfetto MCP tools, supports a local `qodercli` login or PAT, and starts a fresh provider session every turn without durable opaque state. Its SDK/CLI terms are separate, so the SDK is an opt-in optional peer and is not installed by default.
+An OpenAI-compatible endpoint does not require installing or logging in to Claude Code; an Anthropic endpoint does not require an OpenAI key, and a local Claude Code login does not replace explicit credentials. Real-model analysis quality should be verified with startup/scrolling E2E; fake-stream is smoke/test-only and does not represent parity.
 
-These runtimes are mutually selected backend orchestration paths. OpenAI runtime setup does not require installing or logging in to Claude Code; Claude API setup does not require an OpenAI key. Pi Agent Core, OpenCode, and Qoder setup are separate from both. Real-model analysis quality should be verified with startup/scrolling E2E; fake-stream is smoke/test-only and does not represent parity.
+The model source priority is: request/session `providerId`, active Provider Manager profile, then `.env`. With `.env` only, when both Anthropic and OpenAI variables exist the old rule picks the side: `SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk` (deprecated but still read) picks OpenAI; otherwise an Anthropic key/token, Bedrock, or Vertex picks Anthropic; otherwise `OPENAI_*` is used. Do not enable both `ANTHROPIC_*` and `OPENAI_*` for first setup. An active Provider Manager profile overrides `.env` fallback; confirm the current source with `aiEngine.credentialSource` and `aiEngine.providerOverridesEnv` from authenticated `/api/runtime-health`.
 
-Runtime selection priority is: request/session `providerId`, active Provider Manager profile, `SMARTPERFETTO_AGENT_RUNTIME`, then the default: `claude-agent-sdk` when env carries Claude credentials (Anthropic key/token, Bedrock, Vertex), otherwise `pi-agent-core`. Do not enable both `ANTHROPIC_*` and `OPENAI_*` for first setup; if an advanced deployment does contain both without `SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk`, analysis still uses Claude Agent SDK. An active Provider Manager profile overrides `.env` fallback; confirm the current source with `aiEngine.credentialSource` and `aiEngine.providerOverridesEnv` from authenticated `/api/runtime-health`.
-
-Perfetto UI Provider Management can store both endpoint families for the same provider: `claudeBaseUrl` / `claudeApiKey` / `claudeAuthToken` for Claude Code SDK, and `openaiBaseUrl` / `openaiApiKey` / `openaiProtocol` for OpenAI SDK. Custom providers can also select `pi-agent-core` with `piAgentCoreModelJson` and an optional module path/system prompt, `opencode` with `openCodeModelJson` / `openCodeSdkModulePath` / `openCodeSystemPrompt`, or `qoder-agent-sdk` with `qoderAccessToken` / `qoderCliPath` and optional model/system prompt fields. The provider switcher beside the AI input shows the active runtime.
+Perfetto UI Provider Management can store both endpoint families for the same provider: `claudeBaseUrl` / `claudeApiKey` / `claudeAuthToken` for the Anthropic-compatible API, and `openaiBaseUrl` / `openaiApiKey` / `openaiProtocol` for the OpenAI-compatible API; `apiSurface` (`claude` or `openai`) records which side Pi calls, defaulting to the type's former default (the Anthropic side for dual-surface providers). The API returns `supportedRuntimes: ["pi-agent-core"]` for every provider; writing a retired runtime value logs a warning and lands on Pi through the migration above. Custom providers can also set `piAgentCoreModelJson` with an optional module path/system prompt as an explicit override.
 
 In enterprise mode, remote Provider Manager endpoints must use public HTTPS by
 default, including DNS-result validation, and redirects must remain same-origin.
@@ -252,7 +295,7 @@ For an audited private Ollama instance or gateway, set
 host, and port), separated by commas. Wildcards, URL paths, and broad private
 network ranges are intentionally unsupported.
 
-For dual-surface providers such as DeepSeek, Qwen, Kimi, MiMo, TokenHub, MiniMax, StepFun, SiliconFlow, and custom gateways, the UI shows a shared Provider API Key plus optional runtime-specific key overrides. If the provider uses one key for both endpoint families, fill only the shared key. Change the runtime selector only when you intentionally want to switch between the Claude-compatible URL and the OpenAI-compatible URL.
+For dual-surface providers such as DeepSeek, Qwen, Kimi, MiMo, TokenHub, MiniMax, StepFun, SiliconFlow, and custom gateways, the UI shows a shared Provider API Key plus optional runtime-specific key overrides. If the provider uses one key for both endpoint families, fill only the shared key. `apiSurface` decides whether Pi calls the Claude-compatible URL or the OpenAI-compatible URL.
 
 Existing analysis sessions pin the credential source used at creation time. A session created with Provider A will try to resume with Provider A; a session created from `.env` fallback does not switch to a later active provider.
 
@@ -282,8 +325,7 @@ CLAUDE_LIGHT_MODEL=mimo-v2.5
 ```
 
 ```bash
-# OpenAI-compatible / OpenAI Agents SDK
-SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk
+# OpenAI-compatible / OpenAI Responses or Chat Completions
 OPENAI_BASE_URL=https://token-plan-sgp.xiaomimimo.com/v1
 OPENAI_API_KEY=your_xiaomi_mimo_api_key_here
 OPENAI_AGENTS_PROTOCOL=chat_completions
@@ -319,7 +361,6 @@ Provider docs may use `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_HAIKU_MODEL`, but S
 OpenAI official API:
 
 ```bash
-SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk
 OPENAI_API_KEY=sk-your-openai-key
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_AGENTS_PROTOCOL=responses
@@ -334,7 +375,6 @@ Optionally set `OPENAI_ANALYSIS_REASONING_EFFORT=low` for main analysis; omittin
 Ollama or OpenAI-compatible gateways:
 
 ```bash
-SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk
 OPENAI_BASE_URL=http://localhost:11434/v1
 OPENAI_API_KEY=ollama
 OPENAI_AGENTS_PROTOCOL=chat_completions
@@ -342,12 +382,11 @@ OPENAI_MODEL=qwen3:30b
 OPENAI_LIGHT_MODEL=qwen3:30b
 ```
 
-If a third-party provider exposes both endpoint families, fill both in Provider Manager and use `agentRuntime` or the frontend switcher to choose the active side. With `.env` only, one side is active at a time through `SMARTPERFETTO_AGENT_RUNTIME`.
+If a third-party provider exposes both endpoint families, fill both in Provider Manager; `apiSurface` decides which side Pi calls. With `.env` only, enable one side at a time.
 
 Pi Agent Core:
 
 ```bash
-SMARTPERFETTO_AGENT_RUNTIME=pi-agent-core
 SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON='{"id":"your-model-id","name":"Your Model","api":"openai-responses","provider":"openai","baseUrl":"https://api.openai.com/v1","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":128000,"maxTokens":4096,"apiKeyEnv":"OPENAI_API_KEY"}'
 # Optional local checkout or unpacked package:
 # SMARTPERFETTO_PI_AGENT_CORE_MODULE_PATH=/absolute/path/to/@earendil-works/pi-agent-core/dist/index.js
@@ -394,89 +433,28 @@ For a managed custom provider, place provider-specific values such as
 `AZURE_OPENAI_*` in that profile's custom environment overrides. SmartPerfetto
 clears credentials from other profiles before constructing the runtime and
 passes only the selected runtime's provider-scoped cloud environment to Pi.
-To prevent the AWS SDK default credential chain from re-reading process-wide
-state, Bedrock accepts only a runtime-scoped `AWS_BEARER_TOKEN_BEDROCK`, or
-explicit `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` credentials (optionally
-with `AWS_SESSION_TOKEN`). `AWS_PROFILE`, ECS container credentials, web
-identity, and shared config/credentials files fail closed. Vertex service
-accounts check only the exact file explicitly selected through
-`GOOGLE_APPLICATION_CREDENTIALS`; SmartPerfetto does not probe user-home ADC.
+Bedrock credentials are resolved in-process into explicit keys before Pi
+receives them, so Pi's AWS client never re-reads process-wide state: a
+runtime-scoped `AWS_BEARER_TOKEN_BEDROCK`, an AWS profile (read strictly from
+that profile's shared config/credentials files on each request), or explicit
+`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (optionally with
+`AWS_SESSION_TOKEN`). When Bedrock is enabled without naming any credential, the
+AWS SDK default chain applies (shared files, SSO, web identity, container or
+instance role). That chain reads the process env, so an ambient AWS
+credential-chain variable that is not part of the selected configuration fails
+closed. Vertex uses the file the configuration names in
+`GOOGLE_APPLICATION_CREDENTIALS`, and Google ADC otherwise.
 
-Pi Agent Core is custom-only in Provider Manager. Removing the custom provider
-or switching `SMARTPERFETTO_AGENT_RUNTIME` back to `claude-agent-sdk` /
-`openai-agents-sdk` is the rollback path.
+Every Provider Manager profile runs on Pi; an explicit model JSON is needed only to override the automatic mapping.
 
-OpenCode:
-
-```bash
-SMARTPERFETTO_AGENT_RUNTIME=opencode
-# Recommended when you want OpenCode-specific provider/model wiring:
-SMARTPERFETTO_OPENCODE_MODEL_JSON='{"providerID":"smartperfetto","modelID":"your-model-id","baseUrl":"https://api.openai.com/v1","apiKeyEnv":"OPENAI_API_KEY","smallModel":"your-light-model"}'
-OPENAI_API_KEY=sk-your-provider-key
-# Optional local checkout or unpacked package:
-# SMARTPERFETTO_OPENCODE_SDK_MODULE_PATH=/absolute/path/to/@opencode-ai/sdk/dist/index.js
-# Optional isolated project directory; otherwise SmartPerfetto creates a temp directory:
-# SMARTPERFETTO_OPENCODE_PROJECT_DIR=/absolute/path/to/empty/project
-# Optional runtime-level prompt; SmartPerfetto analysis contracts still come from strategies:
-# SMARTPERFETTO_OPENCODE_SYSTEM_PROMPT=
-```
-
-Alternatively, omit `SMARTPERFETTO_OPENCODE_MODEL_JSON` and configure OpenCode
-through OpenAI-compatible fields:
-
-```bash
-SMARTPERFETTO_AGENT_RUNTIME=opencode
-OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_API_KEY=sk-your-provider-key
-OPENAI_MODEL=your-model-id
-OPENAI_LIGHT_MODEL=your-light-model
-```
-
-OpenCode is custom-only in Provider Manager. SmartPerfetto starts OpenCode with
-isolated HOME/config/project state, disabled built-in file/shell/web/edit tools,
-and a request-scoped MCP bridge for SmartPerfetto trace tools. It does not read
-your personal OpenCode login or project extensions. Removing the custom provider
-or switching `SMARTPERFETTO_AGENT_RUNTIME` back to `claude-agent-sdk` /
-`openai-agents-sdk` is the rollback path.
+The OpenCode and Qoder runtimes are retired: `SMARTPERFETTO_AGENT_RUNTIME=opencode|qoder-agent-sdk`
+maps to Pi. An OpenCode configuration's OpenAI-compatible fields (or the `baseURL` / `modelID` /
+`apiKey` in its model JSON) become a Pi Chat Completions model; Qoder used its own service and
+cannot be translated, so switch it to an Anthropic- or OpenAI-compatible endpoint.
 
 ### Runtime and Provider Diagnostics
 
-SmartPerfetto does not read Codex CLI, Gemini CLI, or personal OpenCode login state; those tools manage their own config files. The `opencode` runtime is configured explicitly through Provider Manager or env. Qoder is an explicit runtime integration: after installing its optional SDK, `qoder-agent-sdk` can use the local `qodercli` login or an explicit PAT.
-
-Qoder Agent SDK:
-
-```bash
-# Review and accept the Qoder SDK/CLI terms before this opt-in install.
-# Set QODER_SKIP_DOWNLOAD=1 first when using a pre-installed compatible CLI.
-npm --prefix backend run qoder:install -- --accept-terms
-SMARTPERFETTO_AGENT_RUNTIME=qoder-agent-sdk
-# Optional PAT; omit it to use the local qodercli login.
-# QODER_PERSONAL_ACCESS_TOKEN=your_qoder_pat
-# Optional pre-installed executable override.
-# QODERCLI_PATH=/absolute/path/to/qodercli
-# Optional compatible SDK entry loaded from an absolute path.
-# SMARTPERFETTO_QODER_SDK_MODULE_PATH=/absolute/path/to/qoder-sdk/dist/index.js
-# Optional BYOK: set all three required values together; base URL, style, and
-# light model are optional. BYOK does not replace Qoder PAT/qodercli auth.
-# QODER_MODEL=deepseek-flash
-# QODER_LIGHT_MODEL=deepseek-flash
-# QODER_BYOK_API_KEY=your_model_provider_api_key
-# QODER_BYOK_PROVIDER=deepseek
-# QODER_BYOK_BASE_URL=https://api.deepseek.com/v1
-# QODER_BYOK_STYLE=openai
-```
-
-For the global npm CLI, install the peer beside SmartPerfetto with
-`npm install -g @gracker/smartperfetto @qoder-ai/qoder-agent-sdk`.
-
-The default Docker and portable artifacts do not install the Qoder SDK. To use
-this runtime there, build a deployment that explicitly installs the optional
-peer after accepting its terms. Provider Manager restricts Qoder to custom
-profiles and requires either `qoderAccessToken` or `qoderCliPath`; env mode can
-fall back to the local `qodercli` login. A custom Qoder profile may also set
-`QODER_BYOK_API_KEY`, `QODER_BYOK_PROVIDER`, `QODER_BYOK_BASE_URL`, and
-`QODER_BYOK_STYLE` through `custom.envOverrides`. Other runtimes reject these
-keys, and that entry point cannot override the CLI, SDK module, or worker path.
+SmartPerfetto does not read Codex CLI, Gemini CLI, OpenCode, or Qoder login state; those tools manage their own config files.
 
 Restart the backend after changing `.env`. Saving or activating a Provider Manager profile in the UI usually does not require a backend restart, but existing analysis sessions keep the provider source they were created with. Verify explicit env/proxy credentials with:
 
@@ -490,7 +468,7 @@ Read these `/api/runtime-health` fields before debugging provider complaints:
 |---|---|
 | `aiEngine.credentialSource` | `provider-manager` means UI profile is active; `env-or-default` means env/default configuration, not proof of configured credentials |
 | `aiEngine.providerOverridesEnv` | `true` means `.env` changes will not affect analysis until the active provider is disabled |
-| `aiEngine.runtime` | Must be `claude-agent-sdk`, `openai-agents-sdk`, `pi-agent-core`, `opencode`, or `qoder-agent-sdk`, not a provider name |
+| `aiEngine.runtime` | Normally `pi-agent-core`, not a provider name; `aiEngine.diagnostics.modelUnavailableReason` says why an old configuration cannot be translated |
 | `aiEngine.providerMode` | Shows the effective connection family, such as `anthropic_compatible_proxy` or `openai_chat_completions_compatible` |
 | `aiPolicy.aiEnabled` / `aiEngine.aiEnabled` | `false` means model-backed analysis is disabled; `aiPolicy.disabledReason` explains the source |
 
@@ -502,11 +480,9 @@ Read these `/api/runtime-health` fields before debugging provider complaints:
 | `anthropic_compatible_proxy` | Uses `ANTHROPIC_BASE_URL` for a Claude Code / Anthropic-compatible provider or proxy |
 | `aws_bedrock` | Uses AWS Bedrock |
 | `google_vertex` | Uses Google Vertex AI |
-| `openai_responses` | Uses OpenAI Agents SDK + Responses API |
-| `openai_chat_completions_compatible` | Uses OpenAI Agents SDK + Chat Completions-compatible endpoint |
-| `pi-agent-core` | Uses Pi Agent Core custom model JSON through the shared SmartPerfetto analysis pipeline |
-| `opencode` | Uses OpenCode custom model JSON or OpenAI-compatible fields through the shared SmartPerfetto analysis pipeline |
-| `qoder` | Uses the opt-in Qoder Agent SDK through a local `qodercli` login, PAT, or explicit CLI path |
+| `openai_responses` | Uses the OpenAI Responses API |
+| `openai_chat_completions_compatible` | Uses a Chat Completions-compatible endpoint |
+| `pi-agent-core` | Uses Pi Agent Core (a model from the provider, env, or an explicit model JSON) through the shared SmartPerfetto analysis pipeline |
 | `unconfigured` | No explicit provider credentials. Configure an API key/auth token or a supported cloud provider before analysis |
 
 ### Temporarily Disable Model-Backed Analysis
@@ -546,9 +522,8 @@ persisted session) under the caller's Provider Manager profile:
 Besides the AI switch, a model call also needs the caller's `agent:run`
 permission (a viewer with only `trace:read` gets
 `fallbackReason: "permission_denied"`; the comparison conclusion keeps the
-`comparison:create` permission its route already requires), a Claude Agent SDK active runtime (the comparison
-conclusion also supports the OpenAI runtime; every other runtime degrades), and
-configured credentials. `SMARTPERFETTO_COMPARISON_AI_DISABLED=true` turns off
+`comparison:create` permission its route already requires), a provider that resolves
+to a Pi model, and configured credentials. `SMARTPERFETTO_COMPARISON_AI_DISABLED=true` turns off
 only the comparison conclusion and applies alongside the global switch.
 Timeouts: `CRITICAL_PATH_AI_TIMEOUT_MS` and `FLAMEGRAPH_AI_TIMEOUT_MS`
 (default 60000). Flamegraph hotspot analysis prefers the Rust analyzer
@@ -892,7 +867,7 @@ monthly runs bound analysis resources; they are not per-request rate limits.
 
 ## Runtime and Provider Boundary
 
-`SMARTPERFETTO_AGENT_RUNTIME` only selects the backend orchestration runtime and only accepts `claude-agent-sdk`, `openai-agents-sdk`, `pi-agent-core`, `opencode`, or `qoder-agent-sdk`. Do not put provider names here.
+The backend orchestration runtime is always Pi Agent Core; a provider decides only the endpoint, model, and credentials. `SMARTPERFETTO_AGENT_RUNTIME` is deprecated: it accepts only runtime names that were once valid (`claude-agent-sdk`, `openai-agents-sdk`, `pi-agent-core`, `opencode`, `qoder-agent-sdk`), maps them all to Pi with one deprecation warning, and still rejects unknown values such as a provider name like `deepseek`.
 
 ## Runtime Concurrency Candidate Admission
 

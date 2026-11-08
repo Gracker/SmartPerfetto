@@ -31,6 +31,7 @@ import {
 } from './providerMutationGeneration';
 import {LOCAL_DEV_OWNER} from '../../utils/localDevIdentity';
 import { withoutRetiredTuning } from './retiredTuning';
+import { withMigratedAgentRuntime } from './retiredRuntime';
 
 type ProviderCredentialScope = 'personal' | 'workspace' | 'org';
 
@@ -345,8 +346,9 @@ function parseLegacyProviders(raw: string): Map<string, ProviderConfig> {
       || !isPlainJsonObject(entry.connection)) {
       throw new Error('providers.json holds an invalid provider entry');
     }
-    const provider = entry as unknown as ProviderConfig;
-    providers.set(entry.id, provider.tuning ? {...provider, tuning: withoutRetiredTuning(provider.tuning)} : provider);
+    const stored = entry as unknown as ProviderConfig;
+    providers.set(entry.id, withMigratedAgentRuntime(
+      stored.tuning ? {...stored, tuning: withoutRetiredTuning(stored.tuning)} : stored));
   }
   return providers;
 }
@@ -940,7 +942,7 @@ export class ProviderStore {
     });
     const secrets = this.getSecretStore().get(row.secret_ref);
     const {connection, custom} = mergeProviderSecrets(policy.connection, policy.custom, secrets);
-    return {
+    return withMigratedAgentRuntime({
       id: row.id,
       name: row.name,
       category: policy.category ?? 'custom',
@@ -956,7 +958,7 @@ export class ProviderStore {
       connection,
       ...(policy.tuning ? { tuning: withoutRetiredTuning(policy.tuning) } : {}),
       ...(custom ? {custom} : {}),
-    };
+    });
   }
 
   /**

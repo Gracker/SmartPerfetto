@@ -1,11 +1,16 @@
 // backend/src/services/providerManager/connectionTester.ts
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import {parsePiAgentCoreModelConfig, readPiAgentCoreModelConfig} from '../../agentRuntime/engines/pi/piAgentCoreConfig';
+import {
+  PI_AGENT_CORE_MODEL_UNAVAILABLE_ENV,
+  parsePiAgentCoreModelConfig,
+  piModelUnavailableHint,
+  routeUsesAwsCredentialChain,
+  readPiAgentCoreModelConfig,
+} from '../../agentRuntime/engines/pi/piAgentCoreConfig';
 import {createPiAgentCoreProviderRuntime} from '../../agentRuntime/engines/pi/piAgentCoreProvider';
 import {runPiIntentTransport} from '../../agentRuntime/engines/pi/piIntentTransport';
 import {mergeIsolatedProviderEnv} from './envIsolation';
-import {isPiCatalogProviderType} from './piProviderCatalog';
 import {getProviderService} from './index';
 
 const PI_CONNECTION_TEST_TIMEOUT_MS = 30_000;
@@ -61,20 +66,14 @@ export async function testProviderConnection(provider: ProviderConfig): Promise<
 }
 
 async function runTest(provider: ProviderConfig): Promise<Omit<TestResult, 'latencyMs'>> {
-  if (provider.type === 'bedrock') return testBedrock(provider);
-  if (provider.type === 'vertex') return testVertex(provider);
-  if (provider.type === 'ollama') return testOllama(provider);
-
   const runtime = resolveProviderAgentRuntime(provider);
   if (runtime === 'pi-agent-core') {
     return testPiAgentCore(provider);
   }
-  if (runtime === 'opencode') {
-    return testOpenCode(provider);
-  }
-  if (runtime === 'qoder-agent-sdk') {
-    return testQoder(provider);
-  }
+  // The Claude/OpenAI engines' own probes, reachable only through the hidden legacy opt-in.
+  if (provider.type === 'bedrock') return testBedrock(provider);
+  if (provider.type === 'vertex') return testVertex(provider);
+  if (provider.type === 'ollama') return testOllama(provider);
   if (runtime === 'openai-agents-sdk') {
     return testOpenAICompatible(provider);
   }
@@ -94,15 +93,20 @@ function getOpenAIApiKey(provider: ProviderConfig): string | undefined {
 }
 
 /**
- * A catalog-backed provider without its own model JSON: one real, tool-free
- * request through the Pi path analysis will use (the provider's Pi env, the
- * installed catalog model, its key env and reasoning default).
+ * A provider without its own model JSON: one real, tool-free request through
+ * the Pi path analysis will use (the provider's Pi env, the catalog or
+ * synthesized model it resolves to, its credential form and reasoning default).
  */
-async function testPiCatalogProvider(provider: ProviderConfig): Promise<Omit<TestResult, 'latencyMs'>> {
+async function testPiProviderRequest(provider: ProviderConfig): Promise<Omit<TestResult, 'latencyMs'>> {
   try {
     const env = mergeIsolatedProviderEnv(process.env, getProviderService().getEnvForProviderConfig(provider));
     const config = readPiAgentCoreModelConfig(env);
-    if (!config) return { success: false, error: 'Pi Agent Core model is not configured' };
+    if (!config) {
+      const unavailable = env[PI_AGENT_CORE_MODEL_UNAVAILABLE_ENV];
+      return { success: false, error: unavailable
+        ? piModelUnavailableHint(unavailable)
+        : 'Pi Agent Core model is not configured' };
+    }
     const result = await runPiIntentTransport({
       prompt: 'Reply with OK.', systemPrompt: '', deadlineMs: Date.now() + PI_CONNECTION_TEST_TIMEOUT_MS,
       outputByteLimit: 1024, providerRuntime: await createPiAgentCoreProviderRuntime(config, env), purpose: 'review',
@@ -116,18 +120,13 @@ async function testPiCatalogProvider(provider: ProviderConfig): Promise<Omit<Tes
 }
 
 async function testPiAgentCore(provider: ProviderConfig): Promise<Omit<TestResult, 'latencyMs'>> {
-  if (!provider.connection.piAgentCoreModelJson?.trim() && isPiCatalogProviderType(provider.type)) {
-    return testPiCatalogProvider(provider);
-  }
-  if (provider.type !== 'custom') {
-    return { success: false, error: 'Pi Agent Core runtime is only supported for custom and catalog-backed providers' };
-  }
   const rawModel = provider.connection.piAgentCoreModelJson?.trim();
-  if (!rawModel) {
-    return { success: false, error: 'Pi Agent Core model JSON is required' };
-  }
+  // Every provider type resolves a Pi model; an explicit model JSON is the user's own override.
+  if (!rawModel) return testPiProviderRequest(provider);
   try {
-    parsePiAgentCoreModelConfig(rawModel);
+    if (routeUsesAwsCredentialChain(parsePiAgentCoreModelConfig(rawModel).route)) {
+      return { success: false, error: piModelUnavailableHint('model_json_credential_chain') };
+    }
   } catch (error) {
     return { success: false, error: `Pi Agent Core model JSON is invalid: ${(error as Error).message}` };
   }
@@ -135,52 +134,6 @@ async function testPiAgentCore(provider: ProviderConfig): Promise<Omit<TestResul
     success: true,
     modelVerified: false,
     error: 'Pi Agent Core provider configuration is syntactically valid; runtime smoke runs during analysis.',
-  };
-}
-
-function testOpenCode(provider: ProviderConfig): Omit<TestResult, 'latencyMs'> {
-  if (provider.type !== 'custom') {
-    return { success: false, error: 'OpenCode runtime is only supported for custom providers' };
-  }
-  const rawModel = provider.connection.openCodeModelJson?.trim();
-  if (rawModel) {
-    try {
-      const parsed = JSON.parse(rawModel);
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        return { success: false, error: 'OpenCode model JSON must be an object' };
-      }
-    } catch {
-      return { success: false, error: 'OpenCode model JSON is invalid' };
-    }
-    return {
-      success: true,
-      modelVerified: false,
-      error: 'OpenCode provider configuration is syntactically valid; runtime smoke runs during analysis.',
-    };
-  }
-  if (!getOpenAIBaseUrl(provider, '')) {
-    return { success: false, error: 'OpenCode requires an OpenAI-compatible Base URL or OpenCode model JSON' };
-  }
-  if (!provider.models.primary) {
-    return { success: false, error: 'OpenCode requires a primary model' };
-  }
-  return {
-    success: true,
-    modelVerified: false,
-    error: 'OpenCode will use the OpenAI-compatible provider fields through its server runtime.',
-  };
-}
-
-function testQoder(provider: ProviderConfig): Omit<TestResult, 'latencyMs'> {
-  if (provider.type !== 'custom') {
-    return { success: false, error: 'Qoder Agent SDK runtime is only supported for custom providers' };
-  }
-  return {
-    success: true,
-    modelVerified: false,
-    error: provider.connection.qoderAccessToken?.trim() || provider.connection.qoderCliPath?.trim()
-      ? 'Qoder provider configuration is syntactically valid; SDK and authentication smoke checks run during analysis.'
-      : 'Qoder provider configuration is syntactically valid; analysis will verify the installed SDK and local qodercli login.',
   };
 }
 

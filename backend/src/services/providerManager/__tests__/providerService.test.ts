@@ -8,7 +8,7 @@ import path from 'path';
 import { ProviderRequestError } from '../providerRequestError';
 import { ProviderService } from '../providerService';
 import { ProviderStoreUnreadableError } from '../providerStore';
-import type { ProviderCreateInput } from '../types';
+import type { AgentRuntimeKind, ProviderCreateInput } from '../types';
 
 function makeTmpDir(): string {
   return path.join(os.tmpdir(), `provider-svc-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -23,6 +23,10 @@ describe('ProviderService', () => {
     await fsp.mkdir(dir, { recursive: true });
     svc = new ProviderService(path.join(dir, 'providers.json'));
   });
+
+  /** The env the retired runtime received: the Pi route's input and the legacy opt-in's env. */
+  const legacyEnv = (id: string, runtime: AgentRuntimeKind) => svc.getEnvForProviderUnderRuntime(svc.getRaw(id)!, runtime);
+  const piModel = (id: string) => JSON.parse(svc.getEnvForProvider(id)!.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON);
 
   afterEach(async () => {
     await fsp.rm(dir, { recursive: true, force: true });
@@ -147,7 +151,8 @@ describe('ProviderService', () => {
       expect(listed.custom?.envOverrides?.ANTHROPIC_AUTH_TOKEN).toMatch(/^\*{4}/);
       expect(listed.custom?.envOverrides?.OPENAI_BASE_URL).toBe('https://gateway.example/v1');
       expect(fetched.custom?.envOverrides?.OPENAI_API_KEY).toMatch(/^\*{4}/);
-      expect(svc.getEnvForProvider(created.id)?.OPENAI_API_KEY).toBe('sk-env-secret123456');
+      expect(legacyEnv(created.id, 'openai-agents-sdk').OPENAI_API_KEY).toBe('sk-env-secret123456');
+      expect(svc.getEnvForProvider(created.id)?.SMARTPERFETTO_PI_AGENT_CORE_API_KEY).toBe('sk-env-secret123456');
     });
   });
 
@@ -225,7 +230,8 @@ describe('ProviderService', () => {
     it('returns env vars for active anthropic provider', () => {
       const p = svc.create(validInput);
       svc.activate(p.id);
-      const env = svc.getEffectiveEnv()!;
+      expect(svc.getEffectiveEnv()!.SMARTPERFETTO_AGENT_RUNTIME).toBe('pi-agent-core');
+      const env = legacyEnv(p.id, 'claude-agent-sdk');
       expect(env.ANTHROPIC_API_KEY).toBe('sk-ant-test123456');
       expect(env.CLAUDE_MODEL).toBe('claude-sonnet-5');
       expect(env.CLAUDE_LIGHT_MODEL).toBe('claude-haiku-4-5');
@@ -238,7 +244,7 @@ describe('ProviderService', () => {
         connection: { awsRegion: 'us-west-2', awsBearerToken: 'tok123' },
       });
       svc.activate(p.id);
-      const env = svc.getEffectiveEnv()!;
+      const env = legacyEnv(p.id, 'claude-agent-sdk');
       expect(env.CLAUDE_CODE_USE_BEDROCK).toBe('1');
       expect(env.AWS_REGION).toBe('us-west-2');
       expect(env.AWS_BEARER_TOKEN_BEDROCK).toBe('tok123');
@@ -254,7 +260,7 @@ describe('ProviderService', () => {
         connection: { awsRegion: 'us-west-2', awsBearerToken: 'tok123' },
       });
       svc.activate(p.id);
-      const env = svc.getEffectiveEnv()!;
+      const env = legacyEnv(p.id, 'claude-agent-sdk');
       expect(env.CLAUDE_MODEL).toBe('us.anthropic.claude-sonnet-5');
       expect(env.CLAUDE_LIGHT_MODEL).toBe('us.anthropic.claude-haiku-4-5-20251001-v1:0');
     });
@@ -272,7 +278,7 @@ describe('ProviderService', () => {
         connection: { awsRegion: 'eu-west-1', awsBearerToken: 'tok123' },
       });
       svc.activate(p.id);
-      const env = svc.getEffectiveEnv()!;
+      const env = legacyEnv(p.id, 'claude-agent-sdk');
       expect(env.CLAUDE_MODEL).toBe('eu.anthropic.claude-sonnet-4-5-20250929-v1:0');
       expect(env.CLAUDE_LIGHT_MODEL).toBe('eu.anthropic.claude-haiku-4-5-20251001-v1:0');
     });
@@ -291,7 +297,7 @@ describe('ProviderService', () => {
         },
       });
       svc.activate(p.id);
-      const env = svc.getEffectiveEnv()!;
+      const env = legacyEnv(p.id, 'claude-agent-sdk');
 
       expect(env.ANTHROPIC_BASE_URL).toBe('https://api.deepseek.com/anthropic');
       expect(env.ANTHROPIC_AUTH_TOKEN).toBe('sk-deepseek-test');
@@ -320,7 +326,7 @@ describe('ProviderService', () => {
       ] as const;
 
       for (const type of providerTypes) {
-        const env = svc.getEnvForProvider(svc.create({
+        const env = legacyEnv(svc.create({
           ...validInput,
           name: `Dual ${type}`,
           type,
@@ -331,7 +337,7 @@ describe('ProviderService', () => {
             claudeBaseUrl: `https://${type}.example.test/anthropic`,
             openaiBaseUrl: `https://${type}.example.test/v1`,
           },
-        }).id)!;
+        }).id, 'claude-agent-sdk');
 
         expect(env.ANTHROPIC_AUTH_TOKEN).toBe(`sk-${type}-test`);
         expect(env.ANTHROPIC_API_KEY).toBeUndefined();
@@ -352,7 +358,8 @@ describe('ProviderService', () => {
         },
       });
       svc.activate(p.id);
-      const env = svc.getEffectiveEnv()!;
+      expect(svc.getRaw(p.id)!.connection).toMatchObject({agentRuntime: 'pi-agent-core', apiSurface: 'openai'});
+      const env = legacyEnv(p.id, 'openai-agents-sdk');
 
       expect(env.SMARTPERFETTO_AGENT_RUNTIME).toBe('openai-agents-sdk');
       expect(env.OPENAI_BASE_URL).toBe('https://api.deepseek.com/v1');
@@ -378,7 +385,10 @@ describe('ProviderService', () => {
       });
 
       svc.switchAgentRuntime(p.id, 'openai-agents-sdk');
-      const env = svc.getEnvForProvider(p.id)!;
+      // A retired runtime request lands on Pi on the endpoint that runtime called.
+      expect(svc.getRaw(p.id)!.connection).toMatchObject({agentRuntime: 'pi-agent-core', apiSurface: 'openai'});
+      expect(piModel(p.id).route).toMatchObject({api: 'openai-completions', baseUrl: 'https://api.deepseek.com/v1'});
+      const env = legacyEnv(p.id, 'openai-agents-sdk');
 
       expect(env.SMARTPERFETTO_AGENT_RUNTIME).toBe('openai-agents-sdk');
       expect(env.OPENAI_BASE_URL).toBe('https://api.deepseek.com/v1');
@@ -398,7 +408,7 @@ describe('ProviderService', () => {
           openaiProtocol: 'chat_completions',
         },
       });
-      const env = svc.getEnvForProvider(p.id)!;
+      const env = legacyEnv(p.id, 'openai-agents-sdk');
 
       expect(env.SMARTPERFETTO_AGENT_RUNTIME).toBe('openai-agents-sdk');
       expect(env.OPENAI_BASE_URL).toBe('https://token-plan-sgp.xiaomimimo.com/v1');
@@ -424,8 +434,8 @@ describe('ProviderService', () => {
       })).toThrow(/does not support claude-agent-sdk/);
     });
 
-    it('rejects public Pi runtime for provider types without a Pi catalog route', () => {
-      expect(() => svc.create({
+    it('accepts Pi for a provider type without a Pi catalog route', () => {
+      const p = svc.create({
         ...validInput,
         type: 'qwen',
         connection: {
@@ -433,7 +443,8 @@ describe('ProviderService', () => {
           agentRuntime: 'pi-agent-core',
           piAgentCoreModelJson: '{"id":"pi-test","provider":"test"}',
         },
-      })).toThrow(/does not support pi-agent-core/);
+      });
+      expect(svc.getEnvForProvider(p.id)!.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON).toBe('{"id":"pi-test","provider":"test"}');
     });
 
     it('runs a catalog-backed provider on Pi with a catalog reference and only the Pi key env', () => {
@@ -491,7 +502,7 @@ describe('ProviderService', () => {
         connection: { openaiApiKey: 'sk-openai-test', openaiBaseUrl: 'https://api.openai.com/v1' },
       });
       svc.activate(p.id);
-      const env = svc.getEffectiveEnv()!;
+      const env = legacyEnv(p.id, 'openai-agents-sdk');
 
       expect(env.SMARTPERFETTO_AGENT_RUNTIME).toBe('openai-agents-sdk');
       expect(env.OPENAI_BASE_URL).toBe('https://api.openai.com/v1');
@@ -528,7 +539,30 @@ describe('ProviderService', () => {
       expect(env.ANTHROPIC_API_KEY).toBeUndefined();
     });
 
-    it('returns OpenCode env vars for custom OpenCode providers', () => {
+    it('migrates a custom OpenCode provider to Pi on the OpenAI-compatible endpoint it called', () => {
+      const p = svc.create({
+        ...validInput,
+        type: 'custom',
+        models: { primary: 'opencode-primary', light: 'opencode-light' },
+        connection: {
+          agentRuntime: 'opencode',
+          openaiBaseUrl: 'https://example.test/v1',
+          openaiApiKey: 'sk-opencode-openai',
+          openCodeSdkModulePath: '/tmp/opencode-sdk/dist/index.js',
+          openCodeSystemPrompt: 'Runtime-only OpenCode prompt',
+        },
+      });
+      const raw = svc.getRaw(p.id)!;
+      expect(raw.connection).toMatchObject({agentRuntime: 'pi-agent-core', apiSurface: 'openai', openaiProtocol: 'chat_completions'});
+      expect(raw.connection.openCodeSdkModulePath).toBeUndefined();
+      expect(raw.connection.openCodeSystemPrompt).toBeUndefined();
+      expect(piModel(p.id)).toEqual({
+        route: {api: 'openai-completions', provider: 'smartperfetto-custom', id: 'opencode-primary', baseUrl: 'https://example.test/v1'},
+        apiKeyEnv: 'SMARTPERFETTO_PI_AGENT_CORE_API_KEY',
+      });
+    });
+
+    it('builds the frozen OpenCode legacy env from an unmigrated record', () => {
       const p = svc.create({
         ...validInput,
         type: 'custom',
@@ -543,8 +577,16 @@ describe('ProviderService', () => {
           openaiProtocol: 'chat_completions',
         },
       });
-      svc.activate(p.id);
-      const env = svc.getEffectiveEnv()!;
+      const stored = {...svc.getRaw(p.id)!, connection: {
+        agentRuntime: 'opencode' as const,
+        openaiBaseUrl: 'https://example.test/v1',
+        openaiApiKey: 'sk-opencode-openai',
+        openCodeSdkModulePath: '/tmp/opencode-sdk/dist/index.js',
+        openCodeModelJson: '{"providerID":"smartperfetto","modelID":"opencode-test","apiKey":"sk-opencode-secret"}',
+        openCodeSystemPrompt: 'Runtime-only OpenCode prompt',
+        openaiProtocol: 'chat_completions' as const,
+      }};
+      const env = svc.getEnvForProviderUnderRuntime(stored, 'opencode');
 
       expect(env.SMARTPERFETTO_AGENT_RUNTIME).toBe('opencode');
       expect(env.OPENAI_BASE_URL).toBe('https://example.test/v1');
@@ -574,7 +616,7 @@ describe('ProviderService', () => {
         },
       });
       svc.activate(p.id);
-      const env = svc.getEffectiveEnv()!;
+      const env = legacyEnv(p.id, 'openai-agents-sdk');
 
       expect(env.OPENAI_MAX_TURNS).toBe('80');
       expect(env.OPENAI_FULL_PER_TURN_MS).toBe('90000');
@@ -610,12 +652,12 @@ describe('ProviderService', () => {
       })).toThrow(`Custom provider env override is not allowed: ${key}`);
     });
 
-    it('allows only scoped Qoder BYOK overrides on a Qoder custom provider', () => {
+    it('keeps an untranslatable Qoder profile explicit and drops its BYOK overrides', () => {
       const provider = svc.create({
         ...validInput,
         type: 'custom',
         models: {primary: 'deepseek-main', light: 'deepseek-light'},
-        connection: {agentRuntime: 'qoder-agent-sdk'},
+        connection: {agentRuntime: 'qoder-agent-sdk', qoderModel: 'qoder-main'},
         custom: {
           envOverrides: {
             QODER_BYOK_API_KEY: 'managed-deepseek-key',
@@ -626,30 +668,13 @@ describe('ProviderService', () => {
         },
       });
 
-      expect(svc.getEnvForProvider(provider.id)).toMatchObject({
-        QODER_BYOK_API_KEY: 'managed-deepseek-key',
-        QODER_BYOK_PROVIDER: 'deepseek',
-        QODER_BYOK_BASE_URL: 'https://api.deepseek.com/v1',
-        QODER_BYOK_STYLE: 'openai',
-      });
-      expect(svc.get(provider.id)?.custom?.envOverrides?.QODER_BYOK_API_KEY)
-        .toMatch(/^\*{4}/);
-    });
-
-    it.each([
-      'https://user:password@api.deepseek.com/v1',
-      'https://api.deepseek.com/v1?api_key=secret',
-      'https://api.deepseek.com/v1#secret',
-      'ftp://api.deepseek.com/v1',
-      'not-a-url',
-    ])('rejects unsafe Qoder BYOK base URL %s', (baseUrl) => {
-      expect(() => svc.create({
-        ...validInput,
-        type: 'custom',
-        models: {primary: 'deepseek-main', light: 'deepseek-light'},
-        connection: {agentRuntime: 'qoder-agent-sdk'},
-        custom: {envOverrides: {QODER_BYOK_BASE_URL: baseUrl}},
-      })).toThrow('QODER_BYOK_BASE_URL must be an HTTP(S) URL without credentials, query, or fragment');
+      const raw = svc.getRaw(provider.id)!;
+      expect(raw.connection).toEqual({agentRuntime: 'qoder-agent-sdk', qoderModel: 'qoder-main'});
+      expect(raw.custom?.envOverrides).toEqual({});
+      const env = svc.getEnvForProvider(provider.id)!;
+      expect(env.SMARTPERFETTO_AGENT_RUNTIME).toBe('pi-agent-core');
+      expect(env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON).toBeUndefined();
+      expect(env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_UNAVAILABLE).toBe('qoder_untranslatable');
     });
 
     it.each([
@@ -665,26 +690,6 @@ describe('ProviderService', () => {
         connection: {agentRuntime: 'openai-agents-sdk'},
         custom: {envOverrides: {[key]: value}},
       })).toThrow(`Custom provider env override is not allowed: ${key}`);
-    });
-
-    it('rejects switching away from Qoder while Qoder BYOK overrides remain', () => {
-      const provider = svc.create({
-        ...validInput,
-        type: 'custom',
-        models: {primary: 'deepseek-main', light: 'deepseek-light'},
-        connection: {agentRuntime: 'qoder-agent-sdk'},
-        custom: {
-          envOverrides: {
-            QODER_BYOK_API_KEY: 'managed-deepseek-key',
-            QODER_BYOK_PROVIDER: 'deepseek',
-          },
-        },
-      });
-
-      expect(() => svc.switchAgentRuntime(provider.id, 'opencode')).toThrow(
-        'Custom provider env override is not allowed: QODER_BYOK_API_KEY',
-      );
-      expect(svc.getRawProvider(provider.id)?.connection.agentRuntime).toBe('qoder-agent-sdk');
     });
 
     it.each([
@@ -724,24 +729,23 @@ describe('ProviderService', () => {
       });
     });
 
-    it('rejects Pi-only provider credentials for non-Pi custom runtimes', () => {
-      expect(() => svc.create({
-        ...validInput,
-        type: 'custom',
-        models: {primary: 'custom-openai-main', light: 'custom-openai-light'},
-        connection: {
-          agentRuntime: 'openai-agents-sdk',
-          openaiBaseUrl: 'https://gateway.example/v1',
-          openaiProtocol: 'chat_completions',
-        },
-        custom: {
-          envOverrides: {
-            GOOGLE_APPLICATION_CREDENTIALS: '/managed/google.json',
+    it('accepts Pi provider credentials without depending on the legacy opt-in', () => {
+      process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'openai-agents-sdk';
+      try {
+        expect(() => svc.create({
+          ...validInput,
+          type: 'custom',
+          models: {primary: 'custom-openai-main', light: 'custom-openai-light'},
+          connection: {
+            agentRuntime: 'openai-agents-sdk',
+            openaiBaseUrl: 'https://gateway.example/v1',
+            openaiProtocol: 'chat_completions',
           },
-        },
-      })).toThrow(
-        'Custom provider env override is not allowed: GOOGLE_APPLICATION_CREDENTIALS',
-      );
+          custom: {envOverrides: {GOOGLE_APPLICATION_CREDENTIALS: '/managed/google.json'}},
+        })).not.toThrow();
+      } finally {
+        delete process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME;
+      }
     });
 
     it('allows adding Pi-only provider credentials while updating a Pi runtime', () => {
@@ -760,7 +764,7 @@ describe('ProviderService', () => {
       })).not.toThrow();
     });
 
-    it('rejects switching away from Pi while Pi-only provider credentials remain', () => {
+    it('keeps a Pi custom provider on Pi when a retired runtime is requested', () => {
       const provider = svc.create({
         ...validInput,
         type: 'custom',
@@ -772,10 +776,9 @@ describe('ProviderService', () => {
         custom: {envOverrides: {DEEPSEEK_API_KEY: 'managed-deepseek-key'}},
       });
 
-      expect(() => svc.switchAgentRuntime(provider.id, 'opencode')).toThrow(
-        'Custom provider env override is not allowed: DEEPSEEK_API_KEY',
-      );
+      svc.switchAgentRuntime(provider.id, 'opencode');
       expect(svc.getRawProvider(provider.id)?.connection.agentRuntime).toBe('pi-agent-core');
+      expect(svc.getEnvForProvider(provider.id)).toMatchObject({DEEPSEEK_API_KEY: 'managed-deepseek-key'});
     });
   });
 
@@ -783,7 +786,8 @@ describe('ProviderService', () => {
     it('returns env for a specific provider by id', () => {
       const p = svc.create(validInput);
       const env = svc.getEnvForProvider(p.id)!;
-      expect(env.ANTHROPIC_API_KEY).toBe('sk-ant-test123456');
+      expect(env.SMARTPERFETTO_PI_AGENT_CORE_API_KEY).toBe('sk-ant-test123456');
+      expect(env.ANTHROPIC_API_KEY).toBeUndefined();
     });
 
     it('returns null for nonexistent id', () => {
@@ -796,7 +800,7 @@ describe('ProviderService', () => {
       const p = svc.create(validInput);
       svc.update(p.id, { name: 'Renamed' });
       expect(svc.get(p.id)!.name).toBe('Renamed');
-      expect(svc.getEnvForProvider(p.id)!.ANTHROPIC_API_KEY).toBe('sk-ant-test123456');
+      expect(svc.getEnvForProvider(p.id)!.SMARTPERFETTO_PI_AGENT_CORE_API_KEY).toBe('sk-ant-test123456');
     });
   });
 
@@ -865,7 +869,7 @@ describe('ProviderService', () => {
 
         await fsp.writeFile(file, content);
         expect(svc.getRawEffectiveProvider()?.id).toBe(created.id);
-        expect(svc.getEffectiveEnv()?.ANTHROPIC_API_KEY).toBe('sk-ant-test123456');
+        expect(svc.getEffectiveEnv()?.SMARTPERFETTO_PI_AGENT_CORE_API_KEY).toBe('sk-ant-test123456');
       } finally {
         warn.mockRestore();
       }

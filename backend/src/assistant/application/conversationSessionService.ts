@@ -11,7 +11,8 @@ import {AssistantApplicationService} from './assistantApplicationService';
 import type {AnalysisOptions} from '../../agent/core/orchestratorTypes';
 import {toAnalysisHistoryTurn, type AnalysisHistoryTurn} from '../../agentRuntime/analysisHistory';
 import type {ConversationSessionDescriptor} from '../../services/conversationSessionStore';
-import type {AgentRuntimeKind} from '../../services/providerManager';
+import type {AgentRuntimeKind, RecordedRuntimeKind} from '../../agentRuntime/runtimeKinds';
+import type {RuntimeMigrationContinuityNote} from '../../services/providerManager/providerPinContinuity';
 import type {
   ConversationEvidenceRef,
   ConversationMessage,
@@ -135,8 +136,10 @@ export interface ConversationSession extends ManagedAssistantSession {
   userId?: string;
   providerId?: string | null;
   providerFollowsActive?: boolean;
-  runtimeKind?: AgentRuntimeKind;
+  runtimeKind?: RecordedRuntimeKind;
   providerSnapshotHash?: string;
+  /** Set when a pin recorded under a retired runtime was rebound to Pi Agent Core. */
+  runtimeMigration?: RuntimeMigrationContinuityNote;
   analysisContextFingerprint: string;
   outputLanguage?: AnalysisOptions['outputLanguage'];
   codeAwareMode?: AnalysisOptions['codeAwareMode'];
@@ -158,6 +161,11 @@ export interface StartConversationTurnInput {
   providerFollowsActive?: boolean;
   runtimeKind?: AgentRuntimeKind;
   providerSnapshotHash?: string;
+  /**
+   * The caller verified (reconcileRecordedProviderPin) that the session's pin,
+   * recorded under a retired runtime, describes this one; it is rebound once.
+   */
+  runtimeMigration?: RuntimeMigrationContinuityNote;
   runtimeOptions?: Omit<AnalysisOptions, 'analysisMode' | 'assistantSurface' | 'runId'>;
   /** The request's current authorization fingerprint; a session's turns all run under one. */
   analysisContextFingerprint: string;
@@ -236,6 +244,36 @@ function appendUniqueEvidence(
   }
 }
 
+/** The verified migration names exactly this recorded pin and the current one. */
+function migrationMatches(
+  recorded: {runtimeKind?: RecordedRuntimeKind; providerSnapshotHash?: string},
+  input: Pick<StartConversationTurnInput, 'runtimeKind' | 'providerSnapshotHash' | 'runtimeMigration'>,
+): boolean {
+  const note = input.runtimeMigration;
+  return Boolean(note && input.runtimeKind && input.providerSnapshotHash
+    && note.fromRuntimeKind === recorded.runtimeKind
+    && note.previousProviderSnapshotHash === recorded.providerSnapshotHash
+    && note.toRuntimeKind === input.runtimeKind);
+}
+
+function providerPinMatches(
+  recorded: {runtimeKind?: RecordedRuntimeKind; providerSnapshotHash?: string},
+  input: Pick<StartConversationTurnInput, 'runtimeKind' | 'providerSnapshotHash' | 'runtimeMigration'>,
+): boolean {
+  return (input.providerSnapshotHash === recorded.providerSnapshotHash && input.runtimeKind === recorded.runtimeKind)
+    || migrationMatches(recorded, input);
+}
+
+/** The pin fields a verified migration rebinds (with its continuity note); undefined when it does not match. */
+function reboundProviderPin(
+  recorded: {runtimeKind?: RecordedRuntimeKind; providerSnapshotHash?: string},
+  input: Pick<StartConversationTurnInput, 'runtimeKind' | 'providerSnapshotHash' | 'runtimeMigration'>,
+): Pick<ConversationSession, 'runtimeKind' | 'providerSnapshotHash' | 'runtimeMigration'> | undefined {
+  if (!migrationMatches(recorded, input)) return undefined;
+  return {runtimeKind: input.runtimeKind, providerSnapshotHash: input.providerSnapshotHash,
+    runtimeMigration: input.runtimeMigration};
+}
+
 /**
  * Owns conversation-only lifecycle independently from trace analysis sessions.
  * A clarification outcome ends the physical run and leaves only logical
@@ -300,6 +338,13 @@ export class ConversationSessionService {
     return status && (runId === undefined || status.work.runId === runId) ? status.work : undefined;
   }
 
+  /** Rebinds a live session's pin after the caller verified the retired-runtime migration. */
+  rebindProviderPin(session: ConversationSession, pin: Required<Pick<StartConversationTurnInput,
+    'runtimeKind' | 'providerSnapshotHash' | 'runtimeMigration'>>): void {
+    const rebound = this.sessions.getSession(session.sessionId) === session ? reboundProviderPin(session, pin) : undefined;
+    if (rebound) Object.assign(session, rebound);
+  }
+
   discardPendingContext(session: ConversationSession): void {
     if (this.sessions.getSession(session.sessionId) === session) this.pendingContexts.delete(session);
   }
@@ -324,7 +369,7 @@ export class ConversationSessionService {
     if (existing) return existing;
     if (!input.owner || input.owner.userId !== descriptor.userId || input.owner.tenantId !== descriptor.tenantId ||
       input.owner.workspaceId !== descriptor.workspaceId || input.providerId !== descriptor.providerId ||
-      input.providerSnapshotHash !== descriptor.providerSnapshotHash || input.runtimeKind !== descriptor.runtimeKind ||
+      !providerPinMatches(descriptor, input) ||
       input.analysisContextFingerprint !== descriptor.analysisContextFingerprint ||
       !traceContextsEqual(normalizeTraceContext(input.traceContext), descriptor.traceContext)) {
       throw new ConversationRequestError('CONVERSATION_RECOVERY_UNAVAILABLE',
@@ -355,7 +400,8 @@ export class ConversationSessionService {
         ...(turn.sourceDerived ? {sourceDerived: true} : {})}] : []),
     ]);
     const outcome = interrupted ? undefined : descriptor.lastOutcome as ConversationRuntimeOutcome | undefined;
-    const session: ConversationSession = {...descriptor, runtime: this.createRuntime(input), history, historyTurns,
+    const session: ConversationSession = {...descriptor, ...reboundProviderPin(descriptor, input),
+      runtime: this.createRuntime(input), history, historyTurns,
       status: interrupted ? 'failed' : descriptor.status, sseClients: [], runs: [],
       recoveryStatus: interrupted ? 'interrupted' : 'available',
       ...(interrupted ? {error: 'conversation_run_interrupted_before_final_commit'} : {}),
@@ -481,9 +527,13 @@ export class ConversationSessionService {
       session.providerSnapshotHash &&
       session.providerSnapshotHash !== input.providerSnapshotHash
     ) {
-      this.pendingContexts.delete(session);
-      throw new ConversationRequestError('CONVERSATION_PROVIDER_SNAPSHOT_CHANGED',
-        'Start a new conversation after changing the AI provider configuration', 409);
+      const rebound = reboundProviderPin(session, input);
+      if (!rebound) {
+        this.pendingContexts.delete(session);
+        throw new ConversationRequestError('CONVERSATION_PROVIDER_SNAPSHOT_CHANGED',
+          'Start a new conversation after changing the AI provider configuration', 409);
+      }
+      Object.assign(session, rebound);
     }
     if (session.activeRun) {
       throw new ConversationRequestError('RUN_ALREADY_ACTIVE',

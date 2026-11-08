@@ -13,6 +13,8 @@ import { getProviderService, ProviderStoreUnreadableError } from '../../services
 import { resolveProviderRuntimeSnapshot } from '../../services/providerManager/providerSnapshot';
 import type { AgentRuntimeKind, ProviderScope } from '../../services/providerManager';
 import { getTraceProcessorService } from '../../services/traceProcessorService';
+import {reconcileRecordedProviderPin} from '../../services/providerManager/providerPinContinuity';
+import type {RecordedRuntimeKind} from '../../agentRuntime/runtimeKinds';
 import {
   getSnapshotRuntimeKind,
   snapshotProvesNoPrivateContext,
@@ -389,10 +391,19 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
       });
     }
 
-    const resolveProviderSnapshotHash = (
-      providerId: string | null,
-      runtimeOverride?: AgentRuntimeKind,
-    ) => resolveProviderRuntimeSnapshot(providerSvc, providerId, runtimeOverride, providerScope).snapshotHash;
+    const resolveProviderPin = (providerId: string | null) =>
+      resolveProviderRuntimeSnapshot(providerSvc, providerId, providerScope);
+    // A pin recorded under a retired runtime that still calls the same endpoint
+    // and model is rebound (with an audit note) instead of treated as changed.
+    const reboundRetiredRuntimePin = (
+      recorded: {providerId: string | null; runtimeKind?: RecordedRuntimeKind; snapshotHash: string;
+        analysisContextFingerprint?: string},
+      current: ReturnType<typeof resolveProviderPin>,
+    ) => {
+      const continuity = reconcileRecordedProviderPin(providerSvc, recorded, current,
+        {providerScope, currentAnalysisContextFingerprint: input.analysisContextFingerprint});
+      return continuity.status === 'migrated' ? {current, note: continuity.note} : undefined;
+    };
     // The pin a session takes when it does not keep one it already has: the
     // explicit provider, else the active one. Resolved on first use, so a turn
     // that keeps its live or persisted pin never reads the active provider,
@@ -403,7 +414,7 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
         const providerId = explicitProviderId !== undefined
           ? explicitProviderId
           : providerSvc.getRawEffectiveProvider(providerScope)?.id ?? null;
-        sessionProviderPin = {providerId, snapshotHash: resolveProviderSnapshotHash(providerId)};
+        sessionProviderPin = {providerId, snapshotHash: resolveProviderPin(providerId).snapshotHash};
       }
       return sessionProviderPin;
     };
@@ -466,17 +477,29 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
       );
       // A session without a provider profile is pinned to its runtime, as its
       // restore resolved it; a changed default runtime is not a change to it.
-      const liveSessionProviderSnapshotHash = liveSession?.providerSnapshotHash && !liveSessionProviderMissing
-        ? resolveProviderSnapshotHash(liveSessionProviderId,
-          liveSessionProviderId ? undefined : liveSession.runtimeKind)
+      const liveSessionProviderPin = liveSession?.providerSnapshotHash && !liveSessionProviderMissing
+        ? resolveProviderPin(liveSessionProviderId)
         : null;
-      const liveSessionProviderSnapshotMismatch = Boolean(
+      const liveSessionProviderSnapshotHash = liveSessionProviderPin?.snapshotHash ?? null;
+      let liveSessionProviderSnapshotMismatch = Boolean(
         liveSession &&
         !liveSessionProviderMismatch &&
         liveSession.providerSnapshotHash &&
         liveSessionProviderSnapshotHash &&
         liveSession.providerSnapshotHash !== liveSessionProviderSnapshotHash,
       );
+      if (liveSession && liveSessionProviderSnapshotMismatch) {
+        const rebound = reboundRetiredRuntimePin({providerId: liveSessionProviderId,
+          runtimeKind: liveSession.runtimeKind, snapshotHash: liveSession.providerSnapshotHash as string,
+          analysisContextFingerprint: liveSession.analysisContextFingerprint}, liveSessionProviderPin!);
+        if (rebound) {
+          liveSession.continuityBreaks = continuityBreaksAfterRestore(liveSession.continuityBreaks,
+            rebound.note.previousProviderSnapshotHash, rebound.note.fromRuntimeKind);
+          liveSession.runtimeKind = rebound.current.snapshot.runtimeKind;
+          liveSession.providerSnapshotHash = rebound.current.snapshotHash;
+          liveSessionProviderSnapshotMismatch = false;
+        }
+      }
       if (existingSession && existingSession.traceId === traceId) {
         if (liveSessionProviderMismatch) {
           existingSession.logger.info('AgentRoutes', 'Provider changed; starting a new SDK session', {
@@ -512,7 +535,6 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
           existingSession.runtimeKind ??= resolveProviderRuntimeSnapshot(
             providerSvc,
             liveSessionProviderId,
-            undefined,
             providerScope,
           ).snapshot.runtimeKind;
           existingSession.providerSnapshotHash ??= liveSessionProviderSnapshotHash;
@@ -622,18 +644,20 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
               hint: 'This persisted session was created with a Provider Manager profile that no longer exists. Recreate the provider or start a new chat.',
             });
           }
-          const restoredProviderSnapshotHash = !snapshotProviderMismatch
-            ? resolveProviderSnapshotHash(
-                restoredProviderId,
-                restoredProviderId ? undefined : snapshotRuntimeKind,
-              )
-            : null;
-          const snapshotProviderHashMismatch = Boolean(
+          const restoredProviderPin = !snapshotProviderMismatch ? resolveProviderPin(restoredProviderId) : null;
+          const restoredProviderSnapshotHash = restoredProviderPin?.snapshotHash ?? null;
+          const snapshotProviderHashChanged = Boolean(
             !snapshotProviderMismatch &&
             snapshotProviderHash &&
             restoredProviderSnapshotHash &&
             snapshotProviderHash !== restoredProviderSnapshotHash,
           );
+          const reboundPin = snapshotProviderHashChanged
+            ? reboundRetiredRuntimePin({providerId: restoredProviderId, runtimeKind: snapshotRuntimeKind,
+              snapshotHash: snapshotProviderHash as string, analysisContextFingerprint: stateSnapshot?.analysisContextFingerprint},
+            restoredProviderPin!)
+            : undefined;
+          const snapshotProviderHashMismatch = snapshotProviderHashChanged && !reboundPin;
 
           if (snapshotProviderMismatch) {
             this.onSessionSecurityCleanup?.(requestedSessionId);
@@ -705,7 +729,8 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
               ? sceneSnapshotResult : recoveredResult;
             const restoredContinuityBreaks = continuityBreaksAfterRestore(
               stateSnapshot?.continuityBreaks,
-              snapshotProviderHashMismatch ? snapshotProviderHash : undefined,
+              snapshotProviderHashChanged ? snapshotProviderHash : undefined,
+              reboundPin?.note.fromRuntimeKind,
             );
             const restoredLineage = stateSnapshot?.lineage ?? persistedSession.metadata?.lineage;
 
@@ -767,19 +792,8 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
               workspaceId: persistedSession.metadata?.workspaceId,
               userId: persistedSession.metadata?.userId,
               providerId: restoredProviderId,
-              runtimeKind: restoredProviderId
-                ? resolveProviderRuntimeSnapshot(
-                    providerSvc,
-                    restoredProviderId,
-                    undefined,
-                    providerScope,
-                  ).snapshot.runtimeKind
-                : snapshotRuntimeKind ?? resolveProviderRuntimeSnapshot(
-                    providerSvc,
-                    null,
-                    undefined,
-                    providerScope,
-                  ).snapshot.runtimeKind,
+              // A recorded label (retired included) is provenance: the pin runs on the current runtime.
+              runtimeKind: (restoredProviderPin ?? resolveProviderPin(restoredProviderId)).snapshot.runtimeKind,
               outputLanguage: requestedOutputLanguage,
               providerSnapshotHash: restoredProviderSnapshotHash ?? resolveSessionProviderPin().snapshotHash,
               providerSnapshotChanged: snapshotProviderHashMismatch || undefined,
@@ -879,7 +893,6 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
       runtimeKind: resolveProviderRuntimeSnapshot(
         providerSvc,
         sessionProviderId,
-        undefined,
         providerScope,
       ).snapshot.runtimeKind,
       outputLanguage: requestedOutputLanguage,

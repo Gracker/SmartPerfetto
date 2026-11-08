@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { DUAL_SURFACE_PROVIDER_TYPES, PI_CATALOG_PROVIDER_TYPES } from '../services/providerManager/providerTypes';
+import { DUAL_SURFACE_PROVIDER_TYPES, PROVIDER_TYPES } from '../services/providerManager/providerTypes';
 import type { AgentRuntimeKind } from './runtimeKinds';
 import {
   CLAUDE_AGENT_RUNTIME_KIND,
@@ -11,7 +11,6 @@ import {
   PI_AGENT_CORE_RUNTIME_KIND,
   QODER_AGENT_RUNTIME_KIND,
   isProductionAgentRuntimeKind,
-  listProductionRuntimeKinds,
 } from './runtimeKinds';
 import type {
   EngineCapabilities,
@@ -37,7 +36,10 @@ const OPENAI_PROVIDER_TYPES = [
 
 const CUSTOM_ONLY_PROVIDER_TYPES = ['custom'] as const;
 
-const PI_PROVIDER_TYPES = [...PI_CATALOG_PROVIDER_TYPES, 'custom'] as const;
+// Pi resolves every provider type: a pi-ai catalog route where one keeps the
+// provider's endpoint, otherwise a model synthesized on the endpoint the
+// provider used before (services/providerManager/piProviderCatalog.ts).
+const PI_PROVIDER_TYPES = PROVIDER_TYPES;
 
 function createCapabilities<K extends AgentRuntimeKind>(
   kind: K,
@@ -158,7 +160,6 @@ export const PRODUCTION_RUNTIME_DESCRIPTORS = [
 
 export {
   isProductionAgentRuntimeKind,
-  listProductionRuntimeKinds,
   type AgentRuntimeKind,
   type EngineCapabilities,
   type RuntimeDiagnosticsInput,

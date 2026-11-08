@@ -143,8 +143,8 @@ async function runCase({model, officialBase, purpose, mode = 'answer', expectedR
 try {
   await runCase({model: 'glm-5.3-flash', officialBase: 'https://open.bigmodel.cn/api/coding/paas/v4', purpose: 'classification',
     expectedReasoningReplay: true, expectedControls: {thinking: {type: 'enabled'}, reasoningEffort: 'low'}});
-  await runCase({model: 'deepseek-flash', officialBase: 'https://api.deepseek.com/v1', purpose: 'final_semantic',
-    expectedReasoningReplay: true, expectedControls: {thinking: {type: 'disabled'}, response_format: {type: 'json_object'}}});
+  await runCase({model: 'deepseek-flash', officialBase: 'https://api.deepseek.com/v1', purpose: 'classification',
+    expectedReasoningReplay: true, expectedControls: {thinking: {type: 'disabled'}}});
   await runCase({model: 'glm-5.3-flash', officialBase: 'https://open.bigmodel.cn/api/coding/paas/v4', mode: 'tool', expectedReasoningReplay: true});
   await runCase({model: 'deepseek-flash', officialBase: 'https://api.deepseek.com/v1', mode: 'tool', expectedReasoningReplay: true});
   await runCase({model: 'unknown-native-model', officialBase: 'https://unknown.invalid/v1', mode: 'tool'});

@@ -65,6 +65,7 @@ describe('resolveAgentRuntimeSelection', () => {
     delete process.env.SMARTPERFETTO_AI_ENABLED;
     delete process.env.SMARTPERFETTO_ENABLE_EXPERIMENTAL_AGENT_RUNTIME;
     delete process.env.SMARTPERFETTO_EXPERIMENTAL_AGENT_RUNTIME;
+    delete process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME;
     jest.resetModules();
   });
 
@@ -107,23 +108,46 @@ describe('resolveAgentRuntimeSelection', () => {
     });
   });
 
-  it('keeps the Claude Agent SDK default for an env-only setup with Claude credentials', async () => {
+  it('runs an env-only setup with Claude credentials on Pi', async () => {
     process.env.ANTHROPIC_API_KEY = 'sk-ant-env-only';
     const { resolveAgentRuntimeSelection } = await import('../runtimeSelection');
     expect(resolveAgentRuntimeSelection()).toEqual({
-      kind: 'claude-agent-sdk',
+      kind: 'pi-agent-core',
       source: 'default',
     });
   });
 
-  it('uses explicit SMARTPERFETTO_AGENT_RUNTIME when no provider is active', async () => {
-    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'openai-agents-sdk';
-
-    const { resolveAgentRuntimeSelection } = await import('../runtimeSelection');
-    expect(resolveAgentRuntimeSelection()).toMatchObject({
-      kind: 'openai-agents-sdk',
-      source: 'env',
+  it.each(['claude-agent-sdk', 'openai-agents-sdk', 'opencode', 'qoder-agent-sdk', 'experimental-pi-agent-core'])(
+    'maps a retired SMARTPERFETTO_AGENT_RUNTIME=%s to Pi with one deprecation warning', async (value) => {
+      process.env.SMARTPERFETTO_AGENT_RUNTIME = value;
+      const logger = (await import('../../utils/logger')).default;
+      const warn = jest.spyOn(logger, 'warn').mockImplementation(() => undefined);
+      try {
+        const { resolveAgentRuntimeSelection } = await import('../runtimeSelection');
+        expect(resolveAgentRuntimeSelection()).toEqual({kind: 'pi-agent-core', source: 'env'});
+        expect(resolveAgentRuntimeSelection(null)).toEqual({kind: 'pi-agent-core', source: 'env'});
+        expect(warn.mock.calls.filter(([, message]) => String(message).includes('SMARTPERFETTO_AGENT_RUNTIME'))).toHaveLength(1);
+      } finally {
+        warn.mockRestore();
+      }
     });
+
+  it('selects the hidden legacy runtime only through SMARTPERFETTO_LEGACY_AGENT_RUNTIME', async () => {
+    process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'claude-agent-sdk';
+    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'openai-agents-sdk';
+    const { resolveAgentRuntimeSelection } = await import('../runtimeSelection');
+    // The old variable maps to the effective runtime, which the opt-in decides.
+    expect(resolveAgentRuntimeSelection(null)).toEqual({kind: 'claude-agent-sdk', source: 'env'});
+    // A recorded pin resolves through the same function.
+    expect(resolveAgentRuntimeSelection(null, 'pi-agent-core')).toEqual({kind: 'claude-agent-sdk', source: 'snapshot'});
+    delete process.env.SMARTPERFETTO_AGENT_RUNTIME;
+    expect(resolveAgentRuntimeSelection(null)).toEqual({kind: 'claude-agent-sdk', source: 'env'});
+  });
+
+  it('fails closed on an unknown legacy runtime opt-in', async () => {
+    process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'opencode';
+    const { resolveAgentRuntimeSelection } = await import('../runtimeSelection');
+    expect(() => resolveAgentRuntimeSelection(null)).toThrow('Unsupported SMARTPERFETTO_LEGACY_AGENT_RUNTIME="opencode"');
   });
 
   it('accepts public Pi agent-core through SMARTPERFETTO_AGENT_RUNTIME', async () => {
@@ -145,8 +169,9 @@ describe('resolveAgentRuntimeSelection', () => {
     };
 
     const { resolveAgentRuntimeSelection } = await import('../runtimeSelection');
+    // A recorded retired label keeps its precedence; its execution re-resolves to Pi.
     expect(resolveAgentRuntimeSelection(undefined, 'claude-agent-sdk')).toMatchObject({
-      kind: 'claude-agent-sdk',
+      kind: 'pi-agent-core',
       source: 'snapshot',
     });
   });
@@ -156,7 +181,7 @@ describe('resolveAgentRuntimeSelection', () => {
 
     const { resolveAgentRuntimeSelection } = await import('../runtimeSelection');
     expect(resolveAgentRuntimeSelection(null, 'claude-agent-sdk')).toEqual({
-      kind: 'claude-agent-sdk',
+      kind: 'pi-agent-core',
       source: 'snapshot',
     });
   });
@@ -187,7 +212,7 @@ describe('resolveAgentRuntimeSelection', () => {
 
     const { resolveAgentRuntimeSelection } = await import('../runtimeSelection');
     expect(resolveAgentRuntimeSelection(null)).toEqual({
-      kind: 'openai-agents-sdk',
+      kind: 'pi-agent-core',
       source: 'env',
     });
   });
@@ -247,65 +272,14 @@ describe('resolveAgentRuntimeSelection', () => {
     );
   });
 
-  it('keeps experimental runtime values out of public SMARTPERFETTO_AGENT_RUNTIME', async () => {
-    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'experimental-pi-agent-core';
-    process.env.SMARTPERFETTO_ENABLE_EXPERIMENTAL_AGENT_RUNTIME = '1';
-    process.env.SMARTPERFETTO_EXPERIMENTAL_AGENT_RUNTIME = 'experimental-pi-agent-core';
-
-    const { resolveAgentRuntimeSelection } = await import('../runtimeSelection');
-    expect(() => resolveAgentRuntimeSelection(null)).toThrow(
-      'Unsupported SMARTPERFETTO_AGENT_RUNTIME="experimental-pi-agent-core"',
-    );
-  });
-
-  it('keeps experimental OpenCode out of public SMARTPERFETTO_AGENT_RUNTIME', async () => {
-    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'experimental-opencode';
+  it('ignores the retired experimental runtime switches', async () => {
     process.env.SMARTPERFETTO_ENABLE_EXPERIMENTAL_AGENT_RUNTIME = '1';
     process.env.SMARTPERFETTO_EXPERIMENTAL_AGENT_RUNTIME = 'experimental-opencode';
 
     const { resolveAgentRuntimeSelection } = await import('../runtimeSelection');
-    expect(() => resolveAgentRuntimeSelection(null)).toThrow(
-      'Unsupported SMARTPERFETTO_AGENT_RUNTIME="experimental-opencode"',
-    );
-  });
-
-  it('requires the hidden experiment enable flag before selecting the experimental runtime', async () => {
-    process.env.SMARTPERFETTO_EXPERIMENTAL_AGENT_RUNTIME = 'experimental-pi-agent-core';
-
-    const { resolveAgentRuntimeSelection } = await import('../runtimeSelection');
-    expect(() => resolveAgentRuntimeSelection(null)).toThrow(
-      'SMARTPERFETTO_EXPERIMENTAL_AGENT_RUNTIME requires SMARTPERFETTO_ENABLE_EXPERIMENTAL_AGENT_RUNTIME=1',
-    );
-  });
-
-  it('selects the hidden experimental runtime only after provider, snapshot, and public env fallbacks', async () => {
-    process.env.SMARTPERFETTO_ENABLE_EXPERIMENTAL_AGENT_RUNTIME = '1';
-    process.env.SMARTPERFETTO_EXPERIMENTAL_AGENT_RUNTIME = 'experimental-pi-agent-core';
-
-    const { resolveAgentRuntimeSelection } = await import('../runtimeSelection');
-    expect(resolveAgentRuntimeSelection(null)).toEqual({
-      kind: 'experimental-pi-agent-core',
-      source: 'env',
-    });
-    expect(resolveAgentRuntimeSelection(null, 'claude-agent-sdk')).toEqual({
-      kind: 'claude-agent-sdk',
-      source: 'snapshot',
-    });
-  });
-
-  it('selects the hidden experimental OpenCode runtime only behind the shared experiment gate', async () => {
-    process.env.SMARTPERFETTO_ENABLE_EXPERIMENTAL_AGENT_RUNTIME = '1';
-    process.env.SMARTPERFETTO_EXPERIMENTAL_AGENT_RUNTIME = 'experimental-opencode';
-
-    const { resolveAgentRuntimeSelection } = await import('../runtimeSelection');
-    expect(resolveAgentRuntimeSelection(null)).toEqual({
-      kind: 'experimental-opencode',
-      source: 'env',
-    });
-    expect(resolveAgentRuntimeSelection(null, 'openai-agents-sdk')).toEqual({
-      kind: 'openai-agents-sdk',
-      source: 'snapshot',
-    });
+    expect(resolveAgentRuntimeSelection(null)).toEqual({kind: 'pi-agent-core', source: 'default'});
+    delete process.env.SMARTPERFETTO_ENABLE_EXPERIMENTAL_AGENT_RUNTIME;
+    expect(resolveAgentRuntimeSelection(null)).toEqual({kind: 'pi-agent-core', source: 'default'});
   });
 
   it('lets an active Provider Manager runtime win over the hidden experimental env', async () => {
@@ -326,8 +300,8 @@ describe('resolveAgentRuntimeSelection', () => {
     });
   });
 
-  it('passes the resolved Claude runtime selection snapshot into the runtime instance', async () => {
-    process.env.ANTHROPIC_API_KEY = 'sk-ant-env-only';
+  it('passes the resolved legacy Claude runtime selection snapshot into the runtime instance', async () => {
+    process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'claude-agent-sdk';
     const claudeRuntime = createMockOrchestrator('claude');
     const createClaudeRuntime = jest.fn(() => claudeRuntime);
     jest.doMock('../engines/claude', () => ({ createClaudeRuntime }));
@@ -341,13 +315,13 @@ describe('resolveAgentRuntimeSelection', () => {
     expect(createClaudeRuntime).toHaveBeenCalledWith(
       traceProcessorService,
       undefined,
-      { kind: 'claude-agent-sdk', source: 'default' },
+      { kind: 'claude-agent-sdk', source: 'env' },
     );
   });
 
   it('blocks runtime creation while leaving runtime selection inspectable when AI is disabled', async () => {
     process.env.SMARTPERFETTO_AI_ENABLED = 'false';
-    process.env.ANTHROPIC_API_KEY = 'sk-ant-env-only';
+    process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'claude-agent-sdk';
     const claudeRuntime = createMockOrchestrator('claude');
     const createClaudeRuntime = jest.fn(() => claudeRuntime);
     jest.doMock('../engines/claude', () => ({ createClaudeRuntime }));
@@ -357,7 +331,7 @@ describe('resolveAgentRuntimeSelection', () => {
 
     expect(resolveAgentRuntimeSelection()).toEqual({
       kind: 'claude-agent-sdk',
-      source: 'default',
+      source: 'env',
     });
     expect(() => createAgentOrchestrator({ traceProcessorService })).toThrow('AI is disabled');
     expect(createClaudeRuntime).not.toHaveBeenCalled();
@@ -497,20 +471,7 @@ describe('resolveAgentRuntimeSelection', () => {
     }
   });
 
-  it('creates the hidden experimental runtime as the direct orchestrator', async () => {
-    process.env.SMARTPERFETTO_ENABLE_EXPERIMENTAL_AGENT_RUNTIME = '1';
-    process.env.SMARTPERFETTO_EXPERIMENTAL_AGENT_RUNTIME = 'experimental-pi-agent-core';
-
-    const traceProcessorService = { kind: 'trace-processor' } as any;
-    const { createAgentOrchestrator } = await import('../runtimeSelection');
-    const orchestrator = createAgentOrchestrator({ traceProcessorService, providerId: null });
-
-    expect(orchestrator).not.toBeUndefined();
-    expect((orchestrator as any).constructor?.name).toBe('PiAgentCoreRuntime');
-    expectDirectUpdateEvents(orchestrator);
-  });
-
-  it('creates the hidden experimental OpenCode runtime as the direct orchestrator', async () => {
+  it('creates Pi, not a retired experimental runtime, when the experimental switch is still set', async () => {
     process.env.SMARTPERFETTO_ENABLE_EXPERIMENTAL_AGENT_RUNTIME = '1';
     process.env.SMARTPERFETTO_EXPERIMENTAL_AGENT_RUNTIME = 'experimental-opencode';
 
@@ -518,8 +479,7 @@ describe('resolveAgentRuntimeSelection', () => {
     const { createAgentOrchestrator } = await import('../runtimeSelection');
     const orchestrator = createAgentOrchestrator({ traceProcessorService, providerId: null });
 
-    expect(orchestrator).not.toBeUndefined();
-    expect((orchestrator as any).constructor?.name).toBe('OpenCodeRuntime');
+    expect((orchestrator as any).constructor?.name).toBe('PiAgentCoreRuntime');
     expectDirectUpdateEvents(orchestrator);
   });
 

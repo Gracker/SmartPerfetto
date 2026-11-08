@@ -77,7 +77,6 @@ function providerSnapshotHash(providerId: string | null, providerScope?: Provide
   return resolveProviderRuntimeSnapshot(
     getProviderService(),
     providerId,
-    undefined,
     providerScope,
   ).snapshotHash;
 }

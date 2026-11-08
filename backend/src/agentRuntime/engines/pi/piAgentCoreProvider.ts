@@ -6,7 +6,8 @@ import {access} from 'node:fs/promises';
 import {isDeepStrictEqual} from 'node:util';
 import {resolveModelExecutionProfile, type ReasoningEffort, type ReasoningSetting, type ResolveModelExecutionProfileInput} from '../../../services/providerManager/modelExecutionProfile';
 import {resolveModelExecutionPolicy, type ModelExecutionPolicyReceipt} from '../../modelExecutionPolicy';
-import {resolve as resolvePath} from 'node:path';
+import os from 'node:os';
+import path, {resolve as resolvePath} from 'node:path';
 import type {
   Api,
   Credential,
@@ -24,7 +25,10 @@ import type {
 import {
   piProviderApiKeyEnvNames,
   piStreamEnvKeys,
+  routeUsesAwsCredentialChain,
   type PiAgentCoreModelConfig,
+  type PiModelRoute,
+  type PiRouteApi,
 } from './piAgentCoreConfig';
 import {isRuntimeCandidateAdmitted} from '../../runtimeCandidateAdmission';
 import type {RuntimeModelDispatchPurpose} from '../../runtimePerformance';
@@ -42,6 +46,8 @@ interface PiAiProviderCatalogModule {
   }>;
   /** One generated catalog model (no network refresh); undefined when absent. */
   getBuiltinModel(provider: string, modelId: string): Record<string, unknown> | undefined;
+  /** Every generated catalog model of one provider. */
+  getBuiltinModels?(provider: string): Array<Record<string, unknown>> | undefined;
 }
 
 const importEsmModule = new Function(
@@ -60,9 +66,13 @@ const PI_API_MODULES = {
   'openai-completions': ['openai-completions.lazy', 'openAICompletionsApi'],
   'openai-responses': ['openai-responses.lazy', 'openAIResponsesApi'],
   'pi-messages': ['pi-messages.lazy', 'piMessagesApi'],
+  // SmartPerfetto's Anthropic Messages over Vertex AI: the anthropic-messages
+  // streams with an injected AnthropicVertex client (see vertexProviderStreams).
+  'anthropic-vertex': ['anthropic-messages.lazy', 'anthropicMessagesApi'],
 } as const;
 
 type SupportedPiApi = keyof typeof PI_API_MODULES;
+const ANTHROPIC_VERTEX_API = 'anthropic-vertex' satisfies PiRouteApi & SupportedPiApi;
 
 export type PiAgentCoreProviderModels = Models;
 
@@ -177,11 +187,47 @@ function capturePiStreamEnv(api: SupportedPiApi, env: EnvLike): ProviderEnv | un
   return Object.keys(captured).length > 0 ? captured : undefined;
 }
 
+/**
+ * A Bedrock route with a named AWS profile resolves explicit keys from that
+ * profile and its configuration's own shared files (bedrockChainAuth); an
+ * ambient AWS_PROFILE or shared-file location then selects nothing, so it is
+ * not a fallback.
+ */
+const BEDROCK_PROFILE_ROUTE_AMBIENT_EXEMPT = new Set(['AWS_PROFILE', 'AWS_CONFIG_FILE', 'AWS_SHARED_CREDENTIALS_FILE']);
+
+/** Every process-env input an in-process AWS credential chain can read. */
+const BEDROCK_CHAIN_INPUT_KEYS = [
+  ...UNSAFE_BEDROCK_NATIVE_CHAIN_KEYS,
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'AWS_BEARER_TOKEN_BEDROCK',
+] as const;
+
+/**
+ * The AWS SDK chains read the process env themselves, so before one loads,
+ * every input it can read must hold exactly the selected configuration's own
+ * value (both absent included); otherwise it would resolve another
+ * configuration's or the host's identity. A profile route passes its profile
+ * and shared-file paths explicitly, so those keys are exempt there.
+ */
+function assertBedrockChainInputsScoped(scopedEnv: EnvLike, exempt?: ReadonlySet<string>): void {
+  for (const key of BEDROCK_CHAIN_INPUT_KEYS) {
+    if (exempt?.has(key)) continue;
+    if ((process.env[key]?.trim() || undefined) !== (scopedEnv[key]?.trim() || undefined)) {
+      throw new Error(`Pi bedrock-converse-stream cannot resolve AWS credentials: ${key} in the process ` +
+        'environment is not the selected configuration\'s own');
+    }
+  }
+}
+
 function assertNoAmbientPiStreamEnvFallback(
   api: SupportedPiApi,
   scopedEnv: ProviderEnv | undefined,
+  ambientExempt?: ReadonlySet<string>,
 ): void {
   for (const key of piStreamEnvKeys(api)) {
+    if (ambientExempt?.has(key)) continue;
     const ambientValue = process.env[key]?.trim();
     const scopedValue = scopedEnv?.[key]?.trim();
     if (ambientValue && !scopedValue) {
@@ -211,11 +257,13 @@ function withScopedPiStreamOptions<T extends {env?: ProviderEnv}>(
   api: SupportedPiApi,
   streamEnv: ProviderEnv | undefined,
   options: T | undefined,
+  ambientExempt?: ReadonlySet<string>,
 ): T {
   const resolvedEnv = {...streamEnv, ...options?.env};
   assertNoAmbientPiStreamEnvFallback(
     api,
     Object.keys(resolvedEnv).length > 0 ? resolvedEnv : undefined,
+    ambientExempt,
   );
   return {
     ...(options ?? {}),
@@ -227,30 +275,31 @@ function withCapturedProviderStreams(
   providerStreams: ProviderStreams,
   streamEnv: ProviderEnv | undefined,
   api: SupportedPiApi,
+  ambientExempt?: ReadonlySet<string>,
 ): ProviderStreams {
   return {
     stream: (model, context, options) => providerStreams.stream(
       model,
       context,
-      withScopedPiStreamOptions<StreamOptions>(api, streamEnv, options),
+      withScopedPiStreamOptions<StreamOptions>(api, streamEnv, options, ambientExempt),
     ),
     streamSimple: (model, context, options) => providerStreams.streamSimple(
       model,
       context,
-      withScopedPiStreamOptions<SimpleStreamOptions>(api, streamEnv, options),
+      withScopedPiStreamOptions<SimpleStreamOptions>(api, streamEnv, options, ambientExempt),
     ),
     ...(providerStreams.fetchDeferred ? {
       fetchDeferred: (model, handle, options) => providerStreams.fetchDeferred!(
         model,
         handle,
-        withScopedPiStreamOptions<DeferredFetchOptions>(api, streamEnv, options),
+        withScopedPiStreamOptions<DeferredFetchOptions>(api, streamEnv, options, ambientExempt),
       ),
     } : {}),
     ...(providerStreams.cancelDeferred ? {
       cancelDeferred: (model, handle, options) => providerStreams.cancelDeferred!(
         model,
         handle,
-        withScopedPiStreamOptions<DeferredCancelOptions>(api, streamEnv, options),
+        withScopedPiStreamOptions<DeferredCancelOptions>(api, streamEnv, options, ambientExempt),
       ),
     } : {}),
   };
@@ -260,6 +309,8 @@ function withCapturedPiStreamEnv(
   auth: ProviderAuth,
   streamEnv: ProviderEnv | undefined,
   api: SupportedPiApi,
+  ambientExempt?: ReadonlySet<string>,
+  consumedKeys?: readonly string[],
 ): ProviderAuth {
   if (!auth.apiKey) return auth;
   const apiKey = auth.apiKey;
@@ -271,7 +322,9 @@ function withCapturedPiStreamEnv(
         const result = await apiKey.resolve(input);
         if (!result) return undefined;
         const resolvedEnv = {...streamEnv, ...result.env};
-        assertNoAmbientPiStreamEnvFallback(api, resolvedEnv);
+        assertNoAmbientPiStreamEnvFallback(api, resolvedEnv, ambientExempt);
+        // Keys the in-process credential chain already consumed never reach the native client.
+        for (const key of consumedKeys ?? []) delete resolvedEnv[key];
         return {
           ...result,
           ...(Object.keys(resolvedEnv).length > 0 ? {env: resolvedEnv} : {}),
@@ -410,12 +463,233 @@ export async function resolvePiCatalogModel(
   throw new Error(`Pi catalog has no model ${reference.id} under ${reference.providers.join(', ')}`);
 }
 
-/** The configured model record: the full model, or a catalog reference resolved through the installed SDK. */
+/**
+ * Limits for a route model the installed catalog does not have: the template's
+ * declared limits, else these conservative defaults. The output defaults match
+ * what the retired engines requested (the Claude Agent SDK's 32k output cap on
+ * Anthropic surfaces); cost is unknown and recorded as zero, never used to gate.
+ */
+export const PI_SYNTHESIZED_MODEL_DEFAULTS = {
+  contextWindow: 128_000,
+  maxTokens: {
+    'anthropic-messages': 32_000,
+    'anthropic-vertex': 32_000,
+    'bedrock-converse-stream': 32_000,
+    'openai-completions': 16_384,
+    'openai-responses': 16_384,
+  } satisfies Record<PiRouteApi, number>,
+} as const;
+
+function endpointHost(baseUrl: unknown): string | undefined {
+  if (typeof baseUrl !== 'string') return undefined;
+  try {
+    return new URL(baseUrl).host.toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A route's model: the installed catalog entry when a builtin provider serves
+ * this id with this API on this endpoint host (or is the only provider serving
+ * this API, as with Bedrock), with the route's own base URL; otherwise a model
+ * synthesized on the route's API and endpoint. A synthesized model keeps
+ * reasoning off, takes limits from a same-host catalog entry for this id (any
+ * API), else the template, else the defaults above, and does not send the
+ * newer `eager_input_streaming` tool field to an Anthropic-compatible gateway.
+ */
+export async function resolvePiRouteModel(
+  route: PiModelRoute,
+  moduleLoader: (specifier: string) => Promise<unknown> = importEsmModule,
+): Promise<Record<string, unknown>> {
+  const catalog = await moduleLoader('@earendil-works/pi-ai/providers/all') as PiAiProviderCatalogModule;
+  const host = endpointHost(route.baseUrl);
+  const providers = catalog.builtinProviders().map(provider => ({
+    id: provider.id,
+    models: catalog.getBuiltinModels?.(provider.id) ?? [],
+  }));
+  const sameHost = (model: Record<string, unknown>) => host !== undefined && endpointHost(model.baseUrl) === host;
+  if (route.api !== ANTHROPIC_VERTEX_API) {
+    const serving = providers.filter(provider => provider.models.some(model => model.api === route.api));
+    const candidates = serving.length === 1
+      ? serving
+      : serving.filter(provider => provider.models.some(model => model.api === route.api && sameHost(model)));
+    for (const provider of candidates) {
+      const found = catalog.getBuiltinModel(provider.id, route.id);
+      if (found && found.api === route.api) return {...found, baseUrl: route.baseUrl};
+    }
+  }
+  const peer = providers.flatMap(provider => provider.models).find(model => model.id === route.id && sameHost(model));
+  const anthropicSurface = route.api === 'anthropic-messages' || route.api === ANTHROPIC_VERTEX_API;
+  return {
+    id: route.id,
+    name: route.id,
+    api: route.api,
+    provider: route.provider,
+    baseUrl: route.baseUrl,
+    reasoning: false,
+    input: Array.isArray(peer?.input) ? peer.input : ['text'],
+    cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
+    contextWindow: typeof peer?.contextWindow === 'number' ? peer.contextWindow
+      : route.limits?.contextWindow ?? PI_SYNTHESIZED_MODEL_DEFAULTS.contextWindow,
+    maxTokens: typeof peer?.maxTokens === 'number' ? peer.maxTokens
+      : route.limits?.maxTokens ?? PI_SYNTHESIZED_MODEL_DEFAULTS.maxTokens[route.api],
+    ...(anthropicSurface && host !== 'api.anthropic.com' ? {compat: {supportsEagerToolInputStreaming: false}} : {}),
+  };
+}
+
+/** The configured model record: the full model, or a catalog reference or route resolved through the installed SDK. */
 export function resolvePiModelRecord(
   config: PiAgentCoreModelConfig,
   moduleLoader: (specifier: string) => Promise<unknown> = importEsmModule,
 ): Promise<Record<string, unknown>> {
-  return config.catalog ? resolvePiCatalogModel(config.catalog, moduleLoader) : Promise.resolve(config.model);
+  if (config.catalog) return resolvePiCatalogModel(config.catalog, moduleLoader);
+  if (config.route) return resolvePiRouteModel(config.route, moduleLoader);
+  return Promise.resolve(config.model);
+}
+
+/**
+ * An Anthropic-compatible token sent as `Authorization: Bearer` (what the
+ * retired runtime sent for ANTHROPIC_AUTH_TOKEN), resolved from the scoped env
+ * per request and never written into the model JSON. A stored API key, when
+ * one is configured too, still travels as `x-api-key`.
+ */
+function bearerTokenAuth(tokenEnv: string, capturedEnv: EnvLike): ProviderAuth {
+  return {
+    apiKey: {
+      name: 'Anthropic-compatible auth token',
+      resolve: async ({credential, signal}) => {
+        signal.throwIfAborted();
+        const token = capturedEnv[tokenEnv]?.trim();
+        if (!token) return undefined;
+        return {
+          auth: {
+            ...(credential?.key ? {apiKey: credential.key} : {}),
+            headers: {authorization: `Bearer ${token}`},
+          },
+          source: tokenEnv,
+        };
+      },
+    },
+  };
+}
+
+/** Vertex authenticates through the injected client's Google credentials, not a request key. */
+function vertexGoogleAuth(capturedEnv: EnvLike): ProviderAuth {
+  const source = capturedEnv.GOOGLE_APPLICATION_CREDENTIALS?.trim()
+    ? 'GOOGLE_APPLICATION_CREDENTIALS' : 'Google application default credentials';
+  return {
+    apiKey: {
+      name: 'Google Vertex credentials',
+      resolve: async ({signal}) => {
+        signal.throwIfAborted();
+        return {auth: {}, source};
+      },
+    },
+  };
+}
+
+interface AwsProfileCredentials {
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken?: string;
+  expiration?: Date;
+}
+
+const AWS_CREDENTIAL_REFRESH_MARGIN_MS = 60_000;
+
+/**
+ * Bedrock credentials resolved in-process on each request into explicit
+ * scoped keys: a named profile strictly from its shared config/credentials
+ * files, or the AWS SDK default chain when the configuration enabled Bedrock
+ * without naming a credential. Temporary credentials are reused until shortly
+ * before they expire.
+ */
+function bedrockChainAuth(aws: NonNullable<PiModelRoute['aws']>, scopedEnv: EnvLike): ProviderAuth {
+  const {region, profile} = aws;
+  let current: AwsProfileCredentials | undefined;
+  let pending: Promise<AwsProfileCredentials> | undefined;
+  const load = async (): Promise<AwsProfileCredentials> => {
+    assertBedrockChainInputsScoped(scopedEnv, profile ? BEDROCK_PROFILE_ROUTE_AMBIENT_EXEMPT : undefined);
+    if (profile) {
+      const {fromIni} = await import('@aws-sdk/credential-provider-ini');
+      // The selected configuration's own shared files, never the process env's.
+      return fromIni({
+        profile,
+        filepath: scopedEnv.AWS_SHARED_CREDENTIALS_FILE?.trim() || path.join(os.homedir(), '.aws', 'credentials'),
+        configFilepath: scopedEnv.AWS_CONFIG_FILE?.trim() || path.join(os.homedir(), '.aws', 'config'),
+      })();
+    }
+    const {defaultProvider} = await import('@aws-sdk/credential-provider-node');
+    return defaultProvider()();
+  };
+  const fresh = (value: AwsProfileCredentials | undefined) => value
+    && (!value.expiration || value.expiration.getTime() - Date.now() > AWS_CREDENTIAL_REFRESH_MARGIN_MS);
+  return {
+    apiKey: {
+      name: profile ? `AWS profile ${profile}` : 'AWS default credential chain',
+      resolve: async ({signal}) => {
+        signal.throwIfAborted();
+        if (!fresh(current)) {
+          pending ??= load().finally(() => { pending = undefined; });
+          current = await pending;
+        }
+        const credentials = current!;
+        return {
+          auth: {},
+          env: {
+            AWS_ACCESS_KEY_ID: credentials.accessKeyId,
+            AWS_SECRET_ACCESS_KEY: credentials.secretAccessKey,
+            ...(credentials.sessionToken ? {AWS_SESSION_TOKEN: credentials.sessionToken} : {}),
+            AWS_REGION: region,
+          },
+          source: profile ? 'AWS profile' : 'AWS default credential chain',
+        };
+      },
+    },
+  };
+}
+
+/**
+ * The anthropic-messages streams over Vertex AI: each request gets the
+ * injected AnthropicVertex client (AnthropicOptions.client), authenticated by
+ * the explicit credentials file, or Google ADC when none is configured. The simple-stream path maps options the
+ * way pi-ai's anthropic streamSimple does for a model without reasoning.
+ */
+async function vertexProviderStreams(
+  anthropic: ProviderStreams,
+  route: PiModelRoute,
+  credentialsFile: string | undefined,
+  moduleLoader: (specifier: string) => Promise<unknown>,
+): Promise<ProviderStreams> {
+  if (!route.vertex) throw new Error('Pi anthropic-vertex route requires vertex.projectId and vertex.region');
+  const [{AnthropicVertex}, {GoogleAuth}, simpleOptions] = await Promise.all([
+    import('@anthropic-ai/vertex-sdk'),
+    import('google-auth-library'),
+    moduleLoader('@earendil-works/pi-ai/api/simple-options') as Promise<{
+      buildBaseOptions(model: Model<Api>, context: unknown, options?: SimpleStreamOptions, apiKey?: string): StreamOptions;
+    }>,
+  ]);
+  const client = new AnthropicVertex({
+    projectId: route.vertex.projectId,
+    region: route.vertex.region,
+    baseURL: route.baseUrl,
+    googleAuth: new GoogleAuth({
+      ...(credentialsFile ? {keyFile: credentialsFile} : {}),
+      scopes: ['https://www.googleapis.com/auth/cloud-platform'],
+    }),
+  });
+  const asAnthropic = (model: Model<Api>) => ({...model, api: 'anthropic-messages'}) as Model<Api>;
+  return {
+    stream: (model, context, options) => anthropic.stream(asAnthropic(model), context,
+      {...options, client} as StreamOptions),
+    streamSimple: (model, context, options) => anthropic.stream(asAnthropic(model), context, {
+      ...simpleOptions.buildBaseOptions(asAnthropic(model), context, options, options?.apiKey),
+      toolChoice: (options as {toolChoice?: unknown} | undefined)?.toolChoice,
+      thinkingEnabled: false,
+      client,
+    } as StreamOptions),
+  };
 }
 
 export async function createPiAgentCoreProviderRuntime(
@@ -434,13 +708,19 @@ export async function createPiAgentCoreProviderRuntime(
   const credential = validateCredential(config.credential, api);
   const credentialEnv = credential?.type === 'api_key' ? credential.env : undefined;
   const authEnv = {...capturedEnv, ...credentialEnv};
-  assertSafeBedrockCredentialSnapshot(api, authEnv);
+  const bedrockChain = routeUsesAwsCredentialChain(config.route) ? config.route!.aws : undefined;
+  // A chain route consumes the native chain keys in-process; only other routes must not carry them.
+  if (!bedrockChain) assertSafeBedrockCredentialSnapshot(api, authEnv);
+  const ambientExempt = bedrockChain?.profile ? BEDROCK_PROFILE_ROUTE_AMBIENT_EXEMPT : undefined;
 
-  const {piAi, catalog, providerStreams} = await loadPiProviderRuntimeModules(
+  const {piAi, catalog, providerStreams: loadedStreams} = await loadPiProviderRuntimeModules(
     api,
     env,
     moduleLoader,
   );
+  const providerStreams = api === ANTHROPIC_VERTEX_API
+    ? await vertexProviderStreams(loadedStreams, config.route!, authEnv.GOOGLE_APPLICATION_CREDENTIALS?.trim(), moduleLoader)
+    : loadedStreams;
   const supportedLevels = piAi.getSupportedThinkingLevels(model);
   const authoredLevel = config.thinkingLevel ?? (config.catalog?.defaultThinkingLevel === 'lowest_supported'
     ? LOWEST_THINKING_LEVELS.find(level => supportedLevels.includes(level)) : undefined);
@@ -452,17 +732,27 @@ export async function createPiAgentCoreProviderRuntime(
   assertSupportedLevel(authoredLevel);
   const credentials = new piAi.InMemoryCredentialStore();
   const builtinProvider = catalog.builtinProviders().find(candidate => candidate.id === providerId);
-  const baseAuth = builtinProvider?.auth ?? {
+  const providerAuth = builtinProvider?.auth ?? {
     apiKey: piAi.envApiKeyAuth(
       `${providerId} API key`,
       piProviderApiKeyEnvNames(providerId, config.apiKeyEnv),
     ),
   };
+  if (config.authTokenEnv && api !== 'anthropic-messages') {
+    throw new Error('Pi authTokenEnv applies only to an anthropic-messages model');
+  }
+  if (bedrockChain) assertBedrockChainInputsScoped(authEnv, ambientExempt);
+  const baseAuth = bedrockChain ? bedrockChainAuth(bedrockChain, authEnv)
+    : api === ANTHROPIC_VERTEX_API ? vertexGoogleAuth(authEnv)
+      : config.authTokenEnv ? bearerTokenAuth(config.authTokenEnv, capturedEnv)
+        : providerAuth;
   const streamEnv = capturePiStreamEnv(api, authEnv);
   const auth = withCapturedPiStreamEnv(
     baseAuth,
     streamEnv,
     api,
+    ambientExempt,
+    bedrockChain ? UNSAFE_BEDROCK_NATIVE_CHAIN_KEYS : undefined,
   );
   const explicitApiKey = config.apiKey?.trim()
     || (config.apiKeyEnv ? capturedEnv[config.apiKeyEnv]?.trim() : undefined);
@@ -491,7 +781,7 @@ export async function createPiAgentCoreProviderRuntime(
     headers: builtinProvider?.headers,
     auth,
     models: [model],
-    api: withCapturedProviderStreams(providerStreams, streamEnv, api),
+    api: withCapturedProviderStreams(providerStreams, streamEnv, api, ambientExempt),
   }));
 
   const nativeStream = models.streamSimple.bind(models);
@@ -515,7 +805,7 @@ export async function createPiAgentCoreProviderRuntime(
         const knownThinkingFormat = compat?.thinkingFormat === 'zai' || compat?.thinkingFormat === 'deepseek';
         const protocol = sentModel.api === 'openai-completions' ? 'chat_completions'
           : sentModel.api === 'openai-responses' || sentModel.api === 'azure-openai-responses' ? 'responses'
-          : sentModel.api === 'anthropic-messages' ? 'anthropic_messages' : 'unknown';
+          : sentModel.api === 'anthropic-messages' || sentModel.api === ANTHROPIC_VERTEX_API ? 'anthropic_messages' : 'unknown';
         const stageCandidate = purpose === 'classification' || purpose === 'review' ||
           purpose === 'continuation' && policy?.outputOnly === true;
         const sdkLevel = (options as SimpleStreamOptions | undefined)?.reasoning ?? authoredLevel;

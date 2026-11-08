@@ -6,7 +6,7 @@ import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 import type {StreamingUpdate} from '../../agent/types';
 import {createAnswerDraftStream, createProjectedAnswerDraft, readAnswerDraftIdentity} from '../../agentRuntime/answerDraftStream';
 import {runtimeSupportsDraftAnswerStreaming} from '../../agentRuntime/runtimeDescriptors';
-import {listProductionRuntimeKinds} from '../../agentRuntime/runtimeKinds';
+import {PRODUCTION_RUNTIME_KINDS} from '../../agentRuntime/runtimeKinds';
 import {renderConclusionContractSidecar} from '../../agent/core/conclusionContract';
 import {
   ANSWER_DRAFT_FLUSH_CHARS,
@@ -299,7 +299,7 @@ describe('projected answer draft', () => {
   it('is the only path to a draft for every draft-capable runtime', () => {
     // A runtime added here must send a private run's answer text through
     // createProjectedAnswerDraft, with a test like the OpenAI and Claude ones.
-    expect(listProductionRuntimeKinds().filter(runtimeSupportsDraftAnswerStreaming))
+    expect(PRODUCTION_RUNTIME_KINDS.filter(runtimeSupportsDraftAnswerStreaming))
       .toEqual(['claude-agent-sdk', 'openai-agents-sdk']);
   });
 

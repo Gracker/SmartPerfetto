@@ -1,0 +1,116 @@
+{
+  "description": "Provider records and env-only configurations stored before Pi became the only runtime, with the provider runtime snapshot hash the base commit computed for each (resolveProviderRuntimeSnapshot at ada981b01, all ANTHROPIC/CLAUDE/OPENAI/AWS/GOOGLE/DEEPSEEK/SMARTPERFETTO_AGENT_RUNTIME/SMARTPERFETTO_PI env cleared). Frozen: never regenerate with current code.",
+  "capturedAt": "ada981b01",
+  "providers": [
+    {
+      "id": "golden-anthropic",
+      "name": "Anthropic",
+      "category": "official",
+      "type": "anthropic",
+      "isActive": false,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "models": {
+        "primary": "claude-sonnet-5",
+        "light": "claude-haiku-4-5"
+      },
+      "connection": {
+        "agentRuntime": "claude-agent-sdk",
+        "apiKey": "sk-ant-golden"
+      }
+    },
+    {
+      "id": "golden-qwen",
+      "name": "Qwen",
+      "category": "official",
+      "type": "qwen",
+      "isActive": false,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "models": {
+        "primary": "qwen3.8-flash",
+        "light": "qwen3.8-flash"
+      },
+      "connection": {
+        "agentRuntime": "claude-agent-sdk",
+        "apiKey": "sk-golden-qwen",
+        "claudeBaseUrl": "https://dashscope.aliyuncs.com/apps/anthropic",
+        "openaiBaseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+      }
+    },
+    {
+      "id": "golden-openai",
+      "name": "OpenAI",
+      "category": "official",
+      "type": "openai",
+      "isActive": false,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "models": {
+        "primary": "gpt-5.6-terra",
+        "light": "gpt-5.6-terra"
+      },
+      "connection": {
+        "agentRuntime": "openai-agents-sdk",
+        "openaiApiKey": "sk-golden-openai",
+        "openaiBaseUrl": "https://api.openai.com/v1"
+      }
+    },
+    {
+      "id": "golden-bedrock",
+      "name": "Bedrock",
+      "category": "official",
+      "type": "bedrock",
+      "isActive": false,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "models": {
+        "primary": "us.anthropic.claude-sonnet-5",
+        "light": "us.anthropic.claude-sonnet-5"
+      },
+      "connection": {
+        "agentRuntime": "claude-agent-sdk",
+        "awsRegion": "eu-central-1",
+        "awsAccessKeyId": "AKIDGOLDEN",
+        "awsSecretAccessKey": "golden-secret"
+      }
+    },
+    {
+      "id": "golden-opencode",
+      "name": "Gateway",
+      "category": "custom",
+      "type": "custom",
+      "isActive": false,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "models": {
+        "primary": "gw-model",
+        "light": "gw-model"
+      },
+      "connection": {
+        "agentRuntime": "opencode",
+        "openCodeModelJson": "{\"providerID\":\"gw\",\"modelID\":\"gw-model\",\"baseURL\":\"https://gw.example/v1\",\"apiKey\":\"sk-golden-gw\"}"
+      }
+    }
+  ],
+  "envOnly": {
+    "claude-agent-sdk": {
+      "ANTHROPIC_API_KEY": "sk-ant-env-golden",
+      "CLAUDE_MODEL": "claude-sonnet-5"
+    },
+    "openai-agents-sdk": {
+      "OPENAI_API_KEY": "sk-openai-env-golden",
+      "OPENAI_MODEL": "gpt-5.6-terra",
+      "OPENAI_BASE_URL": "https://api.openai.com/v1"
+    }
+  },
+  "snapshotHashes": {
+    "golden-anthropic": "f9268e5b54fc73be0dcce4ac410fd15133704b7a4be115d35e82b3cb7d29db3d",
+    "golden-qwen": "cf0a4e164a27c2db3ff818080add77aef99678e6fc5235e66265e043dd451cbb",
+    "golden-openai": "8778d5606816ebe6d722b06c164ce3a8fbacdc95c018cbdd7170f7f804e6e3df",
+    "golden-bedrock": "f4e801500a522e9ce8df50349d219de764df513c21bb610b4c35197642d7f693",
+    "golden-opencode": "b53c58d24d367cda3d689ca831b8733be7a914cec560881701879c1c39750415",
+    "env:claude-agent-sdk": "065b47026b98184edd4b62468063be4e7e66f11d962dedce9ae3ea26b1bbcde8",
+    "env:openai-agents-sdk": "5fe44716cc88084b632b4e565d66707688d08b68e7580e663d9e65f3eb267b71"
+  }
+}

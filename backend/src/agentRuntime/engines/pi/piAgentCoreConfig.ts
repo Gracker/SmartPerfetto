@@ -23,12 +23,51 @@ export interface PiCatalogModelReference {
   defaultThinkingLevel?: 'lowest_supported';
 }
 
+/** Pi APIs a route may name; `anthropic-vertex` is SmartPerfetto's Anthropic Messages over Vertex AI. */
+export const PI_ROUTE_APIS = [
+  'anthropic-messages',
+  'openai-completions',
+  'openai-responses',
+  'bedrock-converse-stream',
+  'anthropic-vertex',
+] as const;
+
+export type PiRouteApi = typeof PI_ROUTE_APIS[number];
+
+/**
+ * A model named by the endpoint a provider used before Pi became the only
+ * runtime: the API surface, base URL and model id stay exactly what that
+ * runtime called. When the provider runtime is created, the installed pi-ai
+ * catalog supplies the model if it serves this id with this API on this host;
+ * otherwise the model is synthesized with conservative limits. Derived at env
+ * time from the provider record, never persisted.
+ */
+export interface PiModelRoute {
+  api: PiRouteApi;
+  /** The Pi provider id a synthesized model is registered under. */
+  provider: string;
+  id: string;
+  baseUrl: string;
+  /** Limits a provider template declares; the catalog wins when it has the model. */
+  limits?: {contextWindow?: number; maxTokens?: number};
+  /**
+   * Bedrock credentials resolved in-process into explicit keys: a named
+   * profile, or (`defaultChain`) the AWS SDK default chain the selected
+   * configuration enabled without naming any credential.
+   */
+  aws?: {region: string; profile?: string; defaultChain?: true};
+  vertex?: {projectId: string; region: string};
+}
+
 export interface PiAgentCoreModelConfig {
-  /** The full model, or for a catalog reference only its `id`/`baseUrl` (for attribution). */
+  /** The full model, or for a catalog reference or route only its `id`/`baseUrl` (for attribution). */
   model: Record<string, unknown>;
   catalog?: PiCatalogModelReference;
+  route?: PiModelRoute;
   apiKey?: string;
   apiKeyEnv?: string;
+  /** Env holding an Anthropic-compatible token sent as `Authorization: Bearer`, outside the model JSON. */
+  authTokenEnv?: string;
   credential?: Credential;
   maxRetryDelayMs?: number;
   transport?: string;
@@ -146,6 +185,8 @@ const PI_STREAM_ENV_BY_API: Record<string, readonly string[]> = {
     'GOOGLE_CLOUD_LOCATION',
     'GOOGLE_CLOUD_PROJECT',
   ],
+  // An explicit credentials file; without one the injected client uses Google ADC.
+  'anthropic-vertex': ['GOOGLE_APPLICATION_CREDENTIALS'],
 };
 
 function normalizeProviderEnvName(provider: string): string {
@@ -165,7 +206,8 @@ export function piStreamEnvKeys(api: string): string[] {
   return ['PI_CACHE_RETENTION', ...(PI_STREAM_ENV_BY_API[api] ?? [])];
 }
 
-function optionalString(value: unknown): string | undefined {
+/** A trimmed non-empty string, or undefined. */
+export function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
@@ -197,6 +239,37 @@ function thinkingLevel(value: unknown): ModelThinkingLevel | undefined {
 }
 
 export const PI_AGENT_CORE_MODEL_JSON_ENV = 'SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON';
+/** The API key and Bearer token a derived route sends; Pi-owned names, so no other runtime reads them. */
+export const PI_AGENT_CORE_API_KEY_ENV = 'SMARTPERFETTO_PI_AGENT_CORE_API_KEY';
+export const PI_AGENT_CORE_AUTH_TOKEN_ENV = 'SMARTPERFETTO_PI_AGENT_CORE_AUTH_TOKEN';
+/** Why a provider's previous configuration has no Pi model, reported instead of guessing one. */
+export const PI_AGENT_CORE_MODEL_UNAVAILABLE_ENV = 'SMARTPERFETTO_PI_AGENT_CORE_MODEL_UNAVAILABLE';
+
+const PI_MODEL_UNAVAILABLE_HINTS: Record<string, string> = {
+  credentials_missing: 'the provider has an endpoint but no API key or auth token',
+  bedrock_credentials_missing: 'the Bedrock provider names no bearer token, AWS profile or access keys',
+  vertex_project_missing: 'the Vertex configuration has no project id',
+  vertex_model_region_override: 'a per-model VERTEX_REGION_* variable is set; set CLOUD_ML_REGION to the region serving the model instead',
+  model_json_credential_chain: 'its own model JSON names an AWS profile or credential chain; ' +
+    'name the profile on a Bedrock provider instead',
+  opencode_model_json_untranslatable: 'its OpenCode model JSON named no OpenAI-compatible endpoint and model; set the Base URL and model',
+  qoder_untranslatable: 'it used the retired Qoder runtime; set an Anthropic- or OpenAI-compatible Base URL, API key and model',
+};
+
+/** An actionable message for a provider configuration that maps to no Pi model. */
+export function piModelUnavailableHint(reason: string): string {
+  return `Pi Agent Core has no model for this provider: ${PI_MODEL_UNAVAILABLE_HINTS[reason] ?? reason}, ` +
+    `or set an explicit Pi model JSON (${PI_AGENT_CORE_MODEL_JSON_ENV}).`;
+}
+
+/**
+ * Whether a route resolves AWS credentials through an in-process chain (a
+ * named profile or the default chain) rather than explicit keys. Only the
+ * migration mapping derives such a route; a user-written model JSON is refused.
+ */
+export function routeUsesAwsCredentialChain(route: PiModelRoute | undefined): boolean {
+  return route?.api === 'bedrock-converse-stream' && Boolean(route.aws?.profile || route.aws?.defaultChain);
+}
 
 /** The configured Pi model from env, or undefined when Pi has no model configured. Throws on invalid JSON. */
 export function readPiAgentCoreModelConfig(env: PiAgentCoreEnv): PiAgentCoreModelConfig | undefined {
@@ -218,23 +291,30 @@ export function parsePiAgentCoreModelConfig(rawModel: string): PiAgentCoreModelC
   const {
     apiKey,
     apiKeyEnv,
+    authTokenEnv,
     credential,
     maxRetryDelayMs,
     transport,
     thinkingLevel: rawThinkingLevel,
     thinkingBudgets: rawThinkingBudgets,
     catalog: rawCatalog,
+    route: rawRoute,
     ...model
   } = parsed as Record<string, unknown>;
   const catalog = rawCatalog === undefined ? undefined : piCatalogReference(rawCatalog);
-  if (catalog && Object.keys(model).length > 0) {
-    throw new Error('Pi model JSON must not combine catalog with model fields');
+  const route = rawRoute === undefined ? undefined : piModelRoute(rawRoute);
+  if ((catalog || route) && Object.keys(model).length > 0) {
+    throw new Error('Pi model JSON must not combine catalog or route with model fields');
   }
+  if (catalog && route) throw new Error('Pi model JSON must not combine catalog with route');
+  const reference = catalog ?? route;
   return {
-    model: catalog ? {id: catalog.id, ...(catalog.baseUrl ? {baseUrl: catalog.baseUrl} : {})} : model,
+    model: reference ? {id: reference.id, ...(reference.baseUrl ? {baseUrl: reference.baseUrl} : {})} : model,
     ...(catalog ? {catalog} : {}),
+    ...(route ? {route} : {}),
     apiKey: optionalString(apiKey),
     apiKeyEnv: optionalString(apiKeyEnv),
+    ...(optionalString(authTokenEnv) ? {authTokenEnv: optionalString(authTokenEnv)} : {}),
     credential: credential as Credential | undefined,
     maxRetryDelayMs: optionalNumber(maxRetryDelayMs),
     transport: optionalString(transport),
@@ -262,6 +342,65 @@ function piCatalogReference(value: unknown): PiCatalogModelReference {
   }
   return {providers: [...providers] as string[], id: modelId, ...(endpoint ? {baseUrl: endpoint} : {}),
     ...(defaultThinkingLevel ? {defaultThinkingLevel} : {})};
+}
+
+function positiveLimit(value: unknown, field: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`Pi route limits.${field} must be a positive integer`);
+  }
+  return value;
+}
+
+function piModelRoute(value: unknown): PiModelRoute {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Pi route must be an object');
+  const {api, provider, id, baseUrl, limits, aws, vertex, ...rest} = value as Record<string, unknown>;
+  if (Object.keys(rest).length > 0) throw new Error('Pi route has unknown fields');
+  if (typeof api !== 'string' || !(PI_ROUTE_APIS as readonly string[]).includes(api)) {
+    throw new Error('Pi route api is not supported');
+  }
+  const providerId = optionalString(provider);
+  if (!providerId || !/^[a-z0-9][a-z0-9-]*$/.test(providerId)) throw new Error('Pi route provider must be a provider id');
+  const modelId = optionalString(id);
+  if (!modelId) throw new Error('Pi route id must be a non-empty string');
+  const endpoint = optionalString(baseUrl);
+  if (!endpoint || !isCredentialFreeHttpUrl(endpoint)) throw new Error('Pi route baseUrl must be a credential-free HTTP(S) URL');
+  const route: PiModelRoute = {api: api as PiRouteApi, provider: providerId, id: modelId, baseUrl: endpoint};
+  if (limits !== undefined) {
+    if (!limits || typeof limits !== 'object' || Array.isArray(limits)) throw new Error('Pi route limits must be an object');
+    const {contextWindow, maxTokens, ...unknownLimits} = limits as Record<string, unknown>;
+    if (Object.keys(unknownLimits).length > 0) throw new Error('Pi route limits has unknown fields');
+    const parsedLimits = {
+      ...(positiveLimit(contextWindow, 'contextWindow') ? {contextWindow: contextWindow as number} : {}),
+      ...(positiveLimit(maxTokens, 'maxTokens') ? {maxTokens: maxTokens as number} : {}),
+    };
+    if (Object.keys(parsedLimits).length > 0) route.limits = parsedLimits;
+  }
+  if (aws !== undefined) {
+    if (api !== 'bedrock-converse-stream' || !aws || typeof aws !== 'object' || Array.isArray(aws)) {
+      throw new Error('Pi route aws applies only to a bedrock-converse-stream route');
+    }
+    const {region, profile, defaultChain, ...unknownAws} = aws as Record<string, unknown>;
+    if (Object.keys(unknownAws).length > 0 || !optionalString(region)
+      || (profile !== undefined && !optionalString(profile))
+      || (defaultChain !== undefined && (defaultChain !== true || profile !== undefined))) {
+      throw new Error('Pi route aws must name a region and optionally a profile or the default credential chain');
+    }
+    route.aws = {
+      region: optionalString(region)!,
+      ...(optionalString(profile) ? {profile: optionalString(profile)} : {}),
+      ...(defaultChain === true ? {defaultChain: true as const} : {}),
+    };
+  }
+  if (vertex !== undefined || api === 'anthropic-vertex') {
+    const {projectId, region, ...unknownVertex} = (vertex ?? {}) as Record<string, unknown>;
+    if (api !== 'anthropic-vertex' || Object.keys(unknownVertex).length > 0
+      || !optionalString(projectId) || !optionalString(region)) {
+      throw new Error('Pi route vertex must name a projectId and region for an anthropic-vertex route');
+    }
+    route.vertex = {projectId: optionalString(projectId)!, region: optionalString(region)!};
+  }
+  return route;
 }
 
 /** The installed pi-ai version, which decides what a catalog reference resolves to. */
@@ -296,21 +435,22 @@ export function piRuntimeFingerprintInput(
     addSelectedEnv(customKeys);
     return {modelJson, entries};
   }
-  const provider = configuredModelString(config.model, 'provider');
+  const provider = config.route?.provider ?? configuredModelString(config.model, 'provider');
   const providers = config.catalog?.providers ?? (provider ? [provider] : []);
   // A catalog reference learns its api only when resolved: pin every api's stream env.
-  const api = configuredModelString(config.model, 'api');
+  const api = config.route?.api ?? configuredModelString(config.model, 'api');
   const streamKeys = config.catalog ? Object.keys(PI_STREAM_ENV_BY_API).flatMap(piStreamEnvKeys)
     : api ? piStreamEnvKeys(api) : [];
   const selectedKeys = new Set<string>([
     ...providers.flatMap(id => piProviderApiKeyEnvNames(id)),
     ...(config.apiKeyEnv ? [config.apiKeyEnv] : []),
+    ...(config.authTokenEnv ? [config.authTokenEnv] : []),
     ...streamKeys,
     ...Object.keys(config.credential?.type === 'api_key' ? config.credential.env ?? {} : {}),
     ...customKeys,
   ]);
-  // A catalog reference resolves through the installed SDK: pin its version.
-  if (config.catalog) entries.push(['sdk:@earendil-works/pi-ai', installedPiAiVersion()]);
+  // A catalog reference or route resolves through the installed SDK: pin its version.
+  if (config.catalog || config.route) entries.push(['sdk:@earendil-works/pi-ai', installedPiAiVersion()]);
   if (config.apiKey) entries.push(['config:apiKey', config.apiKey]);
   if (config.credential) entries.push(['config:credential', JSON.stringify(config.credential)]);
   addSelectedEnv(selectedKeys);

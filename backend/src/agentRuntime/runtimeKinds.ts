@@ -27,10 +27,6 @@ export const EXPERIMENTAL_RUNTIME_KINDS = [
 
 export type ExperimentalAgentRuntimeKind = typeof EXPERIMENTAL_RUNTIME_KINDS[number];
 
-export function listProductionRuntimeKinds(): readonly AgentRuntimeKind[] {
-  return PRODUCTION_RUNTIME_KINDS;
-}
-
 export function isProductionAgentRuntimeKind(value: unknown): value is AgentRuntimeKind {
   return typeof value === 'string'
     && PRODUCTION_RUNTIME_KINDS.includes(value as AgentRuntimeKind);
@@ -40,7 +36,43 @@ export function listExperimentalRuntimeKinds(): readonly ExperimentalAgentRuntim
   return EXPERIMENTAL_RUNTIME_KINDS;
 }
 
-export function isExperimentalAgentRuntimeKind(value: unknown): value is ExperimentalAgentRuntimeKind {
+/**
+ * The runtimes a provider, template, API client or `smp provider` may select.
+ * Pi Agent Core is the only one; every other kind maps to it when read.
+ */
+export const SELECTABLE_RUNTIME_KINDS = [PI_AGENT_CORE_RUNTIME_KIND] as const;
+
+export type SelectableAgentRuntimeKind = typeof SELECTABLE_RUNTIME_KINDS[number];
+
+export function isSelectableAgentRuntimeKind(value: unknown): value is SelectableAgentRuntimeKind {
   return typeof value === 'string'
-    && EXPERIMENTAL_RUNTIME_KINDS.includes(value as ExperimentalAgentRuntimeKind);
+    && SELECTABLE_RUNTIME_KINDS.includes(value as SelectableAgentRuntimeKind);
+}
+
+/**
+ * Every runtime label SmartPerfetto has written into a record (provider
+ * profiles, session snapshots, conversation descriptors, run manifests,
+ * evaluation pins). Readers accept these as provenance; execution re-resolves
+ * a retired one through the effective runtime.
+ */
+export const RECORDED_RUNTIME_KINDS = [
+  CLAUDE_AGENT_RUNTIME_KIND,
+  OPENAI_AGENT_RUNTIME_KIND,
+  PI_AGENT_CORE_RUNTIME_KIND,
+  OPENCODE_RUNTIME_KIND,
+  QODER_AGENT_RUNTIME_KIND,
+  EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
+  EXPERIMENTAL_OPENCODE_RUNTIME_KIND,
+] as const;
+
+export type RecordedRuntimeKind = typeof RECORDED_RUNTIME_KINDS[number];
+
+export function isRecordedRuntimeKind(value: unknown): value is RecordedRuntimeKind {
+  return typeof value === 'string'
+    && RECORDED_RUNTIME_KINDS.includes(value as RecordedRuntimeKind);
+}
+
+/** A recorded label that no longer selects its own runtime. */
+export function isRetiredRuntimeKind(value: unknown): value is Exclude<RecordedRuntimeKind, SelectableAgentRuntimeKind> {
+  return isRecordedRuntimeKind(value) && !isSelectableAgentRuntimeKind(value);
 }

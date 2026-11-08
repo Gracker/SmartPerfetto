@@ -58,7 +58,7 @@ function storeSnapshot(overrides: Partial<ConversationSessionDescriptor> = {},
 beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-conversation-route-'));
   process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmp, 'enterprise.sqlite');
-  const pin = resolveProviderRuntimeSnapshot(getProviderService(), null, undefined, owner);
+  const pin = resolveProviderRuntimeSnapshot(getProviderService(), null, owner);
   const sessionId = `recovery-conversation-${++sequence}`;
   descriptor = {version: 1, ...owner, sessionId, traceContext: {kind: 'none'}, providerId: null,
     providerFollowsActive: false, runtimeKind: pin.snapshot.runtimeKind, providerSnapshotHash: pin.snapshotHash,
@@ -115,16 +115,16 @@ describe('conversation route stop', () => {
 });
 
 describe('conversation live-only drafts', () => {
-  const previousRuntime = process.env.SMARTPERFETTO_AGENT_RUNTIME;
+  const previousRuntime = process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME;
   // The default Pi runtime streams no draft; pin one that does.
-  beforeEach(() => { process.env.SMARTPERFETTO_AGENT_RUNTIME = 'openai-agents-sdk'; });
+  beforeEach(() => { process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'openai-agents-sdk'; });
   afterEach(() => {
-    if (previousRuntime === undefined) delete process.env.SMARTPERFETTO_AGENT_RUNTIME;
-    else process.env.SMARTPERFETTO_AGENT_RUNTIME = previousRuntime;
+    if (previousRuntime === undefined) delete process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME;
+    else process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = previousRuntime;
   });
 
   it('sends an answer draft without an SSE id or seqId, while replayable events keep theirs', async () => {
-    const runtimeKind = resolveProviderRuntimeSnapshot(getProviderService(), null, undefined, owner).snapshot.runtimeKind;
+    const runtimeKind = resolveProviderRuntimeSnapshot(getProviderService(), null, owner).snapshot.runtimeKind;
     let release!: () => void;
     const gate = new Promise<void>(resolve => {release = resolve;});
     factory.mockImplementation(() => {

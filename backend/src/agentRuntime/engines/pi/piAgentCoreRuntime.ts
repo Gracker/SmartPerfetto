@@ -154,6 +154,8 @@ import {
 } from './piAgentCoreProvider';
 import {
   PI_AGENT_CORE_MODEL_JSON_ENV,
+  PI_AGENT_CORE_MODEL_UNAVAILABLE_ENV,
+  piModelUnavailableHint,
   readPiAgentCoreModelConfig,
   type PiAgentCoreModelConfig,
 } from './piAgentCoreConfig';
@@ -515,12 +517,14 @@ export function getPiAgentCoreRuntimeDiagnostics(
   const modelJson = env[PI_AGENT_CORE_MODEL_JSON_ENV]?.trim();
   const fakeStream = parseFlagValue(env[PI_AGENT_CORE_FAKE_STREAM_ENV]) === true;
   const modulePath = env[PI_AGENT_CORE_MODULE_PATH_ENV]?.trim();
+  const unavailable = modelJson ? undefined : env[PI_AGENT_CORE_MODEL_UNAVAILABLE_ENV]?.trim();
   return {
     configured: Boolean(modelJson || fakeStream),
     runtime,
     experimental: runtime === EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
     package: '@earendil-works/pi-agent-core',
     modelConfigured: Boolean(modelJson),
+    ...(unavailable ? {modelUnavailableReason: unavailable, configHint: piModelUnavailableHint(unavailable)} : {}),
     fakeStream,
     modulePath: modulePath || undefined,
   };
@@ -1105,11 +1109,14 @@ function resolvePiAgentCoreModel(env: EnvLike, fakeStream: boolean): PiAgentCore
       },
     };
   }
+  const unavailable = env[PI_AGENT_CORE_MODEL_UNAVAILABLE_ENV]?.trim();
+  if (unavailable) throw new Error(piModelUnavailableHint(unavailable));
   throw new Error(
-    `${PI_AGENT_CORE_MODEL_JSON_ENV} is required for the experimental Pi agent-core runtime ` +
-    `unless ${PI_AGENT_CORE_FAKE_STREAM_ENV}=1 is used for a local smoke.`,
+    'Pi Agent Core has no model: configure a provider (its endpoint, API key and model) or set ' +
+    `${PI_AGENT_CORE_MODEL_JSON_ENV}; ${PI_AGENT_CORE_FAKE_STREAM_ENV}=1 runs a local smoke only.`,
   );
 }
+
 
 export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
   private readonly env: EnvLike;

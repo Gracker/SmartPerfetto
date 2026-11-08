@@ -16,6 +16,7 @@ const ORIGINAL_ENV = {
   [SMARTPERFETTO_FINAL_SUBMISSION_ENV]: process.env[SMARTPERFETTO_FINAL_SUBMISSION_ENV],
   [CONCLUSION_AUTHORING_ENV]: process.env[CONCLUSION_AUTHORING_ENV],
   PROVIDER_DATA_DIR_OVERRIDE: process.env.PROVIDER_DATA_DIR_OVERRIDE,
+  SMARTPERFETTO_LEGACY_AGENT_RUNTIME: process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
   OPENAI_MAX_OUTPUT_TOKENS: process.env.OPENAI_MAX_OUTPUT_TOKENS,
@@ -51,6 +52,8 @@ describe('createOpenAIEnv', () => {
     dir = path.join(os.tmpdir(), `openai-config-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     await fsp.mkdir(dir, { recursive: true });
     process.env.PROVIDER_DATA_DIR_OVERRIDE = dir;
+    // The OpenAI engine runs only behind the hidden legacy opt-in.
+    process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME = 'openai-agents-sdk';
     delete process.env.OPENAI_ANALYSIS_REASONING_EFFORT;
     delete process.env[SMARTPERFETTO_FINAL_SUBMISSION_ENV];
     delete process.env[CONCLUSION_AUTHORING_ENV];
@@ -123,7 +126,9 @@ describe('createOpenAIEnv', () => {
     expect(loadOpenAIConfig(p.id).analysisReasoningEffort).toBeUndefined();
   });
 
-  it('ignores an active Claude provider when resolving OpenAI env without an explicit providerId', () => {
+  it('ignores an active provider on another runtime when resolving OpenAI env without an explicit providerId', () => {
+    // The active provider runs on Pi (no legacy opt-in), so this engine's env ignores it.
+    delete process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME;
     process.env.OPENAI_API_KEY = 'sk-global-openai';
     process.env.OPENAI_BASE_URL = 'https://global-openai.example/v1';
 
@@ -180,7 +185,7 @@ describe('createOpenAIEnv', () => {
     );
   });
 
-  it('throws instead of falling back when explicit providerId targets a Claude runtime', () => {
+  it('throws instead of falling back when explicit providerId runs on another runtime', () => {
     const svc = getProviderService();
     const p = svc.create({
       name: 'Claude Provider',
@@ -193,8 +198,9 @@ describe('createOpenAIEnv', () => {
       },
     });
 
+    delete process.env.SMARTPERFETTO_LEGACY_AGENT_RUNTIME;
     expect(() => createOpenAIEnv(p.id)).toThrow(
-      `Provider ${p.id} is configured for claude-agent-sdk, not openai-agents-sdk`,
+      `Provider ${p.id} is configured for pi-agent-core, not openai-agents-sdk`,
     );
   });
 

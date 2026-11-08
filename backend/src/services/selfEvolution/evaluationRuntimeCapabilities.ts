@@ -2,8 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import type {AgentRuntimeKind} from '../../agentRuntime/runtimeKinds';
-import {PRODUCTION_RUNTIME_KINDS} from '../../agentRuntime/runtimeKinds';
+import {isProductionAgentRuntimeKind, type AgentRuntimeKind, type RecordedRuntimeKind} from '../../agentRuntime/runtimeKinds';
 import type {
   EvaluationRuntimeCapabilitiesV1,
   TraceProcessorCpuCapability,
@@ -30,10 +29,10 @@ function traceProcessorCpuCapability(
 }
 
 export function evaluationRuntimeCapabilities(input: {
-  runtime: AgentRuntimeKind;
+  runtime: RecordedRuntimeKind;
   platform?: NodeJS.Platform;
 }): EvaluationRuntimeCapabilitiesV1 {
-  if (!PRODUCTION_RUNTIME_KINDS.includes(input.runtime)) {
+  if (!isProductionAgentRuntimeKind(input.runtime)) {
     throw new Error('evaluation_runtime_unsupported');
   }
   return Object.freeze({
