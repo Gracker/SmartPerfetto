@@ -22,17 +22,6 @@ const buildOpenAITextRequestPurposeOptions = (input: Parameters<typeof purposeIn
 
 describe('JSON controls at the actual no-tool dispatch URL', () => {
   it.each([
-    ['https://open.bigmodel.cn/api/coding/paas/v4', 'glm-5.3-flash', {thinking: {type: 'enabled'}, reasoning_effort: 'low'}],
-    ['https://api.deepseek.com/v1', 'deepseek-flash', {thinking: {type: 'disabled'}}],
-  ] as const)('keeps new HTTP JSON controls out of OpenCode provider options at %s', (url, model, expected) => {
-    for (const purpose of ['classification'] as const) {
-      expect(buildOpenAITextRequestPurposeOptions({requestUrl: new URL(url), protocol: 'chat_completions', model, purpose,
-        runtimeKind: 'opencode', sdkCapabilities: {surface: 'opencode_agent_options', thinking: 'optional',
-          efforts: ['low', 'high'], reasoningRoundtrip: 'unknown', source: 'contract_test'}})).toEqual(expected);
-    }
-  });
-
-  it.each([
     ['https://open.bigmodel.cn/api/coding/paas/v4/chat/completions', 'glm-5.3-flash'],
     ['https://api.deepseek.com/v1/chat/completions', 'deepseek-flash'],
   ])('requests JSON only for classification at %s', (url, model) => {

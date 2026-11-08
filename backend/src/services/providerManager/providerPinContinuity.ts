@@ -9,6 +9,7 @@ import {
   isProductionAgentRuntimeKind,
   isRecordedRuntimeKind,
   type AgentRuntimeKind,
+  type RecordedProductionRuntimeKind,
   type RecordedRuntimeKind,
 } from '../../agentRuntime/runtimeKinds';
 import {piRequestOrigin, resolvePiRouteFromLegacyEnv, runtimeEnvFor} from './piProviderCatalog';
@@ -53,7 +54,7 @@ interface RequestTarget {
 function legacyRequestTarget(
   providerService: ProviderService,
   current: ProviderConfig | undefined,
-  kind: AgentRuntimeKind,
+  kind: RecordedProductionRuntimeKind,
 ): RequestTarget | undefined {
   // What the retired runtime called: the record as it was stored, before the read-time migration.
   // OpenCode named its endpoint inside its own model JSON; the migration's translation of that

@@ -32,8 +32,7 @@ experience.
 
 If installation lists blocked or skipped dependency scripts, review those scripts
 first. The native `better-sqlite3` binding supports core commands such as `query`
-and `skill`, including when AI is disabled. The OpenCode runtime also needs the
-`opencode-ai` install script. Assess other entries, such as `@google/genai`,
+and `skill`, including when AI is disabled. Assess other entries, such as `@google/genai`,
 `protobufjs`, and `esbuild`, by their actual scripts and the features you use;
 the list alone does not establish a broken SQLite binding or CLI.
 
@@ -41,8 +40,8 @@ For global installation or one-off `npm exec` / `npx`, approve only the reviewed
 packages for that command:
 
 ```bash
-npm install -g @gracker/smartperfetto --allow-scripts=better-sqlite3,opencode-ai
-npm exec --allow-scripts=better-sqlite3,opencode-ai --package=@gracker/smartperfetto -- smp doctor
+npm install -g @gracker/smartperfetto --allow-scripts=better-sqlite3
+npm exec --allow-scripts=better-sqlite3 --package=@gracker/smartperfetto -- smp doctor
 ```
 
 These flags apply to that command. A project-local install uses `allowScripts`
@@ -59,8 +58,7 @@ npm install-scripts approve better-sqlite3
 npm rebuild better-sqlite3
 ```
 
-Approval updates the consumer's `allowScripts`. When using OpenCode, review and
-add `opencode-ai` to both commands. See
+Approval updates the consumer's `allowScripts`. See
 [npm install-scripts](https://docs.npmjs.com/cli/v11/commands/npm-install-scripts/).
 Keep Node.js 24 for installation and rebuilding; no global npm configuration
 change or blanket script approval is needed.
@@ -121,8 +119,7 @@ JSON/NDJSON also retain `terminationMessage` and `hasConclusion`.
 missing report sections. A budget above one reserves one no-tool summary of
 returned data, findings, gaps and next steps; exhaustion remains `partial` /
 `max_turns`. The original deadline, authorization and explicit cost budget still
-apply. OpenCode records observed turns and retains the result without an extra
-call if it has overshot the remaining allowance. `smp ask` passes history
+apply. `smp ask` passes history
 separately from the new question, retains completeness metadata and allows
 on-demand recall of older text. Evidence from a reloaded trace remains historical,
 not newly verified evidence for the new trace identity.

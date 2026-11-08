@@ -209,7 +209,7 @@ describe('model execution profile facts', () => {
   });
 
   it('keeps absent native model identity legal and unknown, but rejects explicitly blank IDs', () => {
-    const profile = resolveModelExecutionProfile(config({runtimeKind: 'qoder-agent-sdk', protocol: 'native',
+    const profile = resolveModelExecutionProfile(config({runtimeKind: 'claude-agent-sdk', protocol: 'native',
       modelId: undefined, baseUrl: undefined, sdkCapabilities: {surface: 'none', thinking: 'unknown',
         reasoningRoundtrip: 'unknown', source: 'installed_sdk'}}));
     expect(profile.model).toEqual({identity: 'native_default_unknown', revisionEvidence: 'unknown'});

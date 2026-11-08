@@ -265,7 +265,6 @@ jobs:
           done
           docker exec smartperfetto-runtime-smoke curl -fsS http://127.0.0.1:3000/assistant-shell | grep -qi '<html'
           docker exec smartperfetto-runtime-smoke curl -fsS http://127.0.0.1:3000/admin-control-plane | grep -qi '<html'
-          docker exec smartperfetto-runtime-smoke /app/backend/node_modules/opencode-ai/bin/opencode.exe --version
 
   # Keep one stable required-check candidate. A skipped optional job is allowed;
   # failed/cancelled dependencies and skipped mandatory jobs must fail this gate.

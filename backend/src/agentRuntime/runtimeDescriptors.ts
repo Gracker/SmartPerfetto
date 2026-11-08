@@ -7,9 +7,7 @@ import type { AgentRuntimeKind } from './runtimeKinds';
 import {
   CLAUDE_AGENT_RUNTIME_KIND,
   OPENAI_AGENT_RUNTIME_KIND,
-  OPENCODE_RUNTIME_KIND,
   PI_AGENT_CORE_RUNTIME_KIND,
-  QODER_AGENT_RUNTIME_KIND,
   isProductionAgentRuntimeKind,
 } from './runtimeKinds';
 import type {
@@ -33,8 +31,6 @@ const OPENAI_PROVIDER_TYPES = [
   ...DUAL_SURFACE_PROVIDER_TYPES,
   'custom',
 ] as const;
-
-const CUSTOM_ONLY_PROVIDER_TYPES = ['custom'] as const;
 
 // Pi resolves every provider type: a pi-ai catalog route where one keeps the
 // provider's endpoint, otherwise a model synthesized on the endpoint the
@@ -118,42 +114,6 @@ export const PRODUCTION_RUNTIME_DESCRIPTORS = [
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const { getPiAgentCoreRuntimeDiagnostics } = require('./engines/pi/piAgentCoreRuntime') as typeof import('./engines/pi/piAgentCoreRuntime');
       return getPiAgentCoreRuntimeDiagnostics(env, kind);
-    },
-  },
-  {
-    kind: OPENCODE_RUNTIME_KIND,
-    displayName: 'OpenCode',
-    production: true,
-    publicRuntime: true,
-    providerTypes: CUSTOM_ONLY_PROVIDER_TYPES,
-    capabilities: createCapabilities(OPENCODE_RUNTIME_KIND, 'OpenCode'),
-    createOrchestrator: input => {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { OpenCodeRuntime } = require('./engines/opencode/openCodeRuntime') as typeof import('./engines/opencode/openCodeRuntime');
-      return new OpenCodeRuntime(input, { env: input.env });
-    },
-    getDiagnostics: ({ env, kind, selectedProviderId }: RuntimeDiagnosticsInput<typeof OPENCODE_RUNTIME_KIND>) => {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { getOpenCodeRuntimeDiagnostics } = require('./engines/opencode/openCodeRuntime') as typeof import('./engines/opencode/openCodeRuntime');
-      return getOpenCodeRuntimeDiagnostics(env, kind, selectedProviderId);
-    },
-  },
-  {
-    kind: QODER_AGENT_RUNTIME_KIND,
-    displayName: 'Qoder Agent SDK',
-    production: true,
-    publicRuntime: true,
-    providerTypes: CUSTOM_ONLY_PROVIDER_TYPES,
-    capabilities: createCapabilities(QODER_AGENT_RUNTIME_KIND, 'Qoder Agent SDK'),
-    createOrchestrator: input => {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { QoderRuntime } = require('./engines/qoder/qoderRuntime') as typeof import('./engines/qoder/qoderRuntime');
-      return new QoderRuntime(input);
-    },
-    getDiagnostics: ({ env, kind }: RuntimeDiagnosticsInput<typeof QODER_AGENT_RUNTIME_KIND>) => {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { getQoderRuntimeDiagnostics } = require('./engines/qoder/qoderConfig') as typeof import('./engines/qoder/qoderConfig');
-      return getQoderRuntimeDiagnostics(env, kind);
     },
   },
 ] as const satisfies readonly RuntimeEngineDescriptor[];

@@ -33,8 +33,12 @@ import {
   sanitizeSourceUseDecision,
   type SourceUseDecisionV1,
 } from '../services/codebase/sourceUseDecision';
-import type { AgentRuntimeKind } from '../services/providerManager/types';
-import {isProductionAgentRuntimeKind, isRecordedRuntimeKind, type RecordedRuntimeKind} from '../agentRuntime/runtimeKinds';
+import {
+  isRecordedProductionRuntimeKind,
+  isRecordedRuntimeKind,
+  type RecordedProductionRuntimeKind,
+  type RecordedRuntimeKind,
+} from '../agentRuntime/runtimeKinds';
 import type {OutputLanguage} from './outputLanguage';
 import {analysisHasPrivateContext, privateContextRestrictsAudience} from '../services/security/analysisPrivateContext';
 import type {AnalysisPrivateContextMarker} from '../services/security/analysisPrivateContext';
@@ -332,7 +336,8 @@ export function createPiAgentCoreSnapshotEngineState(
   };
 }
 
-export function createOpenCodeSnapshotEngineState(
+/** A snapshot recorded under the removed OpenCode engine, normalized on read. */
+function createOpenCodeSnapshotEngineState(
   input: EngineProviderStateInput = {},
 ): SnapshotEngineState {
   return {
@@ -342,7 +347,8 @@ export function createOpenCodeSnapshotEngineState(
   };
 }
 
-export function createQoderSnapshotEngineState(
+/** A snapshot recorded under the removed Qoder engine, normalized on read. */
+function createQoderSnapshotEngineState(
   input: EngineProviderStateInput = {},
 ): SnapshotEngineState {
   return {
@@ -435,9 +441,9 @@ function normalizeSourceUseSnapshotFields(
   };
 }
 
-/** Every runtime's engine state now holds only its provider pin. */
+/** Every runtime's engine state now holds only its provider pin, including a removed engine's recorded one. */
 const PROVIDER_ONLY_ENGINE_STATE: Record<
-  AgentRuntimeKind,
+  RecordedProductionRuntimeKind,
   (input: EngineProviderStateInput) => SnapshotEngineState
 > = {
   'claude-agent-sdk': createClaudeSnapshotEngineState,
@@ -468,7 +474,7 @@ export function normalizeSessionStateSnapshot(
 
   // A label without a provider-only engine state (an experimental or unknown
   // kind) keeps no engine state; recovery re-resolves its pin regardless.
-  if (!snapshot.engineState && runtimeKind && isProductionAgentRuntimeKind(runtimeKind)) {
+  if (!snapshot.engineState && runtimeKind && isRecordedProductionRuntimeKind(runtimeKind)) {
     normalizedSnapshot = {
       ...snapshot,
       engineState: PROVIDER_ONLY_ENGINE_STATE[runtimeKind]({

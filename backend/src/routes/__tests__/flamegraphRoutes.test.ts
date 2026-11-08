@@ -270,12 +270,12 @@ describe('flamegraph routes: AI summary gate', () => {
   });
 
   it('does not send the statistics to a non-Claude runtime', async () => {
-    mockSelection.mockReturnValue({kind: 'opencode', source: 'provider'});
+    mockSelection.mockReturnValue({kind: 'openai-agents-sdk', source: 'provider'});
 
     const res = await request(await appWithContext(ANALYST_CONTEXT)).post('/api/flamegraph/trace-1/analyze').send(STATIC_ASSET_BODY);
 
     expect(res.body.aiSummary).toMatchObject({generated: false, fallbackReason: 'runtime_not_supported'});
-    expect(res.body.aiSummary.warnings[0]).toContain('opencode');
+    expect(res.body.aiSummary.warnings[0]).toContain('openai-agents-sdk');
     expect(mockQuery).not.toHaveBeenCalled();
   });
 

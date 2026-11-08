@@ -17,7 +17,6 @@ const QUICK_RUNTIME_KINDS = [
   'claude-agent-sdk',
   'openai-agents-sdk',
   'pi-agent-core',
-  'opencode',
 ];
 const DEFAULT_TRACE = '../Trace/real/android-scroll-customer/trace.pftrace';
 const DEFAULT_TIMEOUT_MS = '300000';
@@ -114,7 +113,7 @@ function parseArgs(argv) {
     }
     if (arg === '--runtime') {
       const value = argv[i + 1];
-      if (!value) throw new Error('--runtime requires a value: claude-agent-sdk, openai-agents-sdk, pi-agent-core, opencode, or all');
+      if (!value) throw new Error('--runtime requires a value: claude-agent-sdk, openai-agents-sdk, pi-agent-core, or all');
       runtime = parseRuntime(value);
       i += 1;
       continue;
@@ -171,13 +170,12 @@ function parseRuntime(value) {
     value === 'openai' ||
     value === 'openai-agents-sdk' ||
     value === 'pi' ||
-    value === 'pi-agent-core' ||
-    value === 'opencode'
+    value === 'pi-agent-core'
   ) {
     return value;
   }
   throw new Error(
-    `Invalid runtime: ${value}. Expected claude-agent-sdk, openai-agents-sdk, pi-agent-core, opencode, or all.`,
+    `Invalid runtime: ${value}. Expected claude-agent-sdk, openai-agents-sdk, pi-agent-core, or all.`,
   );
 }
 
@@ -190,7 +188,7 @@ function resolveRuntimeKinds(value) {
 }
 
 function printUsage() {
-  console.log('Usage: node scripts/run-quick-agent-e2e.cjs [--suite all|mixed-trace-scrolling|trace-fact|process-identity|scrolling-triage] [--runtime claude-agent-sdk|openai-agents-sdk|pi-agent-core|opencode|all]');
+  console.log('Usage: node scripts/run-quick-agent-e2e.cjs [--suite all|mixed-trace-scrolling|trace-fact|process-identity|scrolling-triage] [--runtime claude-agent-sdk|openai-agents-sdk|pi-agent-core|all]');
   console.log('');
   console.log('Runs SmartPerfetto quick-mode Agent SSE E2E suites through the shared verifier.');
   console.log('');
@@ -332,20 +330,6 @@ function buildChildEnv(runtimeKind) {
       ...baseEnv,
       SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON:
         process.env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON || createPiAgentCoreModelJson({ model, baseUrl: loopbackBaseUrl }),
-    };
-  }
-
-  if (runtimeKind === 'opencode') {
-    return {
-      ...baseEnv,
-      SMARTPERFETTO_OPENCODE_MODEL_JSON:
-        process.env.SMARTPERFETTO_OPENCODE_MODEL_JSON || JSON.stringify({
-          providerID: 'quick-e2e',
-          modelID: model,
-          baseURL: loopbackBaseUrl,
-          apiKeyEnv: 'OPENAI_API_KEY',
-          smallModel: model,
-        }),
     };
   }
 

@@ -1,7 +1,7 @@
 // backend/src/services/providerManager/types.ts
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import type { AgentRuntimeKind } from '../../agentRuntime/runtimeKinds';
+import type { AgentRuntimeKind, RecordedProductionRuntimeKind } from '../../agentRuntime/runtimeKinds';
 import type { DUAL_SURFACE_PROVIDER_TYPES } from './providerTypes';
 
 export interface ProviderModels {
@@ -10,7 +10,7 @@ export interface ProviderModels {
   subAgent?: string;
 }
 
-export type { AgentRuntimeKind };
+export type { AgentRuntimeKind, RecordedProductionRuntimeKind };
 export type OpenAIProtocol = 'responses' | 'chat_completions';
 /**
  * Which of a dual-surface or custom provider's endpoints Pi Agent Core calls:
@@ -53,7 +53,7 @@ export interface ProviderConnection {
    * client maps to it (see `retiredRuntime.ts`), keeping the endpoint, model
    * and credential form the retired runtime used.
    */
-  agentRuntime?: AgentRuntimeKind;
+  agentRuntime?: RecordedProductionRuntimeKind;
   /** The endpoint Pi calls for a dual-surface or custom provider; see ProviderApiSurface. */
   apiSurface?: ProviderApiSurface;
   /**

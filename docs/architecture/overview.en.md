@@ -66,7 +66,7 @@ and frontend readiness.
 | Express backend | `backend/src/index.ts` | Route registration, health checks, middleware, process cleanup |
 | OIDC and request identity | `backend/src/routes/enterpriseAuthRoutes.ts`, `enterpriseSsoService.ts`, `middleware/auth.ts` | Login callback, session/CSRF, personal-workspace ownership, and request-scoped tenant/workspace/RBAC binding |
 | Runtime contract and registry | `backend/src/agentRuntime/runtimeKinds.ts`, `runtimeDescriptors.ts`, `runtimeSelection.ts` | Defines the current production runtime set, capabilities, canonical loaders, and per-session selection |
-| Runtime engines | `backend/src/agentRuntime/engines/{claude,openai,pi,opencode,qoder}/` | Canonical implementations behind shared orchestrator, result and safety contracts; Pi keeps classification and main reasoning request policies within each provider instance |
+| Runtime engines | `backend/src/agentRuntime/engines/{claude,openai,pi}/` | Canonical implementations behind shared orchestrator, result and safety contracts; Pi keeps classification and main reasoning request policies within each provider instance |
 | Shared agent capabilities | `backend/src/agentv3/` | MCP server/registry, strategy injection, planning, verification, and memory; individual runtime files may remain as compatibility re-exports |
 | OpenAI compatibility facades | `backend/src/agentOpenAI/` | Re-exports old import paths; the canonical OpenAI implementation lives under `agentRuntime/engines/openai/` |
 | Assistant application | `backend/src/assistant/` | Session management, stream projection, result contracts |
@@ -157,8 +157,7 @@ gaps, and next steps. Cancellation, revoked authority, and provider errors do no
 trigger another summary. An OpenAI acquisition timeout with returned data may
 use the reserved delivery budget for closeout, retaining `partial/timeout`.
 Turn-limit delivery retains `incomplete/turn_limit`;
-text delivery does not establish complete evidence. OpenCode stops after observing
-the limit, records actual overshoot, and cannot add a summary after an overshoot.
+text delivery does not establish complete evidence.
 
 Each user question starts a fresh physical model context. Within the same logical
 session, owner, trace, provider, and source authorization checks precede a bounded
@@ -316,8 +315,10 @@ Source use adds another orthogonal boundary. `SourceUseDecisionV1` records selec
 | `claude-agent-sdk` | Anthropic, Bedrock, Vertex, Claude/Anthropic-compatible providers | All run modes require explicit provider/env credentials; Claude Code login does not establish SDK readiness |
 | `openai-agents-sdk` | OpenAI, Ollama, OpenAI-compatible providers | Credentials and Responses/chat-completions protocol are validated by OpenAI runtime rules |
 | `pi-agent-core` | Custom, GLM, DeepSeek, Kimi, Kimi Code, MiniMax providers | Custom needs explicit Pi model JSON or equivalent env; catalog-backed providers resolve the model from the Pi builtin catalog; does not read `.pi` project config, package extensions, shell tools, or file tools |
-| `opencode` | Custom providers | Requires explicit OpenCode/OpenAI-compatible model config; uses an isolated OpenCode server and request-scoped MCP tools, not personal OpenCode login/project state |
-| `qoder-agent-sdk` | Custom providers or explicit env | The Qoder SDK is an opt-in optional peer; it uses local Qoder CLI login or a PAT and isolates private-knowledge streams, sessions, and snapshots |
+
+The OpenCode and Qoder engines are removed. Records that name `opencode` or
+`qoder-agent-sdk` are read as provenance and run on the effective runtime; see
+[Agent Runtime](agent-runtime.en.md).
 
 Provider Manager active profiles override `.env` fallback. Resume must preserve
 the original provider/runtime/comparison identity and must not silently switch

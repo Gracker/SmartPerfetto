@@ -30,7 +30,7 @@
 
 ## 3. 准备模型配置
 
-不需要把所有 runtime 都配置一遍。第一次只选一个入口：UI Provider Manager、一个 Claude-compatible env block、一个 OpenAI-compatible env block、Pi Agent Core / OpenCode custom block，或显式安装的 Qoder SDK 加本机 CLI 登录态/PAT。
+不需要把所有 runtime 都配置一遍。第一次只选一个入口：UI Provider Manager、一个 Claude-compatible env block、一个 OpenAI-compatible env block，或 Pi Agent Core custom block。
 
 Claude Agent SDK 需要在 Provider Manager 或 env 中显式配置 API key/token，或 Bedrock/Vertex 认证。已有 Claude Code 登录态或仅填写 Base URL 都不代表 SDK 已配置。
 
@@ -38,7 +38,7 @@ Claude Agent SDK 需要在 Provider Manager 或 env 中显式配置 API key/toke
 
 步骤 1：运行 `cp backend/.env.example backend/.env`。
 
-步骤 2：编辑 `backend/.env`。Anthropic 直连时解注释 `ANTHROPIC_API_KEY`；第三方 Claude Code / Anthropic-compatible provider 解注释一个 provider block，只替换 API key/token；OpenAI / OpenAI-compatible provider 使用 OpenAI Agents SDK 相关字段；Pi Agent Core / OpenCode 使用 custom 配置段。Qoder 是 opt-in：先审阅条款并安装 `@qoder-ai/qoder-agent-sdk`，再使用 Qoder 配置段。
+步骤 2：编辑 `backend/.env`。Anthropic 直连时解注释 `ANTHROPIC_API_KEY`；第三方 Claude Code / Anthropic-compatible provider 解注释一个 provider block，只替换 API key/token；OpenAI / OpenAI-compatible provider 使用 OpenAI Agents SDK 相关字段；Pi Agent Core 使用 custom 配置段。旧的 OpenCode 配置会迁移到 Pi；Qoder 配置需要改填 Anthropic- 或 OpenAI-compatible 端点。
 
 `backend/.env.example` 已经内置 DeepSeek、GLM、Qwen、Kimi、Doubao、MiniMax、MiMo、TokenHub 等常见 Claude-compatible 与 OpenAI-compatible provider 的 Base URL 和推荐主/轻模型。Docker 使用仓库根目录 `.env`，包括 Docker Hub 镜像和本地 source Docker build：
 

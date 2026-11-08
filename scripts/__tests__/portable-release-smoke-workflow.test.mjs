@@ -413,7 +413,6 @@ function writeCollectedTarget(rootPath, plan, entry, run = {}, layout = 'multi')
     runtimes: {
       node: {stdout: `v${readNodeRuntimePin(entry.target).version}`, stderr: ''},
       claude: {stdout: '1.0.0', stderr: ''},
-      opencode: {stdout: '1.0.0', stderr: ''},
       traceProcessor: {stdout: 'smartperfetto_smoke\n1', stderr: ''},
       ...(entry.target === 'linux-x64'
         ? {libc: {stdout: '2.34', stderr: ''}}

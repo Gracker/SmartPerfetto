@@ -304,7 +304,7 @@ exact clean commit.
 
 The command first applies safe archive path/link checks and the static verifier,
 then starts the launcher from those same archive bytes. It uses isolated data
-and log directories, explicit `127.0.0.1` health, bundled Node/Claude/OpenCode
+and log directories, explicit `127.0.0.1` health, bundled Node/Claude
 commands, and a minimal trace-processor query. It requests auditable graceful
 shutdown through launcher `--shutdown-file`; `--lifecycle-receipt` records
 process containment, child PIDs, exit codes, escalation, and port release.
@@ -324,7 +324,7 @@ notary receipt on macOS. Omit it only for draft-package smoke.
 3. Check the printed backend health URL, usually [http://127.0.0.1:3000/health](http://127.0.0.1:3000/health).
 4. Upload a small trace and confirm the platform `trace_processor_shell` starts
    in backend logs.
-5. Run the bundled Node.js, Claude, and OpenCode version commands when present.
+5. Run the bundled Node.js and Claude version commands when present.
 6. Stop the launcher normally and confirm child processes exit and both ports
    are released.
 

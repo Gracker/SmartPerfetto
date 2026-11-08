@@ -8,7 +8,6 @@ import {z} from 'zod';
 import {McpToolRegistry, type McpToolDefinition, type RuntimeAcquisitionPolicy} from '../../agentv3/mcpToolRegistry';
 import {createOpenAIToolsFromMcpDefinitions} from '../engines/openai/openAiToolAdapter';
 import {createPiAgentCoreToolFromSharedSpec} from '../engines/pi/piAgentCoreRuntime';
-import {dispatchOpenCodeBridgeRequest} from '../engines/opencode/openCodeRuntime';
 import {createClaudeSdkToolFromSharedSpec} from '../engines/claude/claudeSdkTools';
 import {createRuntimePerformanceScope} from '../runtimePerformanceContext';
 import type {SharedToolSpec} from '../runtimeToolSpec';
@@ -245,27 +244,6 @@ const adapterPairCases: Array<[string, AdapterPairInvoker]> = [
       tools[1].execute('pi-order-2', {namespace: 'android'}, signal),
     ];
   }],
-  ['OpenCode bridge', (definitions, _registry, signal) => [
-    dispatchOpenCodeBridgeRequest(definitions, {
-      jsonrpc: '2.0',
-      id: 'rpc-order-1',
-      method: 'tools/call',
-      params: {name: 'lookup_sql_schema', arguments: {keyword: 'frame'}},
-    }, undefined, {getSignal: () => signal}),
-    dispatchOpenCodeBridgeRequest(definitions, {
-      jsonrpc: '2.0',
-      id: 'rpc-order-2',
-      method: 'tools/call',
-      params: {name: 'list_stdlib_modules', arguments: {namespace: 'android'}},
-    }, undefined, {getSignal: () => signal}),
-  ]],
-  ['Qoder SDK MCP', (_definitions, registry, signal) => {
-    const registered = sdkToolsByName(registry);
-    return [
-      registered.lookup_sql_schema.handler({keyword: 'frame'}, {runtime: 'qoder-agent-sdk', signal, toolCallId: 'qoder-order-1'}),
-      registered.list_stdlib_modules.handler({namespace: 'android'}, {runtime: 'qoder-agent-sdk', signal, toolCallId: 'qoder-order-2'}),
-    ];
-  }],
 ];
 
 const adapterFallbackCases: Array<[string, AdapterFallbackInvoker]> = [
@@ -298,27 +276,6 @@ const adapterFallbackCases: Array<[string, AdapterFallbackInvoker]> = [
       byName.fetch_artifact.execute('pi-fallback-demoted', {artifactId: 'art-1'}, signal),
     ];
   }],
-  ['OpenCode bridge', (definitions, _registry, signal) => [
-    dispatchOpenCodeBridgeRequest(definitions, {
-      jsonrpc: '2.0',
-      id: 'rpc-fallback-writer',
-      method: 'tools/call',
-      params: {name: 'execute_sql', arguments: {query: 'select 1'}},
-    }, undefined, {getSignal: () => signal}),
-    dispatchOpenCodeBridgeRequest(definitions, {
-      jsonrpc: '2.0',
-      id: 'rpc-fallback-demoted',
-      method: 'tools/call',
-      params: {name: 'fetch_artifact', arguments: {artifactId: 'art-1'}},
-    }, undefined, {getSignal: () => signal}),
-  ]],
-  ['Qoder SDK MCP', (_definitions, registry, signal) => {
-    const registered = sdkToolsByName(registry);
-    return [
-      registered.execute_sql.handler({query: 'select 1'}, {runtime: 'qoder-agent-sdk', signal, toolCallId: 'qoder-fallback-writer'}),
-      registered.fetch_artifact.handler({artifactId: 'art-1'}, {runtime: 'qoder-agent-sdk', signal, toolCallId: 'qoder-fallback-demoted'}),
-    ];
-  }],
 ];
 
 const adapterLookupCases: Array<[string, AdapterSingleInvoker]> = [
@@ -346,20 +303,6 @@ const adapterLookupCases: Array<[string, AdapterSingleInvoker]> = [
       runtimeKind: 'pi-agent-core',
     });
     return tool.execute('pi-cancel-lookup', {keyword: 'frame'}, signal);
-  }],
-  ['OpenCode bridge', (definitions, _registry, signal) =>
-    dispatchOpenCodeBridgeRequest(definitions, {
-      jsonrpc: '2.0',
-      id: 'rpc-cancel-lookup',
-      method: 'tools/call',
-      params: {name: 'lookup_sql_schema', arguments: {keyword: 'frame'}},
-    }, undefined, {getSignal: () => signal})],
-  ['Qoder SDK MCP', (_definitions, registry, signal) => {
-    const registered = sdkToolsByName(registry);
-    return registered.lookup_sql_schema.handler(
-      {keyword: 'frame'},
-      {runtime: 'qoder-agent-sdk', signal, toolCallId: 'qoder-cancel-lookup'},
-    );
   }],
 ];
 
@@ -425,60 +368,6 @@ describe('runtime tool concurrency adapter boundaries', () => {
         tools[1].execute('pi-2', {namespace: 'android'}, undefined),
       ];
     });
-  });
-
-  it('lets OpenCode bridge calls overlap admitted safe reads and keeps JSON-RPC ids stable', async () => {
-    const {definitions, started, lookupGate, modulesGate} = createCoordinatedDefinitions();
-    const lookup = dispatchOpenCodeBridgeRequest(definitions, {
-      jsonrpc: '2.0',
-      id: 'rpc-1',
-      method: 'tools/call',
-      params: {name: 'lookup_sql_schema', arguments: {keyword: 'frame'}},
-    });
-    const modules = dispatchOpenCodeBridgeRequest(definitions, {
-      jsonrpc: '2.0',
-      id: 'rpc-2',
-      method: 'tools/call',
-      params: {name: 'list_stdlib_modules', arguments: {namespace: 'android'}},
-    });
-
-    await flushPromises();
-    expect(started).toEqual([
-      'opencode:lookup_sql_schema',
-      'opencode:list_stdlib_modules',
-    ]);
-
-    modulesGate.resolve('modules-result');
-    lookupGate.resolve('lookup-result');
-    await expect(Promise.all([lookup, modules])).resolves.toEqual([
-      expect.objectContaining({id: 'rpc-1', result: textResult('lookup-result')}),
-      expect.objectContaining({id: 'rpc-2', result: textResult('modules-result')}),
-    ]);
-  });
-
-  it('passes the real OpenCode JSON-RPC id into shared tool timing as toolCallId', async () => {
-    let observedToolCallId: string | undefined;
-    const registry = new McpToolRegistry();
-    registry.registerShared({
-      name: 'lookup_sql_schema',
-      description: 'OpenCode id test',
-      exposure: 'public',
-      inputSchema: {keyword: z.string().optional()},
-      concurrency: {mode: 'commutative_read'},
-      handler: async (_args, extra) => {
-        observedToolCallId = extra.toolCallId;
-        return textResult('ok');
-      },
-    });
-
-    await dispatchOpenCodeBridgeRequest(registry.list(), {
-      jsonrpc: '2.0',
-      id: 'rpc-real-tool-call-id',
-      method: 'tools/call',
-      params: {name: 'lookup_sql_schema', arguments: {keyword: 'frame'}},
-    });
-
-    expect(observedToolCallId).toBe('rpc-real-tool-call-id');
   });
 
   it('keeps registry-bound attribution but suppresses observations when a stale extra sink is supplied', async () => {
@@ -606,16 +495,6 @@ describe('runtime tool concurrency adapter boundaries', () => {
     },
   );
 
-  it('keeps the Qoder SDK MCP server path on the same coordinated shared handlers', async () => {
-    await expectConcurrentSafeReads((_definitions, registry) => {
-      const registered = sdkToolsByName(registry);
-      return [
-        registered.lookup_sql_schema.handler({keyword: 'frame'}, {runtime: 'qoder-agent-sdk', toolCallId: 'qoder-1'}),
-        registered.list_stdlib_modules.handler({namespace: 'android'}, {runtime: 'qoder-agent-sdk', toolCallId: 'qoder-2'}),
-      ];
-    });
-  });
-
   it.each([
     ['Claude SDK MCP', (_definitions: readonly McpToolDefinition[], registry: McpToolRegistry) => {
       const registered = sdkToolsByName(registry);
@@ -642,27 +521,6 @@ describe('runtime tool concurrency adapter boundaries', () => {
       return [
         tools[0].execute('pi-rollback-1', {keyword: 'frame'}, undefined),
         tools[1].execute('pi-rollback-2', {namespace: 'android'}, undefined),
-      ];
-    }],
-    ['OpenCode bridge', (definitions: readonly McpToolDefinition[]) => [
-      dispatchOpenCodeBridgeRequest(definitions, {
-        jsonrpc: '2.0',
-        id: 'rpc-rollback-1',
-        method: 'tools/call',
-        params: {name: 'lookup_sql_schema', arguments: {keyword: 'frame'}},
-      }),
-      dispatchOpenCodeBridgeRequest(definitions, {
-        jsonrpc: '2.0',
-        id: 'rpc-rollback-2',
-        method: 'tools/call',
-        params: {name: 'list_stdlib_modules', arguments: {namespace: 'android'}},
-      }),
-    ]],
-    ['Qoder SDK MCP', (_definitions: readonly McpToolDefinition[], registry: McpToolRegistry) => {
-      const registered = sdkToolsByName(registry);
-      return [
-        registered.lookup_sql_schema.handler({keyword: 'frame'}, {runtime: 'qoder-agent-sdk', toolCallId: 'qoder-rollback-1'}),
-        registered.list_stdlib_modules.handler({namespace: 'android'}, {runtime: 'qoder-agent-sdk', toolCallId: 'qoder-rollback-2'}),
       ];
     }],
   ] as Array<[string, (definitions: readonly McpToolDefinition[], registry: McpToolRegistry) => [Promise<unknown>, Promise<unknown>]]>)(
@@ -722,34 +580,6 @@ describe('runtime tool concurrency adapter boundaries', () => {
         byName.lookup_sql_schema.execute('pi-mixed-1', {keyword: 'frame'}, undefined),
         byName.execute_sql.execute('pi-mixed-2', {query: 'select 1'}, undefined),
         byName.list_stdlib_modules.execute('pi-mixed-3', {namespace: 'android'}, undefined),
-      ];
-    }],
-    ['OpenCode bridge', (definitions: readonly McpToolDefinition[]) => [
-      dispatchOpenCodeBridgeRequest(definitions, {
-        jsonrpc: '2.0',
-        id: 'rpc-mixed-1',
-        method: 'tools/call',
-        params: {name: 'lookup_sql_schema', arguments: {keyword: 'frame'}},
-      }),
-      dispatchOpenCodeBridgeRequest(definitions, {
-        jsonrpc: '2.0',
-        id: 'rpc-mixed-2',
-        method: 'tools/call',
-        params: {name: 'execute_sql', arguments: {query: 'select 1'}},
-      }),
-      dispatchOpenCodeBridgeRequest(definitions, {
-        jsonrpc: '2.0',
-        id: 'rpc-mixed-3',
-        method: 'tools/call',
-        params: {name: 'list_stdlib_modules', arguments: {namespace: 'android'}},
-      }),
-    ]],
-    ['Qoder SDK MCP', (_definitions: readonly McpToolDefinition[], registry: McpToolRegistry) => {
-      const registered = sdkToolsByName(registry);
-      return [
-        registered.lookup_sql_schema.handler({keyword: 'frame'}, {runtime: 'qoder-agent-sdk', toolCallId: 'qoder-mixed-1'}),
-        registered.execute_sql.handler({query: 'select 1'}, {runtime: 'qoder-agent-sdk', toolCallId: 'qoder-mixed-2'}),
-        registered.list_stdlib_modules.handler({namespace: 'android'}, {runtime: 'qoder-agent-sdk', toolCallId: 'qoder-mixed-3'}),
       ];
     }],
   ] as Array<[string, (definitions: readonly McpToolDefinition[], registry: McpToolRegistry) => [Promise<unknown>, Promise<unknown>, Promise<unknown>]]>)(
@@ -814,14 +644,11 @@ describe('tool-result handoff audit at the outermost registry boundary', () => {
     vendorOverride: {vendor: 'xiaomi', displayName: 'Xiaomi', additionalStepIds: ['a']},
   }, {facts: {success: true, planPhaseId: 'p1'}});
 
-  // Claude and Qoder ids are injected here; their in-process SDK handlers may not supply one.
+  // Claude ids are injected here; its in-process SDK handler may not supply one.
   const invokers: Array<[string, (definitions: readonly McpToolDefinition[], registry: McpToolRegistry,
     signal?: AbortSignal) => Promise<unknown>]> = [
     ['Claude SDK MCP', (_definitions, registry, signal) =>
       sdkToolsByName(registry).invoke_skill.handler({skillId: 'startup_analysis'}, {signal, toolCallId: 'call-claude'})],
-    ['Qoder SDK MCP', (_definitions, registry, signal) =>
-      sdkToolsByName(registry).invoke_skill.handler({skillId: 'startup_analysis'},
-        {signal, runtime: 'qoder-agent-sdk', toolCallId: 'call-qoder'})],
     ['OpenAI function tools', (definitions, _registry, signal) => {
       const tool = (createOpenAIToolsFromMcpDefinitions(definitions) as any[])[0];
       return tool.invoke({context: {signal}}, '{"skillId":"startup_analysis"}', {signal, toolCall: {id: 'call-openai'}});
@@ -830,12 +657,6 @@ describe('tool-result handoff audit at the outermost registry boundary', () => {
       allowedToolNames: new Set(['invoke_skill']),
       runtimeKind: 'pi-agent-core',
     }).execute('call-pi', {skillId: 'startup_analysis'}, signal)],
-    ['OpenCode bridge', (definitions, _registry, signal) => dispatchOpenCodeBridgeRequest(definitions, {
-      jsonrpc: '2.0',
-      id: 'call-opencode',
-      method: 'tools/call',
-      params: {name: 'invoke_skill', arguments: {skillId: 'startup_analysis'}},
-    }, undefined, {getSignal: () => signal})],
   ];
 
   it.each(invokers)('records one %s handoff that includes wrapper-added text', async (_name, invoke) => {

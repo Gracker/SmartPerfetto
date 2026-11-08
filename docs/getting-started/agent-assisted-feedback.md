@@ -43,8 +43,8 @@ triage 复用源 run 当时固定的 provider/runtime，而不是当前活动 pr
   runtime 暂不支持独立 triage 时，不会静默切换模型。
 - 降级结果只能提示 `needs_verification` 和应补充的信息，不能替 Agent 宣称“应报告”。
 
-Claude Agent SDK 与 OpenAI-compatible runtime 支持真实 triage；Pi Agent Core、
-OpenCode 和 Qoder 的 M10 V1 使用明确的安全降级。主分析 session、run、result、
+Claude Agent SDK 与 OpenAI-compatible runtime 支持真实 triage；Pi Agent Core，
+以及记录在已删除的 Qoder runtime 下的 run，在 M10 V1 使用明确的安全降级。主分析 session、run、result、
 feedback 和 Self-Evolution 状态都不会被 triage 改写。
 
 ## 校验、隐私与安全

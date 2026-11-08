@@ -8,7 +8,7 @@ import type {ModelControlSurface, ModelExecutionFingerprint, ReasoningEffort, Re
 
 export type StageNativeControls =
   | Readonly<{surface: 'none'}>
-  | Readonly<{surface: 'openai_chat' | 'opencode_agent_options';
+  | Readonly<{surface: 'openai_chat';
       thinking: Readonly<{type: 'enabled' | 'disabled'}>; reasoning_effort?: ReasoningEffort}>
   | Readonly<{surface: 'openai_responses'; reasoning: Readonly<{effort: 'none' | ReasoningEffort}>}>
   | Readonly<{surface: 'pi_stream'; reasoning: 'off' | ReasoningEffort}>
@@ -57,12 +57,10 @@ function surfaceMatches(profile: ResolvedModelExecutionProfile): boolean {
     case 'pi-agent-core': return adapter.surface === 'pi_stream' &&
       ['chat_completions', 'responses', 'anthropic_messages'].includes(protocol);
     case 'claude-agent-sdk': return adapter.surface === 'claude_effort' && ['anthropic_messages', 'native'].includes(protocol);
-    case 'opencode': return adapter.surface === 'opencode_agent_options' && protocol === 'chat_completions';
-    case 'qoder-agent-sdk': return false;
   }
 }
 function supportsDisable(surface: ModelControlSurface): boolean {
-  return ['openai_chat', 'openai_responses', 'pi_stream', 'opencode_agent_options'].includes(surface);
+  return ['openai_chat', 'openai_responses', 'pi_stream'].includes(surface);
 }
 function supportsEffort(surface: ModelControlSurface, effort: ReasoningEffort): boolean {
   return surface !== 'none' && (surface !== 'claude_effort' || ['low', 'medium', 'high', 'max'].includes(effort));
@@ -94,8 +92,7 @@ function authoredFailure(profile: ResolvedModelExecutionProfile): ModelPolicyFai
 }
 function controlsFor(surface: ModelControlSurface, setting: ReasoningSetting): StageNativeControls | undefined {
   switch (surface) {
-    case 'openai_chat':
-    case 'opencode_agent_options': return Object.freeze({surface, thinking: Object.freeze({type: setting.mode}),
+    case 'openai_chat': return Object.freeze({surface, thinking: Object.freeze({type: setting.mode}),
       ...(setting.mode === 'enabled' && setting.effort ? {reasoning_effort: setting.effort} : {})});
     case 'openai_responses': return setting.mode === 'disabled' || setting.effort
       ? Object.freeze({surface, reasoning: Object.freeze({effort: setting.mode === 'disabled' ? 'none' : setting.effort!})}) : undefined;

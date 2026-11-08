@@ -10,7 +10,11 @@ import type {
 } from '../../agent/core/orchestratorTypes';
 import type {StreamingUpdate} from '../../agent/types';
 import {createAgentOrchestrator} from '../../agentRuntime';
-import {isProductionAgentRuntimeKind, type AgentRuntimeKind, type RecordedRuntimeKind} from '../../agentRuntime/runtimeKinds';
+import {
+  isRecordedProductionRuntimeKind,
+  type RecordedProductionRuntimeKind,
+  type RecordedRuntimeKind,
+} from '../../agentRuntime/runtimeKinds';
 import {parseOutputLanguage} from '../../agentv3/outputLanguage';
 import type {ProviderService} from '../providerManager/providerService';
 import type {ProviderScope} from '../providerManager/types';
@@ -102,9 +106,13 @@ import {
 import type {EvalCaseStore} from './evalCaseStore';
 
 
-/** A pinned label with no engine (a retired experimental kind) makes the baseline stale. */
-function executablePinnedRuntime(runtime: RecordedRuntimeKind): AgentRuntimeKind {
-  if (!isProductionAgentRuntimeKind(runtime)) throw new Error('evaluation_baseline_runtime_retired');
+/**
+ * The pinned label the replay's manifest records. A production label (even a
+ * removed engine's) replays on the effective runtime; an experimental label
+ * never had a production pin, so its baseline is stale.
+ */
+function productionPinnedRuntimeLabel(runtime: RecordedRuntimeKind): RecordedProductionRuntimeKind {
+  if (!isRecordedProductionRuntimeKind(runtime)) throw new Error('evaluation_baseline_runtime_retired');
   return runtime;
 }
 
@@ -504,7 +512,7 @@ export class OrchestratorReplayExecutor implements ReplayExecutor {
       runId: randomUUID(),
       sessionId: randomUUID(),
       scope: replay.evalCase.scope,
-      runtime: executablePinnedRuntime(replay.pinned.runtime),
+      runtime: productionPinnedRuntimeLabel(replay.pinned.runtime),
       providerId: replay.pinned.providerId,
       providerSnapshotHash: environmentStart.providerSnapshotHash,
       ...(replay.pinned.model ? {model: replay.pinned.model} : {}),

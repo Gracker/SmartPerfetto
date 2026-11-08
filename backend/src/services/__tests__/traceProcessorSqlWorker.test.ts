@@ -75,7 +75,7 @@ function runManifestLifecycle(runId: string): RunManifestLifecycle {
     runId,
     sessionId: `session-${runId}`,
     scope: {tenantId: 'tenant-a', workspaceId: 'workspace-a'},
-    runtime: 'qoder-agent-sdk',
+    runtime: 'pi-agent-core',
     providerId: null,
     outputLanguage: 'en',
     analysisMode: 'auto',

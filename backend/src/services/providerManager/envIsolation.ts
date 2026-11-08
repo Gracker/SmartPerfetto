@@ -106,6 +106,8 @@ const PROVIDER_ENV_PREFIXES = [
   'AWS_',
   'CLAUDE_',
   'OPENAI_',
+  // The removed OpenCode/Qoder engines' variables are still scrubbed, so a stale value
+  // in the process env never reaches a provider run; drop them with the frozen legacy hash.
   'QODER_',
   'SMARTPERFETTO_PI_AGENT_CORE_',
   'SMARTPERFETTO_OPENCODE_',
@@ -118,7 +120,7 @@ const PROVIDER_ENV_KEYS = new Set([
   'QODERCLI_PATH',
 ]);
 
-const SUBPROCESS_SYSTEM_ENV_KEYS = new Set([
+const SHARED_SYSTEM_ENV_KEYS = new Set([
   'PATH', 'PATHEXT', 'SystemRoot', 'WINDIR', 'COMSPEC',
   'LD_LIBRARY_PATH', 'DYLD_LIBRARY_PATH',
   'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
@@ -127,39 +129,6 @@ const SUBPROCESS_SYSTEM_ENV_KEYS = new Set([
   'http_proxy', 'https_proxy', 'no_proxy',
   'GOOGLE_APPLICATION_CREDENTIALS',
 ]);
-
-const SUBPROCESS_DENIED_ENV_KEYS = new Set([
-  // This credential is consumed only by Qoder SDK resolveModel(). The Qoder
-  // runtime builds its own SDK environment and must not inherit it through a
-  // generic provider subprocess boundary.
-  'QODER_BYOK_API_KEY',
-]);
-
-/** Explicit environment boundary for third-party provider subprocesses. */
-export function providerSubprocessEnv(
-  inheritedEnv: Record<string, string | undefined>,
-): Record<string, string | undefined> {
-  const env: Record<string, string | undefined> = {};
-  const includePiProviderEnv = inheritedEnv.SMARTPERFETTO_AGENT_RUNTIME === 'pi-agent-core';
-  for (const [key, value] of Object.entries(inheritedEnv)) {
-    if (SUBPROCESS_DENIED_ENV_KEYS.has(key)) continue;
-    if (
-      SUBPROCESS_SYSTEM_ENV_KEYS.has(key) ||
-      PROVIDER_ENV_KEYS.has(key) ||
-      PROVIDER_ENV_PREFIXES.some(prefix => key.startsWith(prefix)) ||
-      (
-        includePiProviderEnv &&
-        (
-          PI_PROVIDER_ENV_KEYS.has(key) ||
-          PI_PROVIDER_ENV_PREFIXES.some(prefix => key.startsWith(prefix))
-        )
-      )
-    ) {
-      env[key] = value;
-    }
-  }
-  return env;
-}
 
 export function clearProviderRuntimeEnv(
   env: Record<string, string | undefined>,
@@ -171,7 +140,7 @@ export function clearProviderRuntimeEnv(
     const piRuntimeKey = PI_PROVIDER_ENV_KEYS.has(key)
       || PI_PROVIDER_ENV_PREFIXES.some(prefix => key.startsWith(prefix));
     const preserveSharedSystemKey = piRuntimeKey
-      && SUBPROCESS_SYSTEM_ENV_KEYS.has(key)
+      && SHARED_SYSTEM_ENV_KEYS.has(key)
       && options.clearPiSystemEnv !== true;
     if (generalRuntimeKey || (piRuntimeKey && !preserveSharedSystemKey)) {
       delete env[key];

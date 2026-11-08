@@ -254,7 +254,7 @@ node scripts/smoke-portable-archive.cjs \
 clean commit 重新 build once 并 smoke。
 
 该命令先执行安全的归档路径/link 校验和 static verifier，再从同一归档启动 launcher。
-它使用隔离数据和日志目录、显式 `127.0.0.1` health、包内 Node/Claude/OpenCode 与
+它使用隔离数据和日志目录、显式 `127.0.0.1` health、包内 Node/Claude 与
 最小 trace processor 查询，并通过 launcher 的 `--shutdown-file` 进行可审计的优雅
 退出。`--lifecycle-receipt` 记录进程隔离方式、子进程 PID、退出码、是否强制升级和
 端口释放；Windows 必须建立 kill-on-close Job Object，macOS/Linux 服务使用独立
@@ -274,7 +274,7 @@ launcher 会自动选择下一个可用端口，并打印实际访问 URL。只�
 2. 打开 launcher 打印的前端 URL，通常是 [http://127.0.0.1:10000](http://127.0.0.1:10000)。
 3. 检查 launcher 打印的后端 health URL，通常是 [http://127.0.0.1:3000/health](http://127.0.0.1:3000/health)。
 4. 上传一条小 trace，确认后端日志中启动了对应平台的 `trace_processor_shell`。
-5. 执行包内 Node、Claude 和 OpenCode 的版本命令（存在时）。
+5. 执行包内 Node 和 Claude 的版本命令（存在时）。
 6. 正常停止 launcher，确认子进程退出且前后端端口已经释放。
 
 Windows、macOS 或 Linux 任一最终归档缺少目标平台 smoke 时，GitHub release 应保持

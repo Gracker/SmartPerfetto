@@ -26,10 +26,6 @@ import {
   providerScopeFromAnalysisOptions,
 } from './runtimeCommon';
 import {
-  EXPERIMENTAL_OPENCODE_RUNTIME_KIND,
-  EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
-  OPENCODE_RUNTIME_KIND,
-  PI_AGENT_CORE_RUNTIME_KIND,
   isProductionAgentRuntimeKind,
   type AgentRuntimeKind,
 } from './runtimeKinds';
@@ -281,12 +277,6 @@ function resolveEngineCapabilities(input: CreateAnalysisRunSpecInput): EngineCap
 
 export function canonicalRuntimeKind(value: string): AgentRuntimeKind {
   if (isProductionAgentRuntimeKind(value)) return value;
-  if (value === EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND) {
-    return PI_AGENT_CORE_RUNTIME_KIND;
-  }
-  if (value === EXPERIMENTAL_OPENCODE_RUNTIME_KIND) {
-    return OPENCODE_RUNTIME_KIND;
-  }
   throw new Error(`Unsupported production analysis runtime: ${value}`);
 }
 

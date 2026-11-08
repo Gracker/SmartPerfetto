@@ -25,7 +25,6 @@ import {CodebaseRegistry, type CodebaseRef} from '../../services/codebase/codeba
 import {clearCodeAwareOutputGuards} from '../../services/security/codeAwareOutputRegistry';
 import {createClaudeSdkMcpServer} from '../engines/claude/claudeSdkTools';
 import {createOpenAIToolsFromMcpDefinitions} from '../engines/openai/openAiToolAdapter';
-import {dispatchOpenCodeBridgeRequest} from '../engines/opencode/openCodeRuntime';
 import {createPiAgentCoreToolFromSharedSpec} from '../engines/pi/piAgentCoreRuntime';
 import {createJsonSchemaFromZodRawShape} from '../runtimeToolSpec';
 
@@ -94,7 +93,7 @@ describe('runtime tool catalog parity', () => {
       'propose_patch']));
     expect(definitions.every(definition => definition.shared.name === definition.name)).toBe(true);
 
-    // Claude (and Qoder): the SDK's in-process server, built from the shared specs.
+    // Claude: the SDK's in-process server, built from the shared specs.
     const claude = (createClaudeSdkMcpServer(definitions) as unknown as {
       name: string; instance: {tools: Array<{name: string; description: string; inputSchema: z.ZodRawShape;
         annotations?: unknown}>};
@@ -128,13 +127,11 @@ describe('runtime tool catalog parity', () => {
         parameters: jsonSchemaOf(definition)});
     });
 
-    // OpenCode's MCP bridge and the standalone stdio server list the same schema.
+    // The standalone stdio server lists the shared schema of its public tools.
     const listed = (response: unknown) => (response as {result: {tools: Array<{name: string; description: string;
       inputSchema: unknown}>}}).result.tools;
     const expectedListing = (defs: McpToolDefinition[]) => defs.map(definition => ({name: definition.name,
       description: definition.summary || definition.shared.description, inputSchema: jsonSchemaOf(definition)}));
-    expect(listed(await dispatchOpenCodeBridgeRequest(definitions,
-      {jsonrpc: '2.0', id: 1, method: 'tools/list'}, {} as any))).toEqual(expectedListing(definitions));
     const standalone = new McpToolRegistry();
     for (const definition of definitions) standalone.registerShared(definition.shared);
     const publicDefinitions = standalone.list().filter(definition => definition.exposure === 'public');

@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {parsePiAgentCoreModelConfig} from '../../../agentRuntime/engines/pi/piAgentCoreConfig';
 import {PI_SYNTHESIZED_MODEL_DEFAULTS, resolvePiRouteModel} from '../../../agentRuntime/engines/pi/piAgentCoreProvider';
-import type {AgentRuntimeKind} from '../../../agentRuntime/runtimeKinds';
+import type {RecordedProductionRuntimeKind} from '../../../agentRuntime/runtimeKinds';
 import {resetRuntimeDeprecationWarningsForTests} from '../../../agentRuntime/legacyRuntimeFallback';
 import {piRequestOrigin, withEnvOnlyPiModel} from '../piProviderCatalog';
 import {reconcileRecordedProviderPin} from '../providerPinContinuity';
@@ -33,7 +33,7 @@ interface RequestTarget {
 }
 
 /** The runtime each template defaulted to before Pi became the only runtime (frozen for these fixtures). */
-const PREVIOUS_TEMPLATE_RUNTIME: Record<ProviderType, AgentRuntimeKind | undefined> = {
+const PREVIOUS_TEMPLATE_RUNTIME: Record<ProviderType, RecordedProductionRuntimeKind | undefined> = {
   anthropic: undefined,
   bedrock: undefined,
   vertex: undefined,
@@ -71,7 +71,7 @@ function credentialsFor(type: ProviderType): Partial<ProviderConnection> {
 }
 
 /** A stored profile created from a template before the migration, on `runtime` (undefined: none recorded). */
-function templateRecord(type: ProviderType, runtime: AgentRuntimeKind | undefined,
+function templateRecord(type: ProviderType, runtime: RecordedProductionRuntimeKind | undefined,
   connection: Partial<ProviderConnection> = {}): ProviderConfig {
   const template = officialTemplates.find(candidate => candidate.type === type)!;
   const {agentRuntime: _currentDefault, ...defaults} = template.defaultConnection ?? {};
@@ -88,7 +88,7 @@ function templateRecord(type: ProviderType, runtime: AgentRuntimeKind | undefine
  * (the same legacy env the hidden opt-in still builds). Written independently
  * of the Pi resolver so the endpoint-preservation invariant is not circular.
  */
-function previousTarget(env: Env, runtime: AgentRuntimeKind): RequestTarget {
+function previousTarget(env: Env, runtime: RecordedProductionRuntimeKind): RequestTarget {
   if (runtime === 'claude-agent-sdk') {
     if (env.CLAUDE_CODE_USE_BEDROCK === '1') {
       const region = env.AWS_REGION ?? 'us-east-1';
@@ -223,9 +223,9 @@ describe('migration mapping: every template on the runtime it ran on before', ()
   });
 
   // Every template on each retired runtime its type supported, and with no runtime recorded.
-  const RETIRED: Array<[ProviderType, AgentRuntimeKind | undefined]> = officialTemplates.flatMap(template =>
+  const RETIRED: Array<[ProviderType, RecordedProductionRuntimeKind | undefined]> = officialTemplates.flatMap(template =>
     (['claude-agent-sdk', 'openai-agents-sdk', undefined] as const)
-      .map(runtime => [template.type, runtime] as [ProviderType, AgentRuntimeKind | undefined]),
+      .map(runtime => [template.type, runtime] as [ProviderType, RecordedProductionRuntimeKind | undefined]),
   ).filter(([type, runtime]) => {
     if (runtime === 'openai-agents-sdk') return !['anthropic', 'bedrock', 'vertex'].includes(type);
     if (runtime === 'claude-agent-sdk') return !['openai', 'ollama'].includes(type);
@@ -523,7 +523,7 @@ describe('recovered pins across the migration (compatibility predicate)', () => 
   }
 
   /** The hash a session recorded before the migration: the record under its old runtime. */
-  function recordedPin(service: ProviderService, providerId: string | null, runtime: AgentRuntimeKind) {
+  function recordedPin(service: ProviderService, providerId: string | null, runtime: RecordedProductionRuntimeKind) {
     return {providerId, runtimeKind: runtime, analysisContextFingerprint: 'fp-1',
       snapshotHash: legacyProviderRuntimeSnapshot(service, providerId, runtime)!.snapshotHash};
   }
@@ -625,7 +625,7 @@ describe('recovered pins against hashes the retired runtime itself computed', ()
       const file = path.join(dir, 'providers.json');
       fs.writeFileSync(file, JSON.stringify(golden.providers));
       const service = new ProviderService(file);
-      const runtime = provider.connection.agentRuntime as AgentRuntimeKind;
+      const runtime = provider.connection.agentRuntime as RecordedProductionRuntimeKind;
       expect(legacyProviderRuntimeSnapshot(service, id, runtime)?.snapshotHash).toBe(golden.snapshotHashes[id]);
       const recorded = {providerId: id, runtimeKind: runtime, analysisContextFingerprint: 'fp-1',
         snapshotHash: golden.snapshotHashes[id]};
@@ -637,7 +637,7 @@ describe('recovered pins against hashes the retired runtime itself computed', ()
   it.each(Object.keys(golden.envOnly))('rebinds an env-only %s pin', runtime => {
     Object.assign(process.env, golden.envOnly[runtime], {SMARTPERFETTO_AGENT_RUNTIME: runtime});
     const hash = golden.snapshotHashes[`env:${runtime}`];
-    expect(legacyProviderRuntimeSnapshot(svc, null, runtime as AgentRuntimeKind)?.snapshotHash).toBe(hash);
+    expect(legacyProviderRuntimeSnapshot(svc, null, runtime as RecordedProductionRuntimeKind)?.snapshotHash).toBe(hash);
     const recorded = {providerId: null, runtimeKind: runtime, analysisContextFingerprint: 'fp-1', snapshotHash: hash};
     expect(reconcileRecordedProviderPin(svc, recorded, resolveProviderRuntimeSnapshot(svc, null),
       {currentAnalysisContextFingerprint: 'fp-1'}).status).toBe('migrated');

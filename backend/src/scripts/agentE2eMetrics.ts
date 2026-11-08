@@ -6,7 +6,7 @@ import {MODEL_REQUEST_COMPONENTS, RUNTIME_MODEL_CALL_PURPOSES, RUNTIME_MODEL_CAL
   RUNTIME_MODEL_REASONING_EFFORTS, RUNTIME_DECLARATION_AUTHORING_STATUSES, RUNTIME_DECLARATION_AUTHORING_VERSIONS,
   projectRuntimeModelPolicyReceipt, projectRuntimeFinalTransportObservation} from '../agentRuntime/runtimePerformance';
 import {getFinalSubmissionModeDescriptor, type FinalSubmissionModeKey} from '../agentRuntime/finalSubmissionImplementation';
-import {PRODUCTION_RUNTIME_KINDS} from '../agentRuntime/runtimeKinds';
+import {RECORDED_PRODUCTION_RUNTIME_KINDS} from '../agentRuntime/runtimeKinds';
 import {getRunManifestStore} from '../services/selfEvolution/runManifestStore';
 import type {RunManifestScope, RunManifestV1} from '../types/selfEvolution';
 
@@ -153,7 +153,7 @@ export function readAgentE2eMetrics(input: {scope: RunManifestScope; sessionId: 
     }
     return {schemaVersion, status: 'sealed' as const, runId: input.runId, sessionId: input.sessionId,
       sealedAt: number(manifest.sealedAt), wallclockMs: number(manifest.wallclockMs),
-      runtime: member(manifest.runtime, PRODUCTION_RUNTIME_KINDS), modelHash: optionalHash(manifest.model),
+      runtime: member(manifest.runtime, RECORDED_PRODUCTION_RUNTIME_KINDS), modelHash: optionalHash(manifest.model),
       ...(manifest.conclusionDeclarationSyntax === undefined ? {} : {
         conclusionDeclarationSyntax: member(manifest.conclusionDeclarationSyntax, ['canonical_v1', 'authoring_v1', 'authoring_v2']),
       }),

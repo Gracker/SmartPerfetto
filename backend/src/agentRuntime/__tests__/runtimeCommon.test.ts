@@ -171,7 +171,6 @@ describe('runtimeCommon', () => {
     'claude',
     'openai',
     'pi-agent-core',
-    'opencode',
   ])('maps confirmed runtime hypotheses into protocol provenance for %s', (source) => {
     const protocol = toProtocolHypothesis({
       id: 'h1',
@@ -201,11 +200,11 @@ describe('runtimeCommon', () => {
       evidence: 'art-2',
       formedAt: 30,
       resolvedAt: 40,
-    }, 'opencode');
+    }, 'pi-agent-core');
 
     expect(protocol.supportingEvidence).toEqual([]);
     expect(protocol.contradictingEvidence).toEqual([expect.objectContaining({
-      source: 'opencode',
+      source: 'pi-agent-core',
       description: 'art-2',
     })]);
   });
@@ -258,8 +257,6 @@ describe('runtimeCommon', () => {
     const privateConverterPattern = /\bfunction\s+toProtocolHypothesis\s*\(/;
 
     expect(fs.readFileSync(path.join(srcRoot, 'engines', 'pi', 'piAgentCoreRuntime.ts'), 'utf8'))
-      .not.toMatch(privateConverterPattern);
-    expect(fs.readFileSync(path.join(srcRoot, 'engines', 'opencode', 'openCodeRuntime.ts'), 'utf8'))
       .not.toMatch(privateConverterPattern);
   });
 

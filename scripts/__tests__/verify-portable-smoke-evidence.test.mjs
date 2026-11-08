@@ -54,7 +54,6 @@ function validSummary() {
     runtimes: {
       node: {stdout: 'v24.18.0', stderr: ''},
       claude: {stdout: '1.0.0', stderr: ''},
-      opencode: {stdout: '1.0.0', stderr: ''},
       traceProcessor: {stdout: 'smartperfetto_smoke\n1', stderr: ''},
       libc: {stdout: '2.34', stderr: ''},
     },
@@ -157,7 +156,6 @@ test('public release evidence binds target-native smoke to exact archive bytes',
     {...summary, health: {...summary.health, backend: {status: 'OK', version: 'old'}}},
     {...summary, runtimes: {...summary.runtimes, libc: {stdout: '2.33', stderr: ''}}},
     {...summary, runtimes: {...summary.runtimes, claude: null}},
-    {...summary, runtimes: {...summary.runtimes, opencode: null}},
     {
       ...summary,
       runtimes: {

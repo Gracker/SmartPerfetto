@@ -5,11 +5,11 @@ import express from 'express';
 import {
   getProviderModelCatalogService,
   getProviderService,
-  isAgentRuntimeKind,
   mergeModelOptions,
   officialTemplates,
 } from '../services/providerManager';
-import type { AgentRuntimeKind, ProviderCreateInput, ProviderScope, ProviderUpdateInput } from '../services/providerManager';
+import type { ProviderCreateInput, ProviderScope, ProviderUpdateInput } from '../services/providerManager';
+import { isRecordedProductionRuntimeKind } from '../agentRuntime/runtimeKinds';
 import type { ProviderType } from '../services/providerManager/types';
 import { testProviderConnection } from '../services/providerManager/connectionTester';
 import { withSupportedRuntimes } from '../services/providerManager/providerRuntimeMatrix';
@@ -264,8 +264,8 @@ router.post('/:id/activate', (req, res) => {
 router.post('/:id/runtime', (req, res) => {
   try {
     const svc = getProviderService();
-    const runtime = req.body?.agentRuntime as AgentRuntimeKind | undefined;
-    if (!isAgentRuntimeKind(runtime)) {
+    const runtime: unknown = req.body?.agentRuntime;
+    if (!isRecordedProductionRuntimeKind(runtime)) {
       return res.status(400).json({ success: false, error: 'Invalid agentRuntime' });
     }
     const context = requireRequestContext(req);

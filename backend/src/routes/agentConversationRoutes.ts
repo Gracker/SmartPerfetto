@@ -10,7 +10,6 @@ import {projectAssistantWork} from '../assistant/application/assistantWorkProjec
 import type {ConversationContextRequest} from '../assistant/contracts/assistantWorkContract';
 import type {AnalysisOptions} from '../agent/core/orchestratorTypes';
 import {createAgentOrchestrator} from '../agentRuntime';
-import type {AgentRuntimeKind} from '../agentRuntime/runtimeKinds';
 import {toAnalysisHistoryTurn} from '../agentRuntime/analysisHistory';
 import {getConversationSessionStore, type ConversationSessionDescriptor} from '../services/conversationSessionStore';
 import {
@@ -582,7 +581,7 @@ async function readAuthorizedConversation(req: express.Request, res: express.Res
   return conversationSessionService.restoreSession(stored!, getConversationSessionStore().listTurns(stored!), {
     query: '', sessionId, owner, traceContext: stored!.traceContext, providerId: stored!.providerId,
     providerFollowsActive: stored!.providerFollowsActive,
-    ...(currentPin ?? {runtimeKind: stored!.runtimeKind as AgentRuntimeKind, providerSnapshotHash: stored!.providerSnapshotHash}),
+    ...(currentPin ?? {runtimeKind: stored!.runtimeKind, providerSnapshotHash: stored!.providerSnapshotHash}),
     analysisContextFingerprint: stored!.analysisContextFingerprint,
     runtimeOptions,
   });

@@ -11,7 +11,7 @@ import {AssistantApplicationService} from './assistantApplicationService';
 import type {AnalysisOptions} from '../../agent/core/orchestratorTypes';
 import {toAnalysisHistoryTurn, type AnalysisHistoryTurn} from '../../agentRuntime/analysisHistory';
 import type {ConversationSessionDescriptor} from '../../services/conversationSessionStore';
-import type {AgentRuntimeKind, RecordedRuntimeKind} from '../../agentRuntime/runtimeKinds';
+import type {RecordedRuntimeKind} from '../../agentRuntime/runtimeKinds';
 import type {RuntimeMigrationContinuityNote} from '../../services/providerManager/providerPinContinuity';
 import type {
   ConversationEvidenceRef,
@@ -159,7 +159,8 @@ export interface StartConversationTurnInput {
   owner?: {tenantId: string; workspaceId: string; userId: string};
   providerId?: string | null;
   providerFollowsActive?: boolean;
-  runtimeKind?: AgentRuntimeKind;
+  /** The current pin's runtime, or for a restore that matched no current pin, the recorded label. */
+  runtimeKind?: RecordedRuntimeKind;
   providerSnapshotHash?: string;
   /**
    * The caller verified (reconcileRecordedProviderPin) that the session's pin,

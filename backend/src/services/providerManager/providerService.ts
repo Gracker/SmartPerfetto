@@ -24,7 +24,6 @@ import type {
 } from './types';
 import {
   assertAgentRuntimeSupported,
-  isAgentRuntimeKind,
   isDualSurfaceProviderType,
   normalizeBedrockModelId,
   previousProviderAgentRuntime,
@@ -33,6 +32,7 @@ import {
   supportsAgentRuntimeType,
 } from './providerRuntimeMatrix';
 import {PROVIDER_TYPES} from './providerTypes';
+import type {RecordedProductionRuntimeKind} from '../../agentRuntime/runtimeKinds';
 import {officialTemplates} from './templates';
 import type {
   ProviderMutationGenerationVectorV1,
@@ -420,10 +420,8 @@ export class ProviderService {
   }
 
   /** A retired runtime is accepted with a warning and lands on Pi, keeping the endpoint it used. */
-  switchAgentRuntime(id: string, runtime: AgentRuntimeKind, scope?: ProviderScope): ProviderConfig {
-    if (!isAgentRuntimeKind(runtime)) {
-      throw invalidProviderRequest(`Invalid agent runtime: ${runtime}`);
-    }
+  switchAgentRuntime(id: string, runtime: RecordedProductionRuntimeKind, scope?: ProviderScope): ProviderConfig {
+    // update() validates the value through assertAgentRuntimeSupported.
     return this.update(id, { connection: { agentRuntime: runtime } }, scope);
   }
 
@@ -643,7 +641,7 @@ export class ProviderService {
    * Pi became the only runtime: the input of the Pi route derivation and of
    * the legacy snapshot a recovered session is compared against.
    */
-  getEnvForProviderUnderRuntime(provider: ProviderConfig, runtime: AgentRuntimeKind): Record<string, string> {
+  getEnvForProviderUnderRuntime(provider: ProviderConfig, runtime: RecordedProductionRuntimeKind): Record<string, string> {
     return this.toEnvVars(provider, runtime);
   }
 
@@ -652,7 +650,7 @@ export class ProviderService {
    * it ran on) received: the one derivation both the Pi env and the pin
    * continuity check read.
    */
-  legacyPiRoute(provider: ProviderConfig, runtime: AgentRuntimeKind): PiLegacyRouteResolution {
+  legacyPiRoute(provider: ProviderConfig, runtime: RecordedProductionRuntimeKind): PiLegacyRouteResolution {
     const legacyEnv = withVertexHostCredentials(provider.type,
       this.toEnvVars(provider, runtime) as Record<string, string | undefined>);
     return resolvePiRouteFromLegacyEnv(legacyEnv, runtime, {
@@ -661,7 +659,16 @@ export class ProviderService {
     });
   }
 
-  private toEnvVars(provider: ProviderConfig, runtime = this.resolveAgentRuntime(provider)): Record<string, string> {
+  /**
+   * The env `runtime` receives from `provider`. OpenCode and Qoder no longer
+   * run: their branches stay frozen for one release because a pin recorded
+   * under them is recovered by recomputing the snapshot hash those engines
+   * computed from this env (`legacyRuntimeSnapshotOf`, `legacyPiRoute`).
+   */
+  private toEnvVars(
+    provider: ProviderConfig,
+    runtime: RecordedProductionRuntimeKind = this.resolveAgentRuntime(provider),
+  ): Record<string, string> {
     const env: Record<string, string> = {};
     if (runtime === 'pi-agent-core') {
       // Pi gets its model and key only under its own env; no Claude/OpenAI surface env or tuning knobs.

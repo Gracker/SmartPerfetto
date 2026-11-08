@@ -9,7 +9,7 @@
  * field requires a migration. Everything else is ephemeral / derivable.
  */
 
-import type { BackendAgentRuntimeKind } from '../agentRuntime/runtimeSelection';
+import type { RecordedRuntimeKind } from '../agentRuntime/runtimeKinds';
 import type { SessionLineage } from '../agentv3/sessionStateSnapshot';
 import type { CodeAwareMode } from '../services/codebase/codeAwareFeature';
 import type { CapturePresetId } from '../services/traceCaptureConfig';
@@ -84,8 +84,8 @@ export interface CliSessionConfig {
   referenceTraceId?: string;
   /** Provider Manager profile that supplied runtime credentials; null means env/default fallback. */
   providerId?: string | null;
-  /** Runtime that produced the session. Used by resume preflight checks. */
-  agentRuntimeKind?: BackendAgentRuntimeKind;
+  /** Runtime label that produced the session (provenance; a resume re-resolves the effective runtime). */
+  agentRuntimeKind?: RecordedRuntimeKind;
   /** Non-secret provider/runtime snapshot hash captured for diagnostics. */
   providerSnapshotHash?: string | null;
   /** Claude model actually used — preserved for consistency across resumes. */

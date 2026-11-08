@@ -17,13 +17,7 @@ import {
 import { runtimeDeprecationNotices } from '../../agentRuntime/legacyRuntimeFallback';
 import type { RuntimeDiagnosticsPayload } from '../../agentRuntime/runtimeDescriptorTypes';
 import type { RecordedRuntimeKind } from '../../agentRuntime/runtimeKinds';
-import {
-  EXPERIMENTAL_OPENCODE_RUNTIME_KIND,
-  EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
-  OPENCODE_RUNTIME_KIND,
-  PI_AGENT_CORE_RUNTIME_KIND,
-  QODER_AGENT_RUNTIME_KIND,
-} from '../../agentRuntime/runtimeKinds';
+import { PI_AGENT_CORE_RUNTIME_KIND } from '../../agentRuntime/runtimeKinds';
 import { hasOpenAICredentials } from '../../agentOpenAI/openAiConfig';
 import { getTraceProcessorPath } from '../../services/workingTraceProcessor';
 import { getProviderService } from '../../services/providerManager';
@@ -120,29 +114,10 @@ export function assertAnalysisRuntimeReady(options: RuntimeGuardOptions = {}): R
     return { selection, diagnostics };
   }
 
-  if (
-    selection.kind === EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND ||
-    selection.kind === PI_AGENT_CORE_RUNTIME_KIND
-  ) {
+  if (selection.kind === PI_AGENT_CORE_RUNTIME_KIND) {
     if (diagnostics.configured !== true) {
       throw runtimeNotReadyError('Pi Agent Core runtime is selected but no Pi model is configured.', piSetupHint(diagnostics));
     }
-    return { selection, diagnostics };
-  }
-
-  if (selection.kind === EXPERIMENTAL_OPENCODE_RUNTIME_KIND || selection.kind === OPENCODE_RUNTIME_KIND) {
-    return { selection, diagnostics };
-  }
-
-  if (selection.kind === QODER_AGENT_RUNTIME_KIND) {
-    if (diagnostics.sdkInstalled !== true) {
-      throw new Error(
-        'Qoder Agent SDK runtime is selected but @qoder-ai/qoder-agent-sdk is not installed. Review its terms, then install the optional SDK explicitly.',
-      );
-    }
-    // Qoder supports an explicit PAT/CLI path or the local qodercli login.
-    // Let the SDK surface a precise authentication error when that login is
-    // unavailable instead of applying the Claude native-binary guard.
     return { selection, diagnostics };
   }
 
@@ -227,19 +202,10 @@ export function collectDoctorReport(cliHome: string): DoctorReport {
   const active = providers.find((p) => p.isActive);
   const nodeMajor = Number.parseInt(process.version.replace(/^v/, '').split('.')[0] || '0', 10);
 
-  const qoderSdkInstalled = selection.kind !== QODER_AGENT_RUNTIME_KIND ||
-    runtimeDiagnostics.sdkInstalled === true;
   // Analyses following the active provider are refused while providers.json is unreadable.
-  const runtimeConfigured = !providerStoreError && qoderSdkInstalled && (
-    runtimeDiagnostics.configured ||
-    selection.kind === QODER_AGENT_RUNTIME_KIND
-  );
+  const runtimeConfigured = !providerStoreError && runtimeDiagnostics.configured;
   const runtimeStatus: DoctorCheck['status'] = aiPolicy.aiEnabled
-    ? runtimeConfigured
-      ? runtimeDiagnostics.configured
-        ? 'ok'
-        : 'warn'
-      : 'error'
+    ? runtimeConfigured ? 'ok' : 'error'
     : 'warn';
   const runtimeOk = aiPolicy.aiEnabled ? runtimeConfigured : true;
   const runtimeMessage = aiPolicy.aiEnabled
@@ -247,19 +213,11 @@ export function collectDoctorReport(cliHome: string): DoctorReport {
       ? providerStoreError.message
       : runtimeDiagnostics.configured
       ? `${selection.kind} credentials/configuration detected`
-      : selection.kind === QODER_AGENT_RUNTIME_KIND && !qoderSdkInstalled
-        ? 'Qoder Agent SDK is not installed; review its terms and install the optional SDK explicitly'
-        : selection.kind === 'claude-agent-sdk'
+      : selection.kind === 'claude-agent-sdk'
         ? 'Claude SDK has no configured credentials.'
-        : selection.kind === QODER_AGENT_RUNTIME_KIND
-          ? 'Qoder SDK has no explicit PAT or CLI path; local qodercli login fallback will be used if available'
-        : selection.kind === PI_AGENT_CORE_RUNTIME_KIND ||
-            selection.kind === EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND
+        : selection.kind === PI_AGENT_CORE_RUNTIME_KIND
           ? piSetupHint(runtimeDiagnostics)
-          : selection.kind === EXPERIMENTAL_OPENCODE_RUNTIME_KIND ||
-            selection.kind === OPENCODE_RUNTIME_KIND
-            ? 'OpenCode runtime needs @opencode-ai/sdk and opencode-ai available, plus OpenAI-compatible model configuration'
-            : 'OpenAI runtime needs OPENAI_API_KEY or a localhost/OpenAI-compatible provider'
+          : 'OpenAI runtime needs OPENAI_API_KEY or a localhost/OpenAI-compatible provider'
     : 'AI is disabled; runtime credentials are not required for deterministic CLI flows';
 
   const deprecationNotices = runtimeDeprecationNotices();
@@ -289,8 +247,7 @@ export function collectDoctorReport(cliHome: string): DoctorReport {
       status: runtimeStatus,
       message: aiPolicy.aiEnabled &&
         !providerStoreError &&
-        !runtimeDiagnostics.configured &&
-        selection.kind !== QODER_AGENT_RUNTIME_KIND
+        !runtimeDiagnostics.configured
         ? `${runtimeMessage} ${providerConfigurationHelp(parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE), 'cli')}`
         : runtimeMessage,
       details: {

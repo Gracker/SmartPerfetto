@@ -21,6 +21,9 @@ describe('runtime candidate admission', () => {
     ',task4',
     'task4,task4',
     'task4,unknown',
+    // The OpenCode/Qoder candidates were retired with their engines.
+    'task5,task8',
+    'task9',
     'TASK4',
   ])('fails the complete value closed for invalid input: %p', raw => {
     const env = raw === undefined ? {} : {
@@ -33,11 +36,11 @@ describe('runtime candidate admission', () => {
 
   it('admits only exact candidate IDs from one valid maintainer value', () => {
     const env = {
-      [SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES_ENV]: 'task4,task6,task9',
+      [SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES_ENV]: 'task4,task6,task7',
     };
-    expect([...parseAdmittedRuntimeCandidates(env)]).toEqual(['task4', 'task6', 'task9']);
+    expect([...parseAdmittedRuntimeCandidates(env)]).toEqual(['task4', 'task6', 'task7']);
     expect(isRuntimeCandidateAdmitted('task4', env)).toBe(true);
     expect(isRuntimeCandidateAdmitted('task5', env)).toBe(false);
-    expect(isRuntimeCandidateAdmitted('task9', env)).toBe(true);
+    expect(isRuntimeCandidateAdmitted('task7', env)).toBe(true);
   });
 });

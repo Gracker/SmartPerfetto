@@ -2,21 +2,17 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {isProductionAgentRuntimeKind, type AgentRuntimeKind, type RecordedRuntimeKind} from '../../agentRuntime/runtimeKinds';
+import {
+  isRecordedProductionRuntimeKind,
+  type RecordedRuntimeKind,
+} from '../../agentRuntime/runtimeKinds';
 import type {
   EvaluationRuntimeCapabilitiesV1,
   TraceProcessorCpuCapability,
 } from './evaluationTelemetry';
 
-const TOKEN_CAPABILITIES: Readonly<
-  Record<AgentRuntimeKind, EvaluationRuntimeCapabilitiesV1['tokens']>
-> = Object.freeze({
-  'claude-agent-sdk': 'soft_response_observed',
-  'openai-agents-sdk': 'soft_response_observed',
-  'pi-agent-core': 'soft_response_observed',
-  opencode: 'soft_response_observed',
-  'qoder-agent-sdk': 'soft_response_observed',
-});
+/** Every production engine observes token use from provider responses, after the fact. */
+const TOKEN_CAPABILITY: EvaluationRuntimeCapabilitiesV1['tokens'] = 'soft_response_observed';
 
 function traceProcessorCpuCapability(
   platform: NodeJS.Platform,
@@ -32,13 +28,13 @@ export function evaluationRuntimeCapabilities(input: {
   runtime: RecordedRuntimeKind;
   platform?: NodeJS.Platform;
 }): EvaluationRuntimeCapabilitiesV1 {
-  if (!isProductionAgentRuntimeKind(input.runtime)) {
+  if (!isRecordedProductionRuntimeKind(input.runtime)) {
     throw new Error('evaluation_runtime_unsupported');
   }
   return Object.freeze({
     schemaVersion: 1,
     runtime: input.runtime,
-    tokens: TOKEN_CAPABILITIES[input.runtime],
+    tokens: TOKEN_CAPABILITY,
     toolCalls: 'hard_realtime',
     wallclock: 'hard_realtime',
     traceProcessorCpu: traceProcessorCpuCapability(

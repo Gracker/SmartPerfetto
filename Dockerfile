@@ -13,23 +13,6 @@ COPY backend/ ./
 COPY backend/data/perfettoSqlIndex.light.json backend/data/perfettoSqlDocs.json backend/data/perfettoStdlibSymbols.json ./data/
 RUN npm run build
 
-# Pin the runtime OpenCode executable independently of the builder CPU. The
-# upstream postinstall selects AVX2 from /proc/cpuinfo; copying that selection
-# into an amd64 image would make the image fail on baseline x86_64 hosts.
-RUN set -eux; \
-    ARCH="$(uname -m)"; \
-    case "$ARCH" in \
-      x86_64) OPENCODE_SOURCE="node_modules/opencode-linux-x64-baseline/bin/opencode" ;; \
-      aarch64) OPENCODE_SOURCE="node_modules/opencode-linux-arm64/bin/opencode" ;; \
-      *) echo "Unsupported OpenCode architecture: $ARCH" >&2; exit 1 ;; \
-    esac; \
-    OPENCODE_DEST="node_modules/opencode-ai/bin/opencode.exe"; \
-    test -s "$OPENCODE_SOURCE"; \
-    rm -f "$OPENCODE_DEST"; \
-    ln "$OPENCODE_SOURCE" "$OPENCODE_DEST"; \
-    chmod +x "$OPENCODE_DEST"; \
-    "$OPENCODE_DEST" --version
-
 # Remove devDependencies to drastically reduce the final image size
 RUN npm prune --production
 

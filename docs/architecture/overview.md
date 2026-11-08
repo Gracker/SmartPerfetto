@@ -62,7 +62,7 @@ backend 与 frontend。
 | Express backend | `backend/src/index.ts` | 路由注册、健康检查、中间件、进程清理 |
 | OIDC 与请求身份 | `backend/src/routes/enterpriseAuthRoutes.ts`、`enterpriseSsoService.ts`、`middleware/auth.ts` | 登录回调、Session/CSRF、个人工作区所有权、请求级 tenant/workspace/RBAC 绑定 |
 | Runtime contract 与 registry | `backend/src/agentRuntime/runtimeKinds.ts`、`runtimeDescriptors.ts`、`runtimeSelection.ts` | 定义当前 production runtime 集合、capabilities、canonical loader 和每个 session 的 runtime 选择 |
-| Runtime engines | `backend/src/agentRuntime/engines/{claude,openai,pi,opencode,qoder}/` | 五个当前 runtime 的 canonical 实现，复用统一 orchestrator、结果和安全边界；Pi 在实例内区分分类与主分析的推理请求策略 |
+| Runtime engines | `backend/src/agentRuntime/engines/{claude,openai,pi}/` | 当前 runtime 的 canonical 实现，复用统一 orchestrator、结果和安全边界；Pi 在实例内区分分类与主分析的推理请求策略 |
 | 共享 Agent 能力 | `backend/src/agentv3/` | MCP server/registry、策略注入、planning、verifier 和记忆；其中个别 runtime 文件仅保留 compatibility re-export |
 | OpenAI compatibility facades | `backend/src/agentOpenAI/` | 向旧 import path 提供 re-export；canonical OpenAI 实现在 `agentRuntime/engines/openai/` |
 | assistant application | `backend/src/assistant/` | session 管理、stream projection、结果 contract |
@@ -134,7 +134,7 @@ cookie credentials，也不会把非 OIDC 401 当作 OIDC authority 失效。本
 在采集触顶后根据已经返回的事实生成有限结论、不足和下一步；取消、授权失效及
 提供方错误不会触发额外总结。OpenAI 采集超时且已有返回数据时，可在预留交付预算内收尾，
 仍保留 `partial/timeout`。触顶结果保留 `incomplete/turn_limit`，不能把交付文本当作
-取证完整。OpenCode 的上限依赖观察后中止，实际超额必须记录且不得再追加总结。
+取证完整。
 
 每个用户问题使用新的物理模型上下文。同一逻辑会话经 owner、Trace、provider 和源码
 授权检查后，默认继承有界的近轮结论、缺口与证据定位；更早记录由 `read_session_history`
@@ -273,8 +273,9 @@ private advisory。详见
 | `claude-agent-sdk` | Anthropic、Bedrock、Vertex、Claude/Anthropic-compatible provider | 所有运行方式都需要显式 provider/env 凭据；Claude Code 登录态不代表 SDK 已配置 |
 | `openai-agents-sdk` | OpenAI、Ollama、OpenAI-compatible provider | 按 OpenAI runtime 规则验证凭证和 chat-completions/Responses 协议 |
 | `pi-agent-core` | Custom、GLM、DeepSeek、Kimi、Kimi Code、MiniMax provider | Custom 需要显式 Pi model JSON 或等价 env，目录型 provider 由 Pi 内置目录解析模型；不读取 `.pi` project config、package extension、shell tool 或 file tool |
-| `opencode` | Custom provider | 需要显式 OpenCode/OpenAI-compatible model 配置；使用隔离 OpenCode server 和 request-scoped MCP tools，不读取个人 OpenCode 登录态/project state |
-| `qoder-agent-sdk` | Custom provider 或显式 env | Qoder SDK 是 opt-in optional peer；使用本机 Qoder CLI 登录态或 PAT，并隔离私有知识的 stream/session/snapshot |
+
+OpenCode 与 Qoder 引擎已删除。记录 `opencode` 或 `qoder-agent-sdk` 标签的数据只作为
+provenance 读取，执行时使用 effective runtime，见[Agent 运行时](agent-runtime.md)。
 
 Provider Manager active profile 优先于 `.env` fallback。历史 session 恢复时必须保留
 原 provider/runtime/comparison identity，不能因为当前 active provider 变化而静默切换。

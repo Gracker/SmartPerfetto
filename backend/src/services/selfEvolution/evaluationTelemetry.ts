@@ -4,7 +4,7 @@
 
 import {AsyncLocalStorage} from 'async_hooks';
 
-import type {AgentRuntimeKind} from '../../agentRuntime/runtimeKinds';
+import type {RecordedProductionRuntimeKind} from '../../agentRuntime/runtimeKinds';
 import {
   canonicalContentHash,
   immutableCanonicalSnapshot,
@@ -35,7 +35,7 @@ export interface EvaluationBudgetLimitsV1 {
 
 export interface EvaluationRuntimeCapabilitiesV1 {
   schemaVersion: 1;
-  runtime: AgentRuntimeKind;
+  runtime: RecordedProductionRuntimeKind;
   tokens: EvaluationTokenCapability;
   toolCalls: 'hard_realtime';
   wallclock: 'hard_realtime';

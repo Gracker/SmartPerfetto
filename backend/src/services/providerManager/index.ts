@@ -20,7 +20,6 @@ export {
   getProviderModelCatalogService,
   mergeModelOptions,
 } from './providerModelCatalog';
-export { isAgentRuntimeKind } from './providerRuntimeMatrix';
 
 let instance: ProviderService | null = null;
 

@@ -10,8 +10,7 @@ import { sessionContextManager } from '../../agent/context/enhancedSessionContex
 import {
   createPiAgentCoreToolFromSharedSpec,
   buildPiAnalysisCompletion,
-  EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
-  getPiAgentCoreEngineCapabilities,
+  PI_AGENT_CORE_RUNTIME_KIND,
   PI_AGENT_CORE_ABORT_JOIN_TIMEOUT_MS_ENV,
   PI_AGENT_CORE_MODULE_PATH_ENV,
   PI_AGENT_CORE_REQUEST_TIMEOUT_MS_ENV,
@@ -566,17 +565,6 @@ describe('experimental Pi agent-core runtime contract', () => {
     }
   });
 
-  it('describes Pi agent-core as hidden, optional, sequential, and no shell/file tool runtime', () => {
-    expect(getPiAgentCoreEngineCapabilities()).toEqual({
-      kind: EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
-      displayName: 'Experimental Pi Agent Core',
-      production: false,
-      publicRuntime: false,
-      promptCache: { systemPromptDynamicBoundary: false },
-      draftAnswerStreaming: false,
-    });
-  });
-
   it('loads Pi provider imports serially by default and concurrently only when Task 7 is admitted', async () => {
     const firstModule = createDeferred<unknown>();
     const serialLoader = jest.fn(async (specifier: string) => {
@@ -626,7 +614,7 @@ describe('experimental Pi agent-core runtime contract', () => {
     const spec = createSharedSpec(handler);
     const tool = createPiAgentCoreToolFromSharedSpec(spec, {
       allowedToolNames: new Set([spec.name]),
-      runtimeKind: EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
+      runtimeKind: PI_AGENT_CORE_RUNTIME_KIND,
     });
     const updates: unknown[] = [];
     const controller = new AbortController();
@@ -654,7 +642,7 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(handler).toHaveBeenCalledWith(
       { sql: 'select 1', params: { pid: 123 } },
       expect.objectContaining({
-        runtime: EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
+        runtime: PI_AGENT_CORE_RUNTIME_KIND,
         toolCallId: 'call-1',
         signal: controller.signal,
       }),
@@ -711,7 +699,7 @@ describe('experimental Pi agent-core runtime contract', () => {
     };
     const tool = createPiAgentCoreToolFromSharedSpec(spec, {
       allowedToolNames: new Set([spec.name]),
-      runtimeKind: EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
+      runtimeKind: PI_AGENT_CORE_RUNTIME_KIND,
       analysisPlan: { current: plan },
     });
 
@@ -757,7 +745,7 @@ describe('experimental Pi agent-core runtime contract', () => {
     };
     const tool = createPiAgentCoreToolFromSharedSpec(spec, {
       allowedToolNames: new Set([spec.name]),
-      runtimeKind: EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
+      runtimeKind: PI_AGENT_CORE_RUNTIME_KIND,
       analysisPlan: { current: plan },
     });
     const controller = new AbortController();
@@ -863,17 +851,6 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(() => createPiAgentCoreToolFromSharedSpec(createSharedSpec(), {
       allowedToolNames: new Set(['other_tool']),
     })).toThrow('Pi agent-core tool is not allowed in this request: query_trace');
-  });
-
-  it('describes the public Pi agent-core runtime as provider-pinnable but capability-limited', () => {
-    expect(getPiAgentCoreEngineCapabilities('pi-agent-core')).toEqual({
-      kind: 'pi-agent-core',
-      displayName: 'Pi Agent Core',
-      production: true,
-      publicRuntime: true,
-      promptCache: { systemPromptDynamicBoundary: false },
-      draftAnswerStreaming: false,
-    });
   });
 
   it('projects Pi agent-core events without synthesizing route terminal events', () => {
@@ -1073,7 +1050,7 @@ describe('experimental Pi agent-core runtime contract', () => {
   it('runs a hidden smoke analysis with an injected Pi agent-core module', async () => {
     const runtime = new PiAgentCoreRuntime(
       createFakeTraceProcessorService(),
-      { kind: EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND, source: 'env' },
+      { kind: PI_AGENT_CORE_RUNTIME_KIND, source: 'env' },
       {
         env: { [PI_AGENT_CORE_FAKE_STREAM_ENV]: '1' },
         moduleLoader: async () => ({ Agent: FakePiAgent }),

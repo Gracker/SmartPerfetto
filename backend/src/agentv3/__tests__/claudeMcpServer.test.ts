@@ -26,7 +26,6 @@ import {createPiAgentCoreToolFromSharedSpec} from '../../agentRuntime/engines/pi
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import net from 'net';
 import Database from 'better-sqlite3';
 import type {QueryResult} from '../../services/traceProcessorService';
 import {OriginalTraceEvidenceRefusal, OriginalTraceEvidenceQueryUnknownError, type OriginalTraceEvidenceQueryOptions} from '../../services/originalTraceEvidence';
@@ -6313,80 +6312,43 @@ describe('createClaudeMcpServer', () => {
       expect(analysisPlan.current).toBeNull();
     });
 
-    it.each(['disconnect', 'deadline'] as const)(
-      'does not mutate or emit a plan when OpenCode %s aborts deferred registry binding',
-      async abortKind => {
-        const registryStarted = createDeferred<void>();
-        const releaseRegistry = createDeferred<Awaited<ReturnType<typeof getWorkspaceSkillRegistry>>>();
-        (getWorkspaceSkillRegistry as jest.MockedFunction<typeof getWorkspaceSkillRegistry>)
-          .mockImplementationOnce(async () => {
-            registryStarted.resolve();
-            return releaseRegistry.promise;
-          });
-        const testServer = createTestServer({
-          knowledgeScope: {tenantId: 'tenant-a', workspaceId: 'workspace-a'},
+    it('does not mutate or emit a plan when the run aborts deferred registry binding', async () => {
+      const registryStarted = createDeferred<void>();
+      const releaseRegistry = createDeferred<Awaited<ReturnType<typeof getWorkspaceSkillRegistry>>>();
+      (getWorkspaceSkillRegistry as jest.MockedFunction<typeof getWorkspaceSkillRegistry>)
+        .mockImplementationOnce(async () => {
+          registryStarted.resolve();
+          return releaseRegistry.promise;
         });
-        const {__testing: openCodeTesting} = await import(
-          '../../agentRuntime/engines/opencode/openCodeRuntime'
-        );
-        const bridge = await openCodeTesting.startOpenCodeMcpBridge(
-          testServer.toolDefinitions.filter(definition => definition.name === 'submit_plan'),
-          undefined,
-          {timeoutMs: 100},
-        );
-        const socket = net.createConnection({host: '127.0.0.1', port: bridge.port});
-        try {
-          await new Promise<void>((resolve, reject) => {
-            socket.once('connect', resolve);
-            socket.once('error', reject);
-          });
-          socket.write(`${JSON.stringify({
-            token: bridge.token,
-            request: {
-              jsonrpc: '2.0',
-              id: `submit-plan-${abortKind}`,
-              method: 'tools/call',
-              params: {
-                name: 'submit_plan',
-                arguments: {
-                  phases: [{id: 'p1', name: 'Collect', goal: 'Collect evidence', expectedTools: []}],
-                  successCriteria: 'Complete the analysis',
-                },
-              },
-            },
-          })}\n`);
-          await registryStarted.promise;
-          if (abortKind === 'disconnect') {
-            socket.destroy();
-            await new Promise(resolve => setTimeout(resolve, 50));
-          } else {
-            await new Promise(resolve => setTimeout(resolve, 150));
-          }
-          releaseRegistry.resolve({
-            registry: {
-              registryFingerprint: 'deferred-registry',
-              getAllSkills: jest.fn(() => []),
-              getFragmentCache: jest.fn(() => new Map()),
-              getSkill: jest.fn(() => undefined),
-              getVendorOverride: jest.fn(() => undefined),
-              hasVendorOverrides: jest.fn(() => false),
-            },
-            registryFingerprint: 'deferred-registry',
-            enabledPacks: [],
-            getSkillOrigin: jest.fn(() => ({origin: 'built_in'})),
-          } as unknown as Awaited<ReturnType<typeof getWorkspaceSkillRegistry>>);
-          await new Promise(resolve => setImmediate(resolve));
-          await new Promise(resolve => setImmediate(resolve));
+      const testServer = createTestServer({
+        knowledgeScope: {tenantId: 'tenant-a', workspaceId: 'workspace-a'},
+      });
+      const controller = new AbortController();
+      const call = callToolWithExtra(testServer.tools, 'submit_plan', {
+        phases: [{id: 'p1', name: 'Collect', goal: 'Collect evidence', expectedTools: []}],
+        successCriteria: 'Complete the analysis',
+      }, {signal: controller.signal});
+      await registryStarted.promise;
+      controller.abort('cancelled');
+      releaseRegistry.resolve({
+        registry: {
+          registryFingerprint: 'deferred-registry',
+          getAllSkills: jest.fn(() => []),
+          getFragmentCache: jest.fn(() => new Map()),
+          getSkill: jest.fn(() => undefined),
+          getVendorOverride: jest.fn(() => undefined),
+          hasVendorOverrides: jest.fn(() => false),
+        },
+        registryFingerprint: 'deferred-registry',
+        enabledPacks: [],
+        getSkillOrigin: jest.fn(() => ({origin: 'built_in'})),
+      } as unknown as Awaited<ReturnType<typeof getWorkspaceSkillRegistry>>);
+      await expect(call).rejects.toThrow();
 
-          expect(testServer.analysisPlan.current).toBeNull();
-          expect(testServer.emittedUpdates.filter(update => update.type === 'plan_submitted'))
-            .toEqual([]);
-        } finally {
-          socket.destroy();
-          await bridge.close();
-        }
-      },
-    );
+      expect(testServer.analysisPlan.current).toBeNull();
+      expect(testServer.emittedUpdates.filter(update => update.type === 'plan_submitted'))
+        .toEqual([]);
+    });
 
     it('should create a plan with phases', async () => {
       const { tools, analysisPlan } = createTestServer();

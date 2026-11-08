@@ -20,7 +20,8 @@
 // The Claude SDK branch (its isolated options and stream reading) lives in the
 // Claude engine (`agentRuntime/engines/claude/claudeOneShot.ts`).
 
-import {selectRuntimeForProvider, type ResolvedAgentRuntimeKind} from '../agentRuntime/runtimeSelection';
+import {selectRuntimeForProvider} from '../agentRuntime/runtimeSelection';
+import type {AgentRuntimeKind} from '../agentRuntime/runtimeKinds';
 import {
   loadClaudeConfig,
   runtimeConfigForProviderEnv,
@@ -61,7 +62,7 @@ export interface PiOneShotContext {
 export type ResolvedOneShotProvider =
   | {kind: 'resolved'; runtime: 'claude-agent-sdk'; claude: ClaudeOneShotContext}
   | {kind: 'resolved'; runtime: 'pi-agent-core'; pi: PiOneShotContext}
-  | {kind: 'resolved'; runtime: Exclude<ResolvedAgentRuntimeKind, 'claude-agent-sdk' | 'pi-agent-core'>};
+  | {kind: 'resolved'; runtime: 'openai-agents-sdk'};
 
 export type OneShotProvider = {kind: 'unavailable'} | ResolvedOneShotProvider;
 
@@ -173,7 +174,7 @@ export async function runIsolatedOneShot(
 /** Resolve the caller's provider once, then make one isolated call on its runtime. */
 export async function runResolvedOneShot(
   input: OneShotCallInput & {providerScope?: ProviderScope},
-): Promise<OneShotResult & {runtime?: ResolvedAgentRuntimeKind}> {
+): Promise<OneShotResult & {runtime?: AgentRuntimeKind}> {
   const {providerScope, ...call} = input;
   const provider = resolveOneShotProvider({providerScope, logLabel: input.logLabel});
   if (provider.kind === 'unavailable') return {ok: false, reason: 'runtime_unavailable'};

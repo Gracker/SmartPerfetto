@@ -5,12 +5,8 @@
 import {renderRequiredLocalizedStrategyTemplate} from '../agentv3/localizedStrategyTemplate';
 import type {OutputLanguage} from '../agentv3/outputLanguage';
 import {stripMachineSegments} from '../agent/core/conclusionContract';
-import type {AnalysisCompletion} from '../types/analysisDelivery';
 import type {AnalysisTurnIntent} from './analysisTurnIntent';
 import type {VerificationIssue} from '../agentv3/types';
-import {dispatchWithModelCallRecord, type IntentTransportInput, type IntentTransportResult} from './intentTransport';
-import type {RuntimePerformanceRecorder} from './runtimePerformance';
-import {admitDeliveryCall} from '../services/runtimeCallStats';
 
 function projectTurnIntentForDelivery(intent: AnalysisTurnIntent) {
   return {
@@ -52,43 +48,4 @@ export function buildNativeOutputCompletionPrompt(input: {
 /** Whether a candidate carries an answer body; a stray machine segment alone is not one. Nothing is parsed. */
 export function candidateHasAnswerBody(candidate: string): boolean {
   return stripMachineSegments(candidate).trim().length > 0;
-}
-
-/**
- * A completed, non-acknowledgement run whose final reply has no answer body
- * (only a stray machine segment, or nothing) may spend its one delivery call writing the
- * body. Runtimes without an issue-based correction (OpenCode, Qoder) ask here;
- * the call is spent once attempted.
- */
-export function nativeBodyCompletionNeeded(input: {
-  intent: AnalysisTurnIntent;
-  completion: Pick<AnalysisCompletion, 'status'>;
-  candidate: string;
-  remainingDeliveryTurns: number;
-}): boolean {
-  return input.intent.taskKind !== 'acknowledgement' && input.completion.status === 'completed' &&
-    Number.isSafeInteger(input.remainingDeliveryTurns) && input.remainingDeliveryTurns > 0 &&
-    !candidateHasAnswerBody(input.candidate);
-}
-
-/**
- * Admit the one no-tool continuation that writes a missing answer body (after
- * an empty reply, or an output-limited one that produced no body) against the
- * run's budget. The body is known missing, so the admission fails open. An
- * admitted call returns its dispatcher, which records the model call; the
- * runtime does its own turn bookkeeping and error handling around it.
- */
-export function admitBodyContinuation(input: {
-  recorder: RuntimePerformanceRecorder | undefined;
-  deliveryCall: {providerOrigin?: string; model?: string};
-  trigger: 'empty_body' | 'output_limit';
-  request: Omit<IntentTransportInput, 'observer'>;
-  dispatch: (request: IntentTransportInput) => Promise<IntentTransportResult>;
-}): (() => Promise<IntentTransportResult>) | undefined {
-  const {recorder, deliveryCall, request} = input;
-  if (!admitDeliveryCall(recorder, {...deliveryCall, purpose: 'continuation',
-    inputBytes: Buffer.byteLength(request.prompt) + Buffer.byteLength(request.systemPrompt),
-    remainingMs: request.deadlineMs - Date.now(), failOpen: true})) return undefined;
-  return () => dispatchWithModelCallRecord(recorder, {purpose: 'continuation', trigger: input.trigger, ...deliveryCall},
-    request, input.dispatch);
 }

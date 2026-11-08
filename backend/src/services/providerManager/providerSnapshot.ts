@@ -5,7 +5,11 @@
 import crypto from 'crypto';
 import {effectiveAgentRuntimeKind} from '../../agentRuntime/legacyRuntimeFallback';
 import {piRuntimeFingerprintInput} from '../../agentRuntime/engines/pi/piAgentCoreConfig';
-import {isProductionAgentRuntimeKind, type RecordedRuntimeKind} from '../../agentRuntime/runtimeKinds';
+import {
+  isRecordedProductionRuntimeKind,
+  type RecordedProductionRuntimeKind,
+  type RecordedRuntimeKind,
+} from '../../agentRuntime/runtimeKinds';
 import {runtimeEnvFor} from './piProviderCatalog';
 import {storedProviderRecord} from './retiredRuntime';
 import {redactUrlForDiagnostics} from '../../agentRuntime/envCredentialSources';
@@ -18,11 +22,16 @@ import type { AgentRuntimeKind, ProviderConfig, ProviderScope, ProviderTuning } 
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 
-export interface ProviderRuntimeSnapshot {
+/**
+ * A provider pin. A current pin names the engine that runs it; a legacy
+ * snapshot recomputed for a recovered pin names the runtime that recorded it,
+ * which may be a removed engine (`RecordedProductionRuntimeKind`).
+ */
+export interface ProviderRuntimeSnapshot<K extends RecordedProductionRuntimeKind = AgentRuntimeKind> {
   version: 1;
   providerId: string | null;
   providerType: ProviderConfig['type'] | 'env';
-  runtimeKind: AgentRuntimeKind;
+  runtimeKind: K;
   resolvedModels: {
     primary?: string;
     light?: string;
@@ -39,8 +48,8 @@ export interface ProviderRuntimeSnapshot {
   secretVersion: string;
 }
 
-export interface ProviderRuntimeSnapshotResolution {
-  snapshot: ProviderRuntimeSnapshot;
+export interface ProviderRuntimeSnapshotResolution<K extends RecordedProductionRuntimeKind = AgentRuntimeKind> {
+  snapshot: ProviderRuntimeSnapshot<K>;
   snapshotHash: string;
 }
 
@@ -65,6 +74,9 @@ const PI_AGENT_CORE_SENSITIVE_CONNECTION_FIELDS: Array<keyof ProviderConfig['con
   'piAgentCoreModelJson',
 ];
 
+// The OPENCODE_* and QODER_* lists below are frozen: those engines are
+// removed, and the lists exist only so `legacyRuntimeSnapshotOf` recomputes
+// the exact hash they recorded. Never edit them.
 const OPENCODE_SENSITIVE_CONNECTION_FIELDS: Array<keyof ProviderConfig['connection']> = [
   'apiKey',
   'openaiApiKey',
@@ -241,7 +253,7 @@ function pickEnv(env: Record<string, string | undefined>, keys: string[]): Recor
 
 function publicRuntimeEnvironment(
   env: Record<string, string | undefined>,
-  runtimeKind: AgentRuntimeKind,
+  runtimeKind: RecordedProductionRuntimeKind,
 ): Record<string, string> {
   if (runtimeKind === 'openai-agents-sdk') {
     parseOpenAIAnalysisReasoningEffort(env.OPENAI_ANALYSIS_REASONING_EFFORT);
@@ -263,7 +275,7 @@ function publicRuntimeEnvironment(
   return picked;
 }
 
-function runtimeEnvironmentKeys(runtimeKind: AgentRuntimeKind): string[] {
+function runtimeEnvironmentKeys(runtimeKind: RecordedProductionRuntimeKind): string[] {
   switch (runtimeKind) {
     case 'openai-agents-sdk':
       return OPENAI_RUNTIME_ENV_KEYS;
@@ -279,7 +291,7 @@ function runtimeEnvironmentKeys(runtimeKind: AgentRuntimeKind): string[] {
   }
 }
 
-function runtimeSecretEnvKeys(runtimeKind: AgentRuntimeKind): string[] {
+function runtimeSecretEnvKeys(runtimeKind: RecordedProductionRuntimeKind): string[] {
   switch (runtimeKind) {
     case 'openai-agents-sdk':
       return OPENAI_SECRET_ENV_KEYS;
@@ -296,7 +308,7 @@ function runtimeSecretEnvKeys(runtimeKind: AgentRuntimeKind): string[] {
 }
 
 function runtimeSensitiveConnectionFields(
-  runtimeKind: AgentRuntimeKind,
+  runtimeKind: RecordedProductionRuntimeKind,
 ): Array<keyof ProviderConfig['connection']> {
   switch (runtimeKind) {
     case 'openai-agents-sdk':
@@ -315,7 +327,7 @@ function runtimeSensitiveConnectionFields(
 
 function pickResolvedTimeouts(
   tuning: ProviderTuning | undefined,
-  runtimeKind: AgentRuntimeKind,
+  runtimeKind: RecordedProductionRuntimeKind,
 ): ProviderRuntimeSnapshot['resolvedTimeouts'] {
   const resolved: ProviderRuntimeSnapshot['resolvedTimeouts'] = {};
   const keys = runtimeKind === 'qoder-agent-sdk'
@@ -328,7 +340,7 @@ function pickResolvedTimeouts(
   return resolved;
 }
 
-function inferBaseUrl(runtimeKind: AgentRuntimeKind, env: Record<string, string>): string | undefined {
+function inferBaseUrl(runtimeKind: RecordedProductionRuntimeKind, env: Record<string, string>): string | undefined {
   if (runtimeKind === 'qoder-agent-sdk') return env.QODER_BYOK_BASE_URL;
   if (runtimeKind === 'openai-agents-sdk' || runtimeKind === 'opencode') {
     return env.OPENAI_BASE_URL;
@@ -342,7 +354,7 @@ function inferBaseUrl(runtimeKind: AgentRuntimeKind, env: Record<string, string>
  * current pin (Pi sees the model the env-only setup maps to), or a recorded
  * retired runtime when a recovered pin's legacy hash is recomputed.
  */
-function envRuntimeSnapshot(runtimeKind: AgentRuntimeKind): ProviderRuntimeSnapshot {
+function envRuntimeSnapshot<K extends RecordedProductionRuntimeKind>(runtimeKind: K): ProviderRuntimeSnapshot<K> {
   const env = runtimeEnvFor(process.env, null, runtimeKind);
   const timeoutPrefix = runtimeKind === 'qoder-agent-sdk'
     ? 'QODER'
@@ -402,7 +414,7 @@ function envRuntimeSnapshot(runtimeKind: AgentRuntimeKind): ProviderRuntimeSnaps
 
 function providerSecretVersion(
   provider: ProviderConfig,
-  runtimeKind: AgentRuntimeKind,
+  runtimeKind: RecordedProductionRuntimeKind,
   env: Record<string, string | undefined>,
 ): string {
   const entries: Array<[string, string | undefined]> = [
@@ -417,11 +429,11 @@ function providerSecretVersion(
   return hashSecretEntries(entries);
 }
 
-function providerRuntimeSnapshot(
+function providerRuntimeSnapshot<K extends RecordedProductionRuntimeKind>(
   providerService: ProviderService,
   provider: ProviderConfig,
-  runtimeKind: AgentRuntimeKind = providerService.resolveAgentRuntime(provider),
-): ProviderRuntimeSnapshot {
+  runtimeKind: K,
+): ProviderRuntimeSnapshot<K> {
   const providerEnv = providerService.getEnvForProviderUnderRuntime(provider, runtimeKind);
   const env = mergeIsolatedProviderEnv(process.env, providerEnv);
   const nonSecretEnv = publicRuntimeEnvironment(env, runtimeKind);
@@ -451,7 +463,11 @@ function providerRuntimeSnapshot(
   };
 }
 
-export function hashProviderRuntimeSnapshot(snapshot: ProviderRuntimeSnapshot): string {
+function currentProviderRuntimeSnapshot(providerService: ProviderService, provider: ProviderConfig): ProviderRuntimeSnapshot {
+  return providerRuntimeSnapshot(providerService, provider, providerService.resolveAgentRuntime(provider));
+}
+
+export function hashProviderRuntimeSnapshot(snapshot: ProviderRuntimeSnapshot<RecordedProductionRuntimeKind>): string {
   return sha256Hex(canonicalJson(snapshot));
 }
 
@@ -466,7 +482,7 @@ export function resolveProviderRuntimeSnapshot(
   providerScope?: ProviderScope,
 ): ProviderRuntimeSnapshotResolution {
   const snapshot = typeof providerId === 'string'
-    ? providerRuntimeSnapshot(providerService, requireProvider(providerService, providerId, providerScope))
+    ? currentProviderRuntimeSnapshot(providerService, requireProvider(providerService, providerId, providerScope))
     : envRuntimeSnapshot(effectiveAgentRuntimeKind());
   return {
     snapshot,
@@ -486,15 +502,16 @@ function requireProvider(providerService: ProviderService, providerId: string, p
  * The snapshot hash the current record (or env, for null) had under the
  * recorded retired runtime, as that runtime computed it: the input of the
  * continuity check for a pin recorded before Pi became the only runtime.
- * OpenCode and Qoder keep this frozen computation for one release after
- * their engines are removed. Undefined for a label that names no engine.
+ * The OpenCode and Qoder engines are removed; their part of this computation
+ * stays frozen for one release. Undefined for an experimental label, which
+ * never recorded a provider pin of its own.
  */
 export function legacyProviderRuntimeSnapshot(
   providerService: ProviderService,
   providerId: string | null,
   recordedKind: RecordedRuntimeKind,
   providerScope?: ProviderScope,
-): ProviderRuntimeSnapshotResolution | undefined {
+): ProviderRuntimeSnapshotResolution<RecordedProductionRuntimeKind> | undefined {
   return legacyRuntimeSnapshotOf(providerService,
     typeof providerId === 'string' ? requireProvider(providerService, providerId, providerScope) : undefined, recordedKind);
 }
@@ -504,8 +521,8 @@ export function legacyRuntimeSnapshotOf(
   providerService: ProviderService,
   provider: ProviderConfig | undefined,
   recordedKind: RecordedRuntimeKind,
-): ProviderRuntimeSnapshotResolution | undefined {
-  if (!isProductionAgentRuntimeKind(recordedKind)) return undefined;
+): ProviderRuntimeSnapshotResolution<RecordedProductionRuntimeKind> | undefined {
+  if (!isRecordedProductionRuntimeKind(recordedKind)) return undefined;
   const snapshot = provider
     ? providerRuntimeSnapshot(providerService, storedProviderRecord(provider), recordedKind)
     : envRuntimeSnapshot(recordedKind);

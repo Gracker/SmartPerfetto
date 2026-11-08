@@ -7,7 +7,7 @@ import {describe, expect, it} from '@jest/globals';
 import type {ClaudeAnalysisContext} from '../types';
 
 import {buildAgentDefinitions} from '../../agentRuntime/engines/claude/claudeAgentDefinitions';
-import {buildQuickSystemPrompt, buildSystemPrompt} from '../claudeSystemPrompt';
+import {buildSystemPrompt} from '../claudeSystemPrompt';
 import {buildStrategyRegistrySnapshotFromDefinitions, getRegisteredScenes, loadPromptTemplate} from '../strategyLoader';
 
 const registry = buildStrategyRegistrySnapshotFromDefinitions({
@@ -71,17 +71,17 @@ describe('typed source contract golden rules', () => {
   );
 
   it('makes Quick/Conversation source-aware only for an active selected codebase', () => {
-    const active = buildQuickSystemPrompt(typedContext({
+    const active = buildSystemPrompt(typedContext({
       codeAwareMode: 'provider_send',
       codebaseIds: ['cb_quick'],
       outputLanguage: 'en',
     }));
-    const off = buildQuickSystemPrompt(typedContext({
+    const off = buildSystemPrompt(typedContext({
       codeAwareMode: 'off',
       codebaseIds: ['cb_quick'],
       outputLanguage: 'en',
     }));
-    const emptySelection = buildQuickSystemPrompt(typedContext({
+    const emptySelection = buildSystemPrompt(typedContext({
       codeAwareMode: 'provider_send',
       codebaseIds: [],
       outputLanguage: 'en',

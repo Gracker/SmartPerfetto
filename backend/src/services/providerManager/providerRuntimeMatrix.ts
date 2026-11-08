@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import {
-  getProviderTypesForRuntime,
-  isProductionAgentRuntimeKind,
   supportsRuntimeProviderType,
 } from '../../agentRuntime/runtimeDescriptors';
 import {
@@ -12,6 +10,9 @@ import {
   PI_AGENT_CORE_RUNTIME_KIND,
   QODER_AGENT_RUNTIME_KIND,
   SELECTABLE_RUNTIME_KINDS,
+  isProductionAgentRuntimeKind,
+  isRecordedProductionRuntimeKind,
+  type RecordedProductionRuntimeKind,
   type SelectableAgentRuntimeKind,
 } from '../../agentRuntime/runtimeKinds';
 import {legacyAgentRuntimeFallback} from '../../agentRuntime/legacyRuntimeFallback';
@@ -26,10 +27,6 @@ import { DUAL_SURFACE_PROVIDER_TYPES, PI_CATALOG_ROUTES } from './providerTypes'
 import { invalidProviderRequest } from './providerRequestError';
 
 export { DUAL_SURFACE_PROVIDER_TYPES };
-
-export function isAgentRuntimeKind(value: unknown): value is AgentRuntimeKind {
-  return isProductionAgentRuntimeKind(value);
-}
 
 export function isDualSurfaceProviderType(type: ProviderType): type is DualSurfaceProviderType {
   return DUAL_SURFACE_PROVIDER_TYPES.includes(type as DualSurfaceProviderType);
@@ -59,12 +56,14 @@ export function withSupportedRuntimes<T extends {type: ProviderType}>(value: T):
  * or a retired runtime the type supported (it maps to Pi). Anything else is
  * invalid.
  */
-export function assertAgentRuntimeSupported(type: ProviderType, runtime?: unknown): asserts runtime is AgentRuntimeKind | undefined {
+export function assertAgentRuntimeSupported(type: ProviderType, runtime?: unknown): asserts runtime is RecordedProductionRuntimeKind | undefined {
   if (runtime === undefined || runtime === null) return;
-  if (!isAgentRuntimeKind(runtime)) {
+  if (!isRecordedProductionRuntimeKind(runtime)) {
     throw invalidProviderRequest(`Invalid agent runtime: ${String(runtime)}`);
   }
-  if (!getProviderTypesForRuntime(runtime).includes(type)) {
+  // The removed OpenCode and Qoder engines ran custom providers only.
+  const supported = isProductionAgentRuntimeKind(runtime) ? supportsAgentRuntimeType(type, runtime) : type === 'custom';
+  if (!supported) {
     throw invalidProviderRequest(`Provider type "${type}" does not support ${runtime}`);
   }
 }
@@ -85,7 +84,7 @@ function surfaceRuntime(surface: ProviderConnection['apiSurface']): AgentRuntime
  */
 export function previousProviderAgentRuntime(
   provider?: Pick<ProviderConfig, 'type' | 'connection'> | null,
-): AgentRuntimeKind {
+): RecordedProductionRuntimeKind {
   const type = (provider?.type ?? 'custom') as ProviderType;
   const connection = provider?.connection ?? {};
   const storedRuntime = connection.agentRuntime;

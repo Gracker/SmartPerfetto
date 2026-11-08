@@ -5,7 +5,11 @@
 import { describe, expect, it, jest } from '@jest/globals';
 import type { IOrchestrator } from '../../agent/core/orchestratorTypes';
 import type { AgentRuntimeKind } from '../../services/providerManager/types';
-import { isAgentRuntimeKind } from '../../services/providerManager';
+import {
+  isProductionAgentRuntimeKind,
+  isRecordedProductionRuntimeKind,
+  type RecordedProductionRuntimeKind,
+} from '../runtimeKinds';
 import { createAnalysisRunSpec } from '../analysisRunSpec';
 import type { RuntimeSelection } from '../runtimeSelection';
 import { resolveAgentRuntimeSelection } from '../runtimeSelection';
@@ -38,20 +42,28 @@ describe('fake third-party runtime contract', () => {
     else process.env.SMARTPERFETTO_AGENT_RUNTIME = originalRuntime;
   });
 
-  it('keeps fake third-party runtime out of the public Provider Manager runtime kind', () => {
-    const publicRuntimeKindStillExact:
+  it('keeps fake third-party runtime out of the executable and recorded runtime kinds', () => {
+    const executableRuntimeKindStillExact:
+      IsExact<AgentRuntimeKind, 'claude-agent-sdk' | 'openai-agents-sdk' | 'pi-agent-core'> = true;
+    const recordedRuntimeKindStillExact:
       IsExact<
-        AgentRuntimeKind,
+        RecordedProductionRuntimeKind,
         'claude-agent-sdk' | 'openai-agents-sdk' | 'pi-agent-core' | 'opencode' | 'qoder-agent-sdk'
       > = true;
 
-    expect(publicRuntimeKindStillExact).toBe(true);
-    expect(isAgentRuntimeKind('claude-agent-sdk')).toBe(true);
-    expect(isAgentRuntimeKind('openai-agents-sdk')).toBe(true);
-    expect(isAgentRuntimeKind('pi-agent-core')).toBe(true);
-    expect(isAgentRuntimeKind('opencode')).toBe(true);
-    expect(isAgentRuntimeKind('qoder-agent-sdk')).toBe(true);
-    expect(isAgentRuntimeKind(fakeKind)).toBe(false);
+    expect(executableRuntimeKindStillExact).toBe(true);
+    expect(recordedRuntimeKindStillExact).toBe(true);
+    for (const kind of ['claude-agent-sdk', 'openai-agents-sdk', 'pi-agent-core']) {
+      expect(isProductionAgentRuntimeKind(kind)).toBe(true);
+      expect(isRecordedProductionRuntimeKind(kind)).toBe(true);
+    }
+    // Removed engines stay readable as recorded labels but never execute.
+    for (const kind of ['opencode', 'qoder-agent-sdk']) {
+      expect(isProductionAgentRuntimeKind(kind)).toBe(false);
+      expect(isRecordedProductionRuntimeKind(kind)).toBe(true);
+    }
+    expect(isProductionAgentRuntimeKind(fakeKind)).toBe(false);
+    expect(isRecordedProductionRuntimeKind(fakeKind)).toBe(false);
   });
 
   it('keeps fake third-party runtime out of public env selection', () => {

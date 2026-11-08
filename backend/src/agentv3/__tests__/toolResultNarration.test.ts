@@ -16,8 +16,7 @@ import {createRuntimeToolResult, readRuntimeToolResultFacts} from '../../agentRu
 
 /**
  * The tools a runtime can call: the analysis MCP server's registry, plus the
- * standalone public MCP server (`bin/smartperfetto-mcp.ts`), which OpenCode
- * reaches behind its standalone gate.
+ * standalone public MCP server (`bin/smartperfetto-mcp.ts`).
  */
 function registeredToolNames(): {analysis: Set<string>; all: Set<string>} {
   const fs = require('fs') as typeof import('fs');

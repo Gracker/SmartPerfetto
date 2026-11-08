@@ -6,7 +6,7 @@ import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
 import type {InvestigationEvidenceRecord} from '../evidence/investigationEvidenceLedger';
 import type {InvestigationLedgerAcquisitionRow} from '../../types/analysisInvestigationAssessment';
 import {INVESTIGATION_CONDITION_OPERATORS} from '../../types/analysisInvestigation';
-import {isProductionAgentRuntimeKind} from '../../agentRuntime/runtimeKinds';
+import {isRecordedProductionRuntimeKind} from '../../agentRuntime/runtimeKinds';
 import {SOURCE_NEEDS} from '../../types/sourceNeed';
 import {
   analysisDeliveryFingerprint,
@@ -198,7 +198,7 @@ export function copyAnalysisDeliveryFields(input: AnalysisDeliveryFields): Analy
     };
   }
   const completion = input.completion;
-  if (completion?.schemaVersion === 1 && isProductionAgentRuntimeKind(completion.runtimeKind) &&
+  if (completion?.schemaVersion === 1 && isRecordedProductionRuntimeKind(completion.runtimeKind) &&
       member(completion.status, ['completed', 'incomplete', 'failed', 'cancelled', 'unknown'])) {
     output.completion = {
       schemaVersion: 1, ...candidate(completion), runtimeKind: completion.runtimeKind,

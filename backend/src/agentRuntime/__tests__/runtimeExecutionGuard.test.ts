@@ -56,8 +56,8 @@ describe('RuntimeExecutionGuard', () => {
 
   it('keeps different sessions independent for the same runtime', () => {
     const guard = new RuntimeExecutionGuard();
-    const first = guard.begin({ runtime: 'qoder-agent-sdk', sessionId: 'session-1' });
-    const second = guard.begin({ runtime: 'qoder-agent-sdk', sessionId: 'session-2' });
+    const first = guard.begin({ runtime: 'pi-agent-core', sessionId: 'session-1' });
+    const second = guard.begin({ runtime: 'pi-agent-core', sessionId: 'session-2' });
 
     expect(first.signal.aborted).toBe(false);
     expect(second.signal.aborted).toBe(false);
@@ -66,8 +66,8 @@ describe('RuntimeExecutionGuard', () => {
   it('fans out session abort to every active key for that logical session', async () => {
     const guard = new RuntimeExecutionGuard();
     const first = guard.begin({ runtime: 'pi-agent-core', sessionId: 'session-1', runId: 'run-1' });
-    const second = guard.begin({ runtime: 'opencode', sessionId: 'session-1', runId: 'run-2' });
-    const isolated = guard.begin({ runtime: 'qoder-agent-sdk', sessionId: 'session-2', runId: 'run-1' });
+    const second = guard.begin({ runtime: 'openai-agents-sdk', sessionId: 'session-1', runId: 'run-2' });
+    const isolated = guard.begin({ runtime: 'claude-agent-sdk', sessionId: 'session-2', runId: 'run-1' });
 
     await expect(guard.abortSession('session-1', 'cancelled')).resolves.toBe(2);
     await expect(guard.abortSession('session-1', 'cancelled again')).resolves.toBe(0);

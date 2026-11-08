@@ -60,7 +60,8 @@ currently active provider:
   information; it cannot pretend that an Agent recommended reporting.
 
 Claude Agent SDK and OpenAI-compatible runtimes support live triage. M10 V1
-uses an explicit safe fallback for Pi Agent Core, OpenCode, and Qoder. Triage
+uses an explicit safe fallback for Pi Agent Core and for runs recorded under
+the removed Qoder runtime. Triage
 does not mutate the main analysis session, run, result, feedback, or
 Self-Evolution state.
 

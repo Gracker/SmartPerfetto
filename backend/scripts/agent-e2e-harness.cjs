@@ -51,12 +51,10 @@ function createProviderE2eHarness(providerKind) {
   const PROVIDER_RUNTIME_KINDS = [
     'openai-agents-sdk',
     'pi-agent-core',
-    'opencode',
   ];
   const ALL_RUNTIME_KINDS = [
     'claude-agent-sdk',
     ...PROVIDER_RUNTIME_KINDS,
-    'qoder-agent-sdk',
   ];
   const CONTEXT_SUITE_NAMES = ['context-source', 'context-rag', 'context-combined'];
   const SEMANTIC_DELTA_SUITE = 'code-aware-semantic-delta';
@@ -464,7 +462,7 @@ function createProviderE2eHarness(providerKind) {
       if (arg === '--runtime') {
         const value = argv[i + 1];
         if (!value) {
-          throw new Error(`--runtime requires a value: openai-agents-sdk, pi-agent-core, opencode, qoder-agent-sdk, or ${profile.runtimeGroup}`);
+          throw new Error(`--runtime requires a value: claude-agent-sdk, openai-agents-sdk, pi-agent-core, or ${profile.runtimeGroup}`);
         }
         runtime = parseRuntime(value);
         i += 1;
@@ -566,15 +564,12 @@ function createProviderE2eHarness(providerKind) {
       value === 'openai' ||
       value === 'openai-agents-sdk' ||
       value === 'pi' ||
-      value === 'pi-agent-core' ||
-      value === 'opencode' ||
-      value === 'qoder' ||
-      value === 'qoder-agent-sdk'
+      value === 'pi-agent-core'
     ) {
       return value;
     }
     throw new Error(
-      `Invalid runtime: ${value}. Expected claude-agent-sdk, openai-agents-sdk, pi-agent-core, opencode, qoder-agent-sdk, all, or ${profile.runtimeGroup}.`,
+      `Invalid runtime: ${value}. Expected claude-agent-sdk, openai-agents-sdk, pi-agent-core, all, or ${profile.runtimeGroup}.`,
     );
   }
 
@@ -584,12 +579,11 @@ function createProviderE2eHarness(providerKind) {
     if (value === 'claude') return ['claude-agent-sdk'];
     if (value === 'openai') return ['openai-agents-sdk'];
     if (value === 'pi') return ['pi-agent-core'];
-    if (value === 'qoder') return ['qoder-agent-sdk'];
     return [value];
   }
 
   function printUsage() {
-    console.log(`Usage: node scripts/run-${profile.slug}-agent-e2e.cjs [--suite all|context|flagship|startup|scrolling|scene-reconstruction|scene-cancel|external-issue|dual-trace|context-source|context-rag|context-combined|code-aware-semantic-delta|system-analysis] [--runtime claude-agent-sdk|openai-agents-sdk|pi-agent-core|opencode|qoder-agent-sdk|all|${profile.runtimeGroup}] [--timeout-ms <number>] [--repeat 5] [--output-dir <path>] [--strict] [--delta-baseline <summary.json|dir>]`);
+    console.log(`Usage: node scripts/run-${profile.slug}-agent-e2e.cjs [--suite all|context|flagship|startup|scrolling|scene-reconstruction|scene-cancel|external-issue|dual-trace|context-source|context-rag|context-combined|code-aware-semantic-delta|system-analysis] [--runtime claude-agent-sdk|openai-agents-sdk|pi-agent-core|all|${profile.runtimeGroup}] [--timeout-ms <number>] [--repeat 5] [--output-dir <path>] [--strict] [--delta-baseline <summary.json|dir>]`);
     console.log('');
     console.log(`Runs SmartPerfetto Agent SSE E2E with ${profile.label}; main ${profile.model}, light ${profile.lightModel}.`);
     console.log(`Credential precedence: ${profile.credentialKeys.join(', ')}. No other-provider or generic OpenAI fallback.`);
@@ -600,11 +594,10 @@ function createProviderE2eHarness(providerKind) {
     } else {
       console.log('Only the official DeepSeek Flash endpoint/model is allowed. Claude uses the official Anthropic-format endpoint.');
     }
-    console.log('OpenAI, Pi and OpenCode receive pinned provider/model configuration. An absent installed Pi model is unavailable, never replaced with another model.');
-    console.log('Qoder uses resolveModel BYOK and still requires QODER_PERSONAL_ACCESS_TOKEN or qodercli login; BYOK does not replace Qoder authentication.');
+    console.log('OpenAI and Pi receive pinned provider/model configuration. An absent installed Pi model is unavailable, never replaced with another model.');
     console.log(`Each real SSE scenario has a ${DEFAULT_TIMEOUT_MS}ms default timeout; --timeout-ms changes observation only.`);
     console.log('The code-aware semantic-delta suite requires --repeat 5 and writes paired-run plus aggregate JSON artifacts.');
-    console.log(`The system-analysis suite uses declarative real/constructed fixtures. all/${profile.runtimeGroup} selects OpenAI, Pi and OpenCode; Claude/Qoder require separate runs.`);
+    console.log(`The system-analysis suite uses declarative real/constructed fixtures. all/${profile.runtimeGroup} selects OpenAI and Pi; Claude requires a separate run.`);
     console.log('Use --suite system-analysis --system-scenario <manifest ID> for one diagnostic; it never represents full matrix acceptance.');
     console.log('The flagship suite runs startup/scrolling independent expectation files and writes fingerprinted summaries.');
     console.log('Without --strict, wrong/undelivered answers and hard flags fail; unmeasured facets remain INCONCLUSIVE.');
@@ -716,27 +709,6 @@ function createProviderE2eHarness(providerKind) {
             reason: 'CLAUDE_EXPLICIT_CONFIGURATION_MISSING',
           };
     }
-    if (runtimeKind === 'qoder-agent-sdk') {
-      const qoderToken = concreteCredential(env.QODER_PERSONAL_ACCESS_TOKEN);
-      const qoderCliPath = concreteCredential(env.QODERCLI_PATH);
-      const missingReasons = [
-        ...(!providerApiKey ? [profile.missingCredential] : []),
-        ...(!qoderToken && !qoderCliPath
-          ? ['QODER_PERSONAL_ACCESS_TOKEN_OR_QODERCLI_PATH_MISSING']
-          : []),
-      ];
-      if (missingReasons.length > 0) {
-        return {
-          available: false,
-          reason: missingReasons.join(';'),
-        };
-      }
-      return {
-        available: true,
-        credentialKind: qoderToken ? 'QODER_PERSONAL_ACCESS_TOKEN' : 'QODERCLI_PATH',
-        apiKey: providerApiKey,
-      };
-    }
     return {available: false, reason: 'UNSUPPORTED_RUNTIME'};
   }
 
@@ -745,6 +717,7 @@ function createProviderE2eHarness(providerKind) {
       return buildChildEnv(availability.apiKey, runtimeKind, isolatedRoot, env);
     }
     return {
+      // A stale Qoder PAT in the operator env never reaches a child process.
       ...Object.fromEntries(Object.entries(env).filter(([key]) => key !== 'QODER_PERSONAL_ACCESS_TOKEN')),
       SMARTPERFETTO_AGENT_RUNTIME: 'claude-agent-sdk',
       DOTENV_CONFIG_QUIET: 'true',
@@ -1218,24 +1191,17 @@ function createProviderE2eHarness(providerKind) {
     }
   }
 
-  // Provider endpoint origin and model name only: never a path, query or credential. Pi and
-  // OpenCode take their model from the model JSON this wrapper (or the caller) supplies.
+  // Provider endpoint origin and model name only: never a path, query or credential. Pi takes
+  // its model from the model JSON this wrapper (or the caller) supplies.
   function providerFingerprint(runtimeKind, env) {
     if (runtimeKind === 'claude-agent-sdk') {
       return {providerOrigin: originOf(env.ANTHROPIC_BASE_URL, 'anthropic-default'), model: env.CLAUDE_MODEL || 'claude-runtime-default'};
-    }
-    if (runtimeKind === 'qoder-agent-sdk') {
-      return {providerOrigin: originOf(env.QODER_BYOK_BASE_URL, 'qoder-default'), model: env.QODER_MODEL || 'qoder-runtime-default'};
     }
     if (runtimeKind === 'pi-agent-core' && env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON) {
       const config = parseModelJson(env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON);
       // A catalog reference nests the model id and endpoint under `catalog`.
       const model = config.catalog && typeof config.catalog === 'object' ? config.catalog : config;
       return {providerOrigin: originOf(model.baseUrl, 'pi-default'), model: model.id || 'pi-runtime-default'};
-    }
-    if (runtimeKind === 'opencode' && env.SMARTPERFETTO_OPENCODE_MODEL_JSON) {
-      const model = parseModelJson(env.SMARTPERFETTO_OPENCODE_MODEL_JSON);
-      return {providerOrigin: originOf(model.baseURL, 'opencode-default'), model: model.modelID || 'opencode-runtime-default'};
     }
     return {providerOrigin: originOf(env.OPENAI_BASE_URL, 'openai-default'), model: env.OPENAI_MODEL || 'openai-runtime-default'};
   }
@@ -1612,36 +1578,6 @@ function createProviderE2eHarness(providerKind) {
             model, baseUrl,
             override: env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON,
           }, env),
-      };
-    }
-
-    if (runtimeKind === 'opencode') {
-      return {
-        ...baseEnv,
-        SMARTPERFETTO_AGENT_RUNTIME: 'opencode',
-        SMARTPERFETTO_OPENCODE_MODEL_JSON:
-          assertPinnedModelJson(env.SMARTPERFETTO_OPENCODE_MODEL_JSON, JSON.stringify({
-            providerID: profile.id,
-            modelID: model,
-            baseURL: baseUrl,
-            apiKeyEnv: profile.credentialKeys[0],
-            smallModel: lightModel,
-          }), 'OpenCode'),
-      };
-    }
-
-    if (runtimeKind === 'qoder-agent-sdk') {
-      return {
-        ...baseEnv,
-        SMARTPERFETTO_AGENT_RUNTIME: 'qoder-agent-sdk',
-        ...(env.QODER_PERSONAL_ACCESS_TOKEN !== undefined
-          ? {QODER_PERSONAL_ACCESS_TOKEN: env.QODER_PERSONAL_ACCESS_TOKEN} : {}),
-        QODER_MODEL: model,
-        QODER_LIGHT_MODEL: lightModel,
-        QODER_BYOK_API_KEY: apiKey,
-        QODER_BYOK_PROVIDER: profile.slug,
-        QODER_BYOK_BASE_URL: baseUrl,
-        QODER_BYOK_STYLE: 'openai',
       };
     }
 

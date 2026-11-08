@@ -181,7 +181,7 @@ test('lists entrypoints with the file that establishes each, including live path
   });
 });
 
-// The OpenCode runtime spawns backend/bin/smartperfetto-mcp.ts by path with tsx.
+// A runtime may spawn a launcher such as backend/bin/smartperfetto-mcp.ts by path with tsx.
 test('a launcher under bin is tooling only while something live names it', () => {
   const { entrypoints, live } = analyze({
     'src/app.ts': longBody("import {spawn} from './spawner';\nexport default spawn;\n"),

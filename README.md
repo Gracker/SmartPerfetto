@@ -126,11 +126,10 @@ If npm reports that dependency install scripts were blocked or skipped, review
 those scripts and retry with approval limited to the required packages:
 
 ```bash
-npm install -g @gracker/smartperfetto --allow-scripts=better-sqlite3,opencode-ai
+npm install -g @gracker/smartperfetto --allow-scripts=better-sqlite3
 ```
 
-`better-sqlite3` provides the native SQLite binding used by core CLI commands;
-`opencode-ai` needs its install script when selecting the OpenCode runtime.
+`better-sqlite3` provides the native SQLite binding used by core CLI commands.
 Package-publisher approvals do not approve scripts for your installation. See
 [npm's install policy](https://docs.npmjs.com/cli/install/) and the
 [CLI installation guide](docs/reference/cli.en.md#when-npm-blocks-install-scripts)
@@ -145,9 +144,7 @@ After the Web UI starts, open **AI Assistant Settings → Providers**, add one
 provider, save it, test it, and activate it. Local source runs may instead configure explicit provider credentials in
 `backend/.env`. Claude Code login does not configure the SDK. Do not configure every
 runtime for the first launch; choose one provider path and follow the
-[Configuration Guide](docs/getting-started/configuration.en.md). Advanced
-Qoder users can also route models through the documented BYOK policy while
-keeping Qoder PAT or `qodercli` authentication separate. Saved providers also
+[Configuration Guide](docs/getting-started/configuration.en.md). Saved providers also
 refresh their model suggestions from supported provider catalogs with a bounded
 cache; unsupported or unavailable catalogs keep the curated preset list.
 

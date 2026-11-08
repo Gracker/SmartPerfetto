@@ -209,7 +209,7 @@ node backend/scripts/run-glm-agent-e2e.cjs \
   --repeat 5
 ```
 
-默认使用 GLM Coding Plan 订阅端点和 `GLM_API_KEY`，主模型 `glm-5.3`、轻量模型 `glm-5.3-flash`；拒绝通用按量付费端点和 DeepSeek 回退。真实 OpenAI、Pi、OpenCode 的结果必须分别报告 `PASSED`、`FAILED` 或 `REAL PROVIDER NOT AVAILABLE`；缺少凭证不是通过。Claude、Qoder 仅在显式选择并具备各自授权时单独运行。
+默认使用 GLM Coding Plan 订阅端点和 `GLM_API_KEY`，主模型 `glm-5.3`、轻量模型 `glm-5.3-flash`；拒绝通用按量付费端点和 DeepSeek 回退。真实 OpenAI、Pi 的结果必须分别报告 `PASSED`、`FAILED` 或 `REAL PROVIDER NOT AVAILABLE`；缺少凭证不是通过。Claude 仅在显式选择并具备授权时单独运行。
 
 排查单个失败场景时，可以先运行诊断预检；它不替代五轮矩阵，也不会把未覆盖的建议语义标为已验收：
 

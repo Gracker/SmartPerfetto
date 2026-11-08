@@ -24,8 +24,9 @@ Vertex) with its model ID and credential form. Pick one source for your first se
 
 ### Migrating from a retired runtime
 
-Claude Agent SDK, OpenAI Agents SDK, OpenCode, and Qoder Agent SDK are no longer selectable.
-Existing configuration migrates automatically; nothing needs editing by hand:
+Claude Agent SDK and OpenAI Agents SDK are no longer selectable, and the OpenCode and Qoder
+Agent SDK engines are removed. Existing configuration migrates automatically; nothing needs
+editing by hand:
 
 - **Provider profiles**: on read, a retired `agentRuntime` maps to `pi-agent-core` and records
   the endpoint the old runtime used (`apiSurface`: `claude` or `openai`). Pi keeps calling the
@@ -447,7 +448,7 @@ closed. Vertex uses the file the configuration names in
 
 Every Provider Manager profile runs on Pi; an explicit model JSON is needed only to override the automatic mapping.
 
-The OpenCode and Qoder runtimes are retired: `SMARTPERFETTO_AGENT_RUNTIME=opencode|qoder-agent-sdk`
+The OpenCode and Qoder engines are removed: `SMARTPERFETTO_AGENT_RUNTIME=opencode|qoder-agent-sdk`
 maps to Pi. An OpenCode configuration's OpenAI-compatible fields (or the `baseURL` / `modelID` /
 `apiKey` in its model JSON) become a Pi Chat Completions model; Qoder used its own service and
 cannot be translated, so switch it to an Anthropic- or OpenAI-compatible endpoint.
@@ -594,8 +595,7 @@ or a run; remove them from `.env`.
 100/50 are safety budgets for one investigation, not targets to fill. A budget
 above one reserves one no-tool summary of findings, missing evidence and next steps;
 the result remains partial. Closeout cannot bypass cancellation, timeouts, permissions
-or cost limits. OpenCode observes turns asynchronously and may overshoot, with actual
-counts retained. See [Turn Budgets And Closeout](../architecture/agent-runtime.en.md#turn-budgets-and-closeout).
+or cost limits. See [Turn Budgets And Closeout](../architecture/agent-runtime.en.md#turn-budgets-and-closeout).
 
 Follow-up questions receive bounded history and can retrieve older turns on demand.
 History does not widen source, owner or trace permissions, and full older answers
@@ -879,19 +879,18 @@ provider A/B gates may set the following on the target backend process:
 SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES=task4,task6
 ```
 
-The value accepts only a comma-separated list of `task4`, `task5`, `task6`,
-`task7`, `task8`, and `task9`. Leading, trailing, or item whitespace, duplicate
+The value accepts only a comma-separated list of `task4`, `task5`, `task6`, and
+`task7`; `task8` and `task9`, retired with the OpenCode and Qoder engines, are
+unknown items. Leading, trailing, or item whitespace, duplicate
 items, empty items, unknown items, or any malformed value invalidate the whole
 setting and admit nothing. This is a maintainer deployment boundary, not a
 Provider Manager, UI, or provider-credential env option. Benchmark artifacts
 never edit or activate it automatically.
 
-- `task4`: reuse quick-evidence/focus preflight across all five runtimes.
-- `task5`: permit bounded overlap for marked commutative reads across all five runtimes; other tools stay exclusive.
+- `task4`: reuse quick-evidence/focus preflight across every runtime.
+- `task5`: permit bounded overlap for marked commutative reads across every runtime; other tools stay exclusive.
 - `task6`: overlap independent Claude/OpenAI preflights.
 - `task7`: load independent Pi SDK/provider startup concurrently and enable quick parallel-batch scheduling; descriptor/tool gates still serialize exclusive work.
-- `task8`: observe OpenCode messages/status together with adaptive polling.
-- `task9`: overlap Qoder Skill-registry and SDK startup.
 
 Once `task5` is admitted, safe read concurrency is on by default. The following
 setting can only roll it back to exclusive execution; it cannot enable the
@@ -902,7 +901,7 @@ SMARTPERFETTO_SAFE_TOOL_CONCURRENCY=false
 ```
 
 Current shipped defaults remain serial because genuine deterministic admission
-for all five adapters is `NOT CONFIGURED`, bounded real-provider base/candidate
+for every adapter is `NOT CONFIGURED`, bounded real-provider base/candidate
 A/B has not run, and the admission conclusion is `INCONCLUSIVE`. Correctness
 and observability fixes such as the execution guard, processor-creation
 single-flight, failed-cache retry, cancellation cleanup, and internal
@@ -956,6 +955,4 @@ The RunManifest `RuntimePerformance` receipt is internal evidence. Public SSE
 does not include admission-grade model, provider snapshot, provider usage, or
 performance fields. Deterministic gates are not real-provider proof either:
 record unavailable credentials, SDKs, or local login state precisely as
-`NOT AVAILABLE` or `NOT CONFIGURED`. Qoder requires a PAT or local `qodercli`
-login in addition to a BYOK provider key; BYOK alone does not prove Qoder can
-run.
+`NOT AVAILABLE` or `NOT CONFIGURED`.

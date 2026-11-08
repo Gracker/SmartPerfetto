@@ -4,7 +4,7 @@
 
 import {randomUUID} from 'crypto';
 
-import type {AgentRuntimeKind} from '../../agentRuntime/runtimeKinds';
+import type {RecordedProductionRuntimeKind} from '../../agentRuntime/runtimeKinds';
 import type {CapabilityManifestAttributionV1} from '../../types/capabilityManifest';
 import type {
   RunInjectionAttribution,
@@ -42,7 +42,7 @@ export interface CreateRunManifestBuilderInput {
   scope: RunManifestScope;
   userId?: string;
   startedAt?: number;
-  runtime: AgentRuntimeKind;
+  runtime: RecordedProductionRuntimeKind;
   providerId?: string | null;
   providerSnapshotHash?: string;
   model?: string;

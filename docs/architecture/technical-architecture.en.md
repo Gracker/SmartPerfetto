@@ -69,7 +69,7 @@ POST /api/agent/v1/analyze
   -> AgentAnalyzeSessionService.prepareSession()
   -> resolve workspace / user / trace / provider / source / knowledge context
   -> createAgentOrchestrator()
-  -> select Claude / OpenAI / Pi / OpenCode / Qoder runtime
+  -> select the Pi runtime (or the hidden Claude / OpenAI fallback)
   -> typed intent pins scope, evidence access, budget, and deliverable
   -> product acquires strategy-declared scene entry evidence when eligible
   -> use the shared MCP registry for SQL, Skills, knowledge, and planning
@@ -135,8 +135,6 @@ shared `IOrchestrator` contract:
 | `claude-agent-sdk` | Anthropic, Bedrock, Vertex, Claude-compatible | No native state across turns (provider pin only) |
 | `openai-agents-sdk` | OpenAI Responses, OpenAI-compatible, Ollama/chat-completions | No native state across turns (provider pin only) |
 | `pi-agent-core` | Provider Manager custom profile / Pi model config | No native state across turns (provider pin only) |
-| `opencode` | OpenCode SDK and custom providers | No native session across turns; isolated directories derived from the session id are reused |
-| `qoder-agent-sdk` | Qoder CLI login or PAT, custom providers | No native state across turns (provider pin only) |
 
 Canonical loaders and capabilities come from
 `backend/src/agentRuntime/runtimeDescriptors.ts`, with implementations under

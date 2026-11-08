@@ -32,7 +32,7 @@ Output:
 - Each round places its analysis process and steps above its final conclusion, keeping each round together.
 - Conclusions should trace back to concrete time ranges, threads, slices, SQL rows, or Skill results.
 - Server delivery details are collapsed by default; expand them for the full evidence and source references. Numbers come from Skill and SQL results rather than a per-sentence check; the server records native completion, dual-trace comparison identity and, with source selected, whether written source locations match source this run read. Warnings remain visible.
-- With the Claude or OpenAI runtime, the answer streams in as a draft while it is written. Once the run finishes, the final answer replaces the draft, with no review step after it; Stop cancels the run. The Pi, OpenCode and Qoder runtimes show no draft: the answer appears once it is finished. Sessions with source or knowledge selected also show a draft, but only to you and only after the same redacting projection as the final answer; once any draft text needs redaction, the draft is withdrawn for the rest of the run and the projected answer appears when it is finished.
+- With the Claude or OpenAI runtime, the answer streams in as a draft while it is written. Once the run finishes, the final answer replaces the draft, with no review step after it; Stop cancels the run. The Pi runtime shows no draft: the answer appears once it is finished. Sessions with source or knowledge selected also show a draft, but only to you and only after the same redacting projection as the final answer; once any draft text needs redaction, the draft is withdrawn for the rest of the run and the projected answer appears when it is finished.
 
 ### Panel Layout And Shortcuts
 

@@ -146,14 +146,6 @@ function packagePaths(extractedRoot, packageName, target) {
         ? '@anthropic-ai/claude-agent-sdk-darwin-arm64/claude'
         : '@anthropic-ai/claude-agent-sdk-linux-x64/claude',
   );
-  const opencode = path.join(
-    resources,
-    'backend',
-    'node_modules',
-    'opencode-ai',
-    'bin',
-    'opencode.exe',
-  );
   const sodiumPrebuild = target === 'windows-x64'
     ? 'win32-x64'
     : target === 'macos-arm64'
@@ -166,7 +158,6 @@ function packagePaths(extractedRoot, packageName, target) {
     node,
     traceProcessor,
     claude,
-    opencode,
     betterSqlite3: path.join(
       resources,
       'backend',
@@ -1492,14 +1483,6 @@ async function smoke(options) {
             paths.claude,
             ['--version'],
             'bundled Claude',
-            runtimeEnv,
-          )
-        : null,
-      opencode: fs.existsSync(paths.opencode)
-        ? runArchiveBinary(
-            paths.opencode,
-            ['--version'],
-            'bundled OpenCode',
             runtimeEnv,
           )
         : null,

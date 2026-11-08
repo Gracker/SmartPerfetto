@@ -3,7 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import type {ApplicationBuildIdentity} from '../services/applicationUpdate/types';
-import type {AgentRuntimeKind, RecordedRuntimeKind} from '../agentRuntime/runtimeKinds';
+import type {RecordedProductionRuntimeKind, RecordedRuntimeKind} from '../agentRuntime/runtimeKinds';
 import type {
   RuntimePerformanceReceiptV1,
   RuntimePerformanceRecorder,
@@ -1257,7 +1257,8 @@ export interface RunSkillInvocationOutcome {
 }
 
 export interface RunManifestRuntimeAttribution {
-  runtime: AgentRuntimeKind;
+  /** The run's runtime label; a replay pinned to a removed engine's label keeps it as provenance. */
+  runtime: RecordedProductionRuntimeKind;
   providerId: string | null;
   providerSnapshotHash?: string;
   model?: string;

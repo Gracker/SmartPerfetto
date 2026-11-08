@@ -104,8 +104,7 @@ import {
   stringifyRuntimeToolResult,
 } from '../../runtimeToolSpec';
 import type { RuntimeSelection } from '../../runtimeSelection';
-import type { RuntimeEngineDefinition, RuntimeFactoryInput } from '../../runtimeRegistry';
-import type { EngineCapabilities } from '../../runtimeDescriptorTypes';
+import type { RuntimeFactoryInput } from '../../runtimeRegistry';
 import { canonicalRuntimeKind, createAnalysisRunSpec, type AnalysisRunSpec } from '../../analysisRunSpec';
 import {
   buildRuntimeTracePairComparisonContext,
@@ -114,10 +113,8 @@ import {
   detectRunFocusApps,
 } from '../../runtimePromptContext';
 import { loadPromptTemplate } from '../../../agentv3/strategyLoader';
-import {
-  EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
-  PI_AGENT_CORE_RUNTIME_KIND,
-} from '../../runtimeKinds';
+import { PI_AGENT_CORE_RUNTIME_KIND } from '../../runtimeKinds';
+import { getProductionEngineCapabilities } from '../../runtimeDescriptors';
 import {
   buildQuickRunReceipt,
   buildQuickMemoryContextPayload,
@@ -170,13 +167,8 @@ import {runtimeSourceDepth} from '../../../services/codebase/sourceDepthPolicy';
 import {parseFlagValue} from '../../../utils/envFlag';
 export type {PiAgentCoreModelConfig} from './piAgentCoreConfig';
 
-export type ExperimentalPiAgentCoreRuntimeKind = typeof EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND;
-export type PublicPiAgentCoreRuntimeKind = typeof PI_AGENT_CORE_RUNTIME_KIND;
-export type PiAgentCoreRuntimeKind = ExperimentalPiAgentCoreRuntimeKind | PublicPiAgentCoreRuntimeKind;
-export {
-  EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
-  PI_AGENT_CORE_RUNTIME_KIND,
-};
+export type PiAgentCoreRuntimeKind = typeof PI_AGENT_CORE_RUNTIME_KIND;
+export { PI_AGENT_CORE_RUNTIME_KIND };
 
 export const PI_AGENT_CORE_MODULE_PATH_ENV = 'SMARTPERFETTO_PI_AGENT_CORE_MODULE_PATH';
 export const PI_AGENT_CORE_FAKE_STREAM_ENV = 'SMARTPERFETTO_PI_AGENT_CORE_FAKE_STREAM';
@@ -496,20 +488,6 @@ function createPiProviderIdleSupervisor(input: {
   };
 }
 
-export function getPiAgentCoreEngineCapabilities(
-  kind: PiAgentCoreRuntimeKind = EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
-): EngineCapabilities {
-  const publicRuntime = kind === PI_AGENT_CORE_RUNTIME_KIND;
-  return {
-    kind,
-    displayName: publicRuntime ? 'Pi Agent Core' : 'Experimental Pi Agent Core',
-    production: publicRuntime,
-    publicRuntime,
-    promptCache: { systemPromptDynamicBoundary: false },
-    draftAnswerStreaming: false,
-  };
-}
-
 export function getPiAgentCoreRuntimeDiagnostics(
   env: EnvLike = process.env,
   runtime: PiAgentCoreRuntimeKind = PI_AGENT_CORE_RUNTIME_KIND,
@@ -521,7 +499,8 @@ export function getPiAgentCoreRuntimeDiagnostics(
   return {
     configured: Boolean(modelJson || fakeStream),
     runtime,
-    experimental: runtime === EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
+    // Part of the diagnostics payload contract; the experimental Pi runtime no longer exists.
+    experimental: false,
     package: '@earendil-works/pi-agent-core',
     modelConfigured: Boolean(modelJson),
     ...(unavailable ? {modelUnavailableReason: unavailable, configHint: piModelUnavailableHint(unavailable)} : {}),
@@ -2015,7 +1994,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       traceId,
       options,
       runtimeSelection: this.selection,
-      engineCapabilities: getPiAgentCoreEngineCapabilities(this.selection.kind),
+      engineCapabilities: getProductionEngineCapabilities(this.selection.kind),
       sceneType,
       outputLanguage,
       resolvedMode: quickMode ? 'quick' : 'full',
@@ -2434,20 +2413,9 @@ export function createPiAgentCoreRuntime(
   };
   return new PiAgentCoreRuntime(
     input.traceProcessorService,
-    input.selection.kind === EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND ||
-      input.selection.kind === PI_AGENT_CORE_RUNTIME_KIND
+    input.selection.kind === PI_AGENT_CORE_RUNTIME_KIND
       ? input.selection as RuntimeSelection<PiAgentCoreRuntimeKind>
       : { kind: PI_AGENT_CORE_RUNTIME_KIND, source: 'env' },
     runtimeOptions,
   );
-}
-
-export function createPiAgentCoreRuntimeDefinition(
-  kind: PiAgentCoreRuntimeKind = EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
-): RuntimeEngineDefinition {
-  return {
-    kind,
-    capabilities: getPiAgentCoreEngineCapabilities(kind),
-    createOrchestrator: (input) => createPiAgentCoreRuntime(input),
-  };
 }

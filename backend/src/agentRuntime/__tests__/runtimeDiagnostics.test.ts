@@ -46,25 +46,14 @@ describe('runtime diagnostics resolver', () => {
     expect(diagnostics).toMatchObject({runtime: 'pi-agent-core', configured: true, modelConfigured: true});
   });
 
-  it('resolves hidden experimental diagnostics without exposing them as production descriptors', () => {
-    const diagnostics = getRuntimeDiagnostics({
-      kind: 'experimental-opencode',
-      source: 'env',
-    }, {
-      env: {
-        SMARTPERFETTO_OPENCODE_SDK_MODULE_PATH: '/tmp/opencode-sdk.js',
-      },
-    });
+  it.each(['opencode', 'qoder-agent-sdk', 'experimental-opencode', 'experimental-pi-agent-core'])(
+    'refuses diagnostics for %s, which names no engine', (kind) => {
+      expect(() => getRuntimeDiagnostics({kind, source: 'env'}, {env: {}}))
+        .toThrow(`Unsupported agent runtime diagnostics: ${kind}`);
+    },
+  );
 
-    expect(diagnostics).toMatchObject({
-      runtime: 'experimental-opencode',
-      configured: false,
-      experimental: true,
-      modulePath: '/tmp/opencode-sdk.js',
-    });
-  });
-
-  it.each(['claude-agent-sdk', 'openai-agents-sdk', 'pi-agent-core', 'opencode'])(
+  it.each(['claude-agent-sdk', 'openai-agents-sdk', 'pi-agent-core'])(
     'offers surface-neutral setup for unconfigured runtimes (%s)', (runtime) => {
       const diagnostics = asRuntimeDiagnosticsPayload({
         runtime, configured: false, configHint: 'Runtime-specific requirement',
@@ -77,27 +66,6 @@ describe('runtime diagnostics resolver', () => {
       expect(hint).toContain('~/.smartperfetto/runtime/data/providers.json');
       expect(hint).toContain('same SMARTPERFETTO_BACKEND_DATA_DIR');
       expect(hint).not.toContain('First open the Web UI');
-    },
-  );
-
-  it.each([
-    ['en', true, 'may use the local qodercli login', 'Qoder Agent SDK is installed'],
-    ['zh-CN', true, '可以使用本机 qodercli 登录态', 'Qoder Agent SDK 已安装'],
-    ['en', false, 'explicitly install the optional SDK', 'Qoder Agent SDK is not installed'],
-    ['zh-CN', false, '显式安装可选 SDK', 'Qoder Agent SDK 未安装'],
-  ] as const)(
-    'keeps Qoder local-login diagnostics accurate (%s, installed=%s)',
-    (language, sdkInstalled, expected, prefix) => {
-      const diagnostics = asRuntimeDiagnosticsPayload({
-        runtime: 'qoder-agent-sdk',
-        configured: false,
-        sdkInstalled,
-      }, 'qoder-agent-sdk', {SMARTPERFETTO_OUTPUT_LANGUAGE: language});
-      expect(diagnostics.configured).toBe(false);
-      expect(diagnostics.configHint).toContain(prefix);
-      expect(diagnostics.configHint).toContain(expected);
-      expect(diagnostics.configHint).not.toContain('Providers');
-      expect(diagnostics.configHint).not.toContain('SMARTPERFETTO_BACKEND_DATA_DIR');
     },
   );
 
@@ -123,14 +91,13 @@ describe('runtime diagnostics resolver', () => {
       modelConfigured: false,
     })).toBe('');
     expect(getRuntimeDiagnosticModel({
-      runtime: 'opencode',
+      runtime: 'claude-agent-sdk',
       configured: false,
-      modelConfigured: false,
-    })).toBe('opencode');
+    })).toBe('');
     expect(getRuntimeDiagnosticProviderMode({
-      runtime: 'opencode',
+      runtime: 'pi-agent-core',
       configured: true,
-    })).toBe('opencode');
+    })).toBe('pi-agent-core');
   });
 
   it('fails closed for malformed diagnostics without dumping payload contents', () => {

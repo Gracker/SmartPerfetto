@@ -12,7 +12,7 @@ export const MODEL_EXECUTION_PROFILE_RULESET = 'model_execution_profile_rules@5'
 export type ModelExecutionProtocol = 'chat_completions' | 'responses' | 'anthropic_messages' | 'native' | 'unknown';
 export type ReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type ReasoningSetting = Readonly<{mode: 'disabled'} | {mode: 'enabled'; effort?: ReasoningEffort}>;
-export type ModelControlSurface = 'openai_chat' | 'openai_responses' | 'pi_stream' | 'claude_effort' | 'opencode_agent_options' | 'none';
+export type ModelControlSurface = 'openai_chat' | 'openai_responses' | 'pi_stream' | 'claude_effort' | 'none';
 export type ModelFactSource = 'official' | 'installed_sdk' | 'contract_test' | 'runtime_observation';
 export type ModelFactReason = 'unrecognized_endpoint_model_protocol' | 'native_model_unknown' | 'capability_unsupported';
 export type ModelCapabilityFact<T> =
@@ -121,7 +121,7 @@ export function parseOpenAIAnalysisReasoningEffort(value: string | undefined): O
 }
 
 const PROTOCOLS: readonly ModelExecutionProtocol[] = ['chat_completions', 'responses', 'anthropic_messages', 'native', 'unknown'];
-const SURFACES: readonly ModelControlSurface[] = ['openai_chat', 'openai_responses', 'pi_stream', 'claude_effort', 'opencode_agent_options', 'none'];
+const SURFACES: readonly ModelControlSurface[] = ['openai_chat', 'openai_responses', 'pi_stream', 'claude_effort', 'none'];
 const NUMERIC_SETTINGS = ['maxOutputTokens', 'maxTurns', 'quickMaxTurns', 'quickTargetTurns', 'fullPerTurnMs',
   'quickPerTurnMs', 'fullRequestTimeoutMs', 'streamIdleTimeoutMs', 'maxRunTimeoutMs', 'classifierTimeoutMs', 'maxHistoryBytes'] as const;
 const GLM_EVIDENCE = 'zai-chat-completion-thinking-2026-11-05';

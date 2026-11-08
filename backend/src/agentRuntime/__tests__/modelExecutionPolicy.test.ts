@@ -151,7 +151,7 @@ describe('explicit model execution policy', () => {
   });
 
   it('keeps a missing model legal with no invented identity or controls', () => {
-    const target = profile({runtimeKind: 'qoder-agent-sdk', protocol: 'native', modelId: undefined, baseUrl: undefined,
+    const target = profile({runtimeKind: 'claude-agent-sdk', protocol: 'native', modelId: undefined, baseUrl: undefined,
       sdkCapabilities: {surface: 'none', thinking: 'unknown', reasoningRoundtrip: 'unknown', source: 'installed_sdk'}});
     const result = policy(target);
     expect(result).toMatchObject({status: 'ready', controls: {surface: 'none'}, receipt: {outcome: 'not_applied_unknown'}});
@@ -186,14 +186,8 @@ describe('closed native control surfaces', () => {
     expect(result).toMatchObject({status: 'ready', controls: {surface: 'claude_effort', effort: 'low'}});
   });
 
-  it('keeps OpenCode controls in its agent-options surface', () => {
-    const result = policy(profile({...deepseek, runtimeKind: 'opencode', sdkCapabilities: {surface: 'opencode_agent_options',
-      thinking: 'optional', efforts: ['low', 'high', 'max'], reasoningRoundtrip: 'supported', source: 'contract_test'}}));
-    expect(result).toMatchObject({status: 'ready', controls: {surface: 'opencode_agent_options', thinking: {type: 'disabled'}}});
-  });
-
   it.each([
-    {runtimeKind: 'qoder-agent-sdk' as const}, {runtimeKind: 'claude-agent-sdk' as const}, {protocol: 'responses' as const},
+    {runtimeKind: 'pi-agent-core' as const}, {runtimeKind: 'claude-agent-sdk' as const}, {protocol: 'responses' as const},
   ])('rejects a mismatched runtime/protocol/SDK surface: %j', overrides => {
     expect(policy(profile(overrides))).toMatchObject({status: 'unsupported', reason: 'adapter_surface_mismatch'});
   });

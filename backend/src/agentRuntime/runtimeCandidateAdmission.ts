@@ -10,8 +10,6 @@ export const RUNTIME_CANDIDATE_IDS = [
   'task5',
   'task6',
   'task7',
-  'task8',
-  'task9',
 ] as const;
 
 export type RuntimeCandidateId = typeof RUNTIME_CANDIDATE_IDS[number];

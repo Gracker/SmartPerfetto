@@ -10,11 +10,6 @@ import { getProviderService } from '../../services/providerManager';
 import { testProviderConnection } from '../../services/providerManager/connectionTester';
 import { resolveAgentRuntimeSelectionForDiagnostics } from '../../agentRuntime/runtimeSelection';
 import { getRuntimeDiagnostics } from '../../agentRuntime/runtimeDiagnostics';
-import {
-  EXPERIMENTAL_OPENCODE_RUNTIME_KIND,
-  OPENCODE_RUNTIME_KIND,
-  QODER_AGENT_RUNTIME_KIND,
-} from '../../agentRuntime/runtimeKinds';
 import { getClaudeRuntimeDiagnostics } from '../../agentv3/claudeConfig';
 import { getOpenAIRuntimeDiagnostics, hasOpenAICredentials } from '../../agentOpenAI/openAiConfig';
 import { withConsoleLogToStderr } from '../io/stdio';
@@ -151,46 +146,6 @@ export async function runProviderTestCommand(args: ProviderTestCommandArgs): Pro
       note: hasOpenAICredentials(providerId)
         ? 'OpenAI-compatible runtime is configured.'
         : `OpenAI-compatible runtime needs OPENAI_API_KEY or a localhost provider endpoint. ${providerConfigurationHelp(parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE), 'cli')}`,
-    });
-  }
-
-  if (selection.kind === QODER_AGENT_RUNTIME_KIND) {
-    const diagnostics = await withConsoleLogToStderr(
-      format !== 'text',
-      async () => getRuntimeDiagnostics(selection),
-    );
-    const sdkInstalled = diagnostics.sdkInstalled === true;
-    return writeResult(format, {
-      ok: sdkInstalled,
-      target: 'system',
-      runtime: selection,
-      diagnostics,
-      note: !sdkInstalled
-        ? 'Qoder Agent SDK is not installed; review its terms and install the optional SDK explicitly.'
-        : diagnostics.configured
-        ? 'Qoder runtime has an explicit PAT or CLI path.'
-        : 'Qoder runtime will use the local qodercli login; SDK availability and authentication are verified during analysis.',
-    });
-  }
-
-  if (
-    selection.kind === OPENCODE_RUNTIME_KIND ||
-    selection.kind === EXPERIMENTAL_OPENCODE_RUNTIME_KIND
-  ) {
-    const diagnostics = await withConsoleLogToStderr(format !== 'text', async () => getRuntimeDiagnostics(selection));
-    // Keep CLI preflight on the runtime's parser so accepted configuration
-    // cannot drift from what OpenCode will actually consume.
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { validateOpenCodeModelConfiguration } = require(
-      '../../agentRuntime/engines/opencode/openCodeRuntime'
-    ) as typeof import('../../agentRuntime/engines/opencode/openCodeRuntime');
-    const modelConfiguration = validateOpenCodeModelConfiguration(process.env, selection);
-    return writeResult(format, {
-      ok: modelConfiguration.configured,
-      target: 'system', runtime: selection, diagnostics,
-      note: modelConfiguration.configured
-        ? 'OpenCode model configuration detected.'
-        : `${modelConfiguration.error} ${providerConfigurationHelp(parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE), 'cli')}`,
     });
   }
 

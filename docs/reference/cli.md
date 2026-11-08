@@ -28,15 +28,15 @@ Docker 或 GitHub 免安装包。
 
 如果安装输出列出 blocked 或 skipped 的依赖脚本，先检查对应依赖的安装脚本。
 `better-sqlite3` 的原生绑定用于 `query`、`skill` 等核心命令；即使禁用 AI 也需要它。
-选择 OpenCode 运行时时，还需要 `opencode-ai` 的安装脚本。`@google/genai`、
+`@google/genai`、
 `protobufjs`、`esbuild` 等其他条目要按实际脚本和所用功能判断，不能只凭名单认定
 SQLite 或整个 CLI 已损坏。
 
 全局安装或一次性 `npm exec` / `npx` 使用命令级审批，仅授权审查过的依赖：
 
 ```bash
-npm install -g @gracker/smartperfetto --allow-scripts=better-sqlite3,opencode-ai
-npm exec --allow-scripts=better-sqlite3,opencode-ai --package=@gracker/smartperfetto -- smp doctor
+npm install -g @gracker/smartperfetto --allow-scripts=better-sqlite3
+npm exec --allow-scripts=better-sqlite3 --package=@gracker/smartperfetto -- smp doctor
 ```
 
 这些参数只用于本次命令。项目内安装由消费项目根目录 `package.json` 的
@@ -52,8 +52,7 @@ npm install-scripts approve better-sqlite3
 npm rebuild better-sqlite3
 ```
 
-审批会写入消费项目的 `allowScripts`。使用 OpenCode 时，审查后将 `opencode-ai`
-加入审批和重建命令。具体用法见
+审批会写入消费项目的 `allowScripts`。具体用法见
 [npm install-scripts](https://docs.npmjs.com/cli/v11/commands/npm-install-scripts/)。
 安装和重建仍须使用 Node.js 24；无需修改全局 npm 配置或允许全部依赖脚本。
 
@@ -102,7 +101,6 @@ Options:
 `quality_gate_failed` 表示空正文或原生交付失败，不用于交付保证疑点。
 总轮次预算大于一时预留一次无工具总结；触顶后基于已有返回数据说明发现、不足及
 下一步，仍标记 `partial` / `max_turns`。原截止时间、授权和显式费用预算继续生效。
-OpenCode 按观察到的实际轮次停止，若已过冲到没有剩余额度则保留结果而不追加调用。
 `smp ask` 把历史与新问题分开传递，保留历史完整性状态并允许按需回查更早正文；
 Trace 重载后的旧证据仍标为历史，不冒充新 Trace 的已核验事实。
 

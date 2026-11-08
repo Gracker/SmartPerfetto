@@ -249,13 +249,13 @@ describe('runOneShotSummary gates', () => {
   });
 
   it('names the runtime it does not support and never builds the prompt for it', async () => {
-    mockSelection.mockReturnValue({kind: 'opencode', source: 'provider'});
+    mockSelection.mockReturnValue({kind: 'openai-agents-sdk', source: 'provider'});
     const {run, buildPrompt} = summary();
 
     const result = await run();
 
     expect(result.fallbackReason).toBe('runtime_not_supported');
-    expect(result.warnings[0]).toContain('opencode');
+    expect(result.warnings[0]).toContain('openai-agents-sdk');
     expect(result.warnings[0]).toContain('test AI summary');
     expect(buildPrompt).not.toHaveBeenCalled();
   });
@@ -272,8 +272,8 @@ describe('runOneShotSummary gates', () => {
     const label = {zh: '测试 AI 总结', en: 'test AI summary'};
     for (const reason of ['ai_disabled', 'permission_denied', 'runtime_not_supported', 'runtime_unavailable',
       'credentials_missing', 'client_disconnected', 'timed_out', 'failed', 'empty_response'] as const) {
-      expect(oneShotFallbackWarning(reason, label, 'en', 'opencode')).toMatch(/[a-z]/);
-      expect(oneShotFallbackWarning(reason, label, 'zh-CN', 'opencode')).toMatch(/[\u4e00-\u9fff]/);
+      expect(oneShotFallbackWarning(reason, label, 'en', 'openai-agents-sdk')).toMatch(/[a-z]/);
+      expect(oneShotFallbackWarning(reason, label, 'zh-CN', 'openai-agents-sdk')).toMatch(/[\u4e00-\u9fff]/);
     }
   });
 });

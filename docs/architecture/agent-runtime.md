@@ -11,8 +11,9 @@ SmartPerfetto 后端现在把“模型 SDK”与“Perfetto 分析能力”分�
 | `claude-agent-sdk` | Claude Agent SDK | Anthropic、Bedrock、Vertex、DeepSeek、Anthropic-compatible gateway | env 已有 Claude 凭据时的默认运行时，需要显式 provider/env 凭据，支持 MCP server 和可配置 sub-agent，复用共享终态与验证合约 |
 | `openai-agents-sdk` | OpenAI Agents SDK | OpenAI、Ollama、OpenAI-compatible gateway | 原生 OpenAI runtime，通过 function tools 复用同一套 SmartPerfetto 工具 |
 | `pi-agent-core` | Pi Agent Core | custom、GLM、DeepSeek、Kimi、Kimi Code、MiniMax | 可选 public runtime；真实模型配置下复用 SmartPerfetto 共享 prompt/tool/report 管线，fake-stream 仅用于 smoke；不启用 `.pi` discovery、package extension、shell/file tools |
-| `opencode` | OpenCode server / SDK | custom only | 可选 public runtime；使用显式 OpenAI-compatible 或 OpenCode model 配置、request-scoped SmartPerfetto MCP 工具和加固隔离的 OpenCode server；不读取本地 OpenCode 登录态/project state，也不启用内建 file/shell/web/edit tools |
-| `qoder-agent-sdk` | Qoder Agent SDK / `qodercli` | custom only 或 env | 可选 public runtime；SDK 是 opt-in optional peer，使用本机 Qoder CLI 登录态或 PAT，只暴露 request-scoped SmartPerfetto MCP 工具，并隔离私有知识的流式输出、session 和 snapshot |
+
+OpenCode 与 Qoder 引擎及其 SDK 依赖已删除。记录里出现的 `opencode`、`qoder-agent-sdk` 标签仍可读取
+（`RECORDED_PRODUCTION_RUNTIME_KINDS`），执行时使用 effective runtime。
 
 ## 入口
 
@@ -22,7 +23,7 @@ HTTP 主路径：
 POST /api/agent/v1/analyze
   -> AgentAnalyzeSessionService.prepareSession()
   -> createAgentOrchestrator()
-  -> ClaudeRuntime.analyze() | OpenAIRuntime.analyze() | PiAgentCoreRuntime.analyze() | OpenCodeRuntime.analyze() | QoderRuntime.analyze()
+  -> PiAgentCoreRuntime.analyze() | ClaudeRuntime.analyze() | OpenAIRuntime.analyze()
 ```
 
 恢复和场景还原也走同一个 runtime factory：
@@ -96,15 +97,16 @@ Provider profile 在读取时由 `retiredRuntime.ts` 的 `withMigratedAgentRunti
 record 在记录的旧 runtime 下重算的 legacy hash 等于记录的 hash；effective 请求 origin 不变；model ID
 不变；`analysisContextFingerprint` 不变。兼容时 pin 重新绑定到新 hash，并记录连续性说明（对话描述的
 `runtimeMigration`，session snapshot 的 `retired_runtime_rebound` 条目）；否则沿用原有的显式结果
-（409 或 continuity break）。OpenCode/Qoder 的 legacy hash 计算在删除引擎后保留一个版本。
+（409 或 continuity break）。OpenCode 与 Qoder 引擎已删除；它们记录的 pin 所需的冻结 legacy hash 计算
+（`ProviderService.toEnvVars` 与 `providerSnapshot.ts`，不依赖引擎或 SDK）保留一个版本。
 
 模型控制由 `modelExecutionProfile.ts` 区分服务端模型能力、实际 SDK 表达能力及已捕获的用户配置，`modelExecutionPolicy.ts` 决定本轮用途允许的参数。匹配依据是实际 endpoint、model ID 和协议，未知 gateway 或尚未建模的协议保持 unknown；已由原生 SDK 验证的合法配置继续保留。不能根据 provider 名称、请求耗时或模型自述推断能力，也不能静默切换 pinned provider/model。
 
 主分析与普通续写保留原生设置。分类及显式 output-only 交付，只有在服务端与当前 adapter 都支持时才选择最低合法思考设置。例如已知 GLM 5.3 Flash 不能关闭思考，使用 enabled/low；已知 DeepSeek Flash 支持的相应接口可以关闭。用户显式设置优先，已知不合法的设置在派发前返回配置错误，不能作为临时网络错误重试。SDK 不支持或能力未知时不猜参数。
 
-Pi 的 model JSON 可显式设置 `thinkingLevel`（`off/minimal/low/medium/high/xhigh/max`）；installed SDK 不支持的设置会在调用前拒绝，不静默换档。`thinkingLevelMap` 保留 SDK 的原生映射。官方 GLM 未显式设置时不会因 Pi Agent 的默认 off 而自动发送 disabled；已知强制思考模型的显式 off 会被拒绝。OpenCode 使用它实际支持的 agent option 映射，例如 `reasoningEffort` 由宿主转成 wire `reasoning_effort`；缺失的模型温度、工具、成本能力不伪造为已知值，独立轻模型不继承主模型的能力和限制。
+Pi 的 model JSON 可显式设置 `thinkingLevel`（`off/minimal/low/medium/high/xhigh/max`）；installed SDK 不支持的设置会在调用前拒绝，不静默换档。`thinkingLevelMap` 保留 SDK 的原生映射。官方 GLM 未显式设置时不会因 Pi Agent 的默认 off 而自动发送 disabled；已知强制思考模型的显式 off 会被拒绝。缺失的模型温度、工具、成本能力不伪造为已知值，独立轻模型不继承主模型的能力和限制。
 
-`model_execution_fingerprint@1` 独立于既有 provider snapshot，绑定实际模型、接口、有效配置及已知 SDK/adapter 事实；未知版本明确保留 unknown。内部 `policyObservations` 只记录策略选择，固定 `wireObservation: not_observed`，不等于实际派发或服务端执行事实。真实 wire 行为使用维护入口 `test:pi-provider-runtime`、`test:opencode-provider-runtime` 验证；这些本地 fake-provider 合同测试不替代真实模型准确度和时延验收。
+`model_execution_fingerprint@1` 独立于既有 provider snapshot，绑定实际模型、接口、有效配置及已知 SDK/adapter 事实；未知版本明确保留 unknown。内部 `policyObservations` 只记录策略选择，固定 `wireObservation: not_observed`，不等于实际派发或服务端执行事实。真实 wire 行为使用维护入口 `test:pi-provider-runtime` 验证；这个本地 fake-provider 合同测试不替代真实模型准确度和时延验收。
 
 `OPENAI_ANALYSIS_REASONING_EFFORT` 可显式配置 OpenAI runtime 的主分析与普通续写，省略时保留服务商默认。它不覆盖分类或超时无工具收尾各自的用途策略。合法性按实际选中的模型、端点、协议与当前 SDK 验证；通用 effort 通过 SDK 原生字段发送，不向未知网关注入 `thinking`。已识别 DeepSeek Chat 的 `none` 映射为关闭思考；强制思考的 GLM 拒绝 `none`。当前 adapter 仅在已识别且支持的 Chat 接口通过透传表达 `max`，未知网关与 Responses 的显式 `max` 暂不支持。配置进入同一隔离环境的 provider snapshot，非法值不进入公开快照。较低 effort 的准确性仍需真实验证。
 
@@ -137,8 +139,8 @@ provider snapshot 与该 hash 完全一致。它不会读取后来切换的 acti
 
 Claude/Anthropic-compatible 源 run 通过无工具 Claude SDK 调用执行 triage；
 OpenAI/OpenAI-compatible 源 run 通过轻量 Chat Completions 调用执行。两者都只接收有界的
-公开 source context，不共享主分析 SDK session。Pi Agent Core、OpenCode、Qoder、旧
-manifest、凭据不可用、snapshot 漂移或非法模型输出在 V1 中使用明确的确定性 fallback，
+公开 source context，不共享主分析 SDK session。Pi Agent Core、记录在已删除的 Qoder runtime
+下的 run、旧 manifest、凭据不可用、snapshot 漂移或非法模型输出在 V1 中使用明确的确定性 fallback，
 不会伪装成同一 Agent 已复核。完整用户边界见
 [Agent 辅助 GitHub 反馈](../getting-started/agent-assisted-feedback.md)。
 
@@ -153,10 +155,8 @@ manifest、凭据不可用、snapshot 漂移或非法模型输出在 V1 中使�
 | `backend/src/agentRuntime/engines/openai/openAiRuntime.ts` | OpenAI Agents SDK orchestrator |
 | `backend/src/agentRuntime/engines/openai/openAiToolAdapter.ts` | shared MCP descriptor 到 OpenAI function tool 的适配 |
 | `backend/src/agentRuntime/engines/pi/piAgentCoreRuntime.ts` | Pi Agent Core runtime adapter |
-| `backend/src/agentRuntime/engines/opencode/openCodeRuntime.ts` | OpenCode server/runtime adapter 与 request-scoped MCP bridge |
-| `backend/src/agentRuntime/engines/qoder/qoderRuntime.ts` | Qoder Agent SDK adapter、流式投影和 session 隔离 |
 | `backend/src/agentRuntime/runtimeExecutionGuard.ts` | runtime/session 单活执行、取消与 stale settle 隔离 |
-| `backend/src/agentRuntime/analysisTurnIntent.ts`, `runtimeTurnPolicy.ts` | 五个原生引擎共享的 typed intent、预算、范围和证据访问策略 |
+| `backend/src/agentRuntime/analysisTurnIntent.ts`, `runtimeTurnPolicy.ts` | 各原生引擎共享的 typed intent、预算、范围和证据访问策略 |
 | `backend/src/agentRuntime/analysisFinalizationContext.ts`, `runtimeEvidenceContext.ts` | 私有 finalization 上下文、原 deadline、受授权的原始证据读取及跨轮 lease |
 | `backend/src/services/providerManager/modelExecutionProfile.ts`, `backend/src/agentRuntime/modelExecutionPolicy.ts` | 实际模型与 SDK 能力、独立执行指纹、按用途选择合法模型参数 |
 | `backend/src/agentRuntime/runtimeTaskDeadline.ts` | 单轮内部 admission 身份与显式工作期限；不替代用户取消或授权 |
@@ -190,7 +190,7 @@ SmartPerfetto 的分析能力由 `createClaudeMcpServer()` 实现，并通过 `M
 
 OpenAI runtime 不复制工具逻辑，而是读取同一份 `McpToolRegistry`，把每个 tool descriptor 适配为 OpenAI Agents SDK function tool。工具名称保留 `mcp__smartperfetto__*` 前缀，便于 SSE、日志和报告复用现有语义。
 
-当前 production runtime 保持同一个产品合约：输入通过各自 pinned provider 的原生无工具 transport 解析为共享 typed intent，输出交给同一个产品层 finalizer 和报告边界。Claude 使用 in-process MCP、tool allowlist 和可配置 sub-agent，每轮开启新的 SDK session；OpenAI 使用同一工具注册表适配的 function tools，SDK history 只在本轮内用于续写/恢复调用，不写入快照、也不用 `previousResponseId` 跨轮续接；Pi 使用 request-scoped native tools；OpenCode 使用每次分析的隔离 server/MCP bridge；Qoder 通过 SDK in-process bridge 复用共享工具。OpenCode/Qoder 的内建文件、shell 等工具隔离规则不变。各 SDK 的调用节奏、流式事件、恢复和成本/超时语义仍有差异。
+当前 production runtime 保持同一个产品合约：输入通过各自 pinned provider 的原生无工具 transport 解析为共享 typed intent，输出交给同一个产品层 finalizer 和报告边界。Claude 使用 in-process MCP、tool allowlist 和可配置 sub-agent，每轮开启新的 SDK session；OpenAI 使用同一工具注册表适配的 function tools，SDK history 只在本轮内用于续写/恢复调用，不写入快照、也不用 `previousResponseId` 跨轮续接；Pi 使用 request-scoped native tools。各 SDK 的调用节奏、流式事件、恢复和成本/超时语义仍有差异。
 
 SQL 工具的 `executionContext` 独立于模型、预算和源码权限。省略或 `working` 使用
 当前工作区（包括已加载模块和临时表）；`original_trace` 显式请求本轮原始 Trace 的
@@ -223,26 +223,24 @@ SDK 回调即使脱离原异步链也保持本轮绑定；归属冲突会抑制�
 不修改工具执行、授权或固定 attribution。运行结束后冻结回执，迟到回调不能写入后继运行。
 观测失败不改变分析结果，工具和采集计数也不能决定交付完成或核验通过。
 
-SSE 与 session log 里的工具结果会被截断到 2000 字符，截断后看不出模型是否拿到了尾部的 `vendorOverride` 这类提示。为此，内部 `RunManifest.toolResults` 在最外层共享工具边界上记录每次调用交给 runtime 的内容，记录发生在所有产品包装（包括 pacing 提醒）之后、传输截断之前。记录项包括：工具名、调用 id（仅当 adapter 提供时，目前是 OpenAI、Pi、OpenCode）、结果状态、receipt 事实（`planPhaseId` 只记是否存在），以及 adapter 序列化之前的文本规模。对 `RUNTIME_TOOL_RESULT_AUDITED_FIELDS` 中的每个字段，还会记录它的 key 和值是否逐字出现在交接文本里。这份记录不复制任何 payload 的值。它只能证明内容交给了 runtime adapter，runtime 自身的输出上限不在产品视野内。
+SSE 与 session log 里的工具结果会被截断到 2000 字符，截断后看不出模型是否拿到了尾部的 `vendorOverride` 这类提示。为此，内部 `RunManifest.toolResults` 在最外层共享工具边界上记录每次调用交给 runtime 的内容，记录发生在所有产品包装（包括 pacing 提醒）之后、传输截断之前。记录项包括：工具名、调用 id（仅当 adapter 提供时，目前是 OpenAI、Pi）、结果状态、receipt 事实（`planPhaseId` 只记是否存在），以及 adapter 序列化之前的文本规模。对 `RUNTIME_TOOL_RESULT_AUDITED_FIELDS` 中的每个字段，还会记录它的 key 和值是否逐字出现在交接文本里。这份记录不复制任何 payload 的值。它只能证明内容交给了 runtime adapter，runtime 自身的输出上限不在产品视野内。
 
-性能分支由严格的维护者开关 `SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES` 控制；默认没有任何候选获准。值只能是无空白、无重复的 `task4` 到 `task9` 逗号列表，任意空白、未知项、重复项或格式错误都会让整项 fail closed。它不是 Provider Manager、UI 或 provider env，也不会从 benchmark artifact 自动激活：
+性能分支由严格的维护者开关 `SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES` 控制；默认没有任何候选获准。值只能是无空白、无重复的 `task4` 到 `task7` 逗号列表（随 OpenCode、Qoder 引擎删除的 `task8`、`task9` 已是未知项），任意空白、未知项、重复项或格式错误都会让整项 fail closed。它不是 Provider Manager、UI 或 provider env，也不会从 benchmark artifact 自动激活：
 
 | 候选 | 范围 |
 |---|---|
-| `task4` | 五个 runtime 复用一次 quick evidence/focus 预取结果 |
-| `task5` | 五个 runtime 的显式可交换只读工具使用有界公平并发；其余工具仍独占 |
+| `task4` | 各 runtime 复用一次 quick evidence/focus 预取结果 |
+| `task5` | 各 runtime 的显式可交换只读工具使用有界公平并发；其余工具仍独占 |
 | `task6` | Claude/OpenAI 的独立 preflight DAG 重叠 |
 | `task7` | Pi 并发加载独立 SDK/provider，并在 quick 模式启用 parallel batch 调度；descriptor/tool gate 仍串行独占工作 |
-| `task8` | OpenCode 并行读取消息/状态并使用自适应轮询 |
-| `task9` | Qoder 的 Skill registry 与 SDK 启动重叠 |
 
 `task5` 获准后默认启用其安全只读策略；`SMARTPERFETTO_SAFE_TOOL_CONCURRENCY=false` 只是回滚到独占执行，不能在缺少 `task5` 准入时绕过边界。缓存 single-flight、执行隔离、取消清理、receipt 和确定性修复属于 correctness/observability 基础能力，不依赖性能候选开关。
 
-当前发布默认仍是串行策略：五个真实 adapter 的确定性准入 harness 为 `NOT CONFIGURED`，真实 provider 的有界 base/candidate A/B 尚未执行，因此速度/准确性准入结论是 `INCONCLUSIVE`。合成 scorer 只能验证计分器机械逻辑，不能批准候选默认开启。真实 provider 不可用时必须分别记录 `NOT AVAILABLE` 或 `NOT CONFIGURED`；尤其 Qoder 除 BYOK 外还需要 PAT 或本机 `qodercli` 登录态。单元测试、typecheck、build 和确定性 gate 都不能替代真实 provider 结果。
+当前发布默认仍是串行策略：各真实 adapter 的确定性准入 harness 为 `NOT CONFIGURED`，真实 provider 的有界 base/candidate A/B 尚未执行，因此速度/准确性准入结论是 `INCONCLUSIVE`。合成 scorer 只能验证计分器机械逻辑，不能批准候选默认开启。真实 provider 不可用时必须分别记录 `NOT AVAILABLE` 或 `NOT CONFIGURED`。单元测试、typecheck、build 和确定性 gate 都不能替代真实 provider 结果。
 
 ## 源码分析的 Runtime 一致性
 
-五个 production runtime 不各自实现一套源码规则。它们共用 strategy asset 中的
+各 production runtime 不各自实现一套源码规则。它们共用 strategy asset 中的
 source-use prompt 和同一 MCP registry/handler 产生的实际 `SourceUseDecisionV1`。
 运行时把真实 source-use 状态附给产品层 finalizer；没有当前 run accessor 时，模型自己
 编写的源码决策/绑定不会成为已执行事实。`pending` 或 `attempted` 本身不强制整轮失败，
@@ -267,8 +265,8 @@ HTML report、CLI JSON/Markdown/HTML、analysis-result snapshot 和报告/snapsh
 为不含 `CodeRef` 的当前 run 回执。这些路径都不保留绝对 root、snippet、检索 query 或
 模型自由文本 binding reason。
 
-确定性五 runtime 执行/终态 gate 与 A0–A4 语义 gate 证明产品契约，不证明真实
-provider 的模型质量。真实 Claude、OpenAI、Pi、OpenCode 和 Qoder 必须在凭证可用时分别重复验收；
+确定性 runtime 执行/终态 gate 与 A0–A4 语义 gate 证明产品契约，不证明真实
+provider 的模型质量。真实 Claude、OpenAI 和 Pi 必须在凭证可用时分别重复验收；
 不可用必须标记 `REAL PROVIDER NOT AVAILABLE`，不能被单测或确定性 fixture 替代。
 
 ## 分析模式
@@ -286,18 +284,18 @@ scene 必须属于本 run 固定的 registry。声明通过 schema 校验不等�
 已解析的 `scene_wide` 读取为 `full`，额外预取记忆类上下文（知识库、模式、案例、SQL 修复对）；
 bounded 问题和 unavailable 分类为 `trace_facts`，仍然检测焦点应用、架构和 trace 完整性——
 问题再窄，也是针对一份模型没见过的 trace 提出的。没有挂载 trace 的 Conversation 不做任何探测，也不绑定 trace
-身份或证据 trace（`resolveRunTurnPolicy`、`runtimeTraceAttachment.ts`，五个 runtime 共用）。厂商不是预检阶段：`invoke_skill` 只在 Skill 有厂商
+身份或证据 trace（`resolveRunTurnPolicy`、`runtimeTraceAttachment.ts`，各 runtime 共用）。厂商不是预检阶段：`invoke_skill` 只在 Skill 有厂商
 override 时、在其自身查询完成后，经共享缓存的 `traceVendorResolver`（只读 trace metadata）
-有上限地等待解析结果，并挂上 `vendorOverride` 提示；五个 runtime 规则相同。
+有上限地等待解析结果，并挂上 `vendorOverride` 提示；各 runtime 规则相同。
 焦点应用检测在分析窗口内对候选进程统一打分（前台时长、帧、启动、battery top、CPU），没有任何活动的进程
-直接排除，并给出 `high`/`medium`/`ambiguous` 置信度。五个 runtime 共用 `focusAppTarget` 决定生效包名：
+直接排除，并给出 `high`/`medium`/`ambiguous` 置信度。各 runtime 共用 `focusAppTarget` 决定生效包名：
 用户指定为 `user`，high/medium 推断为 `auto_detected`，ambiguous 不设包名，只给候选。只有 `user` 包名和选区
 约束分析目标；推断包名只作为 Skill 的默认范围（结果中的 `appliedDefaultProcess` 会注明），不作为对比身份门禁的
 期望值；答案说明理由后可以改看有证据的候选。
 
 **场景入口证据（产品采集）。** 策略 frontmatter 可声明 `entry_skill`（Skill id + 闭合参数绑定：
 `focus_app`/`user_target`/`trace_start`/`trace_end`/`selection_start`/`selection_end`）。已解析的
-`scene_wide`、`read_new` investigation（须挂载 trace；不含 comparison 回合或带参考 trace 的运行）在五个 runtime 的预检中、构造带取证工具的
+`scene_wide`、`read_new` investigation（须挂载 trace；不含 comparison 回合或带参考 trace 的运行）在各 runtime 的预检中、构造带取证工具的
 MCP server 之前，由产品运行该 Skill（`agentRuntime/sceneEntryEvidence.ts`）：包名绑定只接受用户包名或
 high/medium 焦点，并须经 Skill 自身的身份门（`prepareInvocation`）`verified` 才运行，`ambiguous` 时只把候选
 写进提示。它与模型的 `invoke_skill` 共用核心层 `agentv3/skillRunCore.ts`，同参数产生同样的 evidenceRefId、
@@ -318,7 +316,7 @@ artifact、capture 与 queryReview；但它不是模型工具调用：不进 Run
 root producer，不按 Skill 名称选择。缺省或不明 target-use、旧客户端缺表提示、其他选择类型、另一目标、
 existing-only 和双 trace 均不启用此路径。
 
-五个 runtime 在通用焦点、架构和完整性预取之前完成该采集：先从同一 processor 的原始响应签发
+各 runtime 在通用焦点、架构和完整性预取之前完成该采集：先从同一 processor 的原始响应签发
 native witness，再运行身份门与最低 metric，避免预取加载模块后失去原生证据资格。已不可信的 processor
 不会因此恢复资格。早期采集与后续模型工具、finalizer 复用本轮同一个 evidence store、executor 和
 pinned registry；失败或不可用结果也只处理一次。后续预检失败不删除或重新归属已合法提交的捕获，
@@ -357,8 +355,7 @@ OpenAI 的采集截止时间可随实际进展延后，但不侵占预留交付�
 采集超时且已有返回数据时可在交付预算内做一次无工具收尾，结果保留 `partial/timeout`，
 不追加复核调用。收尾失败时保留原候选；取消、硬 deadline 到期、授权失效
 或已耗尽的显式费用预算不会启动额外调用。
-只有 1 轮的配置没有额外收尾额度。OpenCode 通过观察原生消息停止采集，可能在两次观察
-之间过冲；实际轮数照实记录，已无剩余额度时不再请求总结，不能将它宣称为严格调用硬上限。
+只有 1 轮的配置没有额外收尾额度。
 
 收尾和续写调用在派发前通过 `services/runtimeCallStats.ts` 估计所需时长，
 按 provider origin、model、purpose 和输入大小档使用成功调用的 p75；样本不足时采用
@@ -388,10 +385,6 @@ OpenAI 的采集截止时间可随实际进展延后，但不侵占预留交付�
 临时答案、`provisional_answer`、`review_stop_requested` 或 `final_review` 进度。
 
 Pi Agent Core 的真实模型路径复用 SmartPerfetto 的 scene strategy、系统 prompt、SQL/Skill、plan/hypothesis、artifact、route-owned quality/finalization/report 管线。它不会把 SmartPerfetto 运行时变成 Pi coding-agent harness，也不读取 `.pi` 项目配置、package extension、shell tool 或 file tool。`custom` provider 需要显式 Pi model JSON 或等价 env。GLM、DeepSeek、Kimi、Kimi Code、MiniMax 在未填写 model JSON 时由 Provider Manager 生成 catalog reference：`{catalog: {providers, id, baseUrl, defaultThinkingLevel: 'lowest_supported'}, apiKeyEnv}`，模型能力取自已安装 pi-ai 的内置目录（不联网刷新、不伪造），endpoint 沿用 provider 自己的配置，key 只写入 Pi 的 key env；未显式设置时 reasoning 取该模型支持的 off/minimal/low 中最低一档。GLM、DeepSeek 新建模板默认 Pi；已保存的 provider 和未写 runtime 的 API 记录不迁移。快照固定 key env 和已安装 pi-ai 版本。`SMARTPERFETTO_PI_AGENT_CORE_FAKE_STREAM=1` 只用于本地 smoke/test，输出必须继续标记为 capability-limited。
-
-OpenCode 路径同样只允许 custom provider。它可以使用带 `providerID` / `modelID` / `baseUrl` / `apiKey` 的 `SMARTPERFETTO_OPENCODE_MODEL_JSON`，也可以回退到 OpenAI-compatible 的 `OPENAI_*` env/provider 字段。SmartPerfetto 不复用用户自己的 OpenCode CLI 登录态、配置文件或 project extension；回滚路径是把 custom provider 或 `SMARTPERFETTO_AGENT_RUNTIME` 切回 `claude-agent-sdk` / `openai-agents-sdk`。
-
-Qoder 在 Provider Manager 中同样只允许 custom provider，也可以通过 env 显式选择。SDK 默认不安装，用户必须先审阅条款，再通过 `qoder:install -- --accept-terms` 或显式 module path opt in。`resolveModel` BYOK 由 `QODER_BYOK_API_KEY`、`QODER_BYOK_PROVIDER`、`QODER_MODEL` 及可选 base URL/style/light model 组成；配置不完整时 fail closed。BYOK 只替换模型 provider，不替代 Qoder PAT 或本机 `qodercli` 登录认证。Provider Manager 仅允许 Qoder custom profile 的 `custom.envOverrides` 写入这四个 BYOK 值，不允许借此覆盖 CLI、SDK module 或 worker path。BYOK key 只进入 SDK 的 `resolveModel` 回调，不进入 SDK 子进程 env、诊断或明文快照；provider/base/style 进入非密钥快照，key 只参与 secret fingerprint，确保 provider pin、resume、外部 Issue 和 Self-Evolution proof 能检测配置变化。逻辑续问使用产品历史并建立新模型上下文，不恢复也不保存 provider session；一旦请求获准访问私有 codebase 或外部知识源，也不会把中间状态写入 durable snapshot。
 
 ## Final Result 与质量产物
 
@@ -430,10 +423,6 @@ runtime 在结果和写入会话的轮次上只记录原生事实（完成状态
 deadline、trace identity 和证据读取范围；产品 owner 在 await 前后检查当前 run、取消和
 授权，用户取消或释放 context 会中止 finalization 的证据读取。改变已检查输入的隐私投影把
 `passed` 降为 `not_checked`，`not_applicable` 保持不变。
-
-OpenCode 的共享模型配置不伪造 context/output 容量：未提供容量时依赖 SDK 默认值，
-未知 context 不触发容量阈值驱动的预压缩，真实 context overflow 仍走原生被动压缩。
-这不保证长会话行为与已知容量模型相同，也不增加模型 JSON 的容量配置入口。
 
 `final_report_contract` 仍来自固定 registry 的 strategy frontmatter。`runtimeConclusionVerifier`
 只提供结构化交付诊断，不再运行独立语义 LLM 或按误诊词匹配正文；runtime 只用它决定同轮
@@ -517,7 +506,6 @@ comparison identity 读写。
 - 源码和 npm CLI 要求 Node.js `>=24 <25`。
 - 免安装包自带 Node.js 24、后端、预构建 `frontend/` 和固定 trace processor。
 - Docker 不读取宿主机 Claude Code 登录态，必须用 Provider Manager 或 env provider。
-- 默认 Docker、portable 和 npm 安装不包含 Qoder SDK；接受其条款并显式安装 optional peer 后才能启用。
 - typed intent、answer guidance 及 Conversation evidence context 模板都是运行资产。
   变更后必须复核现有 public Skill export、npm CLI 与 Docker/portable 的 bundled 路径，
   防止源码可用但分发缺模板；文档描述不代替这些门禁的实际结果。

@@ -256,10 +256,10 @@ node backend/scripts/run-glm-agent-e2e.cjs \
 
 The default matrix uses the subscribed GLM Coding Plan endpoint and `GLM_API_KEY`,
 with `glm-5.3` for main answers and `glm-5.3-flash` for light calls. Generic paid
-endpoints and DeepSeek fallback are refused. OpenAI, Pi and OpenCode results
+endpoints and DeepSeek fallback are refused. OpenAI and Pi results
 are reported independently as
 `PASSED`, `FAILED`, or `REAL PROVIDER NOT AVAILABLE`; missing credentials are
-not a pass. Claude and Qoder require explicit separate runs and authentication.
+not a pass. Claude requires an explicit separate run and authentication.
 
 Use a single-scenario diagnostic to investigate a failure before repeating the
 matrix. It does not replace five repetitions or certify uncovered recommendation

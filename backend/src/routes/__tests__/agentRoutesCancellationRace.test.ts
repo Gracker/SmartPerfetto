@@ -1297,7 +1297,7 @@ describe('HTTP shared finalization ownership', () => {
     it('streams no draft for a runtime without the reset contract', async () => {
       const id = 'http-draft-incapable';
       try {
-        const {writes} = await runWithDrafts(id, {runtimeKind: 'opencode'});
+        const {writes} = await runWithDrafts(id, {runtimeKind: 'pi-agent-core'});
         expect(drafts(writes)).toEqual([]);
       } finally {agentRoutesCancellationTestSeam.deleteSession(id);}
     });

@@ -68,10 +68,9 @@ export function intentTransportErrorReason(error: unknown): 'timeout' | 'provide
 }
 
 /**
- * Why a Claude-protocol SDK `result` message (Claude Agent SDK, Qoder) is not
- * a usable success. The CLI reports a provider API error as a result with
- * `is_error: true`, and an execution failure as `error_during_execution`:
- * both are provider failures, read from the structured fields only. A refusal
+ * Why a Claude Agent SDK `result` message is not a usable success. The CLI
+ * reports a provider API error as a result with `is_error: true`, and an
+ * execution failure as `error_during_execution`: both are provider failures, read from the structured fields only. A refusal
  * or any other shape stays an invalid response.
  */
 export function sdkResultFailureReason(message: {subtype?: unknown; is_error?: unknown; stop_reason?: unknown}):

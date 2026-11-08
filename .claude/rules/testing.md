@@ -258,8 +258,8 @@ Each target smoke must:
    target-required client identifier in schema-v2 evidence and reject evidence
    produced by another client. Do not maintain a release-only HTTP parser that
    diverges from the launcher, browsers, and normal clients.
-4. Execute the bundled Node.js, Claude, and OpenCode version commands when
-   present, then run a minimal packaged `trace_processor_shell` operation.
+4. Execute the bundled Node.js and Claude version commands when present, then
+   run a minimal packaged `trace_processor_shell` operation.
 5. Use the launcher-supported shutdown control, require a zero/successful and
    non-escalated shutdown receipt with platform containment
    (`windows-job-object` or `service-process-groups`), and verify child
@@ -399,8 +399,6 @@ npx jest --runInBand --forceExit \
   src/agentv3/__tests__/claudeRuntimeRuntimeSnapshots.test.ts \
   src/agentOpenAI/__tests__/openAiRuntime.test.ts \
   src/agentRuntime/__tests__/piAgentCoreRuntime.test.ts \
-  src/agentRuntime/__tests__/openCodeRuntime.test.ts \
-  src/agentRuntime/engines/qoder/__tests__/qoderRuntime.test.ts \
   src/scripts/__tests__/benchmarkAgentRuntimeLatency.test.ts
 npx jest --runInBand --forceExit \
   src/services/__tests__/traceProcessorLeaseProcessorRouting.test.ts \
@@ -412,11 +410,11 @@ npm run build
 
 These suites must cover absent/invalid admission, admitted behavior,
 cancellation/late settle, cache failure retry, same-processor SQL serialization,
-tool fallback receipts, and all five adapter projections. Also run
+tool fallback receipts, and every adapter projection. Also run
 `npm run test:analysis-accuracy`; before a PR use the normal `npm run verify:pr`
 gate rather than substituting this focused list.
 
-`SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES` admits only `task4` through `task9`
+`SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES` admits only `task4` through `task7`
 and defaults to none. Unknown, duplicate, whitespace-bearing, empty, or malformed
 values must fail closed as a whole. `SMARTPERFETTO_SAFE_TOOL_CONCURRENCY=false`
 may roll admitted `task5` back to exclusive execution but must not activate it.
@@ -459,8 +457,7 @@ does not provide admission-grade model, provider snapshot, usage, or performance
 fields, so bounded real-provider admission remains `INCONCLUSIVE` until a
 reviewed harness supplies them. Record missing real credentials/runtime as
 `NOT AVAILABLE` or missing harness/configuration as `NOT CONFIGURED`; never
-equate deterministic gates with authenticated E2E. Qoder BYOK also requires a
-PAT or locally authenticated `qodercli`.
+equate deterministic gates with authenticated E2E.
 
 ## Agent SSE E2E
 
@@ -475,7 +472,6 @@ or generic OpenAI-key fallback. Pin the Coding Plan endpoint/catalog; native
 reasoning/output limits stay unchanged unless explicitly configured. Keep keys
 out of command logs and public artifacts. Normal selected runtimes execute
 sequentially; separate authenticated runs use at most two concurrent runtimes.
-Qoder additionally needs PAT/local CLI authentication; BYOK does not replace it.
 
 Observation timeout must cover the real native deadline/finalization; extending
 observation changes neither budget nor acceptance. Runtime/provider/scene lists,
@@ -531,5 +527,4 @@ run the separate repeated matrix:
 node backend/scripts/run-glm-agent-e2e.cjs --suite code-aware-semantic-delta --runtime all-glm --repeat 5
 ```
 
-Report runtime outcomes separately; Claude/Qoder need separate authenticated
-runs. Missing auth remains `REAL PROVIDER NOT AVAILABLE`, never a fixture pass.
+Report runtime outcomes separately; Claude needs a separate authenticated run. Missing auth remains `REAL PROVIDER NOT AVAILABLE`, never a fixture pass.

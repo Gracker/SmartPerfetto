@@ -3,7 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {describe, expect, it} from '@jest/globals';
-import {buildQuickSystemPrompt, buildSystemPromptParts, estimatePromptTokens, MAX_PROMPT_TOKENS} from '../claudeSystemPrompt';
+import {buildSystemPrompt, buildSystemPromptParts, estimatePromptTokens, MAX_PROMPT_TOKENS} from '../claudeSystemPrompt';
 import {buildStrategyRegistrySnapshotFromDefinitions, getRegisteredScenes} from '../strategyLoader';
 import type {ClaudeAnalysisContext} from '../types';
 
@@ -44,7 +44,7 @@ describe('real quick prompt context assembly', () => {
         expect(parts.fullPrompt).toContain('existing_only');
         // The prompt no longer asks for a conclusion declaration.
         expect(parts.fullPrompt).not.toContain('conclusion_contract_v1');
-        expect(buildQuickSystemPrompt(context)).toBe(parts.fullPrompt);
+        expect(buildSystemPrompt(context)).toBe(parts.fullPrompt);
       }
     }
   });
@@ -53,7 +53,7 @@ describe('real quick prompt context assembly', () => {
     const registry = buildStrategyRegistrySnapshotFromDefinitions({
       definitions: getRegisteredScenes(), overlayGeneration: 'supplied-table-test',
     });
-    const prompt = buildQuickSystemPrompt({
+    const prompt = buildSystemPrompt({
       strategyRegistry: registry,
       turnIntent: {schemaVersion: 1, status: 'resolved', source: 'semantic', sceneId: 'general',
         taskKind: 'fact', scope: 'bounded_question', recommendedComplexity: 'quick', deliverable: 'answer',
@@ -87,8 +87,8 @@ describe('real quick prompt context assembly', () => {
     expect(parts.truncatedLabels).not.toContain('runtime_evidence');
     expect(parts.droppedLabels).not.toContain('runtime_evidence');
     expect(parts.segments.some(segment => segment.label === 'report_requirements')).toBe(false);
-    expect(buildQuickSystemPrompt(context)).toBe(parts.fullPrompt);
-    expect(buildQuickSystemPrompt({...context, turnIntent: {...context.turnIntent!, recommendedComplexity: 'full'}}))
+    expect(buildSystemPrompt(context)).toBe(parts.fullPrompt);
+    expect(buildSystemPrompt({...context, turnIntent: {...context.turnIntent!, recommendedComplexity: 'full'}}))
       .toBe(parts.fullPrompt);
     expect(parts.fullPrompt).not.toMatch(/\{\{\w+\}\}/);
     expect(estimatePromptTokens(parts.fullPrompt)).toBeLessThanOrEqual(MAX_PROMPT_TOKENS);

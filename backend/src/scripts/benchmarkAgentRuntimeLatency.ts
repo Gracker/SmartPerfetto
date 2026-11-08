@@ -2,13 +2,13 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {RUNTIME_CANDIDATE_IDS, type RuntimeCandidateId} from '../agentRuntime/runtimeCandidateAdmission';
 import 'dotenv/config';
 
 import {createHash, randomBytes, randomInt} from 'crypto';
 import fs from 'fs';
 import fsp from 'fs/promises';
 import http, {type IncomingMessage, type RequestOptions} from 'http';
-import os from 'os';
 import path from 'path';
 import {performance as nodePerformance} from 'perf_hooks';
 import {Readable} from 'stream';
@@ -32,7 +32,7 @@ import {isSceneEntryNotRunReason, type RuntimePerformanceSceneEvidenceReceiptV1}
 
 export type BenchmarkSampleKind = 'real' | 'deterministic';
 export type BenchmarkJudgmentStatus = 'PASS' | 'FAIL' | 'INCONCLUSIVE';
-export type BenchmarkCandidate = 'task4' | 'task5' | 'task6' | 'task7' | 'task8' | 'task9';
+export type BenchmarkCandidate = RuntimeCandidateId;
 export type BenchmarkScenarioId = 'startup-full' | 'scrolling-full' | 'identity-fast';
 export type BenchmarkExecutionProvenance = 'synthetic_scorer' | 'genuine_adapter' | 'real_provider';
 
@@ -41,8 +41,6 @@ export const CANDIDATE_TARGET_PHASES: Readonly<Record<BenchmarkCandidate, readon
   task5: [],
   task6: ['classification', 'comparison', 'skill_registry', 'knowledge', 'provider', 'verification'],
   task7: ['sdk_start', 'provider', 'correction'],
-  task8: ['provider'],
-  task9: ['skill_registry', 'sdk_start', 'provider'],
 };
 
 const CANDIDATE_RUNTIME_MATRIX: Readonly<Record<BenchmarkCandidate, readonly AgentRuntimeKind[]>> = {
@@ -50,8 +48,6 @@ const CANDIDATE_RUNTIME_MATRIX: Readonly<Record<BenchmarkCandidate, readonly Age
   task5: PRODUCTION_RUNTIME_KINDS,
   task6: ['claude-agent-sdk', 'openai-agents-sdk'],
   task7: ['pi-agent-core'],
-  task8: ['opencode'],
-  task9: ['qoder-agent-sdk'],
 };
 
 const CELL_FIELDS = [
@@ -337,9 +333,7 @@ export interface LocalRuntimeAvailability {
   deepseek: RuntimeAvailabilityEntry;
   openai: RuntimeAvailabilityEntry;
   pi: RuntimeAvailabilityEntry;
-  opencode: RuntimeAvailabilityEntry;
   claude: RuntimeAvailabilityEntry;
-  qoder: RuntimeAvailabilityEntry;
 }
 
 export interface TargetBenchmarkCellInput {
@@ -397,7 +391,6 @@ interface AvailabilityInspectionOptions {
   env?: NodeJS.ProcessEnv;
   commandExists?: (command: string) => boolean;
   fileExists?: (filePath: string) => boolean;
-  homeDir?: string;
 }
 
 interface DeterministicStubMatrixEntry {
@@ -762,7 +755,7 @@ function parseProviderUsage(value: unknown): ProviderUsageReceiptV1 | undefined 
 }
 
 const PHASE_NAMES = new Set<string>(CANDIDATE_TARGET_PHASES.task4
-  .concat(CANDIDATE_TARGET_PHASES.task5, CANDIDATE_TARGET_PHASES.task6, CANDIDATE_TARGET_PHASES.task7, CANDIDATE_TARGET_PHASES.task8, CANDIDATE_TARGET_PHASES.task9)
+  .concat(CANDIDATE_TARGET_PHASES.task5, CANDIDATE_TARGET_PHASES.task6, CANDIDATE_TARGET_PHASES.task7)
   .concat(['architecture', 'completeness', 'finalization', 'scene_evidence']));
 
 function parsePerformance(value: unknown): RuntimePerformanceReceiptV1 | undefined {
@@ -906,10 +899,8 @@ function parseSceneEvidenceReceipt(value: unknown): RuntimePerformanceSceneEvide
 }
 
 function parseCandidate(value: unknown): BenchmarkCandidate {
-  if (value !== 'task4' && value !== 'task5' && value !== 'task6' && value !== 'task7' && value !== 'task8' && value !== 'task9') {
-    throw new Error('benchmark_cell_candidate_invalid');
-  }
-  return value;
+  if (!(RUNTIME_CANDIDATE_IDS as readonly unknown[]).includes(value)) throw new Error('benchmark_cell_candidate_invalid');
+  return value as BenchmarkCandidate;
 }
 
 function parseExecutionProvenance(value: unknown): BenchmarkExecutionProvenance {
@@ -3095,24 +3086,14 @@ export function inspectLocalRuntimeAvailability(
   const env = options.env ?? process.env;
   const commandExists = options.commandExists ?? defaultCommandExists;
   const fileExists = options.fileExists ?? fs.existsSync;
-  const homeDir = options.homeDir ?? os.homedir();
   const deepseekKey = concreteEnv(env, 'DEEPSEEK_API_KEY');
   const openAiKey = concreteEnv(env, 'OPENAI_API_KEY');
   const piModel = concreteEnv(env, 'SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON');
-  const openCodeModel = concreteEnv(env, 'SMARTPERFETTO_OPENCODE_MODEL_JSON');
   const claudeEnv = concreteEnv(env, 'ANTHROPIC_API_KEY')
     || concreteEnv(env, 'ANTHROPIC_AUTH_TOKEN')
     || concreteEnv(env, 'AWS_BEARER_TOKEN_BEDROCK')
     || concreteEnv(env, 'GOOGLE_APPLICATION_CREDENTIALS');
   const claudeBinary = commandExists('claude') || (concreteEnv(env, 'CLAUDE_BINARY_PATH') && fileExists(env.CLAUDE_BINARY_PATH!));
-  const openCodeBinary = commandExists('opencode');
-  const qoderPat = concreteEnv(env, 'QODER_PERSONAL_ACCESS_TOKEN');
-  const qoderBinary = commandExists('qodercli') || (concreteEnv(env, 'QODERCLI_PATH') && fileExists(env.QODERCLI_PATH!));
-  const qoderLocalAuthHints = [
-    path.join(homeDir, '.qoder', 'qoder-auth.json'),
-    path.join(homeDir, '.config', 'qoder', 'auth.json'),
-  ].some(fileExists);
-  const qoderByok = concreteEnv(env, 'QODER_BYOK_API_KEY');
 
   return {
     scope: 'local_harness_only',
@@ -3134,17 +3115,6 @@ export function inspectLocalRuntimeAvailability(
       'Pi model/provider configuration is not present in the local environment.',
       piModel ? ['pi_model_config_present'] : [],
     ),
-    opencode: availability(
-      openCodeModel && openCodeBinary,
-      'OpenCode model configuration and local binary are present; authentication remains unverified.',
-      openCodeModel
-        ? 'OpenCode model configuration is present but the local OpenCode binary is unavailable.'
-        : 'OpenCode model configuration is not present locally.',
-      [
-        ...(openCodeModel ? ['opencode_model_config_present'] : []),
-        ...(openCodeBinary ? ['opencode_binary_present'] : []),
-      ],
-    ),
     claude: availability(
       claudeEnv || claudeBinary,
       claudeEnv
@@ -3156,23 +3126,6 @@ export function inspectLocalRuntimeAvailability(
         ...(claudeBinary ? ['claude_binary_present'] : []),
       ],
     ),
-    qoder: qoderPat
-      ? {
-        status: 'CONFIGURED_NOT_VERIFIED',
-        reason: 'Qoder PAT is configured; SDK/CLI acceptance remains unverified until bounded real A/B.',
-        signals: ['qoder_pat_present', ...(qoderByok ? ['qoder_byok_present'] : [])],
-      }
-      : {
-        status: 'NOT_AVAILABLE',
-        reason: qoderByok
-          ? 'Qoder BYOK does not prove Qoder authentication; no QODER_PERSONAL_ACCESS_TOKEN is configured and local login is not non-interactively verifiable.'
-          : 'Qoder authentication is not non-interactively available; no QODER_PERSONAL_ACCESS_TOKEN is configured.',
-        signals: [
-          ...(qoderByok ? ['qoder_byok_present'] : []),
-          ...(qoderBinary ? ['qoder_binary_present'] : []),
-          ...(qoderLocalAuthHints ? ['qoder_local_auth_hint_present'] : []),
-        ],
-      },
   };
 }
 

@@ -66,7 +66,7 @@ POST /api/agent/v1/analyze
   -> AgentAnalyzeSessionService.prepareSession()
   -> 解析 workspace / user / trace / provider / source / knowledge context
   -> createAgentOrchestrator()
-  -> 选择 Claude / OpenAI / Pi / OpenCode / Qoder runtime
+  -> 选择 Pi runtime（或隐藏的 Claude / OpenAI 回退）
   -> typed intent 固定范围、证据访问、预算和交付物
   -> 符合条件时由产品采集策略声明的场景入口证据
   -> 通过共享 MCP registry 调用 SQL、Skill、知识和计划工具
@@ -122,8 +122,6 @@ Cookie 写请求除了 CORS 之外还要经过精确 Origin 检查，因为 CORS
 | `claude-agent-sdk` | Anthropic、Bedrock、Vertex、Claude-compatible | 不跨轮保留原生状态（只保留 provider 钉定） |
 | `openai-agents-sdk` | OpenAI Responses、OpenAI-compatible、Ollama/chat-completions | 不跨轮保留原生状态（只保留 provider 钉定） |
 | `pi-agent-core` | Provider Manager custom profile / Pi model config | 不跨轮保留原生状态（只保留 provider 钉定） |
-| `opencode` | OpenCode SDK 与 custom provider | 不跨轮保留原生 session；隔离目录由 session id 推导，每轮复用 |
-| `qoder-agent-sdk` | Qoder CLI 登录态或 PAT、custom provider | 不跨轮保留原生状态（只保留 provider 钉定） |
 
 canonical loader 和 capabilities 来自
 `backend/src/agentRuntime/runtimeDescriptors.ts`，具体实现在

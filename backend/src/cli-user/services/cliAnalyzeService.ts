@@ -61,15 +61,12 @@ import { SymbolResolver, type ResolvedSymbolCandidate } from '../../services/sym
 import { getTraceProcessorPath, TraceProcessorFactory } from '../../services/workingTraceProcessor';
 import { withConsoleLogToStderr } from '../io/stdio';
 import { installTraceProcessorPrebuilt } from './traceProcessorInstaller';
-import {
-  resolveAgentRuntimeSelection,
-  type BackendAgentRuntimeKind,
-} from '../../agentRuntime/runtimeSelection';
+import { resolveAgentRuntimeSelection } from '../../agentRuntime/runtimeSelection';
 import {
   getRuntimeDiagnosticModel,
   getRuntimeDiagnostics,
 } from '../../agentRuntime/runtimeDiagnostics';
-import { isProductionAgentRuntimeKind } from '../../agentRuntime/runtimeKinds';
+import { isProductionAgentRuntimeKind, type AgentRuntimeKind } from '../../agentRuntime/runtimeKinds';
 import {
   getSnapshotRuntimeKind,
   getSnapshotRuntimeProviderId,
@@ -217,7 +214,7 @@ export interface RunTurnOutput {
   reportError?: string;
   model?: string;
   providerId?: string | null;
-  agentRuntimeKind?: BackendAgentRuntimeKind;
+  agentRuntimeKind?: AgentRuntimeKind;
   providerSnapshotHash?: string | null;
   /** Effective mode after defaults and feature-gate normalization. */
   codeAwareMode: CodeAwareMode;

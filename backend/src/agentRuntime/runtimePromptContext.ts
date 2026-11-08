@@ -11,7 +11,6 @@ import {
   detectFocusApps,
   focusAppTimeRangeFromSelection,
   type FocusAppDetectionResult,
-  type FocusAppTimeRange,
 } from '../agentv3/focusAppDetector';
 import {
   hasFocusAppDetectionData,
@@ -44,9 +43,9 @@ function freezeComparisonContext<T>(value: T, seen = new Set<object>()): T {
 
 /**
  * The run's focus-app detection, shared by every runtime: it runs only when the
- * turn's preflight gathers trace facts, scoped to `timeRange` or else to the
- * selection's range. `measure` wraps the detection (a runtime phase span, a
- * non-fatal failure); `undefined` means no detection, which
+ * turn's preflight gathers trace facts, scoped to the selection's range.
+ * `measure` wraps the detection (a runtime phase span, a non-fatal failure);
+ * `undefined` means no detection, which
  * `resolveFocusAppTarget` reads as nothing detected.
  */
 export async function detectRunFocusApps(input: {
@@ -54,13 +53,11 @@ export async function detectRunFocusApps(input: {
   traceId: string;
   preflight: RuntimeTurnPolicy['preflight'];
   selectionContext?: Parameters<typeof focusAppTimeRangeFromSelection>[0];
-  /** An explicit scope that overrides the selection's range (Qoder accepts one in its options). */
-  timeRange?: FocusAppTimeRange;
   measure?: (detect: () => Promise<FocusAppDetectionResult>) => Promise<FocusAppDetectionResult | undefined>;
 }): Promise<FocusAppDetectionResult | undefined> {
   if (input.preflight === 'none') return undefined;
   const detect = () => detectFocusApps(input.traceProcessorService, input.traceId, {
-    timeRange: input.timeRange ?? focusAppTimeRangeFromSelection(input.selectionContext),
+    timeRange: focusAppTimeRangeFromSelection(input.selectionContext),
   });
   return input.measure ? input.measure(detect) : detect();
 }

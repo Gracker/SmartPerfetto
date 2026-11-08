@@ -58,7 +58,6 @@ const TARGETS = {
       'backend/node_modules/better-sqlite3/build/Release/better_sqlite3.node',
       'backend/node_modules/sodium-native/prebuilds/win32-x64/sodium-native.node',
       'backend/node_modules/@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe',
-      'backend/node_modules/opencode-ai/bin/opencode.exe',
       'backend/node_modules/@earendil-works/pi-agent-core/dist/index.js',
       'backend/node_modules/@earendil-works/pi-ai/dist/index.js',
     ],
@@ -69,7 +68,6 @@ const TARGETS = {
       'backend/node_modules/better-sqlite3/build/Release/better_sqlite3.node',
       'backend/node_modules/sodium-native/prebuilds/win32-x64/sodium-native.node',
       'backend/node_modules/@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe',
-      'backend/node_modules/opencode-ai/bin/opencode.exe',
     ],
   },
   'macos-arm64': {
@@ -100,7 +98,6 @@ const TARGETS = {
       'SmartPerfetto.app/Contents/Resources/frontend/server.js',
       'SmartPerfetto.app/Contents/Resources/backend/node_modules/better-sqlite3/build/Release/better_sqlite3.node',
       'SmartPerfetto.app/Contents/Resources/backend/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude',
-      'SmartPerfetto.app/Contents/Resources/backend/node_modules/opencode-ai/bin/opencode.exe',
       'SmartPerfetto.app/Contents/Resources/backend/node_modules/@earendil-works/pi-agent-core/dist/index.js',
       'SmartPerfetto.app/Contents/Resources/backend/node_modules/@earendil-works/pi-ai/dist/index.js',
     ],
@@ -110,7 +107,6 @@ const TARGETS = {
       'SmartPerfetto.app/Contents/Resources/bin/trace_processor_shell',
       'SmartPerfetto.app/Contents/Resources/backend/node_modules/better-sqlite3/build/Release/better_sqlite3.node',
       'SmartPerfetto.app/Contents/Resources/backend/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude',
-      'SmartPerfetto.app/Contents/Resources/backend/node_modules/opencode-ai/bin/opencode.exe',
     ],
   },
   'linux-x64': {
@@ -139,7 +135,6 @@ const TARGETS = {
       'frontend/server.js',
       'backend/node_modules/better-sqlite3/build/Release/better_sqlite3.node',
       'backend/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude',
-      'backend/node_modules/opencode-ai/bin/opencode.exe',
       'backend/node_modules/@earendil-works/pi-agent-core/dist/index.js',
       'backend/node_modules/@earendil-works/pi-ai/dist/index.js',
     ],
@@ -149,7 +144,6 @@ const TARGETS = {
       'bin/trace_processor_shell',
       'backend/node_modules/better-sqlite3/build/Release/better_sqlite3.node',
       'backend/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude',
-      'backend/node_modules/opencode-ai/bin/opencode.exe',
     ],
   },
 };

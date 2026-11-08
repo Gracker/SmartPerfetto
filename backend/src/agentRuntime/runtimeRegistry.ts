@@ -10,10 +10,6 @@ import type {
   RuntimeEngineDefinition,
   RuntimeFactoryInput,
 } from './runtimeDescriptorTypes';
-import {
-  EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
-  EXPERIMENTAL_OPENCODE_RUNTIME_KIND,
-} from './runtimeKinds';
 export type { RuntimeEngineDefinition, RuntimeFactoryInput } from './runtimeDescriptorTypes';
 
 function assertRuntimeDefinition(definition: RuntimeEngineDefinition): void {
@@ -71,36 +67,7 @@ export function createRuntimeRegistry(
 
 const productionRuntimeRegistry = createRuntimeRegistry(productionRuntimeDefinitions);
 
-export function createRuntimeRegistryForSelection(kind: string): RuntimeRegistry {
-  if (kind === EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND) {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const {
-      createPiAgentCoreRuntime,
-      getPiAgentCoreEngineCapabilities,
-    } = require('./engines/pi/piAgentCoreRuntime') as typeof import('./engines/pi/piAgentCoreRuntime');
-    return createRuntimeRegistry([
-      ...productionRuntimeDefinitions,
-      {
-        kind: EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
-        capabilities: getPiAgentCoreEngineCapabilities(EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND),
-        createOrchestrator: input => createPiAgentCoreRuntime(input),
-      },
-    ]);
-  }
-  if (kind === EXPERIMENTAL_OPENCODE_RUNTIME_KIND) {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const {
-      OpenCodeRuntime,
-      getOpenCodeEngineCapabilities,
-    } = require('./engines/opencode/openCodeRuntime') as typeof import('./engines/opencode/openCodeRuntime');
-    return createRuntimeRegistry([
-      ...productionRuntimeDefinitions,
-      {
-        kind: EXPERIMENTAL_OPENCODE_RUNTIME_KIND,
-        capabilities: getOpenCodeEngineCapabilities(EXPERIMENTAL_OPENCODE_RUNTIME_KIND),
-        createOrchestrator: input => new OpenCodeRuntime(input),
-      },
-    ]);
-  }
+/** The registry of the engines a selection can name (Pi, and the hidden Claude/OpenAI fallback). */
+export function getProductionRuntimeRegistry(): RuntimeRegistry {
   return productionRuntimeRegistry;
 }

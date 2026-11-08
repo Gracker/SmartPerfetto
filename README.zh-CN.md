@@ -108,11 +108,10 @@ SmartPerfetto 在 Perfetto Trace 之上增加 AI 分析层。加载 Trace、用�
 授权并重装：
 
 ```bash
-npm install -g @gracker/smartperfetto --allow-scripts=better-sqlite3,opencode-ai
+npm install -g @gracker/smartperfetto --allow-scripts=better-sqlite3
 ```
 
-`better-sqlite3` 提供 CLI 核心命令使用的原生 SQLite 绑定；选择 OpenCode 运行时时
-需要运行 `opencode-ai` 的安装脚本。发布包里的脚本审批不会替使用者授权。项目内
+`better-sqlite3` 提供 CLI 核心命令使用的原生 SQLite 绑定。发布包里的脚本审批不会替使用者授权。项目内
 安装的审批方式，以及 doctor 和真实 query 检查，见
 [CLI 安装说明](docs/reference/cli.md#npm-阻止安装脚本时)和
 [npm 官方安装策略](https://docs.npmjs.com/cli/install/)。
@@ -124,8 +123,7 @@ npm install -g @gracker/smartperfetto --allow-scripts=better-sqlite3,opencode-ai
 Web UI 启动后，打开 **AI Assistant 设置 → Providers**，添加一个 Provider，依次保存、
 测试并激活。本地源码运行也可在 `backend/.env` 配置凭据；Claude Code 登录态不能作为 SDK 已配置的依据。
 第一次启动不需要配置所有 Runtime；只选一条 Provider 路径，按
-[配置指南](docs/getting-started/configuration.md)操作即可。Qoder 高级用户也可以按文档
-配置 BYOK 模型路由；Qoder PAT 或 `qodercli` 认证仍是独立且必需的。已保存 Provider
+[配置指南](docs/getting-started/configuration.md)操作即可。已保存 Provider
 会通过受控缓存刷新供应商支持的模型建议；目录不支持或不可用时继续使用内置预置。
 
 Pi 用户可在 model JSON 中配置推理设置；provider 默认、显式关闭和强度映射见 [Pi 配置说明](docs/getting-started/configuration.md#llm-配置)。

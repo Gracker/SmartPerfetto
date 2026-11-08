@@ -4,7 +4,7 @@
 
 import {AsyncLocalStorage} from 'async_hooks';
 
-import type {AgentRuntimeKind} from '../../agentRuntime/runtimeKinds';
+import type {RecordedProductionRuntimeKind} from '../../agentRuntime/runtimeKinds';
 import type {RuntimePerformanceRecorder} from '../../agentRuntime/runtimePerformance';
 import {resolveRuntimePerformanceRecorder} from '../../agentRuntime/runtimePerformanceContext';
 import type {
@@ -57,7 +57,7 @@ export interface CreateRunManifestLifecycleInput {
   scope: RunManifestScope;
   userId?: string;
   startedAt?: number;
-  runtime: AgentRuntimeKind;
+  runtime: RecordedProductionRuntimeKind;
   providerId?: string | null;
   providerSnapshotHash?: string;
   model?: string;

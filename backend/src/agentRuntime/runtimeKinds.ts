@@ -5,12 +5,38 @@
 export const CLAUDE_AGENT_RUNTIME_KIND = 'claude-agent-sdk' as const;
 export const OPENAI_AGENT_RUNTIME_KIND = 'openai-agents-sdk' as const;
 export const PI_AGENT_CORE_RUNTIME_KIND = 'pi-agent-core' as const;
+// Labels of removed engines: they appear only in records written before the removal.
 export const OPENCODE_RUNTIME_KIND = 'opencode' as const;
 export const QODER_AGENT_RUNTIME_KIND = 'qoder-agent-sdk' as const;
 export const EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND = 'experimental-pi-agent-core' as const;
 export const EXPERIMENTAL_OPENCODE_RUNTIME_KIND = 'experimental-opencode' as const;
 
+/**
+ * The engines that can run an analysis: Pi Agent Core, and the Claude Agent
+ * SDK and OpenAI Agents SDK engines kept behind the hidden one-release
+ * fallback (`legacyRuntimeFallback.ts`).
+ */
 export const PRODUCTION_RUNTIME_KINDS = [
+  CLAUDE_AGENT_RUNTIME_KIND,
+  OPENAI_AGENT_RUNTIME_KIND,
+  PI_AGENT_CORE_RUNTIME_KIND,
+] as const;
+
+export type AgentRuntimeKind = typeof PRODUCTION_RUNTIME_KINDS[number];
+
+export function isProductionAgentRuntimeKind(value: unknown): value is AgentRuntimeKind {
+  return typeof value === 'string'
+    && PRODUCTION_RUNTIME_KINDS.includes(value as AgentRuntimeKind);
+}
+
+/**
+ * Every runtime label a production engine has written into a provider
+ * profile, completion fact, run manifest or provider pin: the current engines
+ * and the removed OpenCode and Qoder engines. A reader accepts these as
+ * provenance; only an `AgentRuntimeKind` executes.
+ */
+// Spelled out, not spread: the frontend contract generator resolves only literal tuples.
+export const RECORDED_PRODUCTION_RUNTIME_KINDS = [
   CLAUDE_AGENT_RUNTIME_KIND,
   OPENAI_AGENT_RUNTIME_KIND,
   PI_AGENT_CORE_RUNTIME_KIND,
@@ -18,22 +44,11 @@ export const PRODUCTION_RUNTIME_KINDS = [
   QODER_AGENT_RUNTIME_KIND,
 ] as const;
 
-export type AgentRuntimeKind = typeof PRODUCTION_RUNTIME_KINDS[number];
+export type RecordedProductionRuntimeKind = typeof RECORDED_PRODUCTION_RUNTIME_KINDS[number];
 
-export const EXPERIMENTAL_RUNTIME_KINDS = [
-  EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
-  EXPERIMENTAL_OPENCODE_RUNTIME_KIND,
-] as const;
-
-export type ExperimentalAgentRuntimeKind = typeof EXPERIMENTAL_RUNTIME_KINDS[number];
-
-export function isProductionAgentRuntimeKind(value: unknown): value is AgentRuntimeKind {
+export function isRecordedProductionRuntimeKind(value: unknown): value is RecordedProductionRuntimeKind {
   return typeof value === 'string'
-    && PRODUCTION_RUNTIME_KINDS.includes(value as AgentRuntimeKind);
-}
-
-export function listExperimentalRuntimeKinds(): readonly ExperimentalAgentRuntimeKind[] {
-  return EXPERIMENTAL_RUNTIME_KINDS;
+    && RECORDED_PRODUCTION_RUNTIME_KINDS.includes(value as RecordedProductionRuntimeKind);
 }
 
 /**
@@ -52,8 +67,9 @@ export function isSelectableAgentRuntimeKind(value: unknown): value is Selectabl
 /**
  * Every runtime label SmartPerfetto has written into a record (provider
  * profiles, session snapshots, conversation descriptors, run manifests,
- * evaluation pins). Readers accept these as provenance; execution re-resolves
- * a retired one through the effective runtime.
+ * evaluation pins), including the experimental labels. Readers accept these
+ * as provenance; execution re-resolves a retired one through the effective
+ * runtime.
  */
 export const RECORDED_RUNTIME_KINDS = [
   CLAUDE_AGENT_RUNTIME_KIND,

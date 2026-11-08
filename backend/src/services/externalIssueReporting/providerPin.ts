@@ -6,7 +6,7 @@ import type {ProviderScope} from '../providerManager';
 import {getProviderService} from '../providerManager';
 import {resolveProviderRuntimeSnapshot} from '../providerManager/providerSnapshot';
 import {reconcileRecordedProviderPin} from '../providerManager/providerPinContinuity';
-import {isRecordedRuntimeKind} from '../../agentRuntime/runtimeKinds';
+import {isRecordedRuntimeKind, type AgentRuntimeKind} from '../../agentRuntime/runtimeKinds';
 import type {
   ExternalIssueReviewUnavailableReason,
 } from '../../types/externalIssueReporting';
@@ -16,11 +16,7 @@ export type ExternalIssueProviderPinResolution =
   | {
       ok: true;
       providerId: string | null;
-      runtime:
-        | 'openai-agents-sdk'
-        | 'claude-agent-sdk'
-        | 'pi-agent-core'
-        | 'opencode';
+      runtime: AgentRuntimeKind;
       model?: string;
     }
   | {
@@ -60,10 +56,6 @@ export function resolveExternalIssueProviderPin(
       return {ok: false, reason: 'provider_snapshot_changed'};
     }
     const runtime = current.snapshot.runtimeKind;
-    if (runtime !== 'openai-agents-sdk' && runtime !== 'claude-agent-sdk'
-      && runtime !== 'pi-agent-core' && runtime !== 'opencode') {
-      return {ok: false, reason: 'runtime_not_supported'};
-    }
     return {
       ok: true,
       providerId: manifest.providerId,

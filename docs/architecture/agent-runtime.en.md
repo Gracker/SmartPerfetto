@@ -14,8 +14,10 @@ or environment.
 | `claude-agent-sdk` | Claude Agent SDK | Anthropic, Bedrock, Vertex, DeepSeek, Anthropic-compatible gateways | Default when env carries Claude credentials; requires explicit provider/env credentials and supports MCP server and configurable sub-agents under shared completion and verification contracts |
 | `openai-agents-sdk` | OpenAI Agents SDK | OpenAI, Ollama, OpenAI-compatible gateways | Native OpenAI runtime; adapts the same SmartPerfetto tools as function tools |
 | `pi-agent-core` | Pi Agent Core | custom, GLM, DeepSeek, Kimi, Kimi Code, MiniMax | Optional public runtime; real model configurations reuse the shared SmartPerfetto prompt/tool/report pipeline, while fake-stream remains smoke-only; does not enable `.pi` discovery, package extensions, shell tools, or file tools |
-| `opencode` | OpenCode server / SDK | custom only | Optional public runtime; uses explicit OpenAI-compatible or OpenCode model configuration, request-scoped SmartPerfetto MCP tools, and a hardened isolated OpenCode server; does not read local OpenCode login/project state or enable built-in file/shell/web/edit tools |
-| `qoder-agent-sdk` | Qoder Agent SDK / `qodercli` | custom only or env | Optional public runtime; SDK is an opt-in optional peer, uses a local Qoder CLI login or PAT, exposes request-scoped SmartPerfetto MCP tools, and isolates private-knowledge streams/sessions/snapshots |
+
+The OpenCode and Qoder engines and their SDK dependencies are removed. The
+`opencode` and `qoder-agent-sdk` labels remain readable wherever a record names
+them (`RECORDED_PRODUCTION_RUNTIME_KINDS`) and execute on the effective runtime.
 
 ## Entry Points
 
@@ -25,7 +27,7 @@ HTTP analysis:
 POST /api/agent/v1/analyze
   -> AgentAnalyzeSessionService.prepareSession()
   -> createAgentOrchestrator()
-  -> ClaudeRuntime.analyze() | OpenAIRuntime.analyze() | PiAgentCoreRuntime.analyze() | OpenCodeRuntime.analyze() | QoderRuntime.analyze()
+  -> PiAgentCoreRuntime.analyze() | ClaudeRuntime.analyze() | OpenAIRuntime.analyze()
 ```
 
 Resume and scene reconstruction use the same runtime factory:
@@ -113,15 +115,16 @@ runtime equals the recorded hash; the effective request origin is unchanged; the
 and `analysisContextFingerprint` is unchanged. A compatible pin is rebound to the new hash with a
 continuity note (`runtimeMigration` on the conversation descriptor, a `retired_runtime_rebound` entry on
 the session snapshot); anything else keeps the existing explicit outcome (409 or a continuity break).
-The OpenCode/Qoder legacy-hash computation stays for one release after their engines are removed.
+The OpenCode and Qoder engines are removed; the frozen legacy-hash computation for pins they recorded
+(`ProviderService.toEnvVars` and `providerSnapshot.ts`, no engine or SDK) stays for one release.
 
 `modelExecutionProfile.ts` separates documented server capabilities, actual SDK expression capabilities and captured authored settings; `modelExecutionPolicy.ts` selects controls by call purpose. Matching uses the actual endpoint, exact model ID and protocol. Unknown gateways or unmodeled protocols remain unknown, and native configurations already validated by their SDK remain intact. Provider names, latency and model self-descriptions do not establish capabilities or authorize switching the pinned provider/model.
 
 Main analysis and ordinary continuation preserve native settings. Classification and explicit output-only delivery select the minimum legal thinking setting only when both server and adapter support it. Known GLM 5.3 Flash requires enabled thinking and uses low; known DeepSeek Flash interfaces may disable it. Authored settings take precedence; a known illegal setting is a configuration error before dispatch, not a transient network failure. Unknown capability does not authorize guessed parameters.
 
-Pi model JSON may explicitly set `thinkingLevel` (`off/minimal/low/medium/high/xhigh/max`); unsupported levels fail before dispatch. `thinkingLevelMap` preserves native mappings. Official GLM without an authored setting does not inherit disabled thinking solely from Pi Agent's off default; explicit off is rejected for known forced-thinking models. OpenCode uses actual host options, such as `reasoningEffort` mapped to wire `reasoning_effort`. Missing temperature/tool/cost capabilities remain unknown; a separate light model does not inherit the primary model's capabilities or limits.
+Pi model JSON may explicitly set `thinkingLevel` (`off/minimal/low/medium/high/xhigh/max`); unsupported levels fail before dispatch. `thinkingLevelMap` preserves native mappings. Official GLM without an authored setting does not inherit disabled thinking solely from Pi Agent's off default; explicit off is rejected for known forced-thinking models. Missing temperature/tool/cost capabilities remain unknown; a separate light model does not inherit the primary model's capabilities or limits.
 
-`model_execution_fingerprint@1` is separate from the existing provider snapshot and binds actual model/API, effective settings and known SDK/adapter facts. Unknown versions stay unknown. Internal `policyObservations` describe policy selection with `wireObservation: not_observed`; they are not actual dispatch or server execution facts. Maintainer commands `test:pi-provider-runtime` and `test:opencode-provider-runtime` verify native wire contracts against local fake providers, not real-model accuracy or latency.
+`model_execution_fingerprint@1` is separate from the existing provider snapshot and binds actual model/API, effective settings and known SDK/adapter facts. Unknown versions stay unknown. Internal `policyObservations` describe policy selection with `wireObservation: not_observed`; they are not actual dispatch or server execution facts. The maintainer command `test:pi-provider-runtime` verifies native wire contracts against local fake providers, not real-model accuracy or latency.
 
 `OPENAI_ANALYSIS_REASONING_EFFORT` explicitly configures OpenAI runtime main analysis and ordinary continuation; omitting it preserves provider defaults. It does not override classification or timeout output-only closeout purpose policies. Validation uses the actual selected model, endpoint, protocol and installed SDK. Generic effort uses native SDK fields and never injects vendor `thinking` into unknown gateways. Recognized DeepSeek Chat maps `none` to disabled thinking; forced-thinking GLM rejects it. This adapter currently expresses `max` through passthrough only on recognized supported Chat interfaces; explicit `max` on unknown gateways or Responses is not yet supported by this adapter. The same isolated provider environment binds the setting into its snapshot; invalid values cannot enter public snapshots. Lower effort still needs real accuracy validation.
 
@@ -168,9 +171,9 @@ runtime.
 Claude/Anthropic-compatible source runs use a no-tool Claude SDK call for
 triage. OpenAI/OpenAI-compatible source runs use a lightweight Chat
 Completions call. Both receive only bounded public source context and do not
-share the analysis SDK session. Pi Agent Core, OpenCode, Qoder, legacy
-manifests, unavailable credentials, snapshot drift, or invalid model output
-use an explicit deterministic fallback in V1 and are never presented as if the
+share the analysis SDK session. Pi Agent Core, runs recorded under the removed
+Qoder runtime, legacy manifests, unavailable credentials, snapshot drift, or
+invalid model output use an explicit deterministic fallback in V1 and are never presented as if the
 same Agent reviewed the result. See
 [Agent-Assisted GitHub Feedback](../getting-started/agent-assisted-feedback.en.md)
 for the user-visible contract.
@@ -186,8 +189,6 @@ for the user-visible contract.
 | `backend/src/agentRuntime/engines/openai/openAiRuntime.ts` | OpenAI Agents SDK orchestrator |
 | `backend/src/agentRuntime/engines/openai/openAiToolAdapter.ts` | Shared MCP descriptors adapted to OpenAI function tools |
 | `backend/src/agentRuntime/engines/pi/piAgentCoreRuntime.ts` | Pi Agent Core runtime adapter |
-| `backend/src/agentRuntime/engines/opencode/openCodeRuntime.ts` | OpenCode server/runtime adapter and request-scoped MCP bridge |
-| `backend/src/agentRuntime/engines/qoder/qoderRuntime.ts` | Qoder SDK adapter, stream projection, and session isolation |
 | `backend/src/agentRuntime/runtimeExecutionGuard.ts` | Runtime/session single-active execution, cancellation, and stale-settle isolation |
 | `backend/src/agentRuntime/analysisTurnIntent.ts`, `runtimeTurnPolicy.ts` | Shared typed intent, budget, scope and evidence-access policy for all native engines |
 | `backend/src/agentRuntime/analysisFinalizationContext.ts`, `runtimeEvidenceContext.ts` | Private finalization context, original deadline, authorized capture reads and cross-turn leases |
@@ -232,12 +233,7 @@ tool descriptors into OpenAI Agents SDK function tools. Pi Agent Core uses
 request-scoped native tools built from the same shared descriptors, the shared
 system prompt, planning/hypothesis tools, and the same route-owned
 finalization/report pipeline without turning SmartPerfetto
-into a Pi coding-agent harness. OpenCode runs a hardened isolated server and
-bridges request-scoped SmartPerfetto tools through a per-analysis MCP bridge;
-its built-in project discovery, file, shell, web, and edit tools are disabled
-or denied. Qoder uses the SDK's in-process MCP bridge with built-in SDK tools
-disabled and projects every answer token through the shared private-output
-guard before SSE emission. Each engine uses its pinned provider's native no-tool
+into a Pi coding-agent harness. Each engine uses its pinned provider's native no-tool
 transport for the same typed intent and hands its result to the same
 product-owned finalizer/report boundary. Every engine starts each turn in a
 fresh native context; streaming, tool cadence and cost/timeout semantics still
@@ -312,7 +308,7 @@ internal `RunManifest.toolResults` receipt answers that. It records what each
 call handed to its runtime at the outermost shared tool boundary: after every
 product wrapper, including pacing reminders, and before transport truncation.
 Each entry holds the tool name, the call id when the adapter supplies one
-(OpenAI, Pi, OpenCode), outcome, receipt facts (plan phase id presence only),
+(OpenAI, Pi), outcome, receipt facts (plan phase id presence only),
 and the text size before adapter serialization. For each field in
 `RUNTIME_TOOL_RESULT_AUDITED_FIELDS`, it also records whether the field's
 serialized key and value appear verbatim in that text. No payload values are
@@ -322,19 +318,18 @@ output caps are outside the product's view.
 Performance branches are controlled by the strict maintainer-only
 `SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES` boundary and default to no admitted
 candidates. The value may contain only a comma-separated, whitespace-free,
-duplicate-free list from `task4` through `task9`. Whitespace, an unknown item, a
+duplicate-free list from `task4` through `task7` (`task8` and `task9` were
+retired with the OpenCode and Qoder engines and are unknown items). Whitespace, an unknown item, a
 duplicate, or any malformed value invalidates the whole setting. It is not a
 Provider Manager, UI, or provider env option, and benchmark artifacts never
 activate it automatically:
 
 | Candidate | Scope |
 |---|---|
-| `task4` | Reuse one quick-evidence/focus preflight across all five runtimes |
-| `task5` | Use bounded fair overlap for explicitly commutative read tools across all five runtimes; all other tools remain exclusive |
+| `task4` | Reuse one quick-evidence/focus preflight across every runtime |
+| `task5` | Use bounded fair overlap for explicitly commutative read tools across every runtime; all other tools remain exclusive |
 | `task6` | Overlap independent Claude/OpenAI preflight DAG nodes |
 | `task7` | Load independent Pi SDK/provider startup concurrently and enable quick parallel-batch scheduling; descriptor/tool gates still serialize exclusive work |
-| `task8` | Read OpenCode messages/status together and use adaptive polling |
-| `task9` | Overlap Qoder Skill-registry and SDK startup |
 
 After `task5` is admitted, its safe-read policy is enabled by default.
 `SMARTPERFETTO_SAFE_TOOL_CONCURRENCY=false` is a rollback to exclusive
@@ -344,12 +339,11 @@ are correctness/observability foundations and remain active independently of
 performance-candidate admission.
 
 Shipped defaults remain serial: genuine deterministic admission harnesses for
-all five adapters are `NOT CONFIGURED`, and bounded real-provider base/candidate
+every adapter are `NOT CONFIGURED`, and bounded real-provider base/candidate
 A/B has not run, so performance/accuracy admission is `INCONCLUSIVE`. Synthetic
 scorer data validates scoring mechanics only and cannot enable a candidate.
 When real-provider validation cannot run, record `NOT AVAILABLE` or
-`NOT CONFIGURED` precisely. Qoder needs a PAT or local `qodercli` login in
-addition to BYOK. Unit, type, build, and deterministic gates are not substitutes
+`NOT CONFIGURED` precisely. Unit, type, build, and deterministic gates are not substitutes
 for real-provider evidence.
 
 The Pi Agent Core real-model path reuses SmartPerfetto scene strategies, system
@@ -367,34 +361,9 @@ and DeepSeek templates default to Pi; saved providers and API records without a
 runtime are not migrated. Snapshots pin the key env and installed pi-ai version. `SMARTPERFETTO_PI_AGENT_CORE_FAKE_STREAM=1` is
 smoke/test-only and must stay labeled capability-limited.
 
-The OpenCode path is also custom-only. It can use `SMARTPERFETTO_OPENCODE_MODEL_JSON`
-with `providerID` / `modelID` / `baseUrl` / `apiKey` fields, or fall back to
-OpenAI-compatible `OPENAI_*` env/provider fields. SmartPerfetto does not reuse
-the user's OpenCode CLI login, config, or project extensions; rollback is
-switching the custom provider or `SMARTPERFETTO_AGENT_RUNTIME` back to
-`claude-agent-sdk` / `openai-agents-sdk`.
-
-The Qoder path is custom-only in Provider Manager and also supports an explicit
-env selection. The SDK is not installed by default; users must review its terms
-and opt in through `qoder:install -- --accept-terms` or an explicit module path.
-The `resolveModel` BYOK policy combines `QODER_BYOK_API_KEY`,
-`QODER_BYOK_PROVIDER`, `QODER_MODEL`, and optional base URL, style, and light
-model values; partial configuration fails closed. BYOK changes the model
-provider only and never replaces Qoder PAT or local `qodercli` authentication.
-Provider Manager accepts the four BYOK values only through a Qoder custom
-profile's `custom.envOverrides`; it cannot override the CLI, SDK module, or
-worker path. The BYOK key reaches only the SDK `resolveModel` callback, not the
-SDK subprocess environment, diagnostics, or plaintext snapshots. Provider,
-base URL, and style remain non-secret snapshot inputs, while key changes update
-the secret fingerprint used by provider pinning, resume, external issue, and
-Self-Evolution proof boundaries. Logical follow-ups use product history and a
-fresh model context; no provider session is resumed or stored. A run authorized
-for private codebase or external knowledge also keeps its intermediate state out
-of durable snapshots.
-
 ## Source-Aware Runtime Parity
 
-The five production runtimes do not implement separate source policies. They
+The production runtimes do not implement separate source policies. They
 share the strategy-owned source-use prompt and actual `SourceUseDecisionV1`
 state from the common MCP registry/handlers. Runtimes attach actual source-use
 state for the product finalizer. Without a current-run accessor, model-authored
@@ -428,9 +397,9 @@ analysis-result snapshots, and report/snapshot APIs. Web chat further reduces
 it to a current-run receipt without `CodeRef`. No surface retains absolute
 roots, snippets, search queries, or model-authored free-text binding reasons.
 
-The deterministic five-runtime execution/finalization gate and A0–A4 semantic
+The deterministic runtime execution/finalization gate and A0–A4 semantic
 gate prove the product contract, not real-provider model quality. Claude,
-OpenAI, Pi, OpenCode, and Qoder require separate repeated acceptance when
+OpenAI, and Pi require separate repeated acceptance when
 credentials are available. Unavailable authentication is reported as
 `REAL PROVIDER NOT AVAILABLE` and cannot be replaced by unit tests or fixtures.
 
@@ -452,13 +421,13 @@ memory-type prefetch, and `trace_facts` — a bounded question, or an unavailabl
 classification — still detects focus app, architecture and trace
 completeness. A Conversation without a mounted trace probes nothing and binds no
 trace identity or evidence trace (`resolveRunTurnPolicy`,
-`runtimeTraceAttachment.ts`, shared by all five runtimes). Vendor is not a preflight phase: `invoke_skill` resolves it only
+`runtimeTraceAttachment.ts`, shared by every runtime). Vendor is not a preflight phase: `invoke_skill` resolves it only
 for a Skill with vendor overrides, after that Skill's own queries, through the
 shared cached `traceVendorResolver` (trace metadata only) with a bounded wait,
-and attaches a `vendorOverride` hint; the rule is the same in all five runtimes. Focus detection scores candidate processes once over the
+and attaches a `vendorOverride` hint; the rule is the same in every runtime. Focus detection scores candidate processes once over the
 analysis window (foreground time, frames, launches, battery `top`, CPU),
 excludes processes with no activity and reports `high`/`medium`/`ambiguous`
-confidence. All five runtimes resolve the effective package through
+confidence. Every runtime resolves the effective package through
 `focusAppTarget`: a user-named package is `user`, a high/medium inference is
 `auto_detected`, and an ambiguous ranking sets no package, only candidates. Only
 `user` packages and selections bind the analysis target; an inferred package is a
@@ -510,7 +479,7 @@ safe root producer from the pinned registry, without choosing by Skill name.
 Missing or unknown target-use, old clients without the table hint, other selection
 types or targets, existing-only turns and dual traces do not enable this path.
 
-All five runtimes complete this acquisition before generic focus, architecture
+Every runtime completes this acquisition before generic focus, architecture
 and completeness prefetch: the original response from the same processor issues
 the native witness before identity preparation and the minimum metric run.
 Prefetch module loading cannot invalidate that earlier immutable capture; an
@@ -562,10 +531,7 @@ returned data may use one no-tool closeout inside the delivery reserve, retainin
 original candidate. Cancellation, an expired
 hard deadline, revoked authorization or an exhausted explicit cost budget cannot
 start another call.
-A one-turn configuration has no extra delivery allowance. OpenCode stops acquisition
-after observing native messages and can overshoot between observations. It records
-actual turns and skips the summary when no allowance remains; this is not a strict
-model-call cap.
+A one-turn configuration has no extra delivery allowance.
 
 Before dispatch, closeout and continuation calls use
 `services/runtimeCallStats.ts` to estimate duration from successful calls' p75
@@ -651,12 +617,6 @@ evidence-read scope. The owner checks current-run identity, cancellation and
 authorization across awaits; user cancellation or context disposal aborts
 finalization's evidence reads. A privacy projection that alters checked inputs
 downgrades `passed` to `not_checked` and keeps `not_applicable`.
-
-The shared OpenCode model configuration does not invent context/output capacity:
-omitted capacity uses SDK defaults, unknown context does not trigger proactive
-capacity-threshold compaction, and actual context overflow still uses native
-reactive compaction. This does not promise equivalent long-session behavior to
-a model with known capacity or add capacity fields to the model JSON interface.
 
 `final_report_contract` remains strategy frontmatter in the pinned registry.
 `runtimeConclusionVerifier` supplies structured delivery diagnostics without an additional
@@ -772,8 +732,6 @@ comparison identity.
   templates available in source. Documentation cannot substitute for those gates.
 - Docker does not read host Claude Code local auth; use Provider Manager or env
   provider configuration.
-- Qoder is absent from default Docker/portable/npm installs until the optional
-  SDK peer is explicitly installed after its terms are accepted.
 - Runtime/provider/session changes must be checked against Web UI, CLI, API,
   reports, Docker, and portable packages. See
   [`../../.claude/rules/product-surface.md`](../../.claude/rules/product-surface.md).

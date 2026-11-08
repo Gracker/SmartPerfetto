@@ -191,7 +191,6 @@ function validateSmokeSummary(summary, expected) {
   if (
     String(summary.runtimes?.node?.stdout || '').trim() !== expectedNodeVersion ||
     !probeHasOutput(summary.runtimes?.claude) ||
-    !probeHasOutput(summary.runtimes?.opencode) ||
     !traceProcessorOutput.includes('smartperfetto_smoke') ||
     !/(^|\r?\n)1(\r?\n|$)/.test(traceProcessorOutput)
   ) {

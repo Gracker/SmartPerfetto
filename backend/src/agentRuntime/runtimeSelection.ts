@@ -11,7 +11,7 @@ import {
   type ProviderConfig,
   type ProviderScope,
 } from '../services/providerManager';
-import { PI_AGENT_CORE_RUNTIME_KIND, type ExperimentalAgentRuntimeKind, type RecordedRuntimeKind } from './runtimeKinds';
+import { PI_AGENT_CORE_RUNTIME_KIND, type RecordedRuntimeKind } from './runtimeKinds';
 import { createRuntimeFactoryEnv } from './runtimeFactoryEnv';
 import {
   agentRuntimeFromEnv,
@@ -19,16 +19,13 @@ import {
   legacyAgentRuntimeFallback,
   warnRetiredExperimentalRuntimeEnv,
 } from './legacyRuntimeFallback';
-import { createRuntimeRegistryForSelection } from './runtimeRegistry';
+import { getProductionRuntimeRegistry } from './runtimeRegistry';
 import {
   assertAiFeatureEnabled,
   type AiCapabilityFeature,
 } from '../services/aiCapabilityPolicy';
 
-export type BackendAgentRuntimeKind = AgentRuntimeKind;
-export type ResolvedAgentRuntimeKind = BackendAgentRuntimeKind | ExperimentalAgentRuntimeKind;
-
-export interface RuntimeSelection<K extends string = ResolvedAgentRuntimeKind> {
+export interface RuntimeSelection<K extends string = AgentRuntimeKind> {
   kind: K;
   source: 'provider' | 'snapshot' | 'env' | 'default';
   providerId?: string;
@@ -125,8 +122,7 @@ export function selectRuntimeForProvider(
 export function createAgentOrchestrator(input: CreateAgentOrchestratorInput): IOrchestrator {
   assertAiFeatureEnabled(input.aiFeature ?? 'agent_analyze');
   const selection = resolveAgentRuntimeSelection(input.providerId, input.runtimeOverride, input.providerScope);
-  const registry = createRuntimeRegistryForSelection(selection.kind);
-  return registry.createOrchestrator(selection.kind, {
+  return getProductionRuntimeRegistry().createOrchestrator(selection.kind, {
     traceProcessorService: input.traceProcessorService,
     selection,
     env: createRuntimeFactoryEnv(selection, input.providerScope),

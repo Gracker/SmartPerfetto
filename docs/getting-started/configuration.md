@@ -23,8 +23,8 @@ Pi Agent Core 是唯一的分析 runtime。你配置的是**模型 endpoint**：
 
 ### 从旧 runtime 迁移
 
-Claude Agent SDK、OpenAI Agents SDK、OpenCode 和 Qoder Agent SDK 已不再可选，现有配置
-自动迁移，不需要手动修改：
+Claude Agent SDK 与 OpenAI Agents SDK 已不再可选，OpenCode 和 Qoder Agent SDK 引擎已删除；
+现有配置自动迁移，不需要手动修改：
 
 - **Provider profile**：读取时把旧 `agentRuntime` 映射为 `pi-agent-core`，并记录原 runtime
   使用的 endpoint（`apiSurface`：`claude` 或 `openai`）。Pi 继续调用同一个 Base URL、同一个
@@ -380,7 +380,7 @@ config/credentials 文件），或 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`
 
 每种 Provider Manager profile 都在 Pi 上运行；显式 model JSON 只在需要覆盖自动换算时填写。
 
-OpenCode 与 Qoder runtime 已退役：`SMARTPERFETTO_AGENT_RUNTIME=opencode|qoder-agent-sdk` 映射为
+OpenCode 与 Qoder 引擎已删除：`SMARTPERFETTO_AGENT_RUNTIME=opencode|qoder-agent-sdk` 映射为
 Pi。OpenCode 配置中的 OpenAI-compatible 字段（或 model JSON 中的 `baseURL` / `modelID` /
 `apiKey`）会换算为 Pi 的 Chat Completions 模型；Qoder 使用自己的服务，无法换算，需要改为
 Anthropic- 或 OpenAI-compatible endpoint。
@@ -503,8 +503,7 @@ OpenAI runtime 的 `maxTurns × per-turn timeout`（full 模式再受上面的�
 
 100/50 是单次调查的安全预算，不是需要用满的目标。预算大于一时预留一次无工具总结，
 触顶后说明已有发现、证据不足和下一步；总结仍为部分完成。取消、超时、权限失效和
-费用限制不会因为收尾而被绕过。OpenCode 的轮次控制基于异步观察，可能过冲，实际轮数
-会保留。具体边界见 [轮次预算与收尾](../architecture/agent-runtime.md#轮次预算与收尾)。
+费用限制不会因为收尾而被绕过。具体边界见 [轮次预算与收尾](../architecture/agent-runtime.md#轮次预算与收尾)。
 
 后续提问默认继承有界历史摘要，并可按需回查完整旧轮；来源、用户或 Trace 的权限边界
 不会因历史继承而扩大。更早正文不需要每轮全部发送给模型。
@@ -745,14 +744,12 @@ trace 大小、并发 run 与每月 run 配额只约束分析资源，不是按�
 SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES=task4,task6
 ```
 
-该变量只接受 `task4`、`task5`、`task6`、`task7`、`task8`、`task9` 的逗号列表。值不能包含前后或分项空白、重复项、空项或未知项；任一问题都会让整个值 fail closed 为“无候选获准”。它是维护者部署边界，不属于 Provider Manager、UI 或 provider credential env。benchmark 产物也不会自动修改或激活它。
+该变量只接受 `task4`、`task5`、`task6`、`task7` 的逗号列表；随 OpenCode、Qoder 引擎删除的 `task8`、`task9` 已是未知项。值不能包含前后或分项空白、重复项、空项或未知项；任一问题都会让整个值 fail closed 为“无候选获准”。它是维护者部署边界，不属于 Provider Manager、UI 或 provider credential env。benchmark 产物也不会自动修改或激活它。
 
-- `task4`：五个 runtime 复用 quick evidence/focus 预取。
-- `task5`：五个 runtime 允许已标记的可交换只读工具做有界重叠；其余工具仍独占。
+- `task4`：各 runtime 复用 quick evidence/focus 预取。
+- `task5`：各 runtime 允许已标记的可交换只读工具做有界重叠；其余工具仍独占。
 - `task6`：Claude/OpenAI 重叠独立 preflight。
 - `task7`：Pi 并发加载独立 SDK/provider，并在 quick 模式启用 parallel batch 调度；descriptor/tool gate 仍串行独占工作。
-- `task8`：OpenCode 并行观察 messages/status 并自适应轮询。
-- `task9`：Qoder 重叠 Skill registry 与 SDK 启动。
 
 `task5` 已获准时，安全只读并发默认开启；下面的变量只能把它回滚为独占，不能在缺少 `task5` 准入时强行开启：
 
@@ -760,7 +757,7 @@ SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES=task4,task6
 SMARTPERFETTO_SAFE_TOOL_CONCURRENCY=false
 ```
 
-当前发布默认保持串行，因为五个真实 adapter 的确定性准入为 `NOT CONFIGURED`，真实 provider base/candidate A/B 尚未执行，准入结论为 `INCONCLUSIVE`。执行 guard、processor 创建 single-flight、缓存失败重试、取消清理和内部性能 receipt 等 correctness/observability 修复不受候选开关影响。
+当前发布默认保持串行，因为各真实 adapter 的确定性准入为 `NOT CONFIGURED`，真实 provider base/candidate A/B 尚未执行，准入结论为 `INCONCLUSIVE`。执行 guard、processor 创建 single-flight、缓存失败重试、取消清理和内部性能 receipt 等 correctness/observability 修复不受候选开关影响。
 
 ### 有范围的本地 benchmark
 
@@ -792,4 +789,4 @@ npm run benchmark:agent-latency -- \
   --output-dir test-output/runtime-concurrency/<fresh-diagnostic>
 ```
 
-RunManifest 内的 `RuntimePerformance` receipt 是内部证据；公开 SSE 不包含可用于准入的 model、provider snapshot、provider usage 或 performance 字段。确定性 gate 也不等于真实 provider：若凭据、SDK 或本地登录态不可用，分别记录 `NOT AVAILABLE` 或 `NOT CONFIGURED`。Qoder 除 BYOK provider key 外还必须有 PAT 或本机 `qodercli` 登录态；BYOK 本身不能证明 Qoder 可运行。
+RunManifest 内的 `RuntimePerformance` receipt 是内部证据；公开 SSE 不包含可用于准入的 model、provider snapshot、provider usage 或 performance 字段。确定性 gate 也不等于真实 provider：若凭据、SDK 或本地登录态不可用，分别记录 `NOT AVAILABLE` 或 `NOT CONFIGURED`。

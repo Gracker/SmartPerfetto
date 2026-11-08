@@ -4,8 +4,8 @@
 
 /**
  * The Claude Agent SDK view of SmartPerfetto's shared tools. The registry holds
- * SDK-neutral `SharedToolSpec`s; the Claude runtime (and Qoder, which hands the
- * same in-process server to its SDK) adapts them here, and nowhere else.
+ * SDK-neutral `SharedToolSpec`s; the Claude runtime adapts them here, and
+ * nowhere else.
  */
 
 import {

@@ -2,17 +2,13 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {describe, expect, it, jest} from '@jest/globals';
+import {describe, expect, it} from '@jest/globals';
 import {renderConclusionContractSidecar} from '../../agent/core/conclusionContract';
 import type {AnalysisTurnIntent} from '../analysisTurnIntent';
 import {
-  admitBodyContinuation,
   buildNativeOutputCompletionPrompt,
   candidateHasAnswerBody,
-  nativeBodyCompletionNeeded,
 } from '../runtimeConclusionProtocol';
-import {createRuntimePerformanceRecorder} from '../runtimePerformance';
-import type {IntentTransportInput, IntentTransportResult} from '../intentTransport';
 
 const intent = (taskKind: AnalysisTurnIntent['taskKind']): AnalysisTurnIntent => ({
   schemaVersion: 1,
@@ -77,39 +73,5 @@ describe('answer body facts', () => {
     expect(candidateHasAnswerBody(`Answer\n\n${declaration}`)).toBe(true);
     expect(candidateHasAnswerBody(declaration)).toBe(false);
     expect(candidateHasAnswerBody('  ')).toBe(false);
-  });
-
-  it('asks for a body only for a completed, non-acknowledgement run with a delivery turn left', () => {
-    const base = {intent: intent('investigation'), completion: {status: 'completed' as const}, candidate: declaration,
-      remainingDeliveryTurns: 1};
-    expect(nativeBodyCompletionNeeded(base)).toBe(true);
-    expect(nativeBodyCompletionNeeded({...base, candidate: ''})).toBe(true);
-    // An answer without any declaration is complete; nothing is requested for it.
-    expect(nativeBodyCompletionNeeded({...base, candidate: 'Answer'})).toBe(false);
-    expect(nativeBodyCompletionNeeded({...base, intent: intent('acknowledgement')})).toBe(false);
-    expect(nativeBodyCompletionNeeded({...base, completion: {status: 'incomplete'}})).toBe(false);
-    expect(nativeBodyCompletionNeeded({...base, remainingDeliveryTurns: 0})).toBe(false);
-  });
-});
-
-describe('body continuation admission', () => {
-  const request = {prompt: 'Write the answer body.', systemPrompt: 'system', deadlineMs: Date.now() + 1_000,
-    outputByteLimit: 1024};
-
-  it('admits the known-missing body fail-open, then records one continuation call when dispatched', async () => {
-    const recorder = createRuntimePerformanceRecorder();
-    const dispatch = jest.fn(async (_input: IntentTransportInput): Promise<IntentTransportResult> =>
-      ({status: 'ok', text: 'Answer'}));
-    // Too little time for any estimate: a missing body is still worth the one call.
-    const continueBody = admitBodyContinuation({recorder, deliveryCall: {providerOrigin: 'https://provider.invalid', model: 'm'},
-      trigger: 'empty_body', request: {...request, deadlineMs: Date.now()}, dispatch});
-    expect(continueBody).toBeDefined();
-    expect(dispatch).not.toHaveBeenCalled();
-    expect(await continueBody!()).toEqual({status: 'ok', text: 'Answer'});
-    expect(dispatch).toHaveBeenCalledTimes(1);
-    expect(dispatch.mock.calls[0][0]).toMatchObject({prompt: request.prompt, systemPrompt: 'system'});
-    const receipt = recorder.seal();
-    expect(receipt.deliveryBudgets).toEqual([expect.objectContaining({purpose: 'continuation', decision: 'dispatch'})]);
-    expect(receipt.modelCalls).toEqual([expect.objectContaining({purpose: 'continuation', trigger: 'empty_body', outcome: 'ok'})]);
   });
 });

@@ -1205,17 +1205,15 @@ describe('agent runtime latency benchmark contracts', () => {
     expect(result.decision).toBe('serial');
   });
 
-  it('exercises scorer mechanics with 30 synthetic repetitions for every Task 4-9 runtime mapping without claiming runtime admission', () => {
+  it('exercises scorer mechanics with 30 synthetic repetitions for every Task 4-7 runtime mapping without claiming runtime admission', () => {
     const matrix = buildSyntheticScorerMatrix({repetitions: 30});
     const mappings: Array<[BenchmarkCandidate, readonly RuntimeBenchmarkCell['runtime'][]]> = [
       ['task4', PRODUCTION_RUNTIME_KINDS],
       ['task5', PRODUCTION_RUNTIME_KINDS],
       ['task6', ['claude-agent-sdk', 'openai-agents-sdk']],
       ['task7', ['pi-agent-core']],
-      ['task8', ['opencode']],
-      ['task9', ['qoder-agent-sdk']],
     ];
-    expect(matrix).toHaveLength(15 * 3 * 30 * 2);
+    expect(matrix).toHaveLength(9 * 3 * 30 * 2);
 
     for (const [candidate, runtimes] of mappings) {
       for (const runtime of runtimes) {
@@ -1995,23 +1993,16 @@ describe('agent runtime latency target runner safety', () => {
         DEEPSEEK_API_KEY: 'deepseek-secret',
         OPENAI_API_KEY: 'openai-secret',
         SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON: '{"apiKey":"pi-secret"}',
-        SMARTPERFETTO_OPENCODE_MODEL_JSON: '{"apiKey":"opencode-secret"}',
         ANTHROPIC_API_KEY: 'anthropic-secret',
-        QODER_BYOK_API_KEY: 'qoder-byok-secret',
       },
       commandExists: command => command === 'claude',
-      fileExists: file => file.endsWith('qoder-auth.json'),
-      homeDir: '/Users/example',
     });
     const serialized = JSON.stringify(availability);
     expect(serialized).not.toContain('deepseek-secret');
     expect(serialized).not.toContain('openai-secret');
     expect(serialized).not.toContain('pi-secret');
-    expect(serialized).not.toContain('opencode-secret');
     expect(serialized).not.toContain('anthropic-secret');
-    expect(serialized).not.toContain('qoder-byok-secret');
     expect(availability.scope).toBe('local_harness_only');
-    expect(availability.qoder.status).toBe('NOT_AVAILABLE');
-    expect(availability.qoder.reason).toContain('BYOK does not prove Qoder authentication');
+    expect(Object.keys(availability).sort()).toEqual(['claude', 'deepseek', 'openai', 'pi', 'scope']);
   });
 });

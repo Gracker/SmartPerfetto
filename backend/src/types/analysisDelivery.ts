@@ -4,7 +4,7 @@
 
 import {createHash} from 'node:crypto';
 import type {AnalysisTurnIntent} from '../agentRuntime/analysisTurnIntent';
-import type {AgentRuntimeKind} from '../agentRuntime/runtimeKinds';
+import type {RecordedProductionRuntimeKind} from '../agentRuntime/runtimeKinds';
 import type {ResolvedAnalysisInvestigationRequirements} from './analysisInvestigation';
 import type {FinalInvestigationAssessment} from './analysisInvestigationAssessment';
 import type {InvestigationEvidenceSnapshot} from '../services/evidence/investigationEvidenceLedger';
@@ -25,7 +25,8 @@ export interface AnalysisCandidateIdentity {
 
 export interface AnalysisCompletion extends AnalysisCandidateIdentity {
   schemaVersion: 1;
-  runtimeKind: AgentRuntimeKind;
+  /** The engine that produced the run; a stored completion may name a removed engine. */
+  runtimeKind: RecordedProductionRuntimeKind;
   status: 'completed' | 'incomplete' | 'failed' | 'cancelled' | 'unknown';
   reason?: 'output_limit' | 'turn_limit' | 'timeout' | 'budget_limit' | 'provider_error' | 'cancelled';
   sdkFinishReason?: string;

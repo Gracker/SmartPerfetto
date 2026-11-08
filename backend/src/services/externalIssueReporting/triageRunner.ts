@@ -29,6 +29,7 @@ import {resolveExternalIssueProviderPin} from './providerPin';
 import {runtimeEnvFor} from '../providerManager/piProviderCatalog';
 import {buildExternalIssueTriagePrompt} from './triagePrompt';
 import {validateExternalIssueReview} from './reviewValidator';
+import type {AgentRuntimeKind} from '../../agentRuntime/runtimeKinds';
 
 const DEFAULT_TIMEOUT_MS = 45_000;
 const MAX_OUTPUT_TOKENS = 8192;
@@ -36,12 +37,6 @@ const MAX_OUTPUT_TOKENS = 8192;
 interface ChatCompletionsResponse {
   choices?: Array<{message?: {content?: string}}>;
 }
-
-type ExternalIssueReviewRuntime =
-  | 'openai-agents-sdk'
-  | 'claude-agent-sdk'
-  | 'pi-agent-core'
-  | 'opencode';
 
 interface OpenAICompatibleReviewConfig {
   apiKey?: string;
@@ -64,7 +59,7 @@ export interface RunExternalIssueTriageOptions {
   timeoutMs?: number;
   complete?: (input: {
     prompt: string;
-    runtime: ExternalIssueReviewRuntime;
+    runtime: AgentRuntimeKind;
     providerId: string | null;
     providerScope: ProviderScope;
     model?: string;
@@ -133,7 +128,7 @@ export async function runExternalIssueTriage(input: {
 
 async function completeWithPinnedProvider(input: {
   prompt: string;
-  runtime: ExternalIssueReviewRuntime;
+  runtime: AgentRuntimeKind;
   providerId: string | null;
   providerScope: ProviderScope;
   model?: string;
@@ -145,9 +140,8 @@ async function completeWithPinnedProvider(input: {
   if (input.runtime === 'openai-agents-sdk') {
     return completeWithOpenAI(input);
   }
-  return completeWithPortableOpenAICompatibleRuntime({
+  return completeWithPi({
     ...input,
-    runtime: input.runtime,
   });
 }
 
@@ -173,22 +167,15 @@ async function completeWithOpenAI(input: {
   });
 }
 
-async function completeWithPortableOpenAICompatibleRuntime(input: {
+async function completeWithPi(input: {
   prompt: string;
-  runtime: 'pi-agent-core' | 'opencode';
   providerId: string | null;
   providerScope: ProviderScope;
   model?: string;
   timeoutMs: number;
 }): Promise<{text: string; model: string}> {
-  const env = resolvePinnedRuntimeEnv(
-    input.runtime,
-    input.providerId,
-    input.providerScope,
-  );
-  const config = input.runtime === 'pi-agent-core'
-    ? await resolvePiReviewConfig(env, input.model)
-    : resolveOpenCodeReviewConfig(env, input.model);
+  const env = resolvePinnedPiEnv(input.providerId, input.providerScope);
+  const config = await resolvePiReviewConfig(env, input.model);
   assertReviewCredentials(config);
   return completeWithOpenAICompatible({
     prompt: input.prompt,
@@ -257,8 +244,7 @@ async function completeWithOpenAICompatible(input: {
   }
 }
 
-function resolvePinnedRuntimeEnv(
-  runtime: 'pi-agent-core' | 'opencode',
+function resolvePinnedPiEnv(
   providerId: string | null,
   providerScope: ProviderScope,
 ): Record<string, string | undefined> {
@@ -269,14 +255,14 @@ function resolvePinnedRuntimeEnv(
   if (typeof providerId === 'string' && !provider) {
     throw new Error(`Provider not found: ${providerId}`);
   }
-  if (provider && providerService.resolveAgentRuntime(provider) !== runtime) {
+  if (provider && providerService.resolveAgentRuntime(provider) !== 'pi-agent-core') {
     throw new Error('provider_snapshot_changed');
   }
   const providerEnv = provider
     ? providerService.getEnvForProvider(provider.id, providerScope)
     : null;
   // An env-only Pi pin reads the model its Claude/OpenAI env maps to, as the runtime does.
-  return runtimeEnvFor(process.env, providerEnv, runtime);
+  return runtimeEnvFor(process.env, providerEnv, 'pi-agent-core');
 }
 
 async function resolvePiReviewConfig(
@@ -309,48 +295,6 @@ async function resolvePiReviewConfig(
     baseURL,
     apiKey: resolveModelApiKey(modelJson, env),
   };
-}
-
-function resolveOpenCodeReviewConfig(
-  env: Record<string, string | undefined>,
-  pinnedModel?: string,
-): OpenAICompatibleReviewConfig {
-  const rawModel = env.SMARTPERFETTO_OPENCODE_MODEL_JSON;
-  const modelJson = rawModel
-    ? parseModelJson(rawModel, 'SMARTPERFETTO_OPENCODE_MODEL_JSON')
-    : {};
-  const model = pinnedModel
-    ?? readConfigString(modelJson.smallModel)
-    ?? readConfigString(modelJson.smallModelID)
-    ?? readConfigString(modelJson.modelID)
-    ?? readConfigString(modelJson.modelId)
-    ?? readConfigString(modelJson.model)
-    ?? readConfigString(modelJson.id)
-    ?? env.OPENAI_LIGHT_MODEL
-    ?? env.OPENAI_MODEL;
-  const baseURL = readConfigString(modelJson.baseURL)
-    ?? readConfigString(modelJson.baseUrl)
-    ?? env.OPENAI_BASE_URL;
-  if (!model || !baseURL) {
-    throw new Error('external_issue_triage_opencode_model_config_incomplete');
-  }
-  return {
-    model,
-    baseURL,
-    apiKey: resolveModelApiKey(modelJson, env),
-  };
-}
-
-function parseModelJson(
-  raw: string | undefined,
-  name: string,
-): Record<string, unknown> {
-  if (!raw?.trim()) throw new Error(`${name} is required`);
-  const parsed = JSON.parse(raw) as unknown;
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error(`${name} must be a JSON object`);
-  }
-  return parsed as Record<string, unknown>;
 }
 
 function readConfigString(value: unknown): string | undefined {

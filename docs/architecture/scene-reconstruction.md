@@ -54,7 +54,7 @@
 - 距采集上限不足若干个“最慢近期模型轮次”（上限为采集跨度的一部分）时关闭采集窗口，只保留提案、已保留 artifact 的读取与最终回答；关闭后不再重开。
 - 已有修订但长期未更新且移动截止时间临近时，采集结果提示先提交累积的片段。
 
-OpenAI runtime 的场景分派使用进度感知截止：返回的工具结果和流式输出推迟调查截止，但不超过固定上限并保留 delivery 预留。Claude runtime 的场景分派采用同一预算（`CLAUDE_MAX_RUN_TIMEOUT_MS`，缺省回退 `AGENT_MAX_RUN_TIMEOUT_MS`，再到 60 分钟）；非场景 Claude run 以及 Pi、OpenCode、Qoder 仍使用固定预算，但同样受上述节奏约束。未发生 delivery 调用时，未消耗的 delivery 预留在硬上限内用于 finalization 的证据读取；finalization 不调用模型。
+OpenAI runtime 的场景分派使用进度感知截止：返回的工具结果和流式输出推迟调查截止，但不超过固定上限并保留 delivery 预留。Claude runtime 的场景分派采用同一预算（`CLAUDE_MAX_RUN_TIMEOUT_MS`，缺省回退 `AGENT_MAX_RUN_TIMEOUT_MS`，再到 60 分钟）；非场景 Claude run 以及 Pi 仍使用固定预算，但同样受上述节奏约束。未发生 delivery 调用时，未消耗的 delivery 预留在硬上限内用于 finalization 的证据读取；finalization 不调用模型。
 
 长 Trace 按窗口调查并保留跨窗口的状态与未闭合边界。完整读取 artifact 分页不能补回 SQL 已被 LIMIT 截去的行；生产者截断、解析失败和未查询范围必须单独记录。资源上限导致明确的部分结果，不能静默丢掉末尾片段再宣称完整。
 
@@ -99,4 +99,4 @@ npx tsx src/scripts/verifyAgentSseScrolling.ts \
 
 该调用需要所选 runtime 的真实凭证与 Trace 文件，走 `/scene-reconstruct`，不是用普通分析请求模拟。它的证明范围是产品路由、runtime、修订生命周期和公开展示报告检查；通过不等于自由文本语义或采集完整性已证实。动作准确性还需要独立的 Trace 时间区间与对象事实进行对照。
 
-mock 合同测试不能替代各 runtime 的真实认证 E2E。当前其他 runtime 的 mock 通过不构成真实认证验收；真实 E2E 仍需独立记录。Qoder 的真实认证验证为 `NOT AVAILABLE` 时，应保留这个状态，不能计为通过。不同 Provider 与 runtime 的选择关系见[Agent 运行时](agent-runtime.md)。
+mock 合同测试不能替代各 runtime 的真实认证 E2E。当前其他 runtime 的 mock 通过不构成真实认证验收；真实 E2E 仍需独立记录。某个 runtime 的真实认证验证为 `NOT AVAILABLE` 时，应保留这个状态，不能计为通过。不同 Provider 与 runtime 的选择关系见[Agent 运行时](agent-runtime.md)。

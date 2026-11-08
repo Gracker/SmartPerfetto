@@ -60,7 +60,7 @@ jest.mock('../strategyLoader', () => ({
 
 import {loadSourceUsePrompt} from '../../services/codebase/sourceUseDecision';
 import {describeSelectedCodebases} from '../../services/codebase/selectedCodebaseCapabilities';
-import { buildQuickSystemPrompt, buildSystemPrompt, buildSystemPromptParts, estimatePromptTokens } from '../claudeSystemPrompt';
+import { buildSystemPrompt, buildSystemPromptParts, estimatePromptTokens } from '../claudeSystemPrompt';
 import {loadPromptTemplate} from '../strategyLoader';
 import {CONCLUSION_CONTRACT_SIDECAR_MARKER} from '../../agent/core/conclusionContract';
 import {resolveFocusAppTarget} from '../../agentRuntime/focusAppTarget';
@@ -209,7 +209,7 @@ describe('typed turn prompt assembly', () => {
     expect(parts.segments.find(segment => segment.label === 'investigation_requirements'))
       .toMatchObject({tier: 3, droppable: false, truncatable: false});
     expect(parts.segments.some(segment => segment.label === 'scene_strategy_core')).toBe(false);
-    expect(buildQuickSystemPrompt(context)).toBe(parts.fullPrompt);
+    expect(buildSystemPrompt(context)).toBe(parts.fullPrompt);
     expect(segmentData(buildSystemPromptParts({...context, onDemandContext: true}), 'investigation_requirements'))
       .toEqual(segmentData(parts, 'investigation_requirements'));
   });
@@ -251,7 +251,7 @@ describe('typed turn prompt assembly', () => {
         .toMatchObject({status: 'not_checked', reason: 'intent_unavailable', requirements: []});
       expect(parts.segments.some(segment => ['scene_context', 'scene_strategy_details', 'report_requirements']
         .includes(segment.label))).toBe(false);
-      expect(buildQuickSystemPrompt(context)).toBe(parts.fullPrompt);
+      expect(buildSystemPrompt(context)).toBe(parts.fullPrompt);
     });
 
   it.each([
@@ -340,7 +340,7 @@ describe('typed turn prompt assembly', () => {
       expect(parts.segments.some(item => item.label === 'answer_guidance')).toBe(true);
       expect(parts.segments.some(item => ['report_requirements', 'scene_strategy_core',
         'plan_architecture_requirements', 'base_methodology'].includes(item.label))).toBe(false);
-      expect(buildQuickSystemPrompt(context)).toBe(parts.fullPrompt);
+      expect(buildSystemPrompt(context)).toBe(parts.fullPrompt);
     },
   );
 
@@ -356,12 +356,11 @@ describe('typed turn prompt assembly', () => {
     expect(changed).toEqual(original);
   });
 
-  it('uses one presentation contract for the quick and full entrypoints', () => {
+  it('uses one presentation contract for quick and full budgets', () => {
     const context = fixture();
-    expect(buildQuickSystemPrompt(context)).toBe(buildSystemPrompt(context));
     const quickIntent = {...context, turnIntent: {...context.turnIntent!, recommendedComplexity: 'quick' as const}};
     expect(buildSystemPromptParts(quickIntent)).toEqual(buildSystemPromptParts(context));
-    expect(buildQuickSystemPrompt(context, 4_000)).toBe(buildSystemPrompt(context, 4_000));
+    expect(buildSystemPrompt(quickIntent, 4_000)).toBe(buildSystemPrompt(context, 4_000));
   });
 
   it('keeps a bounded full-budget answer free of report, plan, and scene recipes', () => {
@@ -416,7 +415,7 @@ describe('typed turn prompt assembly', () => {
   it('supplies pinned semantic report obligations even through the quick entrypoint', () => {
     const context = fixture({deliverable: 'report', recommendedComplexity: 'quick'});
     const parts = buildSystemPromptParts(context);
-    expect(buildQuickSystemPrompt(context)).toBe(parts.fullPrompt);
+    expect(buildSystemPrompt(context)).toBe(parts.fullPrompt);
     expect(segmentData(parts, 'report_requirements')).toEqual({
       sceneId: 'scrolling', registryFingerprint: 'pin-one', requirements: [{
         id: 'frame_observation', label: 'Frame observation', description: 'Explain the observed frame data.', required: true,
@@ -462,7 +461,7 @@ describe('typed turn prompt assembly', () => {
     expect(parts.segments.some(segment => segment.label === 'source_use')).toBe(false);
     expect(segmentData(parts, 'selection_context')).toEqual(context.selectionContext);
     expect(segmentData(parts, 'conversation_context').conversationSummary).toBe(context.conversationSummary);
-    expect(buildQuickSystemPrompt(context)).toBe(parts.fullPrompt);
+    expect(buildSystemPrompt(context)).toBe(parts.fullPrompt);
   });
 
   it.each(['not_checked', 'unavailable', 'checked', undefined] as const)('preserves comparison identity and probe status %s under pressure', capabilityProbeStatus => {
@@ -484,8 +483,8 @@ describe('typed turn prompt assembly', () => {
   });
 
   it('fails closed when required identity cannot fit instead of truncating trace IDs', () => {
-    expect(() => buildQuickSystemPrompt(fixture(), 1)).toThrow('hard budget');
-    expect(() => buildQuickSystemPrompt(fixture(), Number.NaN)).toThrow('Invalid prompt token budget');
+    expect(() => buildSystemPrompt(fixture(), 1)).toThrow('hard budget');
+    expect(() => buildSystemPrompt(fixture(), Number.NaN)).toThrow('Invalid prompt token budget');
   });
 
   it('rejects missing, changed, or absent-scene pins without consulting global strategies', () => {
@@ -517,7 +516,7 @@ describe('typed turn prompt assembly', () => {
     expect(parts.fullPrompt).toBe([parts.stablePrefix, parts.volatileSuffix].filter(Boolean).join('\n\n'));
   });
 
-  it.each([buildSystemPrompt, buildQuickSystemPrompt, buildSystemPromptParts])(
+  it.each([buildSystemPrompt, buildSystemPromptParts])(
     'rejects a missing typed intent at every public builder', build => {
       const context = fixture();
       expect(() => build({...context, turnIntent: undefined})).toThrow('typed turn intent');
@@ -535,7 +534,7 @@ describe('typed turn prompt assembly', () => {
     expect(parts.fullPrompt).toContain('only to its owner');
     expect(parts.fullPrompt).toContain('Source Use Guidance');
     expect(parts.fullPrompt).toContain('Trace evidence proves occurrence');
-    expect(buildQuickSystemPrompt(context)).toBe(parts.fullPrompt);
+    expect(buildSystemPrompt(context)).toBe(parts.fullPrompt);
     const off = buildSystemPrompt({...context, codeAwareMode: 'off'});
     const empty = buildSystemPrompt({...context, codebaseIds: []});
     for (const prompt of [off, empty]) expect(prompt).not.toContain('Source Use Guidance');

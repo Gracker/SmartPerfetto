@@ -9,8 +9,8 @@ import type { IOrchestrator } from '../../agent/core/orchestratorTypes';
 import {
   RuntimeRegistry,
   createRuntimeRegistry,
+  getProductionRuntimeRegistry,
   type RuntimeEngineDefinition,
-  type RuntimeFactoryInput,
 } from '../runtimeRegistry';
 import {
   PRODUCTION_RUNTIME_DESCRIPTORS,
@@ -19,14 +19,15 @@ import {
   runtimeSupportsDraftAnswerStreaming,
   supportsRuntimeProviderType,
 } from '../runtimeDescriptors';
-import {PRODUCTION_RUNTIME_KINDS} from '../runtimeKinds';
+import {
+  EXPERIMENTAL_OPENCODE_RUNTIME_KIND,
+  OPENCODE_RUNTIME_KIND,
+  PRODUCTION_RUNTIME_KINDS,
+  QODER_AGENT_RUNTIME_KIND,
+} from '../runtimeKinds';
 import {
   type EngineCapabilities,
 } from '../runtimeDescriptorTypes';
-import {
-  EXPERIMENTAL_OPENCODE_RUNTIME_KIND,
-  EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
-} from '../runtimeKinds';
 
 function fakeCapabilities(kind = 'fake-runtime'): EngineCapabilities {
   return {
@@ -53,8 +54,6 @@ describe('runtime registry', () => {
       'claude-agent-sdk',
       'openai-agents-sdk',
       'pi-agent-core',
-      'opencode',
-      'qoder-agent-sdk',
     ];
 
     expect(descriptorKinds).toEqual(expectedKinds);
@@ -62,8 +61,11 @@ describe('runtime registry', () => {
     expect(isProductionAgentRuntimeKind('claude-agent-sdk')).toBe(true);
     expect(isProductionAgentRuntimeKind('openai-agents-sdk')).toBe(true);
     expect(isProductionAgentRuntimeKind('pi-agent-core')).toBe(true);
-    expect(isProductionAgentRuntimeKind('opencode')).toBe(true);
-    expect(isProductionAgentRuntimeKind('qoder-agent-sdk')).toBe(true);
+    // The removed engines' labels name no descriptor and no capabilities.
+    for (const removed of [OPENCODE_RUNTIME_KIND, QODER_AGENT_RUNTIME_KIND, EXPERIMENTAL_OPENCODE_RUNTIME_KIND]) {
+      expect(isProductionAgentRuntimeKind(removed)).toBe(false);
+      expect(() => getProductionEngineCapabilities(removed)).toThrow(`Unsupported agent runtime capabilities: ${removed}`);
+    }
     expect(isProductionAgentRuntimeKind('fake-third-party-runtime')).toBe(false);
   });
 
@@ -71,14 +73,10 @@ describe('runtime registry', () => {
     const claude = getProductionEngineCapabilities('claude-agent-sdk');
     const openai = getProductionEngineCapabilities('openai-agents-sdk');
     const pi = getProductionEngineCapabilities('pi-agent-core');
-    const opencode = getProductionEngineCapabilities('opencode');
-    const qoder = getProductionEngineCapabilities('qoder-agent-sdk');
 
     expect(claude).toBe(getProductionEngineCapabilities('claude-agent-sdk'));
     expect(openai).toBe(getProductionEngineCapabilities('openai-agents-sdk'));
     expect(pi).toBe(getProductionEngineCapabilities('pi-agent-core'));
-    expect(opencode).toBe(getProductionEngineCapabilities('opencode'));
-    expect(qoder).toBe(getProductionEngineCapabilities('qoder-agent-sdk'));
     expect(claude).toEqual({
       kind: 'claude-agent-sdk',
       displayName: 'Claude Agent SDK',
@@ -103,23 +101,7 @@ describe('runtime registry', () => {
       promptCache: { systemPromptDynamicBoundary: false },
       draftAnswerStreaming: false,
     });
-    expect(opencode).toEqual({
-      kind: 'opencode',
-      displayName: 'OpenCode',
-      production: true,
-      publicRuntime: true,
-      promptCache: { systemPromptDynamicBoundary: false },
-      draftAnswerStreaming: false,
-    });
-    expect(qoder).toEqual({
-      kind: 'qoder-agent-sdk',
-      displayName: 'Qoder Agent SDK',
-      production: true,
-      publicRuntime: true,
-      promptCache: { systemPromptDynamicBoundary: false },
-      draftAnswerStreaming: false,
-    });
-    for (const capabilities of [claude, openai, pi, opencode, qoder]) {
+    for (const capabilities of [claude, openai, pi]) {
       expect(capabilities).not.toHaveProperty('toolTransport');
       expect(capabilities).not.toHaveProperty('continuationPolicy');
       expect(capabilities).not.toHaveProperty('snapshotState');
@@ -131,6 +113,7 @@ describe('runtime registry', () => {
       .toEqual(['claude-agent-sdk', 'openai-agents-sdk']);
     expect(runtimeSupportsDraftAnswerStreaming(undefined)).toBe(false);
     expect(runtimeSupportsDraftAnswerStreaming(EXPERIMENTAL_OPENCODE_RUNTIME_KIND)).toBe(false);
+    expect(runtimeSupportsDraftAnswerStreaming(OPENCODE_RUNTIME_KIND)).toBe(false);
   });
 
   it('derives provider compatibility from runtime descriptors', () => {
@@ -140,8 +123,7 @@ describe('runtime registry', () => {
     expect(supportsRuntimeProviderType('openai', 'openai-agents-sdk')).toBe(true);
     expect(supportsRuntimeProviderType('openai', 'claude-agent-sdk')).toBe(false);
     expect(supportsRuntimeProviderType('custom', 'pi-agent-core')).toBe(true);
-    expect(supportsRuntimeProviderType('custom', 'opencode')).toBe(true);
-    expect(supportsRuntimeProviderType('anthropic', 'opencode')).toBe(false);
+    expect(supportsRuntimeProviderType('anthropic', 'pi-agent-core')).toBe(true);
   });
 
   it('requires every production runtime to expose session-scoped cancellation', () => {
@@ -207,80 +189,16 @@ describe('runtime registry', () => {
     );
   });
 
-  it('registers experimental Pi runtime directly without definition indirection', () => {
-    jest.isolateModules(() => {
-      const orchestrator = { analyze: jest.fn(), reset: jest.fn() } as unknown as IOrchestrator;
-      const createPiAgentCoreRuntime = jest.fn((_input: RuntimeFactoryInput) => orchestrator);
-      const getPiAgentCoreEngineCapabilities = jest.fn((kind: string) => fakeCapabilities(kind));
-      const createPiAgentCoreRuntimeDefinition = jest.fn(() => {
-        throw new Error('definition factory should not be called');
-      });
-
-      jest.doMock('../engines/pi/piAgentCoreRuntime', () => ({
-        createPiAgentCoreRuntime,
-        createPiAgentCoreRuntimeDefinition,
-        getPiAgentCoreEngineCapabilities,
-      }));
-
-      const registryModule = require('../runtimeRegistry') as typeof import('../runtimeRegistry');
-      const registry = registryModule.createRuntimeRegistryForSelection(
-        EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
-      );
-      const input = {
-        traceProcessorService: { kind: 'trace-processor' } as any,
-        selection: {
-          kind: EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
-          source: 'env' as const,
-        },
-      };
-
-      expect(registry.createOrchestrator(EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND, input))
-        .toBe(orchestrator);
-      expect(createPiAgentCoreRuntime).toHaveBeenCalledWith(input);
-      expect(getPiAgentCoreEngineCapabilities)
-        .toHaveBeenCalledWith(EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND);
-      expect(createPiAgentCoreRuntimeDefinition).not.toHaveBeenCalled();
-
-      jest.dontMock('../engines/pi/piAgentCoreRuntime');
-    });
-  });
-
-  it('registers experimental OpenCode runtime directly without definition indirection', () => {
-    jest.isolateModules(() => {
-      const orchestrator = { analyze: jest.fn(), reset: jest.fn() } as unknown as IOrchestrator;
-      const OpenCodeRuntime = jest.fn((_input: RuntimeFactoryInput) => orchestrator);
-      const getOpenCodeEngineCapabilities = jest.fn((kind: string) => fakeCapabilities(kind));
-      const createOpenCodeRuntimeDefinition = jest.fn(() => {
-        throw new Error('definition factory should not be called');
-      });
-
-      jest.doMock('../engines/opencode/openCodeRuntime', () => ({
-        OpenCodeRuntime,
-        createOpenCodeRuntimeDefinition,
-        getOpenCodeEngineCapabilities,
-      }));
-
-      const registryModule = require('../runtimeRegistry') as typeof import('../runtimeRegistry');
-      const registry = registryModule.createRuntimeRegistryForSelection(
-        EXPERIMENTAL_OPENCODE_RUNTIME_KIND,
-      );
-      const input = {
-        traceProcessorService: { kind: 'trace-processor' } as any,
-        selection: {
-          kind: EXPERIMENTAL_OPENCODE_RUNTIME_KIND,
-          source: 'env' as const,
-        },
-      };
-
-      expect(registry.createOrchestrator(EXPERIMENTAL_OPENCODE_RUNTIME_KIND, input))
-        .toBe(orchestrator);
-      expect(OpenCodeRuntime).toHaveBeenCalledWith(input);
-      expect(getOpenCodeEngineCapabilities)
-        .toHaveBeenCalledWith(EXPERIMENTAL_OPENCODE_RUNTIME_KIND);
-      expect(createOpenCodeRuntimeDefinition).not.toHaveBeenCalled();
-
-      jest.dontMock('../engines/opencode/openCodeRuntime');
-    });
+  it('registers exactly the production descriptors, and refuses a removed engine', () => {
+    const registry = getProductionRuntimeRegistry();
+    const traceProcessorService = { kind: 'trace-processor' } as any;
+    for (const removed of [OPENCODE_RUNTIME_KIND, QODER_AGENT_RUNTIME_KIND, EXPERIMENTAL_OPENCODE_RUNTIME_KIND,
+      'experimental-pi-agent-core']) {
+      expect(() => registry.createOrchestrator(removed, {
+        traceProcessorService,
+        selection: { kind: removed, source: 'env' },
+      })).toThrow(`Unsupported agent runtime: ${removed}`);
+    }
   });
 
   it('keeps direct registry construction out of non-test runtime code', () => {

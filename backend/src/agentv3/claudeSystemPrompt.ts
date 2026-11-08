@@ -429,8 +429,3 @@ export function buildSystemPromptParts(
 export function buildSystemPrompt(context: TypedTurnPromptContext, maxTokens?: number): string {
   return buildSystemPromptParts(context, maxTokens).fullPrompt;
 }
-
-/** Budget selection never switches to a reduced conclusion contract. */
-export function buildQuickSystemPrompt(context: TypedTurnPromptContext, maxTokens?: number): string {
-  return buildSystemPromptParts(context, maxTokens).fullPrompt;
-}

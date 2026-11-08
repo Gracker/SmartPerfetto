@@ -6,7 +6,6 @@ import {
   clearProviderRuntimeEnv,
   isQoderByokEnvKey,
   mergeIsolatedProviderEnv,
-  providerSubprocessEnv,
 } from '../envIsolation';
 
 describe('provider runtime environment isolation', () => {
@@ -40,24 +39,6 @@ describe('provider runtime environment isolation', () => {
     expect(env).toEqual({
       PATH: '/usr/bin',
       UNRELATED_APPLICATION_VALUE: 'keep',
-    });
-  });
-
-  it('passes Qoder runtime inputs to provider subprocesses but excludes unrelated values', () => {
-    expect(providerSubprocessEnv({
-      PATH: '/usr/bin',
-      QODER_MODEL: 'qoder-model',
-      QODER_BYOK_API_KEY: 'qoder-byok-secret',
-      QODER_BYOK_PROVIDER: 'deepseek',
-      QODERCLI_PATH: '/qodercli',
-      SMARTPERFETTO_QODER_SYSTEM_PROMPT: 'qoder prompt',
-      UNRELATED_APPLICATION_VALUE: 'exclude',
-    })).toEqual({
-      PATH: '/usr/bin',
-      QODER_MODEL: 'qoder-model',
-      QODER_BYOK_PROVIDER: 'deepseek',
-      QODERCLI_PATH: '/qodercli',
-      SMARTPERFETTO_QODER_SYSTEM_PROMPT: 'qoder prompt',
     });
   });
 

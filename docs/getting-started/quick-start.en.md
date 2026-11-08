@@ -33,7 +33,7 @@ Initialize the submodule only when you need to modify the AI Assistant frontend 
 
 ## 3. Prepare Model Configuration
 
-You do not need to configure every runtime. For first setup, pick one entry point: UI Provider Manager, one Claude-compatible env block, one OpenAI-compatible env block, a custom Pi Agent Core / OpenCode block, or an explicitly installed Qoder SDK with local CLI auth/PAT.
+You do not need to configure every runtime. For first setup, pick one entry point: UI Provider Manager, one Claude-compatible env block, one OpenAI-compatible env block, or a custom Pi Agent Core block.
 
 Claude Agent SDK requires an explicit API key/auth token or Bedrock/Vertex configuration through Provider Manager or env. Claude Code login and a Base URL alone do not configure the SDK.
 
@@ -41,7 +41,7 @@ If you choose env configuration, create the env file:
 
 Step 1: run `cp backend/.env.example backend/.env`.
 
-Step 2: edit `backend/.env`. Uncomment `ANTHROPIC_API_KEY` for direct Anthropic access, uncomment one Claude Code / Anthropic-compatible provider block for compatible providers, use the OpenAI Agents SDK fields for OpenAI / OpenAI-compatible providers, or use the Pi Agent Core / OpenCode custom sections. Qoder is opt-in: review its terms, install `@qoder-ai/qoder-agent-sdk`, then use the Qoder section.
+Step 2: edit `backend/.env`. Uncomment `ANTHROPIC_API_KEY` for direct Anthropic access, uncomment one Claude Code / Anthropic-compatible provider block for compatible providers, use the OpenAI Agents SDK fields for OpenAI / OpenAI-compatible providers, or use the Pi Agent Core custom section. An old OpenCode setup migrates to Pi; a Qoder setup must be re-entered with an Anthropic- or OpenAI-compatible endpoint.
 
 `backend/.env.example` includes presets for common Claude-compatible and OpenAI-compatible providers such as DeepSeek, GLM, Qwen, Kimi, Doubao, MiniMax, MiMo, and TokenHub. Docker reads the repository-root `.env` file, including both Docker Hub images and local source Docker builds:
 

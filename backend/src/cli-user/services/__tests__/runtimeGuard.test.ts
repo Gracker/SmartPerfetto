@@ -282,7 +282,7 @@ describe('runtime guard', () => {
     const report = collectDoctorReport(tmpDir);
     expect(report.runtime).toMatchObject({kind: 'openai-agents-sdk', source: 'env'});
     expect(report.checks.find(check => check.name === 'runtime_deprecation')?.message)
-      .toContain('SMARTPERFETTO_LEGACY_AGENT_RUNTIME=openai-agents-sdk is active');
+      .toContain('SMARTPERFETTO_LEGACY_AGENT_RUNTIME=openai-agents-sdk keeps the deprecated openai-agents-sdk engine');
   });
 
   test('resolves a saved session runtime pin through the effective runtime', () => {

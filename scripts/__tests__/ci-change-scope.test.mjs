@@ -25,7 +25,7 @@ test('native dependencies and launchers retain hosted platform coverage', () => 
     'backend/src/runtimePaths.ts', 'backend/src/services/providerManager/localSecretStore.ts',
     'backend/src/agentRuntime/runtimeHealth.ts', 'backend/src/services/startupCleanupPolicy.ts',
     'backend/src/cli-user/services/traceProcessorInstaller.ts',
-    'backend/src/agentRuntime/engines/opencode/openCodeRuntime.ts', 'perfetto']) {
+    'backend/src/agentRuntime/engines/pi/piAgentCoreRuntime.ts', 'perfetto']) {
     assert.equal(classifyChangedPaths([file]).platform, true, file);
   }
   for (const file of ['Dockerfile', 'rust/flamegraph-analyzer/src/main.rs', 'frontend/v1/frontend_bundle.js',

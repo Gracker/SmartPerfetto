@@ -42,7 +42,7 @@ export interface OpenAITextRequestPurposeInput {
   requestUrl: URL;
   protocol: 'chat_completions' | 'responses';
   model: string | undefined;
-  runtimeKind: 'openai-agents-sdk' | 'opencode';
+  runtimeKind: 'openai-agents-sdk';
   sdkCapabilities: SdkModelCapabilities;
   sdkIdentity?: ResolveModelExecutionProfileInput['sdk'];
   effective?: ModelEffectiveSettings;

@@ -19,8 +19,8 @@ import {
   OPENAI_AGENT_RUNTIME_KIND,
   OPENCODE_RUNTIME_KIND,
   PI_AGENT_CORE_RUNTIME_KIND,
-  isProductionAgentRuntimeKind,
-  type AgentRuntimeKind,
+  isRecordedProductionRuntimeKind,
+  type RecordedProductionRuntimeKind,
 } from '../../agentRuntime/runtimeKinds';
 import {PI_CATALOG_ROUTES} from './providerTypes';
 import type {ProviderConfig, ProviderType} from './types';
@@ -193,7 +193,7 @@ function claudeRoute(env: EnvLike, options: PiLegacyRouteOptions): PiLegacyRoute
     options.limits), credentials: {...(apiKey ? {apiKey} : {}), ...(authToken ? {authToken} : {})}};
 }
 
-function openAiRoute(env: EnvLike, runtime: AgentRuntimeKind, options: PiLegacyRouteOptions): PiLegacyRouteResolution {
+function openAiRoute(env: EnvLike, runtime: RecordedProductionRuntimeKind, options: PiLegacyRouteOptions): PiLegacyRouteResolution {
   const id = concrete(env, 'OPENAI_MODEL')
     ?? (runtime === OPENCODE_RUNTIME_KIND ? concrete(env, 'SMARTPERFETTO_OPENCODE_MODEL') : undefined);
   if (runtime === OPENCODE_RUNTIME_KIND && (!id || !concrete(env, 'OPENAI_BASE_URL'))) {
@@ -219,7 +219,7 @@ function openAiRoute(env: EnvLike, runtime: AgentRuntimeKind, options: PiLegacyR
  */
 export function resolvePiRouteFromLegacyEnv(
   env: EnvLike,
-  runtime: AgentRuntimeKind,
+  runtime: RecordedProductionRuntimeKind,
   options: PiLegacyRouteOptions,
 ): PiLegacyRouteResolution {
   if (runtime === CLAUDE_AGENT_RUNTIME_KIND) return claudeRoute(env, options);
@@ -289,9 +289,9 @@ export function piRequestOrigin(baseUrl: string | undefined): string | undefined
  * former default (Claude credentials, Bedrock or Vertex), else OpenAI
  * credentials. Undefined when the env configures no retired runtime.
  */
-function previousEnvOnlyRuntime(env: EnvLike): AgentRuntimeKind | undefined {
+function previousEnvOnlyRuntime(env: EnvLike): RecordedProductionRuntimeKind | undefined {
   const selected = env.SMARTPERFETTO_AGENT_RUNTIME?.trim();
-  if (selected && isProductionAgentRuntimeKind(selected) && selected !== PI_AGENT_CORE_RUNTIME_KIND) return selected;
+  if (selected && isRecordedProductionRuntimeKind(selected) && selected !== PI_AGENT_CORE_RUNTIME_KIND) return selected;
   if (concrete(env, 'ANTHROPIC_API_KEY') || concrete(env, 'ANTHROPIC_AUTH_TOKEN')
     || isEnabledEnvFlag(env.CLAUDE_CODE_USE_BEDROCK)
     || (isEnabledEnvFlag(env.CLAUDE_CODE_USE_VERTEX) && concrete(env, 'ANTHROPIC_VERTEX_PROJECT_ID'))) {

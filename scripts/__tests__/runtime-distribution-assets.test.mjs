@@ -19,16 +19,12 @@ import {load as loadYaml} from 'js-yaml';
 
 const root = resolve(import.meta.dirname, '../..');
 
-test('Docker carries static backend surfaces and a host-independent OpenCode binary', () => {
+test('Docker carries static backend surfaces and no removed OpenCode executable', () => {
   const dockerfile = readFileSync(join(root, 'Dockerfile'), 'utf8');
   assert.match(dockerfile, /COPY backend\/public \.\/backend\/public/);
   assert.match(dockerfile, /COPY backend\/knowledge \.\/backend\/knowledge/);
   assert.doesNotMatch(dockerfile, /knowledge-pack/);
-  assert.match(dockerfile, /opencode-linux-x64-baseline\/bin\/opencode/);
-  assert.match(dockerfile, /opencode-linux-arm64\/bin\/opencode/);
-  assert.match(dockerfile, /rm -f "\$OPENCODE_DEST"/);
-  assert.match(dockerfile, /ln "\$OPENCODE_SOURCE" "\$OPENCODE_DEST"/);
-  assert.match(dockerfile, /"\$OPENCODE_DEST" --version/);
+  assert.doesNotMatch(dockerfile, /opencode/i);
 });
 
 test('npm and portable artifacts verify the same backend runtime surfaces', () => {
@@ -46,10 +42,11 @@ test('npm and portable artifacts verify the same backend runtime surfaces', () =
     assert.match(portableVerifier, new RegExp(asset.replaceAll('/', '\\/')));
   }
   for (const target of ['windows-x64', 'macos-arm64', 'linux-x64']) {
+    // The Claude Agent SDK binary stays for the hidden one-release fallback engine.
     assert.match(
       portableVerifier,
       new RegExp(
-        `'${target}'[\\s\\S]*?required:[\\s\\S]*?node_modules\\/opencode-ai\\/bin\\/opencode\\.exe`,
+        `'${target}'[\\s\\S]*?required:[\\s\\S]*?node_modules\\/@anthropic-ai\\/claude-agent-sdk-`,
       ),
     );
     assert.match(
@@ -59,6 +56,7 @@ test('npm and portable artifacts verify the same backend runtime surfaces', () =
       ),
     );
   }
+  assert.doesNotMatch(portableVerifier, /opencode/i);
 });
 
 test('npm, Docker, and portable ship the same tracked backend/data runtime assets', () => {
@@ -402,14 +400,14 @@ test('frontend refresh rejects missing Syntaqlite assets before modifying the ta
   );
 });
 
-test('Docker CI smokes both static routes and the packaged OpenCode executable', () => {
+test('Docker CI smokes both static routes and no removed OpenCode executable', () => {
   const workflow = readFileSync(
     join(root, '.github/workflows/backend-agent-regression-gate.yml'),
     'utf8',
   );
   assert.match(workflow, /curl -fsS http:\/\/127\.0\.0\.1:3000\/assistant-shell/);
   assert.match(workflow, /curl -fsS http:\/\/127\.0\.0\.1:3000\/admin-control-plane/);
-  assert.match(workflow, /opencode-ai\/bin\/opencode\.exe --version/);
+  assert.doesNotMatch(workflow, /opencode/i);
 });
 
 test('Docker publishing keeps stable and nightly tags separate', () => {

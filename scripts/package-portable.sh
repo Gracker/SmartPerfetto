@@ -149,8 +149,6 @@ target_field() {
     windows-x64:asset_ext) echo "zip" ;;
     windows-x64:launcher_name) echo "SmartPerfetto.exe" ;;
     windows-x64:claude_pkg) echo "@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe" ;;
-    windows-x64:opencode_pkg) echo "opencode-windows-x64-baseline" ;;
-    windows-x64:opencode_bin) echo "bin/opencode.exe" ;;
     windows-x64:binary_kind) echo "pe" ;;
     windows-x64:prebuild_dir) echo "win32-x64" ;;
 
@@ -169,8 +167,6 @@ target_field() {
     macos-arm64:asset_ext) echo "zip" ;;
     macos-arm64:launcher_name) echo "SmartPerfetto" ;;
     macos-arm64:claude_pkg) echo "@anthropic-ai/claude-agent-sdk-darwin-arm64/claude" ;;
-    macos-arm64:opencode_pkg) echo "opencode-darwin-arm64" ;;
-    macos-arm64:opencode_bin) echo "bin/opencode" ;;
     macos-arm64:binary_kind) echo "macho" ;;
     macos-arm64:prebuild_dir) echo "darwin-arm64" ;;
 
@@ -189,8 +185,6 @@ target_field() {
     linux-x64:asset_ext) echo "tar.gz" ;;
     linux-x64:launcher_name) echo "SmartPerfetto" ;;
     linux-x64:claude_pkg) echo "@anthropic-ai/claude-agent-sdk-linux-x64/claude" ;;
-    linux-x64:opencode_pkg) echo "opencode-linux-x64-baseline" ;;
-    linux-x64:opencode_bin) echo "bin/opencode" ;;
     linux-x64:binary_kind) echo "elf" ;;
     linux-x64:prebuild_dir) echo "linux-x64" ;;
     *)
@@ -361,14 +355,11 @@ install_target_dependencies() {
   local backend_dir="$2"
   local node_runtime_version="$3"
   local npm_os npm_cpu binary_kind claude_rel claude_bin claude_pkg_name better_sqlite3_node
-  local opencode_pkg_name opencode_pkg_bin opencode_source opencode_dest
   npm_os="$(target_field "$target" npm_os)"
   npm_cpu="$(target_field "$target" npm_cpu)"
   binary_kind="$(target_field "$target" binary_kind)"
   claude_rel="$(target_field "$target" claude_pkg)"
   claude_pkg_name="$(node -e "const rel=process.argv[1]; console.log(rel.startsWith('@') ? rel.split('/').slice(0, 2).join('/') : rel.split('/')[0]);" "$claude_rel")"
-  opencode_pkg_name="$(target_field "$target" opencode_pkg)"
-  opencode_pkg_bin="$(target_field "$target" opencode_bin)"
 
   echo "Installing $target production dependencies..."
   (
@@ -429,39 +420,6 @@ install_target_dependencies() {
   assert_binary_kind "$claude_bin" "Claude Agent SDK native binary" "$binary_kind"
   if [ "$(target_field "$target" os_name)" != "windows" ]; then
     chmod +x "$claude_bin"
-  fi
-
-  # npm ci uses --ignore-scripts for cross-target safety, so opencode-ai's
-  # postinstall cannot replace its error stub. Copy the target-native optional
-  # package explicitly; x64 uses the baseline build for wider CPU support.
-  opencode_source="$backend_dir/node_modules/$opencode_pkg_name/$opencode_pkg_bin"
-  if [ ! -f "$opencode_source" ]; then
-    echo "Installing $target OpenCode native package explicitly..."
-    (
-      cd "$backend_dir"
-      local opencode_version pack_dir pack_json pack_file pkg_dest
-      opencode_version="$(node -e "console.log(require('./node_modules/opencode-ai/package.json').version)")"
-      pack_dir="$(mktemp -d)"
-      pack_json="$pack_dir/pack.json"
-      npm pack "$opencode_pkg_name@$opencode_version" --json --pack-destination "$pack_dir" > "$pack_json"
-      pack_file="$(node -e "const path=require('path'); const items=require(process.argv[1]); console.log(path.join(process.argv[2], items[0].filename));" "$pack_json" "$pack_dir")"
-      pkg_dest="node_modules/$opencode_pkg_name"
-      rm -rf "$pkg_dest"
-      mkdir -p "$pkg_dest"
-      tar -xzf "$pack_file" -C "$pkg_dest" --strip-components=1
-      rm -rf "$pack_dir"
-    )
-  fi
-  if [ ! -f "$opencode_source" ]; then
-    echo "ERROR: OpenCode native binary was not installed for $target: $opencode_source" >&2
-    exit 1
-  fi
-  opencode_dest="$backend_dir/node_modules/opencode-ai/bin/opencode.exe"
-  mkdir -p "$(dirname "$opencode_dest")"
-  cp "$opencode_source" "$opencode_dest"
-  assert_binary_kind "$opencode_dest" "OpenCode native binary" "$binary_kind"
-  if [ "$(target_field "$target" os_name)" != "windows" ]; then
-    chmod +x "$opencode_dest"
   fi
 
   # Some dependencies publish every platform prebuild inside one npm package.

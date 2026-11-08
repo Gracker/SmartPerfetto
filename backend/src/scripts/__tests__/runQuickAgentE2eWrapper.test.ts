@@ -51,10 +51,12 @@ describe('declarative system-analysis suite', () => {
       if (scenario.evidenceTier === 'constructed') expect(scenario.args).toContain('--select-slice-json');
     }
   });
-  it('does not label the three GLM Coding Plan native adapters as five-runtime acceptance', () => {
-    expect(wrapper.resolveRuntimeKinds('all')).toEqual(['openai-agents-sdk', 'pi-agent-core', 'opencode']);
+  it('does not label the GLM Coding Plan native adapters as every-runtime acceptance', () => {
+    expect(wrapper.resolveRuntimeKinds('all')).toEqual(['openai-agents-sdk', 'pi-agent-core']);
     expect(wrapper.resolveRuntimeKinds('claude')).toEqual(['claude-agent-sdk']);
-    expect(wrapper.resolveRuntimeKinds('qoder')).toEqual(['qoder-agent-sdk']);
+    for (const removed of ['opencode', 'qoder', 'qoder-agent-sdk']) {
+      expect(() => wrapper.parseArgs(['--runtime', removed])).toThrow('Invalid runtime');
+    }
   });
   it('selects a single known system scenario without claiming the whole matrix', () => {
     expect(wrapper.parseArgs(['--suite', 'system-analysis', '--system-scenario', 'scheduler-constructed']).systemScenario)
@@ -80,8 +82,8 @@ describe('declarative system-analysis suite', () => {
         expect(new Set(outputs.map((output: string) => `${output}${suffix}`)).size).toBe(runtimes.length);
       }
     }
-    expect(wrapper.withRuntimeOutputPath([], 'test-output/system-analysis/scheduler-constructed.json', 'opencode'))
-      .toEqual(['--output', 'test-output/system-analysis/scheduler-constructed-opencode.json']);
+    expect(wrapper.withRuntimeOutputPath([], 'test-output/system-analysis/scheduler-constructed.json', 'openai-agents-sdk'))
+      .toEqual(['--output', 'test-output/system-analysis/scheduler-constructed-openai-agents-sdk.json']);
   });
 
   it('keeps every coverage-matrix test pointer current and selects real non-main actors from constructed fixtures', () => {
@@ -390,7 +392,7 @@ describe('run-quick-agent-e2e wrapper', () => {
     expect(result.stdout).toContain('[quick-e2e] runtime=claude-agent-sdk');
     expect(result.stdout).toContain('[quick-e2e] runtime=openai-agents-sdk');
     expect(result.stdout).toContain('[quick-e2e] runtime=pi-agent-core');
-    expect(result.stdout).toContain('[quick-e2e] runtime=opencode');
+    expect(result.stdout).not.toContain('[quick-e2e] runtime=opencode');
     expect(result.stdout).not.toContain('GLM_API_KEY');
     expect(result.stdout).not.toContain('OPENAI_API_KEY is required');
   });
@@ -426,14 +428,14 @@ describe('GLM Coding Plan E2E explicit output limit', () => {
   it('refuses unpinned runtime JSON and preserves GLM models without changing the main reasoning policy', () => {
     jest.replaceProperty(process, 'env', {...process.env, OPENAI_MAX_OUTPUT_TOKENS: '16384',
       SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON: '{"id":"pi-explicit"}',
-      SMARTPERFETTO_OPENCODE_MODEL_JSON: '{"modelID":"opencode-explicit"}',
       GLM_MODEL: 'glm-5.3', GLM_LIGHT_MODEL: 'glm-5.3-flash'});
     expect(() => buildChildEnv('test-key', 'pi-agent-core', '/tmp/wrapper-test')).toThrow('Pi model JSON must match');
-    expect(() => buildChildEnv('test-key', 'opencode', '/tmp/wrapper-test')).toThrow('OpenCode model JSON must match');
-    const qoder = buildChildEnv('test-key', 'qoder-agent-sdk', '/tmp/wrapper-test');
-    expect(qoder.QODER_MODEL).toBe('glm-5.3');
-    expect(qoder.QODER_LIGHT_MODEL).toBe('glm-5.3-flash');
-    expect(qoder.QODER_BYOK_STYLE).toBe('openai');
+    const openai = buildChildEnv('test-key', 'openai-agents-sdk', '/tmp/wrapper-test');
+    expect(openai.OPENAI_MODEL).toBe('glm-5.3');
+    expect(openai.OPENAI_LIGHT_MODEL).toBe('glm-5.3-flash');
+    for (const removed of ['opencode', 'qoder-agent-sdk']) {
+      expect(() => buildChildEnv('test-key', removed, '/tmp/wrapper-test')).toThrow(`Unsupported runtime: ${removed}`);
+    }
   });
 
   it.each(['glm-5.3-flash', 'glm-5.3'])('loads accurate SDK model capabilities for %s without a wrapper cap', modelId => {
@@ -500,11 +502,6 @@ describe('GLM Coding Plan Pi explicit thinking fence', () => {
     expect(() => configured({...pinned(), thinkingLevel: 'low', [field as string]: value}))
       .toThrow('Pi model JSON must match the pinned GLM Coding Plan configuration');
   });
-  it('does not extend the OpenCode fence to accept thinking controls', () => {
-    process.env.SMARTPERFETTO_OPENCODE_MODEL_JSON = JSON.stringify({providerID: 'zai-coding-cn', modelID: 'glm-5.3',
-      baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4', apiKeyEnv: 'GLM_API_KEY', smallModel: 'glm-5.3-flash', thinkingLevel: 'low'});
-    expect(() => buildChildEnv('test-key', 'opencode', '/tmp/pi-thinking-fence')).toThrow('OpenCode model JSON must match');
-  });
 });
 
 describe('GLM Coding Plan canonical E2E provider boundary', () => {
@@ -512,7 +509,7 @@ describe('GLM Coding Plan canonical E2E provider boundary', () => {
   afterEach(() => jest.restoreAllMocks());
   it('requires GLM-specific credentials with no DeepSeek or generic OpenAI fallback', () => {
     const legacy = {DEEPSEEK_API_KEY: 'unused-deepseek-test-key', OPENAI_API_KEY: 'unused-openai-test-key'};
-    for (const runtime of ['openai-agents-sdk', 'pi-agent-core', 'opencode']) {
+    for (const runtime of ['openai-agents-sdk', 'pi-agent-core']) {
       expect(wrapper.realProviderAvailability(runtime, legacy)).toEqual({available: false, reason: 'GLM_CODING_PLAN_API_KEY_MISSING'});
       expect(wrapper.realProviderAvailability(runtime, {...legacy, GLM_API_KEY: 'glm-test-key'}))
         .toMatchObject({available: true, credentialKind: 'GLM_API_KEY', apiKey: 'glm-test-key'});
@@ -527,12 +524,12 @@ describe('GLM Coding Plan canonical E2E provider boundary', () => {
   ('refuses generic paid and untrusted endpoint %s', baseUrl => {
     expect(() => wrapper.parseArgs(['--base-url', baseUrl])).toThrow('generic paid or other endpoints are refused');
   });
-  it('supports explicit Coding Plan selection and preserves the native three-runtime matrix', () => {
+  it('supports explicit Coding Plan selection and preserves the native runtime matrix', () => {
     expect(wrapper.parseArgs(['--suite', 'flagship', '--strict', '--runtime', 'all-glm', '--provider', 'zai-coding-cn',
       '--base-url', 'https://open.bigmodel.cn/api/coding/paas/v4/', '--model', 'glm-5.3', '--light-model', 'glm-5.3-flash']))
       .toMatchObject({provider: 'zai-coding-cn', baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
         model: 'glm-5.3', lightModel: 'glm-5.3-flash', strict: true, timeoutMs: 20 * 60_000});
-    expect(wrapper.resolveRuntimeKinds('all-glm')).toEqual(['openai-agents-sdk', 'pi-agent-core', 'opencode']);
+    expect(wrapper.resolveRuntimeKinds('all-glm')).toEqual(['openai-agents-sdk', 'pi-agent-core']);
     expect(() => wrapper.parseArgs(['--provider', 'deepseek'])).toThrow('requires --provider zai-coding-cn');
     expect(() => wrapper.parseArgs(['--model', 'deepseek-v4-pro'])).toThrow('requires GLM model names');
   });
@@ -609,17 +606,12 @@ describe('flagship gate wrapper: file expectations, strict acceptance and regres
     expect(wrapper.providerFingerprint('openai-agents-sdk', {OPENAI_BASE_URL: 'https://user:secret@open.bigmodel.cn/api/coding/paas/v4?key=x',
       OPENAI_MODEL: 'glm-5.3'})).toEqual({providerOrigin: 'https://open.bigmodel.cn', model: 'glm-5.3'});
     expect(wrapper.providerFingerprint('claude-agent-sdk', {})).toEqual({providerOrigin: 'anthropic-default', model: 'claude-runtime-default'});
-    expect(wrapper.providerFingerprint('qoder-agent-sdk', {QODER_BYOK_BASE_URL: 'not a url', QODER_MODEL: 'm'}))
+    expect(wrapper.providerFingerprint('openai-agents-sdk', {OPENAI_BASE_URL: 'not a url', OPENAI_MODEL: 'm'}))
       .toEqual({providerOrigin: 'invalid-base-url', model: 'm'});
-    // Pi and OpenCode read their model JSON, not the OpenAI env, so their provider is not 'openai-default'.
+    // Pi reads its model JSON, not the OpenAI env, so its provider is not 'openai-default'.
     expect(wrapper.providerFingerprint('pi-agent-core', {SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON: JSON.stringify({
       id: 'glm-5.3', baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4', apiKeyEnv: 'GLM_API_KEY'})}))
       .toEqual({providerOrigin: 'https://open.bigmodel.cn', model: 'glm-5.3'});
-    expect(wrapper.providerFingerprint('opencode', {SMARTPERFETTO_OPENCODE_MODEL_JSON: JSON.stringify({
-      providerID: 'zai-coding-cn', modelID: 'glm-5.3', baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4'})}))
-      .toEqual({providerOrigin: 'https://open.bigmodel.cn', model: 'glm-5.3'});
-    expect(wrapper.providerFingerprint('opencode', {SMARTPERFETTO_OPENCODE_MODEL_JSON: 'not json'}))
-      .toEqual({providerOrigin: 'opencode-default', model: 'opencode-runtime-default'});
   });
 
   it('summarizes a run with its full fingerprint and per-fact body matches', () => {
@@ -677,12 +669,12 @@ describe('flagship gate wrapper: file expectations, strict acceptance and regres
       .toEqual({passed: true, reasons: []});
     expect(wrapper.flagshipRunVerdict(inconclusive)).toEqual({passed: true, reasons: []});
     expect(wrapper.flagshipRunVerdict({...inconclusive, exitCode: 1})).toEqual({passed: false, reasons: ['verifier_exit_1']});
-    const missing = wrapper.buildFlagshipSummary({suiteName: 'startup', runtimeKind: 'opencode', report: undefined, exitCode: 1,
+    const missing = wrapper.buildFlagshipSummary({suiteName: 'startup', runtimeKind: 'pi-agent-core', report: undefined, exitCode: 1,
       git: {commit: 'unknown', worktreeDirty: null}, strict: false});
     expect(missing).toMatchObject({reportAvailable: false, semanticAcceptance: 'FAILED', checkGroups: null});
     expect(wrapper.flagshipRunVerdict(missing).reasons).toEqual(['report_unavailable', 'verifier_exit_1']);
     // A timed-out run's failure artifact says INCONCLUSIVE for older readers; undelivered is FAILED here.
-    const timedOut = wrapper.buildFlagshipSummary({suiteName: 'startup', runtimeKind: 'opencode', exitCode: 1,
+    const timedOut = wrapper.buildFlagshipSummary({suiteName: 'startup', runtimeKind: 'pi-agent-core', exitCode: 1,
       report: {schemaVersion: 'agent_sse_verification_failure@1', phase: 'analysis_stream', errorCode: 'SSE_TIMEOUT',
         semanticAcceptance: 'INCONCLUSIVE', passed: false}, git: {commit: 'unknown', worktreeDirty: null}, strict: false});
     expect(timedOut).toMatchObject({reportAvailable: false, semanticAcceptance: 'FAILED',
@@ -763,7 +755,7 @@ describe('GLM configured suite output isolation', () => {
       const parsed = wrapper.parseArgs(args);
       expect(parsed.outputDirExplicit).toBe(true);
       wrapper.runConfiguredSuites(parsed);
-      expect(calls).toHaveLength(suite === 'context' ? 9 : 3);
+      expect(calls).toHaveLength(suite === 'context' ? 6 : 2);
       const outputs = calls.map(call => {
         expect(call.args.filter(arg => arg === '--output')).toHaveLength(1);
         const output = call.args[call.args.indexOf('--output') + 1];
@@ -771,8 +763,6 @@ describe('GLM configured suite output isolation', () => {
         expect(output).toContain(call.env.SMARTPERFETTO_AGENT_RUNTIME);
         expect(call.env).toMatchObject({OPENAI_MODEL: 'glm-5.3-flash', OPENAI_LIGHT_MODEL: 'glm-5.3-flash',
           OPENAI_BASE_URL: 'https://open.bigmodel.cn/api/coding/paas/v4'});
-        if (call.env.SMARTPERFETTO_OPENCODE_MODEL_JSON) expect(JSON.parse(call.env.SMARTPERFETTO_OPENCODE_MODEL_JSON))
-          .toMatchObject({modelID: 'glm-5.3-flash', smallModel: 'glm-5.3-flash', baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4'});
         if (call.env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON) expect(JSON.parse(call.env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON))
           .toMatchObject({id: 'glm-5.3-flash', baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4'});
         return output;
@@ -811,7 +801,7 @@ describe('GLM configured suite output isolation', () => {
   it('writes flagship summaries and verifier diagnostics under the explicit directory', () => {
     mocked((wrapper, calls) => {
       wrapper.runConfiguredSuites(wrapper.parseArgs(['--suite', 'flagship', '--runtime', 'all-glm', '--output-dir', directory, ...flashArgs]));
-      expect(calls).toHaveLength(6);
+      expect(calls).toHaveLength(4);
       for (const call of calls) {
         const output = call.args[call.args.indexOf('--output') + 1];
         expect(fs.existsSync(`${output}.diagnostics.json`)).toBe(true);
@@ -842,10 +832,10 @@ describe('GLM configured suite output isolation', () => {
     mocked((wrapper, calls) => {
       const scenario = {label: 'fixture', output: 'test-output/scenario.json',
         args: Object.freeze(['--output', 'old.json', '--query', 'q', '--output', 'duplicate.json'])};
-      wrapper.runSuite('system-analysis', {apiKey: 'fixture', credentialKind: 'test'}, 'opencode', true, 123,
+      wrapper.runSuite('system-analysis', {apiKey: 'fixture', credentialKind: 'test'}, 'openai-agents-sdk', true, 123,
         scenario, {outputDir: directory});
       expect(calls[0].args.filter(arg => arg === '--output')).toHaveLength(1);
-      expect(calls[0].args[calls[0].args.indexOf('--output') + 1]).toBe(path.join(directory, 'scenario-opencode.json'));
+      expect(calls[0].args[calls[0].args.indexOf('--output') + 1]).toBe(path.join(directory, 'scenario-openai-agents-sdk.json'));
       expect(scenario.args).toEqual(['--output', 'old.json', '--query', 'q', '--output', 'duplicate.json']);
       expect(calls[0].args).toContain('--query'); expect(calls[0].args).toContain('q');
     });
@@ -881,7 +871,7 @@ describe('DeepSeek Flash provider-bound E2E harness', () => {
       '--system-scenario', 'scheduler-constructed', '--base-url', 'https://api.deepseek.com/']);
     expect(parsed).toMatchObject({provider: 'deepseek', baseUrl: 'https://api.deepseek.com/v1',
       model: 'deepseek-flash', lightModel: 'deepseek-flash', timeoutMs: 20 * 60_000});
-    expect(wrapper.resolveRuntimeKinds(parsed.runtime)).toEqual(['openai-agents-sdk', 'pi-agent-core', 'opencode']);
+    expect(wrapper.resolveRuntimeKinds(parsed.runtime)).toEqual(['openai-agents-sdk', 'pi-agent-core']);
     const glm = require(glmPath);
     expect(wrapper.FLAGSHIP_EXPECTATIONS).toEqual(glm.FLAGSHIP_EXPECTATIONS);
     expect(wrapper.frameFactExpectation()).toEqual(glm.frameFactExpectation());
@@ -916,7 +906,7 @@ describe('DeepSeek Flash provider-bound E2E harness', () => {
   });
 
   it('never uses GLM, generic OpenAI or Anthropic credentials for DeepSeek', () => {
-    for (const runtime of ['openai-agents-sdk', 'pi-agent-core', 'opencode', 'claude-agent-sdk']) {
+    for (const runtime of ['openai-agents-sdk', 'pi-agent-core', 'claude-agent-sdk']) {
       expect(wrapper.realProviderAvailability(runtime, {GLM_API_KEY: 'other-key',
         OPENAI_API_KEY: 'other-key', ANTHROPIC_API_KEY: 'other-key'}))
         .toEqual({available: false, reason: 'DEEPSEEK_API_KEY_MISSING'});
@@ -924,7 +914,7 @@ describe('DeepSeek Flash provider-bound E2E harness', () => {
     expect(wrapper.realProviderAvailability('openai-agents-sdk', {DEEPSEEK_API_KEY: 'own-key'}))
       .toEqual({available: true, credentialKind: 'DEEPSEEK_API_KEY', apiKey: 'own-key'});
     expect(wrapper.realProviderAvailability('qoder-agent-sdk', {DEEPSEEK_API_KEY: 'own-key'}))
-      .toEqual({available: false, reason: 'QODER_PERSONAL_ACCESS_TOKEN_OR_QODERCLI_PATH_MISSING'});
+      .toEqual({available: false, reason: 'UNSUPPORTED_RUNTIME'});
   });
 
   it('isolates child connection credentials while retaining explicit runtime budgets', () => {
@@ -932,7 +922,7 @@ describe('DeepSeek Flash provider-bound E2E harness', () => {
       ANTHROPIC_AUTH_TOKEN: 'foreign-anthropic', CLAUDE_CODE_OAUTH_TOKEN: 'foreign-oauth',
       OPENAI_API_KEY: 'foreign-openai', OPENAI_BASE_URL: 'https://foreign.test/v1', OPENAI_MODEL: 'foreign-model',
       QODER_BYOK_API_KEY: 'foreign-qoder', OPENAI_MAX_OUTPUT_TOKENS: '4096', OPENAI_FULL_PER_TURN_MS: '60000'});
-    for (const runtime of ['openai-agents-sdk', 'opencode', 'claude-agent-sdk', 'qoder-agent-sdk']) {
+    for (const runtime of ['openai-agents-sdk', 'claude-agent-sdk']) {
       const child = wrapper.buildChildEnv('own-key', runtime, directory);
       expect(child).toMatchObject({DEEPSEEK_API_KEY: 'own-key', OPENAI_API_KEY: 'own-key',
         OPENAI_BASE_URL: 'https://api.deepseek.com/v1', OPENAI_MODEL: 'deepseek-flash', OPENAI_LIGHT_MODEL: 'deepseek-flash',
@@ -943,24 +933,17 @@ describe('DeepSeek Flash provider-bound E2E harness', () => {
       expect(child.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
       if (runtime === 'claude-agent-sdk') expect(child).toMatchObject({ANTHROPIC_BASE_URL: 'https://api.deepseek.com/anthropic',
         ANTHROPIC_AUTH_TOKEN: 'own-key', CLAUDE_MODEL: 'deepseek-flash', CLAUDE_LIGHT_MODEL: 'deepseek-flash'});
-      if (runtime === 'opencode') expect(JSON.parse(child.SMARTPERFETTO_OPENCODE_MODEL_JSON)).toEqual({
-        providerID: 'deepseek', modelID: 'deepseek-flash', baseURL: 'https://api.deepseek.com/v1',
-        apiKeyEnv: 'DEEPSEEK_API_KEY', smallModel: 'deepseek-flash'});
-      if (runtime === 'qoder-agent-sdk') expect(child).toMatchObject({QODER_BYOK_PROVIDER: 'deepseek',
-        QODER_BYOK_API_KEY: 'own-key', QODER_MODEL: 'deepseek-flash', QODER_LIGHT_MODEL: 'deepseek-flash'});
       expect(wrapper.providerFingerprint(runtime, child)).toEqual({providerOrigin: 'https://api.deepseek.com', model: 'deepseek-flash'});
     }
   });
 
-  it('passes a Qoder PAT only to the selected Qoder runtime across both provider entries', () => {
+  it('never passes a stale Qoder PAT from the operator env to a child across both provider entries', () => {
     process.env.QODER_PERSONAL_ACCESS_TOKEN = 'qoder-native-fixture-token';
     for (const harness of [wrapper, require(glmPath)]) {
-      for (const runtime of ['openai-agents-sdk', 'opencode', 'claude-agent-sdk']) {
+      for (const runtime of ['openai-agents-sdk', 'claude-agent-sdk']) {
         const child = harness.buildSemanticChildEnv(runtime, {apiKey: 'own-key'}, directory);
         expect(Object.prototype.hasOwnProperty.call(child, 'QODER_PERSONAL_ACCESS_TOKEN')).toBe(false);
       }
-      expect(harness.buildSemanticChildEnv('qoder-agent-sdk', {apiKey: 'own-key'}, directory)
-        .QODER_PERSONAL_ACCESS_TOKEN).toBe('qoder-native-fixture-token');
     }
   });
 
@@ -1130,7 +1113,7 @@ describe('DeepSeek Flash provider-bound E2E harness', () => {
       [wrapper, 'deepseek', 'deepseek-flash', 'https://api.deepseek.com/v1'],
       [require(glmPath), 'zai-coding-cn', 'glm-5.3-flash', 'https://open.bigmodel.cn/api/coding/paas/v4'],
     ] as const) {
-      for (const runtimeKind of ['openai-agents-sdk', 'opencode', 'qoder-agent-sdk']) {
+      for (const runtimeKind of ['openai-agents-sdk']) {
         const prepared = harness.prepareProviderChild({runtimeKind, isolatedRoot: directory,
           provider, model, lightModel: model}, captured);
         expect(prepared.configuration).toEqual({provider, model, lightModel: model, baseUrl: origin});
@@ -1138,7 +1121,8 @@ describe('DeepSeek Flash provider-bound E2E harness', () => {
         expect(prepared.env).toMatchObject({OPENAI_BASE_URL: origin, OPENAI_MODEL: model, OPENAI_LIGHT_MODEL: model,
           OPENAI_API_KEY: provider === 'deepseek' ? 'captured-deepseek-key' : 'captured-glm-key',
           OPENAI_MAX_OUTPUT_TOKENS: '1234', OPENAI_FULL_PER_TURN_MS: '2345'});
-        expect(prepared.env.QODER_PERSONAL_ACCESS_TOKEN).toBe(runtimeKind === 'qoder-agent-sdk' ? 'captured-qoder-token' : undefined);
+        expect(prepared.env.QODER_PERSONAL_ACCESS_TOKEN).toBeUndefined();
+        expect(prepared.env.SMARTPERFETTO_OPENCODE_MODEL_JSON).toBeUndefined();
       }
     }
     expect(process.env).toEqual(before);
@@ -1154,14 +1138,14 @@ describe('DeepSeek Flash provider-bound E2E harness', () => {
   });
 
   it('applies the same route/model and native override validation to controller preparation', () => {
-    const input = {runtimeKind: 'opencode', isolatedRoot: directory,
+    const input = {runtimeKind: 'pi-agent-core', isolatedRoot: directory,
       provider: 'deepseek', model: 'deepseek-flash', lightModel: 'deepseek-flash'};
     const captured = {DEEPSEEK_API_KEY: 'captured-key'};
     expect(() => wrapper.prepareProviderChild({...input, provider: 'zai-coding-cn'}, captured)).toThrow('requires --provider deepseek');
     expect(() => wrapper.prepareProviderChild({...input, baseUrl: 'https://other.example/v1'}, captured)).toThrow('other endpoints');
     expect(() => wrapper.prepareProviderChild({...input, model: 'deepseek-v4-pro'}, captured)).toThrow('requires --model deepseek-flash');
     expect(() => wrapper.prepareProviderChild(input, {...captured,
-      SMARTPERFETTO_OPENCODE_MODEL_JSON: JSON.stringify({providerID: 'other'})})).toThrow('OpenCode model JSON must match');
+      SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON: JSON.stringify({provider: 'other'})})).toThrow('Pi model JSON must match');
   });
 
   it('keeps legacy unpinned Claude outside controller preparation while preserving its explicit environment API', () => {
