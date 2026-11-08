@@ -2,10 +2,6 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {
-  tool as createClaudeSdkTool,
-  type SdkMcpToolDefinition,
-} from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import {isPlaceholderToolString} from './toolArgPlaceholders';
 import {projectRuntimeToolEventPayload} from '../services/security/runtimeToolEventProjection';
@@ -34,9 +30,64 @@ export type {
   RuntimeToolScheduling,
 } from './runtimeToolConcurrency';
 
-type ClaudeSdkToolHandler = SdkMcpToolDefinition['handler'];
-export type RuntimeToolResult = Awaited<ReturnType<ClaudeSdkToolHandler>>;
-export type RuntimeToolAnnotations = NonNullable<SdkMcpToolDefinition['annotations']>;
+// The tool result and annotation shapes are the MCP protocol's `CallToolResult`
+// and `ToolAnnotations`, declared here so the shared tool layer depends on no
+// agent SDK. A runtime adapter hands them to its SDK unchanged.
+
+interface RuntimeToolContentAnnotations {
+  audience?: Array<'user' | 'assistant'>;
+  priority?: number;
+  lastModified?: string;
+}
+
+interface RuntimeToolContentBase {
+  annotations?: RuntimeToolContentAnnotations;
+  _meta?: Record<string, unknown>;
+}
+
+type RuntimeToolContentBlock =
+  | RuntimeToolContentBase & {type: 'text'; text: string}
+  | RuntimeToolContentBase & {type: 'image' | 'audio'; data: string; mimeType: string}
+  | {
+    type: 'resource_link';
+    uri: string;
+    name: string;
+    title?: string;
+    description?: string;
+    mimeType?: string;
+    size?: number;
+    annotations?: RuntimeToolContentAnnotations;
+    icons?: Array<{src: string; mimeType?: string; sizes?: string[]; theme?: 'light' | 'dark'}>;
+    _meta?: {[key: string]: unknown};
+  }
+  | RuntimeToolContentBase & {
+    type: 'resource';
+    resource:
+      | {uri: string; mimeType?: string; _meta?: Record<string, unknown>; text: string}
+      | {uri: string; mimeType?: string; _meta?: Record<string, unknown>; blob: string};
+  };
+
+/** An MCP `CallToolResult`: what every SmartPerfetto tool handler returns. */
+export interface RuntimeToolResult {
+  [key: string]: unknown;
+  _meta?: {
+    [key: string]: unknown;
+    progressToken?: string | number;
+    'io.modelcontextprotocol/related-task'?: {taskId: string};
+  };
+  content: RuntimeToolContentBlock[];
+  structuredContent?: Record<string, unknown>;
+  isError?: boolean;
+}
+
+/** MCP `ToolAnnotations`: behaviour hints a runtime may pass to its model host. */
+export interface RuntimeToolAnnotations {
+  title?: string;
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
+}
 
 export interface RuntimeToolExtra {
   runtime?: string;
@@ -118,12 +169,42 @@ function resolveRuntimeToolTimingSink(
   }
 }
 
-export interface ClaudeSdkToolLike {
+/**
+ * One tool body before registration: its name, description, input shape,
+ * annotations and handler. `defineRuntimeTool` builds it; the registry turns it
+ * into a `SharedToolSpec` with the exposure and evidence policy of the call site.
+ */
+export interface RuntimeToolDefinition {
   name: string;
   description: string;
   inputSchema: z.ZodRawShape;
   annotations?: RuntimeToolAnnotations;
   handler: (args: Record<string, unknown>, extra: RuntimeToolExtra) => Promise<RuntimeToolResult>;
+}
+
+/** The parsed arguments of an input shape, one required key per field (optional fields may be undefined). */
+export type RuntimeToolInput<Shape extends z.ZodRawShape> = {
+  [K in keyof Shape]: Shape[K] extends {_output: infer O} ? O : never;
+} & {};
+
+/**
+ * Define a tool body from its input shape. The handler's arguments are typed
+ * from the shape; the result is a plain definition with no runtime binding.
+ */
+export function defineRuntimeTool<Shape extends z.ZodRawShape>(
+  name: string,
+  description: string,
+  inputSchema: Shape,
+  handler: (args: RuntimeToolInput<Shape>, extra: unknown) => Promise<RuntimeToolResult>,
+  extras?: {annotations?: RuntimeToolAnnotations},
+): RuntimeToolDefinition {
+  return {
+    name,
+    description,
+    inputSchema,
+    handler: handler as RuntimeToolDefinition['handler'],
+    annotations: extras?.annotations,
+  };
 }
 
 export const RUNTIME_TOOL_DESCRIPTION_MAX_CHARS = 1000;
@@ -478,8 +559,9 @@ export function withRuntimeToolGuard(
   return {...spec, handler};
 }
 
-export function isClaudeSdkToolLike(value: unknown): value is ClaudeSdkToolLike {
-  const toolLike = value as Partial<ClaudeSdkToolLike>;
+// Typed callers cannot pass a malformed body; this guards forced casts.
+function isRuntimeToolDefinition(value: unknown): value is RuntimeToolDefinition {
+  const toolLike = value as Partial<RuntimeToolDefinition>;
   return !!toolLike
     && typeof toolLike.name === 'string'
     && typeof toolLike.description === 'string'
@@ -488,47 +570,42 @@ export function isClaudeSdkToolLike(value: unknown): value is ClaudeSdkToolLike 
     && typeof toolLike.handler === 'function';
 }
 
-export function sharedToolSpecFromClaudeSdkTool(
+export function sharedToolSpecFromRuntimeToolDefinition(
   name: string,
-  sdkTool: unknown,
+  definition: RuntimeToolDefinition,
   exposure: McpToolExposure,
   extras: Pick<SharedToolSpec, 'summary' | 'requires' | 'concurrency' | 'evidenceEffect' | 'role'> = {},
 ): SharedToolSpec {
-  if (!isClaudeSdkToolLike(sdkTool)) {
-    throw new Error(`Cannot build shared tool spec for ${name}: unsupported SDK descriptor shape`);
+  if (!isRuntimeToolDefinition(definition)) {
+    throw new Error(`Cannot build shared tool spec for ${name}: unsupported tool definition shape`);
   }
   return withRuntimeToolTiming({
     name,
-    description: sdkTool.description,
+    description: definition.description,
     exposure,
-    inputSchema: sdkTool.inputSchema,
-    handler: sdkTool.handler,
-    annotations: sdkTool.annotations,
+    inputSchema: definition.inputSchema,
+    handler: definition.handler,
+    annotations: definition.annotations,
     ...extras,
   });
 }
 
-export function createClaudeSdkToolFromSharedSpec(
-  spec: SharedToolSpec,
-): SdkMcpToolDefinition {
+/**
+ * The spec with its one timing receipt, and a handler a runtime adapter hands
+ * to its SDK in the spec's place. The handler delegates to the timed spec and
+ * is itself marked timed, so a descriptor built from it and converted back into
+ * a shared spec is not timed a second time.
+ */
+export function delegateRuntimeToolHandler(spec: SharedToolSpec): {
+  spec: SharedToolSpec;
+  handler: (args: Record<string, unknown>, extra: unknown) => Promise<RuntimeToolResult>;
+} {
   const timedSpec = withRuntimeToolTiming(spec);
-  const handler: ClaudeSdkToolHandler & TimedRuntimeToolHandler = async (args, extra) => timedSpec.handler(
-    args as Record<string, unknown>,
-    normalizeRuntimeToolExtra(extra),
+  const handler = Object.assign(
+    async (args: Record<string, unknown>, extra: unknown) => timedSpec.handler(args, normalizeRuntimeToolExtra(extra)),
+    {[TIMED_SHARED_TOOL_HANDLER]: true as const},
   );
-  // SDK -> shared conversion may wrap this descriptor again; this bridge already delegates timing.
-  handler[TIMED_SHARED_TOOL_HANDLER] = true;
-  const sdkTool = createClaudeSdkTool(
-    timedSpec.name,
-    timedSpec.description,
-    timedSpec.inputSchema,
-    handler,
-    timedSpec.annotations ? { annotations: timedSpec.annotations } : undefined,
-  );
-  return Object.assign(sdkTool, {
-    inputSchema: timedSpec.inputSchema,
-    annotations: timedSpec.annotations,
-  });
+  return {spec: timedSpec, handler};
 }
 
 /** Detect open `z.record(z.string(), z.any())` argument containers. */

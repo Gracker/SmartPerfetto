@@ -169,8 +169,8 @@ for the user-visible contract.
 
 `backend/src/agentOpenAI/` and individual files such as
 `agentv3/claudeRuntime.ts` retain compatibility re-exports for old import paths.
-MCP, strategy and planning remain canonical shared layers. The `claudeVerifier`
-compatibility entry points to shared structured delivery diagnostics, which
+MCP, strategy and planning remain canonical shared layers. The shared structured
+delivery diagnostics (`agentRuntime/runtimeConclusionVerifier.ts`) are what
 runtimes read through `agentRuntime/runtimeDraftDiagnostics.ts` only to choose a
 same-run correction; the finalizer owns the terminal state.
 
@@ -183,7 +183,10 @@ artifacts, memory, code-aware lookup, baselines, and comparison tools.
 
 `list_skills(metricId, offset)` discovers actual metric producers, inputs, identity selectors and scope limits from this run's pinned Skill definitions and SQL fragments. Discovery neither executes a tool nor issues evidence. Raw SQL column names or model prose cannot replace a private producer binding; an unknown metric returns no match rather than silently falling back to the whole catalog.
 
-Claude runtime exposes these tools as an in-process MCP server. OpenAI runtime
+The registry holds SDK-neutral shared tool specs
+(`agentRuntime/runtimeToolSpec.ts`, with MCP `CallToolResult` and
+`ToolAnnotations` shapes). Claude runtime adapts them into its in-process MCP
+server inside its own engine (`engines/claude/claudeSdkTools.ts`). OpenAI runtime
 does not duplicate tool logic; it reads the same `McpToolRegistry` and adapts
 tool descriptors into OpenAI Agents SDK function tools. Pi Agent Core uses
 request-scoped native tools built from the same shared descriptors, the shared
@@ -616,7 +619,7 @@ reactive compaction. This does not promise equivalent long-session behavior to
 a model with known capacity or add capacity fields to the model JSON interface.
 
 `final_report_contract` remains strategy frontmatter in the pinned registry.
-`claudeVerifier` supplies structured delivery diagnostics without an additional
+`runtimeConclusionVerifier` supplies structured delivery diagnostics without an additional
 semantic LLM or misdiagnosis-word matching; runtimes use them only to choose a
 same-run correction. Reports, CLI artifacts and snapshots keep provenance. Chat
 projects the body and structured runtime appendix separately without

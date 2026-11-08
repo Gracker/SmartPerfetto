@@ -17,24 +17,28 @@
 //     `close()` on every exit, and a tool-use or refusal reply treated as a
 //     failed call.
 // Raw SDK error text goes to the log only; callers get a reason code.
+// The Claude SDK branch (its isolated options and stream reading) lives in the
+// Claude engine (`agentRuntime/engines/claude/claudeOneShot.ts`).
 
-import type {Options} from '@anthropic-ai/claude-agent-sdk';
-import {claudeSdkQuery as sdkQuery} from '../agentRuntime/engines/claude/claudeSdkQuery';
 import {selectRuntimeForProvider, type ResolvedAgentRuntimeKind} from '../agentRuntime/runtimeSelection';
-import {claudeMessageHasToolUse} from '../agentRuntime/engines/claude/claudeSdkMessageGuards';
 import {
-  getSdkBinaryOption,
-  hasClaudeCredentials,
   loadClaudeConfig,
-  resolveClaudeSdkPermissionOptions,
   runtimeConfigForProviderEnv,
   sdkEnvForProviderEnv,
-  type ClaudeAgentConfig,
   type EffortLevel,
 } from '../agentv3/claudeConfig';
+import {
+  runIsolatedClaudeOneShot,
+  type ClaudeOneShotContext,
+} from '../agentRuntime/engines/claude/claudeOneShot';
 import {localize, type OutputLanguage} from '../agentv3/outputLanguage';
-import type {AiSummary, AiSummaryFallbackReason} from '../types/criticalPathContract';
-import {isPlainObject} from '../utils/llmJson';
+import type {AiSummary} from '../types/criticalPathContract';
+import {
+  effectiveOneShotTimeoutMs,
+  type OneShotCallInput,
+  type OneShotFallbackReason,
+  type OneShotResult,
+} from '../agentRuntime/oneShotContract';
 import {
   AI_CAPABILITY_ENV_KEY,
   type AiCapabilityFeature,
@@ -47,15 +51,6 @@ import {mergeIsolatedProviderEnv} from './providerManager/envIsolation';
 import {readPiAgentCoreModelConfig} from '../agentRuntime/engines/pi/piAgentCoreConfig';
 import {createPiAgentCoreProviderRuntime} from '../agentRuntime/engines/pi/piAgentCoreProvider';
 import {runPiIntentTransport} from '../agentRuntime/engines/pi/piIntentTransport';
-
-/** Why a one-shot call produced no model answer. */
-export type OneShotFallbackReason = AiSummaryFallbackReason;
-
-/** The Claude SDK env and config of the resolved provider, read once. */
-export interface ClaudeOneShotContext {
-  env: Record<string, string | undefined>;
-  config: ClaudeAgentConfig;
-}
 
 /** The Pi runtime env of the resolved provider (process env with the provider's env applied), read once. */
 export interface PiOneShotContext {
@@ -113,150 +108,6 @@ export function resolveOneShotProvider(input: {
   }
 }
 
-/**
- * SDK options for a one-shot call over untrusted, trace-derived text: one turn,
- * no tools, skills, plugins or MCP servers, no user settings, nothing persisted.
- */
-export function isolatedClaudeOneShotOptions(input: {
-  model: string;
-  env: Record<string, string | undefined>;
-  stderr: (data: string) => void;
-  cwd?: string;
-  effort?: EffortLevel;
-  abortController?: AbortController;
-}): Options {
-  return {
-    ...getSdkBinaryOption(input.env),
-    model: input.model,
-    ...(input.cwd ? {cwd: input.cwd} : {}),
-    ...(input.effort ? {effort: input.effort} : {}),
-    env: input.env,
-    maxTurns: 1,
-    tools: [],
-    allowedTools: [],
-    mcpServers: {},
-    strictMcpConfig: true,
-    settingSources: [],
-    skills: [],
-    plugins: [],
-    persistSession: false,
-    ...resolveClaudeSdkPermissionOptions(),
-    ...(input.abortController ? {abortController: input.abortController} : {}),
-    stderr: input.stderr,
-  };
-}
-
-export type OneShotResult =
-  | {ok: true; text: string; model: string}
-  | {ok: false; reason: OneShotFallbackReason; model?: string};
-
-/** One call's request, independent of the runtime that answers it. */
-export interface OneShotCallInput {
-  prompt: string;
-  /** `light` uses the profile's light model and falls back to the main one (Claude only; Pi has one model). */
-  tier: 'main' | 'light';
-  effort?: EffortLevel;
-  timeoutMs: number;
-  signal?: AbortSignal;
-  logLabel: string;
-}
-
-export interface OneShotClaudeInput extends OneShotCallInput {
-  /** From `resolveOneShotProvider`; no further provider reads happen here. */
-  claude: ClaudeOneShotContext;
-}
-
-function effectiveTimeoutMs(timeoutMs: number): number {
-  return Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 60_000;
-}
-
-/**
- * One isolated Claude call with an already-resolved provider. Never throws for
- * model or cancellation failures; the reason says what happened.
- */
-export async function runIsolatedClaudeOneShot(input: OneShotClaudeInput): Promise<OneShotResult> {
-  if (input.signal?.aborted) return {ok: false, reason: 'client_disconnected'};
-  const {env, config} = input.claude;
-  const model = input.tier === 'light' ? (config.lightModel || config.model) : config.model;
-  if (!hasClaudeCredentials(env)) return {ok: false, reason: 'credentials_missing', model};
-
-  // One controller owns the SDK subprocess; the caller's cancellation and the
-  // deadline both stop it through the same path.
-  const abortController = new AbortController();
-  let stream: ReturnType<typeof sdkQuery> | undefined;
-  let timedOut = false;
-  const stop = (): void => {
-    abortController.abort();
-    try {
-      stream?.close();
-    } catch {
-      // ignore
-    }
-  };
-  input.signal?.addEventListener('abort', stop, {once: true});
-  const timer = setTimeout(() => {
-    timedOut = true;
-    stop();
-  }, effectiveTimeoutMs(input.timeoutMs));
-
-  let text = '';
-  let failed = false;
-  try {
-    stream = sdkQuery({
-      prompt: input.prompt,
-      options: isolatedClaudeOneShotOptions({
-        model,
-        env,
-        cwd: config.cwd,
-        effort: input.effort,
-        abortController,
-        stderr: (data: string) => console.warn(`[${input.logLabel}] SDK stderr: ${data.trimEnd()}`),
-      }),
-    });
-    for await (const entry of stream) {
-      if (abortController.signal.aborted) break;
-      if (!isPlainObject(entry)) continue;
-      const message = entry;
-      if (claudeMessageHasToolUse(message) || (message.type === 'result' && message.stop_reason === 'tool_use')) {
-        console.warn(`[${input.logLabel}] Model attempted a tool call in a tool-less one-shot call`);
-        failed = true;
-        break;
-      }
-      if (message.type === 'system'
-        && (message.subtype === 'model_refusal_fallback' || message.subtype === 'model_refusal_no_fallback')) {
-        failed = true;
-        break;
-      }
-      if (message.type === 'result') {
-        if (message.subtype !== 'success' || message.is_error === true || message.stop_reason === 'refusal') {
-          failed = true;
-          break;
-        }
-        text = typeof message.result === 'string' ? message.result : '';
-      }
-    }
-  } catch (error: unknown) {
-    if (!abortController.signal.aborted) {
-      console.warn(`[${input.logLabel}] Model call failed:`, error);
-      failed = true;
-    }
-  } finally {
-    clearTimeout(timer);
-    input.signal?.removeEventListener('abort', stop);
-    try {
-      stream?.close();
-    } catch {
-      // ignore
-    }
-  }
-
-  if (input.signal?.aborted) return {ok: false, reason: 'client_disconnected', model};
-  if (timedOut) return {ok: false, reason: 'timed_out', model};
-  if (failed) return {ok: false, reason: 'failed', model};
-  if (!text.trim()) return {ok: false, reason: 'empty_response', model};
-  return {ok: true, text: text.trim(), model};
-}
-
 /** Upper bound for a one-shot summary reply; summaries are short prose. */
 const PI_ONE_SHOT_OUTPUT_BYTES = 64 * 1024;
 
@@ -290,7 +141,7 @@ export async function runIsolatedPiOneShot(input: OneShotPiInput): Promise<OneSh
       prompt: input.prompt,
       systemPrompt: '',
       signal: input.signal,
-      deadlineMs: Date.now() + effectiveTimeoutMs(input.timeoutMs),
+      deadlineMs: Date.now() + effectiveOneShotTimeoutMs(input.timeoutMs),
       outputByteLimit: PI_ONE_SHOT_OUTPUT_BYTES,
       providerRuntime,
       purpose: 'review',

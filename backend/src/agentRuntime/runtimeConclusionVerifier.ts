@@ -9,17 +9,17 @@
  * shared finalizer records delivery assurance.
  */
 
-import type {Finding} from '../../../agent/types';
-import type {VerificationResult, VerificationIssue, AnalysisPlanV3, Hypothesis} from '../../../agentv3/types';
-import {formatExpectedCall} from '../../../agentv3/types';
-import {getPhaseToolEvidenceStatus} from '../../../agentv3/planToolCallRecorder';
-import {getAnalysisPlanCompletionStatus} from '../../../agentv3/planCompletionStatus';
-import {hasValidPlanSkipDisposition} from '../../../agentv3/planPhaseSemantics';
-import {DEFAULT_OUTPUT_LANGUAGE, localize, type OutputLanguage} from '../../../agentv3/outputLanguage';
-import {sameAnalysisCandidate, type AnalysisDeliveryContext} from '../../../types/analysisDelivery';
-import {renderRequiredLocalizedStrategyTemplate} from '../../../agentv3/localizedStrategyTemplate';
-import {isProductionAgentRuntimeKind} from '../../runtimeKinds';
-import {candidateHasAnswerBody, projectRuntimeCorrectionContext} from '../../runtimeConclusionProtocol';
+import type {Finding} from '../agent/types';
+import type {VerificationResult, VerificationIssue, AnalysisPlanV3, Hypothesis} from '../agentv3/types';
+import {formatExpectedCall} from '../agentv3/types';
+import {getPhaseToolEvidenceStatus} from '../agentv3/planToolCallRecorder';
+import {getAnalysisPlanCompletionStatus} from '../agentv3/planCompletionStatus';
+import {hasValidPlanSkipDisposition} from '../agentv3/planPhaseSemantics';
+import {DEFAULT_OUTPUT_LANGUAGE, localize, type OutputLanguage} from '../agentv3/outputLanguage';
+import {sameAnalysisCandidate, type AnalysisDeliveryContext} from '../types/analysisDelivery';
+import {renderRequiredLocalizedStrategyTemplate} from '../agentv3/localizedStrategyTemplate';
+import {isProductionAgentRuntimeKind} from './runtimeKinds';
+import {candidateHasAnswerBody, projectRuntimeCorrectionContext} from './runtimeConclusionProtocol';
 
 function nonemptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
@@ -100,21 +100,6 @@ export function verifyHypotheses(hypotheses: Hypothesis[]): VerificationIssue[] 
   if (unresolved.length === 0) return [];
   return [{type: 'unresolved_hypothesis', severity: 'error',
     message: `Unresolved hypothesis state: ${unresolved.map(hypothesis => hypothesis.id).join(', ')}.`}];
-}
-
-/**
- * Compatibility helper for callers migrating to terminal receipts. Text alone
- * establishes only an empty body; style cannot establish SDK completion.
- */
-export function isConclusionIncomplete(
-  conclusion: string,
-  context?: AnalysisDeliveryContext,
-): boolean {
-  if (!conclusion.trim()) return true;
-  if (!context || context.entry === 'historical_restore') return false;
-  return context.completion?.schemaVersion === 1 &&
-    sameAnalysisCandidate(context.completion, context.acceptedCandidate, conclusion) &&
-    context.completion.status === 'incomplete';
 }
 
 /** All controller inputs remain structured, regardless of message language. */

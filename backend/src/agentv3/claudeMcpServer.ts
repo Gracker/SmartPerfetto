@@ -15,7 +15,15 @@ import type {RuntimeToolObserver} from '../agentRuntime/runtimeToolObserver';
 import type {AnalysisHistoryReader} from '../agentRuntime/analysisHistory';
 import {renderRequiredLocalizedStrategyTemplate} from './localizedStrategyTemplate';
 import {findArtifactSqlReference} from './artifactSqlReference';
-import { tool as sdkTool } from '@anthropic-ai/claude-agent-sdk';
+import {
+  defineRuntimeTool,
+  preserveRuntimeLiteralStrings,
+  type RuntimeToolAnnotations,
+  type RuntimeToolDefinition,
+  type RuntimeToolExtra,
+  type RuntimeToolInput,
+  type RuntimeToolResult,
+} from '../agentRuntime/runtimeToolSpec';
 import { z } from 'zod';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -207,24 +215,28 @@ class IndexGenerationRefused extends Error {
   }
 }
 
-const tool: typeof sdkTool = ((
+/**
+ * Every tool body of a run: evaluation telemetry, exposure commit/discard and
+ * index refusals around the handler. The annotations argument has never been
+ * forwarded, so no runtime receives these tools' annotations; forwarding them
+ * changes what each model host is told and is a separate change.
+ */
+function tool<Shape extends z.ZodRawShape>(
   name: string,
   description: string,
-  schema: unknown,
-  handler: (...args: unknown[]) => unknown,
-) => sdkTool(
-  name,
-  description,
-  schema as never,
-  async (...args: unknown[]) => {
+  schema: Shape,
+  handler: (args: RuntimeToolInput<Shape>, extra: unknown) => Promise<RuntimeToolResult>,
+  _extras?: {annotations?: RuntimeToolAnnotations},
+): RuntimeToolDefinition {
+  return defineRuntimeTool(name, description, schema, async (args, extra) => {
     if (currentEvaluationTelemetryActive()) recordEvaluationToolCall();
     const cursor = currentEvaluationInjectionContract()
       ? evaluationExposureCursor()
       : undefined;
     try {
-      let result: unknown;
+      let result: RuntimeToolResult;
       try {
-        result = await handler(...args);
+        result = await handler(args, extra);
       } catch (error) {
         if (!(error instanceof IndexGenerationRefused)) throw error;
         result = createRuntimeToolResult(error.refusal.payload, {isError: error.refusal.isError});
@@ -232,13 +244,13 @@ const tool: typeof sdkTool = ((
       if (cursor !== undefined) {
         commitEvaluationExposureSince(cursor, 'sdk_handoff_observed');
       }
-      return result as never;
+      return result;
     } catch (error) {
       if (cursor !== undefined) discardPendingEvaluationExposures(cursor);
       throw error;
     }
-  },
-)) as unknown as typeof sdkTool;
+  });
+}
 import {
   createTraceSimilarityService,
   type TraceSimilaritySnapshotRepository,
@@ -349,7 +361,6 @@ import {
   readAnalysisContextRegistrations,
   type AnalysisContextRegistrations,
 } from '../services/resolvedAnalysisContext';
-import {preserveRuntimeLiteralStrings, type RuntimeToolExtra} from '../agentRuntime/runtimeToolSpec';
 import {isPlaceholderToolString} from '../agentRuntime/toolArgPlaceholders';
 import {
   rethrowIfTraceProcessorQueryCancelled,
@@ -7757,75 +7768,75 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
   // Budget mode does not change the authorized capability set.
   if (options.conversationTraceAttached !== false) {
-    registry.registerSdk(executeSql, 'execute_sql', 'public', {evidenceEffect: 'acquire'});
-    registry.registerSdk(invokeSkill, 'invoke_skill', 'public', {evidenceEffect: 'acquire'});
-    registry.registerSdk(detectArchitecture, 'detect_architecture', 'public', {evidenceEffect: 'acquire'});
-    registry.registerSdk(analyzeWaitChain, 'analyze_wait_chain', 'public', {evidenceEffect: 'acquire'});
+    registry.registerTool(executeSql, 'execute_sql', 'public', {evidenceEffect: 'acquire'});
+    registry.registerTool(invokeSkill, 'invoke_skill', 'public', {evidenceEffect: 'acquire'});
+    registry.registerTool(detectArchitecture, 'detect_architecture', 'public', {evidenceEffect: 'acquire'});
+    registry.registerTool(analyzeWaitChain, 'analyze_wait_chain', 'public', {evidenceEffect: 'acquire'});
   }
-  registry.registerSdk(listSkills, 'list_skills', 'public', {evidenceEffect: 'none'});
-  registry.registerSdk(lookupSqlSchema, 'lookup_sql_schema', 'public', {
+  registry.registerTool(listSkills, 'list_skills', 'public', {evidenceEffect: 'none'});
+  registry.registerTool(lookupSqlSchema, 'lookup_sql_schema', 'public', {
     evidenceEffect: 'none',
     concurrency: {mode: 'commutative_read'},
   });
-  registry.registerSdk(listStdlibModules, 'list_stdlib_modules', 'public', {
+  registry.registerTool(listStdlibModules, 'list_stdlib_modules', 'public', {
     evidenceEffect: 'none',
     concurrency: {mode: 'commutative_read'},
   });
-  registry.registerSdk(lookupKnowledge, 'lookup_knowledge', 'public', {evidenceEffect: 'none'});
+  registry.registerTool(lookupKnowledge, 'lookup_knowledge', 'public', {evidenceEffect: 'none'});
   // Background, not acquisition: an existing_only turn may consult them.
   if (documentCollectionIds.length > 0) {
-    registry.registerSdk(searchKnowledge, 'search_knowledge', 'public', {evidenceEffect: 'background'});
-    registry.registerSdk(readKnowledgeSection, 'read_knowledge_section', 'public', {evidenceEffect: 'background'});
+    registry.registerTool(searchKnowledge, 'search_knowledge', 'public', {evidenceEffect: 'background'});
+    registry.registerTool(readKnowledgeSection, 'read_knowledge_section', 'public', {evidenceEffect: 'background'});
   }
-  registry.registerSdk(listCodebases, 'list_codebases', 'requires_codebase_permission', {evidenceEffect: 'none'});
-  registry.registerSdk(searchCodebase, 'search_codebase', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-  registry.registerSdk(readCodebaseFile, 'read_codebase_file', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-  registry.registerSdk(findCodebaseFiles, 'find_codebase_files', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-  registry.registerSdk(locateTraceAnchorTool, 'locate_trace_anchor', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-  registry.registerSdk(queryPerfettoSource, 'query_perfetto_source', 'public', {evidenceEffect: 'acquire'});
-  registry.registerSdk(lookupAospSource, 'lookup_aosp_source', 'public', {evidenceEffect: 'acquire'});
-  registry.registerSdk(lookupOemSdk, 'lookup_oem_sdk', 'public', {evidenceEffect: 'acquire'});
+  registry.registerTool(listCodebases, 'list_codebases', 'requires_codebase_permission', {evidenceEffect: 'none'});
+  registry.registerTool(searchCodebase, 'search_codebase', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+  registry.registerTool(readCodebaseFile, 'read_codebase_file', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+  registry.registerTool(findCodebaseFiles, 'find_codebase_files', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+  registry.registerTool(locateTraceAnchorTool, 'locate_trace_anchor', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+  registry.registerTool(queryPerfettoSource, 'query_perfetto_source', 'public', {evidenceEffect: 'acquire'});
+  registry.registerTool(lookupAospSource, 'lookup_aosp_source', 'public', {evidenceEffect: 'acquire'});
+  registry.registerTool(lookupOemSdk, 'lookup_oem_sdk', 'public', {evidenceEffect: 'acquire'});
   // Graph and index tools only accelerate source access; offered only when a
   // selected codebase actually has the graph or an active index.
   if (anySelectedCodebaseHas('graph')) {
-    registry.registerSdk(queryCodeGraph, 'query_code_graph', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-    registry.registerSdk(inspectCodeSymbol, 'inspect_code_symbol', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+    registry.registerTool(queryCodeGraph, 'query_code_graph', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+    registry.registerTool(inspectCodeSymbol, 'inspect_code_symbol', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
   }
   if (anySelectedCodebaseHas('index')) {
-    registry.registerSdk(lookupAppSource, 'lookup_app_source', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-    registry.registerSdk(lookupKernelSource, 'lookup_kernel_source', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-    registry.registerSdk(resolveSymbol, 'resolve_symbol', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+    registry.registerTool(lookupAppSource, 'lookup_app_source', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+    registry.registerTool(lookupKernelSource, 'lookup_kernel_source', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+    registry.registerTool(resolveSymbol, 'resolve_symbol', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
     // A patch changes how code behaves, which only a mechanism-depth run reads for.
     if (sourceDepth === 'mechanism') {
-      registry.registerSdk(proposePatch, 'propose_patch', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+      registry.registerTool(proposePatch, 'propose_patch', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
     }
   }
-  registry.registerSdk(lookupBaseline, 'lookup_baseline', 'public', {evidenceEffect: 'read_existing'});
-  registry.registerSdk(compareBaselines, 'compare_baselines', 'public', {evidenceEffect: 'read_existing'});
-  registry.registerSdk(recallProjectMemory, 'recall_project_memory', 'public', {evidenceEffect: 'read_existing'});
-  registry.registerSdk(recallSimilarCase, 'recall_similar_case', 'public', {evidenceEffect: 'acquire'});
-  registry.registerSdk(recallSimilarResult, 'recall_similar_result', 'public', {evidenceEffect: 'acquire'});
-  if (writeAnalysisNote) registry.registerSdk(writeAnalysisNote, 'write_analysis_note', 'internal', {evidenceEffect: 'none'});
-  if (fetchArtifact) registry.registerSdk(fetchArtifact, 'fetch_artifact', 'public', {evidenceEffect: 'read_existing'});
-  if (readSessionHistory) registry.registerSdk(readSessionHistory, 'read_session_history', 'public', {evidenceEffect: 'read_existing'});
-  if (submitPlan) registry.registerSdk(submitPlan, 'submit_plan', 'internal', {evidenceEffect: 'none'});
-  if (updatePlanPhase) registry.registerSdk(updatePlanPhase, 'update_plan_phase', 'internal', {evidenceEffect: 'none'});
-  if (revisePlan) registry.registerSdk(revisePlan, 'revise_plan', 'internal', {evidenceEffect: 'none'});
-  registry.registerSdk(lookupStrategyDetail, 'lookup_strategy_detail', 'internal', {evidenceEffect: 'none'});
-  if (submitHypothesis) registry.registerSdk(submitHypothesis, 'submit_hypothesis', 'internal', {evidenceEffect: 'none'});
-  if (resolveHypothesis) registry.registerSdk(resolveHypothesis, 'resolve_hypothesis', 'internal', {evidenceEffect: 'none'});
-  if (flagUncertainty) registry.registerSdk(flagUncertainty, 'flag_uncertainty', 'internal', {evidenceEffect: 'none'});
+  registry.registerTool(lookupBaseline, 'lookup_baseline', 'public', {evidenceEffect: 'read_existing'});
+  registry.registerTool(compareBaselines, 'compare_baselines', 'public', {evidenceEffect: 'read_existing'});
+  registry.registerTool(recallProjectMemory, 'recall_project_memory', 'public', {evidenceEffect: 'read_existing'});
+  registry.registerTool(recallSimilarCase, 'recall_similar_case', 'public', {evidenceEffect: 'acquire'});
+  registry.registerTool(recallSimilarResult, 'recall_similar_result', 'public', {evidenceEffect: 'acquire'});
+  if (writeAnalysisNote) registry.registerTool(writeAnalysisNote, 'write_analysis_note', 'internal', {evidenceEffect: 'none'});
+  if (fetchArtifact) registry.registerTool(fetchArtifact, 'fetch_artifact', 'public', {evidenceEffect: 'read_existing'});
+  if (readSessionHistory) registry.registerTool(readSessionHistory, 'read_session_history', 'public', {evidenceEffect: 'read_existing'});
+  if (submitPlan) registry.registerTool(submitPlan, 'submit_plan', 'internal', {evidenceEffect: 'none'});
+  if (updatePlanPhase) registry.registerTool(updatePlanPhase, 'update_plan_phase', 'internal', {evidenceEffect: 'none'});
+  if (revisePlan) registry.registerTool(revisePlan, 'revise_plan', 'internal', {evidenceEffect: 'none'});
+  registry.registerTool(lookupStrategyDetail, 'lookup_strategy_detail', 'internal', {evidenceEffect: 'none'});
+  if (submitHypothesis) registry.registerTool(submitHypothesis, 'submit_hypothesis', 'internal', {evidenceEffect: 'none'});
+  if (resolveHypothesis) registry.registerTool(resolveHypothesis, 'resolve_hypothesis', 'internal', {evidenceEffect: 'none'});
+  if (flagUncertainty) registry.registerTool(flagUncertainty, 'flag_uncertainty', 'internal', {evidenceEffect: 'none'});
   // recall_patterns stays 'internal' for one more commit. Plan 41 M1b
   // routes the recall path through openSupersedeStoreReadOnly so it no
   // longer mkdir's or migrates the supersede DB on first call. The
   // public-readonly exposure flip is gated on the M1b invariant test
   // soaking for one release cycle to catch any hidden writable code
   // path; that flip is the M1b commit 2 follow-up.
-  registry.registerSdk(recallPatterns, 'recall_patterns', 'internal', {evidenceEffect: 'read_existing'});
+  registry.registerTool(recallPatterns, 'recall_patterns', 'internal', {evidenceEffect: 'read_existing'});
   // Comparison mode tools — only when referenceTraceId is provided.
-  if (options.conversationTraceAttached !== false && compareSkill) registry.registerSdk(compareSkill, 'compare_skill', 'internal', {evidenceEffect: 'acquire'});
-  if (options.conversationTraceAttached !== false && executeSqlOn) registry.registerSdk(executeSqlOn, 'execute_sql_on', 'internal', {evidenceEffect: 'acquire'});
-  if (getComparisonContext) registry.registerSdk(getComparisonContext, 'get_comparison_context', 'internal', {evidenceEffect: 'read_existing'});
+  if (options.conversationTraceAttached !== false && compareSkill) registry.registerTool(compareSkill, 'compare_skill', 'internal', {evidenceEffect: 'acquire'});
+  if (options.conversationTraceAttached !== false && executeSqlOn) registry.registerTool(executeSqlOn, 'execute_sql_on', 'internal', {evidenceEffect: 'acquire'});
+  if (getComparisonContext) registry.registerTool(getComparisonContext, 'get_comparison_context', 'internal', {evidenceEffect: 'read_existing'});
 
   const allowedTools = registry.buildAllowedTools(toolRequestScope);
   const toolDefinitions = registry.listForRequest(toolRequestScope);
@@ -7861,7 +7872,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     toolDefinitions.map(definition => definition.name),
   );
   return {
-    server: registry.buildSdkServer({scope: toolRequestScope}),
     allowedTools,
     toolDefinitions,
     sourceUse,

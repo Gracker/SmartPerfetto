@@ -2,9 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {claudeSdkQuery as sdkQuery} from '../../agentRuntime/engines/claude/claudeSdkQuery';
-
-import {createSdkEnv, getSdkBinaryOption} from '../../agentv3/claudeConfig';
+import {runClaudeStructuredReviewQuery} from '../../agentRuntime/engines/claude/claudeAuxiliaryQueries';
 
 export type StructuredReviewExecutionResult =
   | {ok: true; value: Record<string, unknown>}
@@ -32,85 +30,24 @@ export async function executeStructuredReview(
   const model = input.model ??
     process.env.CLAUDE_LIGHT_MODEL ??
     input.defaultModel;
-  let sdkEnv: ReturnType<typeof createSdkEnv>;
-  try {
-    // Follows the active provider, which an unreadable providers.json leaves
-    // unknown; report that as this review's failure rather than rejecting.
-    sdkEnv = createSdkEnv();
-  } catch (error) {
-    return {ok: false, reason: 'sdk_error', details: errorMessage(error)};
-  }
-  const stream = sdkQuery({
+  const outcome = await runClaudeStructuredReviewQuery({
     prompt: input.prompt,
-    options: {
-      model,
-      maxTurns: input.maxTurns,
-      settingSources: [],
-      tools: [],
-      permissionMode: 'bypassPermissions' as const,
-      allowDangerouslySkipPermissions: true,
-      env: sdkEnv,
-      stderr: (data: string) => {
-        console.warn(`[${input.logPrefix}] SDK stderr: ${data.trimEnd()}`);
-      },
-      ...getSdkBinaryOption(sdkEnv),
-    },
+    logPrefix: input.logPrefix,
+    model,
+    maxTurns: input.maxTurns,
+    timeoutMs: input.timeoutMs,
   });
-
-  let result = '';
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    console.warn(
-      `[${input.logPrefix}] timed out after ${input.timeoutMs / 1000}s`,
-    );
-    try {
-      stream.close();
-    } catch {
-      // Best-effort cancellation; the timeout result remains authoritative.
-    }
-  }, input.timeoutMs);
-
-  try {
-    for await (const message of stream) {
-      if (timedOut) break;
-      if (
-        message.type === 'result' &&
-        (message as {subtype?: string}).subtype === 'success'
-      ) {
-        result = (message as {result?: string}).result ?? '';
-      }
-    }
-  } catch (error) {
-    if (timedOut) {
-      return {
-        ok: false,
-        reason: 'sdk_timeout',
-        details: `${input.timeoutMs}ms budget exhausted`,
-      };
-    }
-    return {
-      ok: false,
-      reason: 'sdk_error',
-      details: errorMessage(error),
-    };
-  } finally {
-    clearTimeout(timer);
-    try {
-      stream.close();
-    } catch {
-      // The execution result above remains authoritative.
-    }
-  }
-
-  if (timedOut) {
+  if (outcome.kind === 'timeout') {
     return {
       ok: false,
       reason: 'sdk_timeout',
       details: `${input.timeoutMs}ms budget exhausted`,
     };
   }
-  const parsed = extractFirstJsonObject(result);
+  if (outcome.kind === 'error') {
+    return {ok: false, reason: 'sdk_error', details: errorMessage(outcome.error)};
+  }
+  const parsed = extractFirstJsonObject(outcome.text);
   return parsed
     ? {ok: true, value: parsed}
     : {

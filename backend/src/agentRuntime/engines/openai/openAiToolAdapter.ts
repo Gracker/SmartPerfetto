@@ -9,25 +9,10 @@ import {
   deduplicateNullableSchemaDescriptions,
   normalizeRuntimeToolArgs,
   normalizeRuntimeToolExtra,
-  sharedToolSpecFromClaudeSdkTool,
   stringifyRuntimeToolResult,
-  type SharedToolSpec,
 } from '../../runtimeToolSpec';
 import { isTraceProcessorQueryCancelledError } from '../../../services/traceProcessorCancellation';
 import {projectRuntimeToolEventPayload} from '../../../services/security/runtimeToolEventProjection';
-function getSharedToolSpec(definition: McpToolDefinition): SharedToolSpec {
-  if (definition.shared) return definition.shared;
-  try {
-    return sharedToolSpecFromClaudeSdkTool(
-      definition.name,
-      definition.tool,
-      definition.exposure,
-      {summary: definition.summary, requires: definition.requires, role: definition.role, evidenceEffect: definition.evidenceEffect},
-    );
-  } catch {
-    throw new Error(`Cannot adapt MCP tool ${definition.name}: unsupported SDK descriptor shape`);
-  }
-}
 
 /**
  * The identity of one tool call. The SDK's Chat Completions converter stamps
@@ -50,7 +35,7 @@ function extractOpenAIToolCallId(details: unknown): string | undefined {
 }
 
 /**
- * Adapts SmartPerfetto's existing in-process Claude MCP tool registry to
+ * Adapts SmartPerfetto's shared MCP tool registry to
  * OpenAI Agents SDK function tools. The SmartPerfetto tool contract remains
  * the single source of truth; only the SDK adapter changes.
  */
@@ -58,7 +43,7 @@ export function createOpenAIToolsFromMcpDefinitions(
   definitions: readonly McpToolDefinition[],
 ): Tool[] {
   return definitions.map((definition) => {
-    const shared = getSharedToolSpec(definition);
+    const {shared} = definition;
     const adapted = tool({
       name: definition.name,
       description: shared.description,

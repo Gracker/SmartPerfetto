@@ -6,6 +6,7 @@ import {describe, it, expect} from '@jest/globals';
 import {z} from 'zod';
 
 import {McpToolRegistry} from '../mcpToolRegistry';
+import type {RuntimeToolDefinition} from '../../agentRuntime/runtimeToolSpec';
 import {
   dispatch,
   runStdioLoop,
@@ -16,20 +17,19 @@ import {
   type ResponseSink,
 } from '../standaloneMcpServer';
 
-/** Minimal SDK-tool stub that pretends to be the shape `tool()`
- * from `@anthropic-ai/claude-agent-sdk` returns. */
-function stubSdkTool(opts: {
+/** Minimal tool-definition stub with the shape `defineRuntimeTool()` returns. */
+function stubTool(opts: {
   name?: string;
   description?: string;
   inputSchema?: z.ZodRawShape;
   handler?: (args: unknown) => Promise<unknown> | unknown;
-}): unknown {
+}): RuntimeToolDefinition {
   return {
     name: opts.name ?? 'stub_tool',
     description: opts.description ?? '',
     inputSchema: opts.inputSchema ?? {},
     handler: opts.handler ?? (async () => ({content: [{type: 'text', text: 'ok'}]})),
-  };
+  } as RuntimeToolDefinition;
 }
 
 describe('dispatch — initialize', () => {
@@ -64,18 +64,18 @@ describe('dispatch — initialize', () => {
 describe('dispatch — tools/list', () => {
   it('returns ONLY public exposure tools', async () => {
     const registry = new McpToolRegistry();
-    registry.registerSdk(
-      stubSdkTool({description: 'public alpha'}),
+    registry.registerTool(
+      stubTool({description: 'public alpha'}),
       'alpha',
       'public',
     );
-    registry.registerSdk(
-      stubSdkTool({description: 'internal beta'}),
+    registry.registerTool(
+      stubTool({description: 'internal beta'}),
       'beta',
       'internal',
     );
-    registry.registerSdk(
-      stubSdkTool({description: 'deprecated gamma'}),
+    registry.registerTool(
+      stubTool({description: 'deprecated gamma'}),
       'gamma',
       'deprecated',
     );
@@ -91,13 +91,13 @@ describe('dispatch — tools/list', () => {
 
   it('does not expose requires_codebase_permission tools to standalone hosts', async () => {
     const registry = new McpToolRegistry();
-    registry.registerSdk(
-      stubSdkTool({description: 'public alpha'}),
+    registry.registerTool(
+      stubTool({description: 'public alpha'}),
       'alpha',
       'public',
     );
-    registry.registerSdk(
-      stubSdkTool({description: 'source lookup'}),
+    registry.registerTool(
+      stubTool({description: 'source lookup'}),
       'lookup_app_source',
       'requires_codebase_permission',
     );
@@ -122,8 +122,8 @@ describe('dispatch — tools/list', () => {
 
   it('descriptor carries name + description + JSON Schema from shared input schema', async () => {
     const registry = new McpToolRegistry();
-    registry.registerSdk(
-      stubSdkTool({
+    registry.registerTool(
+      stubTool({
         name: 'alpha',
         description: 'Describe the thing.',
         inputSchema: {q: z.string()},
@@ -165,8 +165,8 @@ describe('dispatch — tools/list', () => {
 describe('dispatch — tools/call', () => {
   it('invokes the handler and returns its result', async () => {
     const registry = new McpToolRegistry();
-    registry.registerSdk(
-      stubSdkTool({
+    registry.registerTool(
+      stubTool({
         handler: async (args: unknown) => ({
           content: [{type: 'text', text: `got ${JSON.stringify(args)}`}],
         }),
@@ -198,8 +198,8 @@ describe('dispatch — tools/call', () => {
 
   it('refuses to call internal tools (hidden from external hosts)', async () => {
     const registry = new McpToolRegistry();
-    registry.registerSdk(
-      stubSdkTool({}),
+    registry.registerTool(
+      stubTool({}),
       'submit_plan',
       'internal',
     );
@@ -215,8 +215,8 @@ describe('dispatch — tools/call', () => {
 
   it('surfaces handler exceptions as TOOL_EXECUTION_FAILED', async () => {
     const registry = new McpToolRegistry();
-    registry.registerSdk(
-      stubSdkTool({
+    registry.registerTool(
+      stubTool({
         handler: async () => {
           throw new Error('boom');
         },
@@ -282,8 +282,8 @@ class CollectingSink implements ResponseSink {
 describe('runStdioLoop', () => {
   it('processes a sequence of requests in order', async () => {
     const registry = new McpToolRegistry();
-    registry.registerSdk(
-      stubSdkTool({
+    registry.registerTool(
+      stubTool({
         handler: async () => ({
           content: [{type: 'text', text: 'echo'}],
         }),
@@ -307,8 +307,8 @@ describe('runStdioLoop', () => {
 
   it('keeps running after a tool failure', async () => {
     const registry = new McpToolRegistry();
-    registry.registerSdk(
-      stubSdkTool({
+    registry.registerTool(
+      stubTool({
         handler: async () => {
           throw new Error('intentional');
         },
@@ -316,8 +316,8 @@ describe('runStdioLoop', () => {
       'broken',
       'public',
     );
-    registry.registerSdk(
-      stubSdkTool({handler: async () => ({content: [{type: 'text', text: 'ok'}]})}),
+    registry.registerTool(
+      stubTool({handler: async () => ({content: [{type: 'text', text: 'ok'}]})}),
       'fine',
       'public',
     );

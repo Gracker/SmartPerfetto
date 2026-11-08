@@ -5,7 +5,6 @@
     "src/agent/scene/buildSmartChatReport.ts#buildSmartChatReport",
     "src/agent/scene/sceneTimelineContract.ts#SceneTimelineProposal",
     "src/agentRuntime/analysisHistory.ts#resolveAnalysisHistoryReader",
-    "src/agentRuntime/engines/claude/claudeVerifier.ts#isConclusionIncomplete",
     "src/agentRuntime/engines/claude/index.ts#createClaudeRuntime",
     "src/agentRuntime/engines/openai/index.ts#createOpenAIRuntime",
     "src/agentRuntime/engines/openai/openAiComplexityClassifier.ts#classifyQueryWithOpenAILightModel",

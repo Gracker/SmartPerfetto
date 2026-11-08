@@ -83,8 +83,8 @@ function declaredCandidate(body: string): string {
 }
 
 const mockClaudeVerifierVerifyConclusion = jest.fn();
-jest.mock('../../agentRuntime/engines/claude/claudeVerifier', () => {
-  const actual = jest.requireActual('../../agentRuntime/engines/claude/claudeVerifier') as any;
+jest.mock('../../agentRuntime/runtimeConclusionVerifier', () => {
+  const actual = jest.requireActual('../../agentRuntime/runtimeConclusionVerifier') as any;
   return {
     ...actual,
     verifyConclusion: (...args: unknown[]) => mockClaudeVerifierVerifyConclusion(...args),
@@ -228,7 +228,7 @@ beforeEach(async () => {
   intentDecision = {...defaultIntent};
   classifierResult = undefined;
   claudeSdkMock.__setQueryImplementation(async function* () {});
-  const actualVerifier = jest.requireActual('../../agentRuntime/engines/claude/claudeVerifier') as any;
+  const actualVerifier = jest.requireActual('../../agentRuntime/runtimeConclusionVerifier') as any;
   mockClaudeVerifierVerifyConclusion.mockReset();
   mockClaudeVerifierVerifyConclusion.mockImplementation((...args: unknown[]) => (
     actualVerifier.verifyConclusion(...args)

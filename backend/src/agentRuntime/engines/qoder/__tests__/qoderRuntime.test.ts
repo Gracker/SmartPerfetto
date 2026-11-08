@@ -99,7 +99,6 @@ const mockEnsureSkillRegistryInitialized = jest.fn<(...args: any[]) => any>().mo
 const mockLoadQoderSdkModule = jest.fn<(...args: any[]) => any>().mockResolvedValue(mockSdkModule);
 const mockResetQoderSdkModuleCache = jest.fn();
 const mockCreateClaudeMcpServer = jest.fn().mockReturnValue({
-  server: { name: 'smartperfetto' },
   allowedTools: ['mcp__smartperfetto__query_trace'],
   toolDefinitions: [],
 });
@@ -218,7 +217,8 @@ import {createRuntimePerformanceRecorder} from '../../../runtimePerformance';
 import type {RunManifestAttributionSink} from '../../../../types/selfEvolution';
 import {McpToolRegistry} from '../../../../agentv3/mcpToolRegistry';
 import type {AnalysisPlanTracker} from '../../../../agentv3/planToolCallRecorder';
-import type {ClaudeSdkToolLike} from '../../../runtimeToolSpec';
+import type {RuntimeToolDefinition} from '../../../runtimeToolSpec';
+import {createClaudeSdkToolFromSharedSpec} from '../../claude/claudeSdkTools';
 import type {RuntimeToolInvocationEvent, RuntimeToolObserver} from '../../../runtimeToolObserver';
 import {createRuntimeToolResult} from '../../../runtimeToolResult';
 import {projectCodeAwareStreamingUpdate} from '../../../../services/security/codeAwareStreamingUpdateProjection';
@@ -298,7 +298,6 @@ describe('QoderRuntime', () => {
     mockBuildQuickConversationContext.mockReturnValue(undefined);
     mockFormatTraceContext.mockReturnValue('');
     mockCreateClaudeMcpServer.mockReturnValue({
-      server: { name: 'smartperfetto' },
       allowedTools: ['mcp__smartperfetto__query_trace'],
       toolDefinitions: [],
     });
@@ -534,7 +533,7 @@ describe('QoderRuntime', () => {
         tracker.current = {phases: [{id: 'explore', name: 'Optional exploration', goal: 'Investigate a further explanation',
           expectedTools: ['execute_sql'], status: 'pending'}], successCriteria: 'Explore the open question', submittedAt: 1, toolCallLog: []};
         options.hypotheses.push(hypothesis);
-        return {server: {name: 'smartperfetto'}, allowedTools: ['mcp__smartperfetto__query_trace'], toolDefinitions: []};
+        return {allowedTools: ['mcp__smartperfetto__query_trace'], toolDefinitions: []};
       });
       const body = 'The observed value is 17.';
       mockQuery.mockReturnValueOnce(createMockSdkStream([{type: 'result', subtype: nativeError ? 'error' : 'success',
@@ -582,7 +581,7 @@ describe('QoderRuntime', () => {
     });
 
     it('records actual SDK descriptor outcomes once with intact receipts and auto-phase events', async () => {
-      let descriptor!: ClaudeSdkToolLike;
+      let descriptor!: RuntimeToolDefinition;
       let tracker!: AnalysisPlanTracker;
       let calls = 0;
       const failure = new Error('SQL execution failed');
@@ -607,8 +606,8 @@ describe('QoderRuntime', () => {
             });
           },
         });
-        descriptor = registry.list()[0].tool as ClaudeSdkToolLike;
-        return {server: registry.buildSdkServer(), allowedTools: registry.buildAllowedTools(), toolDefinitions: registry.list()};
+        descriptor = createClaudeSdkToolFromSharedSpec(registry.list()[0].shared) as unknown as RuntimeToolDefinition;
+        return {allowedTools: registry.buildAllowedTools(), toolDefinitions: registry.list()};
       });
       mockQuery.mockReturnValue({
         async *[Symbol.asyncIterator]() {
@@ -645,7 +644,7 @@ describe('QoderRuntime', () => {
     });
 
     it.each(['execute_sql', 'write_analysis_note'])('deduplicates real SDK IDs for %s before counting or publishing outcomes', async toolName => {
-      let descriptor!: ClaudeSdkToolLike;
+      let descriptor!: RuntimeToolDefinition;
       let tracker!: AnalysisPlanTracker;
       const failure = new Error('actual handler failure');
       const handler = jest.fn(async (_params: Record<string, unknown>, extra: {toolCallId?: string}) => {
@@ -658,8 +657,8 @@ describe('QoderRuntime', () => {
         registry.registerShared({
           name: toolName, description: 'Observed tool', exposure: 'public', inputSchema: {}, handler,
         });
-        descriptor = registry.list()[0].tool as ClaudeSdkToolLike;
-        return {server: registry.buildSdkServer(), allowedTools: registry.buildAllowedTools(), toolDefinitions: registry.list()};
+        descriptor = createClaudeSdkToolFromSharedSpec(registry.list()[0].shared) as unknown as RuntimeToolDefinition;
+        return {allowedTools: registry.buildAllowedTools(), toolDefinitions: registry.list()};
       });
       mockQuery.mockReturnValue({
         async *[Symbol.asyncIterator]() {
@@ -693,7 +692,7 @@ describe('QoderRuntime', () => {
     });
 
     it.each([false, true])('retains private source outcomes before transport truncation (body=%s)', async includeBody => {
-      let descriptor!: ClaudeSdkToolLike;
+      let descriptor!: RuntimeToolDefinition;
       mockCreateClaudeMcpServer.mockImplementationOnce((options: any) => {
         const registry = new McpToolRegistry({toolObserver: options.toolObserver});
         registry.registerShared({
@@ -704,8 +703,8 @@ describe('QoderRuntime', () => {
             ...(includeBody ? {text: 'PRIVATE_SOURCE_BODY'} : {}),
           }))}),
         });
-        descriptor = registry.list()[0].tool as ClaudeSdkToolLike;
-        return {server: registry.buildSdkServer(), allowedTools: registry.buildAllowedTools(), toolDefinitions: registry.list()};
+        descriptor = createClaudeSdkToolFromSharedSpec(registry.list()[0].shared) as unknown as RuntimeToolDefinition;
+        return {allowedTools: registry.buildAllowedTools(), toolDefinitions: registry.list()};
       });
       mockQuery.mockReturnValue({
         async *[Symbol.asyncIterator]() {
@@ -737,7 +736,7 @@ describe('QoderRuntime', () => {
         lineRange: {start: 1, end: 2}, text: rawText,
       };
       const rawResult = createRuntimeToolResult({success: true, reference});
-      let descriptor!: ClaudeSdkToolLike;
+      let descriptor!: RuntimeToolDefinition;
       let tracker!: AnalysisPlanTracker;
       mockCreateClaudeMcpServer.mockImplementationOnce((options: any) => {
         tracker = options.analysisPlan;
@@ -746,8 +745,8 @@ describe('QoderRuntime', () => {
           name: 'read_codebase_file', description: 'Read source', exposure: 'public', inputSchema: {},
           handler: async () => rawResult,
         });
-        descriptor = registry.list()[0].tool as ClaudeSdkToolLike;
-        return {server: registry.buildSdkServer(), allowedTools: registry.buildAllowedTools(), toolDefinitions: registry.list()};
+        descriptor = createClaudeSdkToolFromSharedSpec(registry.list()[0].shared) as unknown as RuntimeToolDefinition;
+        return {allowedTools: registry.buildAllowedTools(), toolDefinitions: registry.list()};
       });
       mockQuery.mockReturnValue({
         async *[Symbol.asyncIterator]() {
@@ -821,10 +820,10 @@ describe('QoderRuntime', () => {
       const oldHandlerStarted = createDeferred<void>();
       const releaseOldHandler = createDeferred<void>();
       const releaseOldStream = createDeferred<void>();
-      const descriptors: ClaudeSdkToolLike[] = [];
+      const descriptors: RuntimeToolDefinition[] = [];
       const trackers: AnalysisPlanTracker[] = [];
       const handler = jest.fn(async () => createRuntimeToolResult({success: true}));
-      let lateResult!: ReturnType<ClaudeSdkToolLike['handler']>;
+      let lateResult!: ReturnType<RuntimeToolDefinition['handler']>;
       const buildMcp = (options: any) => {
         const isFirstRun = descriptors.length === 0;
         trackers.push(options.analysisPlan);
@@ -839,8 +838,8 @@ describe('QoderRuntime', () => {
             return handler();
           },
         });
-        descriptors.push(registry.list()[0].tool as ClaudeSdkToolLike);
-        return {server: registry.buildSdkServer(), allowedTools: registry.buildAllowedTools(), toolDefinitions: registry.list()};
+        descriptors.push(createClaudeSdkToolFromSharedSpec(registry.list()[0].shared) as unknown as RuntimeToolDefinition);
+        return {allowedTools: registry.buildAllowedTools(), toolDefinitions: registry.list()};
       };
       mockCreateClaudeMcpServer.mockImplementationOnce(buildMcp).mockImplementationOnce(buildMcp);
       mockQuery.mockReturnValueOnce({
@@ -1279,7 +1278,7 @@ describe('QoderRuntime', () => {
       let onSkillResult: ((result: any) => void) | undefined;
       mockCreateClaudeMcpServer.mockImplementationOnce((options: any) => {
         onSkillResult = options.onSkillResult;
-        return {server: {name: 'smartperfetto'}, allowedTools: [], toolDefinitions: []};
+        return {allowedTools: [], toolDefinitions: []};
       });
       const skillResult = (frameId: number) => ({displayResults: [{stepId: 'jank_frames', data: [{frame_id: frameId}]}]});
       const stream = createMockSdkStream([
@@ -1555,7 +1554,7 @@ describe('QoderRuntime', () => {
         analysisContextFingerprint: 'qoder-source-scope'};
       const knowledgeUse = {sources: [{knowledgeBaseId: `eks_${'a'.repeat(24)}`, kind: 'document_collection' as const,
         generation: `dc_${'1'.repeat(32)}`, deliveredReferenceCount: 1}], locations: []};
-      mockCreateClaudeMcpServer.mockReturnValue({server: {name: 'smartperfetto'}, allowedTools: [], toolDefinitions: [],
+      mockCreateClaudeMcpServer.mockReturnValue({allowedTools: [], toolDefinitions: [],
         sourceUse: {getSourceUseDecision: () => undefined, getSourceExecutionScope: () => current ? scope : undefined,
           getKnowledgeUse: () => knowledgeUse}});
       const late = createDeferred<void>();
@@ -1981,7 +1980,6 @@ describe('QoderRuntime', () => {
         mockCreateClaudeMcpServer
           .mockReturnValueOnce(fixture.mcp)
           .mockReturnValueOnce({
-            server: {name: 'smartperfetto'},
             allowedTools: ['mcp__smartperfetto__query_trace'],
             toolDefinitions: [],
           });
@@ -2311,8 +2309,7 @@ describe('QoderRuntime', () => {
           resolvedAt: 200,
         });
         return {
-          server: { name: 'smartperfetto' },
-          allowedTools: ['mcp__smartperfetto__query_trace'],
+                  allowedTools: ['mcp__smartperfetto__query_trace'],
           toolDefinitions: [],
         };
       });

@@ -24,9 +24,9 @@ function registeredToolNames(): {analysis: Set<string>; all: Set<string>} {
   const path = require('path') as typeof import('path');
   const read = (...parts: string[]) => fs.readFileSync(path.join(__dirname, ...parts), 'utf8');
   const analysis = new Set([...read('..', 'claudeMcpServer.ts')
-    .matchAll(/registry\.register(?:Sdk|Shared)?\(\s*[A-Za-z0-9_]+,\s*'([a-z_]+)'/g)].map((match) => match[1]));
+    .matchAll(/registry\.register(?:Tool|Shared)?\(\s*[A-Za-z0-9_]+,\s*'([a-z_]+)'/g)].map((match) => match[1]));
   const standalone = [...read('..', '..', '..', 'bin', 'smartperfetto-mcp.ts')
-    .matchAll(/registry\.registerSdk\(\s*tool\(\s*'([a-z_]+)'/g)].map((match) => match[1]);
+    .matchAll(/registry\.registerTool\(\s*tool\(\s*'([a-z_]+)'/g)].map((match) => match[1]);
   expect(analysis.size).toBeGreaterThan(30);
   expect(standalone.length).toBeGreaterThan(3);
   return {analysis, all: new Set([...analysis, ...standalone])};

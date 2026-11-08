@@ -151,15 +151,15 @@ manifest、凭据不可用、snapshot 漂移或非法模型输出在 V1 中使�
 
 `backend/src/agentOpenAI/` 以及 `agentv3/claudeRuntime.ts` 等具体文件继续提供
 旧 import path 的 compatibility re-export；`agentv3/` 目录内的 MCP、strategy、
-planning 仍是 canonical shared layers；`claudeVerifier` 的兼容入口指向共享的
-结构化交付诊断，runtime 只经 `agentRuntime/runtimeDraftDiagnostics.ts` 用它决定本轮是否
-做同轮修正；终态统一交给 finalizer。
+planning 仍是 canonical shared layers；共享的结构化交付诊断
+（`agentRuntime/runtimeConclusionVerifier.ts`）只由 runtime 经 `agentRuntime/runtimeDraftDiagnostics.ts`
+读取，用来决定本轮是否做同轮修正；终态统一交给 finalizer。
 
 ## 工具层
 
 SmartPerfetto 的分析能力由 `createClaudeMcpServer()` 实现，并通过 `McpToolRegistry` 描述和筛选。工具面按真实 request scope、artifact store、codebase permission、referenceTraceId、comparison context 和 evidence access 生成。预算模式不授予权限，也不自动缩减已授权工具；`existing_only` 严格禁止新采集。
 
-Claude runtime 直接把这些工具暴露为 in-process MCP server。
+注册表只保存与 SDK 无关的共享工具规格（`agentRuntime/runtimeToolSpec.ts`，结果和注解采用 MCP `CallToolResult` / `ToolAnnotations` 形状）；Claude runtime 在自身 engine 内（`engines/claude/claudeSdkTools.ts`）把它们适配为 in-process MCP server。
 
 `list_skills(metricId, offset)` 可从本轮固定的 Skill 定义与 SQL fragments 发现对应指标的真实生产者、输入、身份选择器和范围限制。发现不执行工具，也不签发证据；raw SQL 列名或模型正文不能替代私有 producer binding。未知指标返回未找到，不能静默退回整个目录。
 
@@ -410,7 +410,7 @@ OpenCode 的共享模型配置不伪造 context/output 容量：未提供容量�
 未知 context 不触发容量阈值驱动的预压缩，真实 context overflow 仍走原生被动压缩。
 这不保证长会话行为与已知容量模型相同，也不增加模型 JSON 的容量配置入口。
 
-`final_report_contract` 仍来自固定 registry 的 strategy frontmatter。`claudeVerifier`
+`final_report_contract` 仍来自固定 registry 的 strategy frontmatter。`runtimeConclusionVerifier`
 只提供结构化交付诊断，不再运行独立语义 LLM 或按误诊词匹配正文；runtime 只用它决定同轮
 修正。报告、CLI 和 snapshot 保留 provenance；chat 分开投影正文和结构化 runtime appendix，
 不能机械删改自然语言结论。

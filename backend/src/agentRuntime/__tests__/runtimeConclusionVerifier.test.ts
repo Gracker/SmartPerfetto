@@ -6,8 +6,8 @@
 
 import {jest, describe, it, expect, beforeEach} from '@jest/globals';
 import type {Finding} from '../../agent/types';
-import type {AnalysisPlanV3, Hypothesis, VerificationIssue} from '../types';
-import {summarizeToolCallInput} from '../toolCallSummary';
+import type {AnalysisPlanV3, Hypothesis, VerificationIssue} from '../../agentv3/types';
+import {summarizeToolCallInput} from '../../agentv3/toolCallSummary';
 import {
   analysisDeliveryFingerprint,
   type AnalysisCompletion, type AnalysisDeliveryContext,
@@ -24,8 +24,8 @@ jest.mock('fs', () => ({
 import {query as sdkQuery} from '@anthropic-ai/claude-agent-sdk';
 import * as fs from 'fs';
 import {
-  verifyPlanAdherence, verifyHypotheses, verifyConclusion, generateCorrectionPrompt, isConclusionIncomplete,
-} from '../claudeVerifier';
+  verifyPlanAdherence, verifyHypotheses, verifyConclusion, generateCorrectionPrompt,
+} from '../runtimeConclusionVerifier';
 
 beforeEach(() => {jest.clearAllMocks();});
 
@@ -193,25 +193,6 @@ describe('generateCorrectionPrompt', () => {
       recoveryKind: 'continue_output'}], body);
     expect(correctionContext(prompt).recoveryKinds).toEqual([]);
     expect(prompt).toContain(body);
-  });
-});
-
-describe('isConclusionIncomplete', () => {
-  it.each(['短回答', '分析发现 CPU 频率问题。'.repeat(100), '# Report\nText without punctuation'])(
-    'does not infer completion from prose: %s', body => {
-      expect(isConclusionIncomplete(body)).toBe(false);
-      expect(isConclusionIncomplete(body, makeDeliveryContext(body, 'completed'))).toBe(false);
-      expect(isConclusionIncomplete(body, makeDeliveryContext(body, 'incomplete'))).toBe(true);
-    },
-  );
-
-  it('rejects an empty body while ignoring stale completion receipts', () => {
-    expect(isConclusionIncomplete('')).toBe(true);
-    const context = makeDeliveryContext('original', 'incomplete');
-    expect(isConclusionIncomplete('changed body', context)).toBe(false);
-    context.completion!.attemptId = 'different-attempt';
-    expect(isConclusionIncomplete('original', context)).toBe(false);
-    expect(isConclusionIncomplete('original', {entry: 'historical_restore'})).toBe(false);
   });
 });
 

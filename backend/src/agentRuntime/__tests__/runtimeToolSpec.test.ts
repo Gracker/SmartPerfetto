@@ -12,18 +12,19 @@ import {withRuntimeToolObserver, type RuntimeToolInvocationEvent} from '../runti
 import {
   RUNTIME_TOOL_DESCRIPTION_MAX_CHARS,
   compactRuntimeToolDescription,
-  createClaudeSdkToolFromSharedSpec,
   createJsonSchemaFromZodRawShape,
   deduplicateNullableSchemaDescriptions,
-  isClaudeSdkToolLike,
+  defineRuntimeTool,
   normalizeRuntimeToolArgs,
   preserveRuntimeLiteralStrings,
-  sharedToolSpecFromClaudeSdkTool,
+  sharedToolSpecFromRuntimeToolDefinition,
   stringifyRuntimeToolResult,
   withRuntimeToolConcurrency,
   withRuntimeToolTiming,
+  type RuntimeToolDefinition,
   type SharedToolSpec,
 } from '../runtimeToolSpec';
+import {createClaudeSdkToolFromSharedSpec} from '../engines/claude/claudeSdkTools';
 
 describe('nullable schema annotation projection', () => {
   it('preserves opted-in literal text without changing nullable omission or ordinary selector coercion', () => {
@@ -82,7 +83,7 @@ import {
   readRuntimeToolResultFacts,
 } from '../runtimeToolResult';
 
-function sdkTool(name: string) {
+function toolDefinition(name: string) {
   return {
     name,
     description: `${name} description`,
@@ -199,7 +200,7 @@ describe('SharedToolSpec', () => {
   });
 
   it('keeps producer facts through SDK adaptation and string transport before shortening', async () => {
-    const spec = sharedToolSpecFromClaudeSdkTool('execute_sql', {
+    const spec = sharedToolSpecFromRuntimeToolDefinition('execute_sql', {
       name: 'execute_sql', description: 'Read trace data', inputSchema: {},
       handler: async () => createRuntimeToolResult({success: false, planPhaseId: 'phase-1', error: 'x'.repeat(14000)}, {
         decorate: text => '[accuracy] {"success":true}\n' + text + '\nReview this evidence.',
@@ -326,9 +327,9 @@ describe('SharedToolSpec', () => {
     expect(sqlParagraph.indexOf('FrameTimeline')).toBeLessThan(sqlParagraph.indexOf('is_main_thread'));
   });
 
-  it('builds a shared tool body from the existing Claude SDK descriptor shape', async () => {
-    const existing = sdkTool('invoke_skill');
-    const shared = sharedToolSpecFromClaudeSdkTool(
+  it('builds a shared tool body from a tool definition', async () => {
+    const existing = toolDefinition('invoke_skill');
+    const shared = sharedToolSpecFromRuntimeToolDefinition(
       'invoke_skill',
       existing,
       'public',
@@ -347,9 +348,27 @@ describe('SharedToolSpec', () => {
     expect(existing.handler).toHaveBeenCalledWith({ q: 'hello' }, {});
   });
 
+  it('defines a tool body whose handler and annotations reach the shared spec unchanged', async () => {
+    const handler = jest.fn(async (args: {q: string}, _extra: unknown) => ({
+      content: [{type: 'text' as const, text: args.q}],
+    }));
+    const inputSchema = {q: z.string()};
+    const definition = defineRuntimeTool('lookup', 'Look up', inputSchema, handler, {annotations: {readOnlyHint: true}});
+    expect(definition).toEqual({name: 'lookup', description: 'Look up', inputSchema, handler,
+      annotations: {readOnlyHint: true}});
+    expect(defineRuntimeTool('bare', 'Bare', inputSchema, handler).annotations).toBeUndefined();
+
+    const shared = sharedToolSpecFromRuntimeToolDefinition('lookup', definition, 'public');
+    expect(shared).toMatchObject({name: 'lookup', description: 'Look up', exposure: 'public',
+      annotations: {readOnlyHint: true}});
+    expect(shared.inputSchema).toBe(inputSchema);
+    await shared.handler({q: 'select 1'}, {});
+    expect(handler).toHaveBeenCalledWith({q: 'select 1'}, {});
+  });
+
   it('builds a Claude SDK-native descriptor from a shared spec', async () => {
-    const existing = sdkTool('execute_sql');
-    const shared = sharedToolSpecFromClaudeSdkTool('execute_sql', existing, 'public');
+    const existing = toolDefinition('execute_sql');
+    const shared = sharedToolSpecFromRuntimeToolDefinition('execute_sql', existing, 'public');
     const claude = createClaudeSdkToolFromSharedSpec(shared);
 
     expect(claude.name).toBe('execute_sql');
@@ -427,12 +446,12 @@ describe('SharedToolSpec', () => {
 
   it('records direct shared handler timing from the active RunManifest context without adapter extras', async () => {
     const lifecycle = createLifecycle('run-direct-shared-tool');
-    const existing = sdkTool('direct_shared_tool');
+    const existing = toolDefinition('direct_shared_tool');
     existing.handler.mockImplementation(async () => {
       await new Promise(resolve => setTimeout(resolve, 1));
       return {content: [{type: 'text' as const, text: 'ok'}]};
     });
-    const shared = sharedToolSpecFromClaudeSdkTool('direct_shared_tool', existing, 'public');
+    const shared = sharedToolSpecFromRuntimeToolDefinition('direct_shared_tool', existing, 'public');
 
     await withRunManifestLifecycle(lifecycle, () => shared.handler({}, {}));
 
@@ -452,8 +471,8 @@ describe('SharedToolSpec', () => {
 
   it('records adapter tool timing with a recorder-generated fallback id when toolCallId is absent', async () => {
     const lifecycle = createLifecycle('run-adapter-fallback-tool');
-    const existing = sdkTool('adapter_shared_tool');
-    const shared = sharedToolSpecFromClaudeSdkTool('adapter_shared_tool', existing, 'public');
+    const existing = toolDefinition('adapter_shared_tool');
+    const shared = sharedToolSpecFromRuntimeToolDefinition('adapter_shared_tool', existing, 'public');
     const claude = createClaudeSdkToolFromSharedSpec(shared);
 
     await withRunManifestLifecycle(lifecycle, () => claude.handler({}, {}));
@@ -730,14 +749,14 @@ describe('SharedToolSpec', () => {
   it('keeps successful shared tools fail-open when timing recording is sealed or over-cap', async () => {
     const sealedLifecycle = createLifecycle('run-sealed-tool');
     sealedLifecycle.builder.runtimePerformanceRecorder.seal();
-    const sealedShared = sharedToolSpecFromClaudeSdkTool('sealed_tool', sdkTool('sealed_tool'), 'public');
+    const sealedShared = sharedToolSpecFromRuntimeToolDefinition('sealed_tool', toolDefinition('sealed_tool'), 'public');
 
     await expect(withRunManifestLifecycle(sealedLifecycle, () =>
       sealedShared.handler({}, {}))).resolves.toBeDefined();
     sealedLifecycle.dispose();
 
     const overCapLifecycle = createLifecycle('run-over-cap-tool');
-    const longIdShared = sharedToolSpecFromClaudeSdkTool('over_cap_tool', sdkTool('over_cap_tool'), 'public');
+    const longIdShared = sharedToolSpecFromRuntimeToolDefinition('over_cap_tool', toolDefinition('over_cap_tool'), 'public');
 
     await expect(withRunManifestLifecycle(overCapLifecycle, () =>
       longIdShared.handler({}, {toolCallId: 'x'.repeat(300)}))).resolves.toBeDefined();
@@ -749,13 +768,13 @@ describe('SharedToolSpec', () => {
     const lifecycle = createLifecycle('run-cancelled-tool');
     const abort = new AbortController();
     abort.abort(new Error('user cancelled'));
-    const existing = sdkTool('cancelled_tool');
+    const existing = toolDefinition('cancelled_tool');
     existing.handler.mockImplementation(async () => {
       const error = new Error('AbortError: user cancelled');
       error.name = 'AbortError';
       throw error;
     });
-    const shared = sharedToolSpecFromClaudeSdkTool('cancelled_tool', existing, 'public');
+    const shared = sharedToolSpecFromRuntimeToolDefinition('cancelled_tool', existing, 'public');
 
     await expect(withRunManifestLifecycle(lifecycle, () =>
       shared.handler({}, {signal: abort.signal}))).rejects.toThrow('AbortError');
@@ -944,11 +963,11 @@ describe('SharedToolSpec', () => {
       runManifestAttributionSink: lifecycle.builder,
       toolObserver: event => {events.push(event.phase);},
     });
-    registry.registerSdk(sdkTool('execute_sql'), 'execute_sql', 'public');
-    const descriptor = registry.list()[0].tool as ReturnType<typeof createClaudeSdkToolFromSharedSpec>;
+    registry.registerTool(toolDefinition('execute_sql'), 'execute_sql', 'public');
+    // The descriptor the Claude engine hands to its in-process server.
+    const descriptor = createClaudeSdkToolFromSharedSpec(registry.list()[0].shared);
     try {
-      if (!isClaudeSdkToolLike(descriptor)) throw new Error('Expected an SDK tool descriptor');
-      await descriptor.handler({q: 'select 1'}, {});
+      await descriptor.handler({q: 'select 1'} as any, {});
       expect(events).toEqual(['started', 'completed']);
       expect(lifecycle.builder.runtimePerformanceRecorder.seal().tools).toEqual([
         expect.objectContaining({outcome: 'ok', toolCallIdHash: expect.stringMatching(/^sha256:/)}),
@@ -965,18 +984,18 @@ describe('SharedToolSpec', () => {
       name: 'acquire', description: 'Acquire evidence', exposure: 'public', inputSchema: {}, handler: body,
     });
     const events: string[] = [];
-    const factory = jest.spyOn(runtimeToolSpec, 'createClaudeSdkToolFromSharedSpec');
+    const factory = jest.spyOn(runtimeToolSpec, 'withRuntimeToolConcurrency');
     try {
       const registry = new McpToolRegistry({
         requestScope: {sessionId: 's1', hasCodebaseAccess: false, allowNewEvidence},
         runManifestAttributionSink: lifecycle.builder,
         toolObserver: event => {events.push(event.phase);},
       });
-      registry.registerSdk(sdk, 'acquire', 'public', {evidenceEffect: 'acquire'});
-      // Keep the actual generated descriptors, even when discovery hides them.
-      const shared = factory.mock.calls[0][0];
-      const descriptor = factory.mock.results[0].value;
-      if (!isClaudeSdkToolLike(descriptor)) throw new Error('Expected SDK descriptor');
+      // An SDK descriptor registered again keeps its single timing receipt.
+      registry.registerTool(sdk as unknown as RuntimeToolDefinition, 'acquire', 'public', {evidenceEffect: 'acquire'});
+      // Keep the registered runtime spec and its SDK descriptor, even when discovery hides them.
+      const shared = factory.mock.results[0].value as SharedToolSpec;
+      const descriptor = createClaudeSdkToolFromSharedSpec(shared);
       const fromShared = await shared.handler({}, {toolCallId: 'shared'});
       const fromSdk = await descriptor.handler({}, {toolCallId: 'sdk'});
       expect(readRuntimeToolResultFacts(fromShared)).toEqual({success: allowNewEvidence});

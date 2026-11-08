@@ -32,17 +32,16 @@
  * @module mcpToolRegistry
  */
 
-import {createSdkMcpServer} from '@anthropic-ai/claude-agent-sdk';
 import {z} from 'zod';
 
 import {
   compactSharedToolSpec,
-  createClaudeSdkToolFromSharedSpec,
-  sharedToolSpecFromClaudeSdkTool,
+  sharedToolSpecFromRuntimeToolDefinition,
   withRuntimeToolAuthorization,
   withRuntimeToolConcurrency,
   withRuntimeToolGuard,
   withRuntimeToolTiming,
+  type RuntimeToolDefinition,
   type SharedToolSpec,
 } from '../agentRuntime/runtimeToolSpec';
 import type {RunAuthorizationCheck} from '../agentRuntime/runAuthorizationFence';
@@ -63,28 +62,29 @@ import {withRuntimeToolInvocationScope} from '../agentRuntime/runtimeToolInvocat
 import {createRuntimeToolResult} from '../agentRuntime/runtimeToolResult';
 import type {RuntimeToolResult} from '../agentRuntime/runtimeToolSpec';
 
-/** MCP tool name prefix — derived from the server name `'smartperfetto'`.
+/** The MCP server name every SmartPerfetto tool host uses: the Claude
+ * engine's in-process SDK server and the standalone stdio server. */
+export const MCP_SERVER_NAME = 'smartperfetto';
+
+/** MCP tool name prefix — derived from `MCP_SERVER_NAME`.
  * `claudeMcpServer.ts` exports the same constant; both files agree
  * because both import from this module. The SDK consumes prefixed
  * names in its `allowedTools` array; the MCP protocol itself uses
  * short names. */
-export const MCP_NAME_PREFIX = 'mcp__smartperfetto__';
+export const MCP_NAME_PREFIX = `mcp__${MCP_SERVER_NAME}__`;
 
 /** One tool stored in the registry. `shared` is the SDK-neutral
- * SmartPerfetto tool body; `tool` is the Claude SDK-native view
- * generated from it. */
+ * SmartPerfetto tool body every runtime adapts to its own SDK view. */
 export interface McpToolDefinition {
   /** Short MCP tool name (no prefix). */
   name: string;
   /** Shared SmartPerfetto tool body and schema. */
   shared: SharedToolSpec;
-  /** Claude SDK tool descriptor — passed to `createSdkMcpServer`. */
-  tool: unknown;
   /** Exposure level — drives stdio / A2A filtering downstream. */
   exposure: McpToolExposure;
   /** Human-readable summary surfaced via `getAci()`. Optional during
    * M0 because most existing tools already carry their own description
-   * inside the SDK tool object; M1 populates this as it migrates the
+   * inside the tool definition; M1 populates this as it migrates the
    * description text to a stable place. */
   summary?: string;
   /** Required env vars or capability flags. */
@@ -92,10 +92,6 @@ export interface McpToolDefinition {
   evidenceEffect?: SharedToolSpec['evidenceEffect'];
   role?: SharedToolSpec['role'];
 }
-
-export type McpToolRegistration = Omit<McpToolDefinition, 'shared'> & {
-  shared?: SharedToolSpec;
-};
 
 export interface ToolRequestScope {
   readonly sessionId: string;
@@ -192,12 +188,13 @@ export function buildAllowedTools(
 
 /**
  * The McpToolRegistry collects tool definitions and emits the views
- * the existing `claudeMcpServer.ts` consumer needs (SDK server +
- * allowedTools list) plus the views M1 will need (stdio dispatcher,
- * ACI snapshot for `McpPublicApiContract`).
+ * the existing `claudeMcpServer.ts` consumer needs (request-authorized
+ * definitions + allowedTools list) plus the views M1 will need (stdio
+ * dispatcher, ACI snapshot for `McpPublicApiContract`). Each runtime
+ * adapts the definitions' shared specs to its own SDK.
  *
- * Stateful registration order matters — the SDK uses array order to
- * match `allowedTools[i]` to `tools[i]`. `register()` appends; later
+ * Stateful registration order matters — an SDK server uses array order
+ * to match `allowedTools[i]` to `tools[i]`. Registration appends; later
  * calls cannot reorder the registry.
  */
 export class McpToolRegistry {
@@ -241,17 +238,11 @@ export class McpToolRegistry {
     });
   }
 
-  /** Add a tool to the registry. Does NOT prevent duplicates by
-   * name; callers control ordering and uniqueness explicitly so the
-   * existing conditional registration patterns
-   * (`if (writeAnalysisNote) registry.register(...)`) keep working. */
-  register(def: McpToolRegistration): void {
-    const base = def.shared ?? sharedToolSpecFromClaudeSdkTool(
-      def.name,
-      def.tool,
-      def.exposure,
-      {summary: def.summary, requires: def.requires, evidenceEffect: def.evidenceEffect, role: def.role},
-    );
+  /** Register an SDK-neutral SmartPerfetto tool spec. Does NOT prevent
+   * duplicates by name; callers control ordering and uniqueness explicitly
+   * so the existing conditional registration patterns
+   * (`if (writeAnalysisNote) registry.registerTool(...)`) keep working. */
+  registerShared(base: SharedToolSpec): void {
     const planCapability = getPlanToolCapability(base.name);
     const shared = base.role !== 'final_candidate_submission' && planCapability === 'evidence' && !base.inputSchema.planPhaseId
       ? {...base, inputSchema: {...base.inputSchema,
@@ -294,7 +285,6 @@ export class McpToolRegistry {
     this.entries.push(Object.freeze({
       name: runtimeShared.name,
       shared: runtimeShared,
-      tool: createClaudeSdkToolFromSharedSpec(runtimeShared),
       exposure: runtimeShared.exposure,
       summary: runtimeShared.summary,
       requires: runtimeShared.requires,
@@ -303,37 +293,15 @@ export class McpToolRegistry {
     }));
   }
 
-  /** Convenience for the existing call sites that pass `(tool,
-   * name)` — keeps the migration patch in `claudeMcpServer.ts`
-   * minimal. */
-  registerSdk(
-    tool: unknown,
+  /** Register a `defineRuntimeTool` body under `name` with the call
+   * site's exposure and evidence policy. */
+  registerTool(
+    tool: RuntimeToolDefinition,
     name: string,
     exposure: McpToolExposure,
     extras?: Pick<McpToolDefinition, 'summary' | 'requires' | 'evidenceEffect' | 'role'> & Pick<SharedToolSpec, 'concurrency'>,
   ): void {
-    this.register({
-      tool,
-      name,
-      exposure,
-      shared: sharedToolSpecFromClaudeSdkTool(name, tool, exposure, extras),
-      ...extras,
-    });
-  }
-
-  /** Register an SDK-neutral SmartPerfetto tool body and build the
-   * Claude SDK-native descriptor view from it. */
-  registerShared(spec: SharedToolSpec): void {
-    this.register({
-      name: spec.name,
-      exposure: spec.exposure,
-      tool: createClaudeSdkToolFromSharedSpec(spec),
-      shared: spec,
-      summary: spec.summary,
-      requires: spec.requires,
-      evidenceEffect: spec.evidenceEffect,
-      ...(spec.role ? {role: spec.role} : {}),
-    });
+    this.registerShared(sharedToolSpecFromRuntimeToolDefinition(name, tool, exposure, extras));
   }
 
   /** Request-authorized entries in registration order. */
@@ -345,21 +313,6 @@ export class McpToolRegistry {
     return this.entries.filter(entry =>
       isToolAllowedForScope(entry, this.requestScope) && isToolAllowedForScope(entry, scope),
     );
-  }
-
-  /** Build the SDK's in-process MCP server. The SDK names the server
-   * `smartperfetto` to align with `MCP_NAME_PREFIX`; that linkage is
-   * preserved here. */
-  buildSdkServer(opts: {name?: string; version?: string; scope?: ToolRequestScope} = {}) {
-    const entries = this.listForRequest(opts.scope);
-    return createSdkMcpServer({
-      name: opts.name ?? 'smartperfetto',
-      version: opts.version ?? '1.0.0',
-      // The SDK accepts `unknown[]` here because tool() returns its own
-      // opaque shape. Cast at the boundary; consumers do not get to
-      // peek inside a tool descriptor.
-      tools: entries.map(e => e.tool) as never,
-    });
   }
 
   /** Allowed-tools array prefixed for the SDK call site. Matches the

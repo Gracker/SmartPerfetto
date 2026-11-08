@@ -47,7 +47,8 @@ jest.mock('../../services/providerManager', () => ({
   getProviderService: () => mockProviderService,
 }));
 
-jest.mock('../../agentv3/claudeConfig', () => ({
+// The Claude engine's config module, which the agentv3 entry re-exports.
+jest.mock('../../agentRuntime/engines/claude/claudeConfig', () => ({
   sdkEnvForProviderEnv: jest.fn(),
   hasClaudeCredentials: jest.fn(),
   loadClaudeConfig: jest.fn(() => ({model: 'env-model'})),

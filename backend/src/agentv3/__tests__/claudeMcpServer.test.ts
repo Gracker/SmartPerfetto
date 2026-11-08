@@ -50,6 +50,7 @@ import {recordPlanOrPrePlanToolCall} from '../planToolCallRecorder';
 import {planPhaseUpdatedContent} from '../planPhaseEvents';
 import {readRuntimeToolResultFacts} from '../../agentRuntime/runtimeToolResult';
 import * as runtimeToolSpec from '../../agentRuntime/runtimeToolSpec';
+import {createClaudeSdkMcpServer} from '../../agentRuntime/engines/claude/claudeSdkTools';
 import {sanitizeSourceReference} from '../../services/codebase/sourceUseDecision';
 import {verifySourceClaimBindings} from '../../services/codebase/sourceClaimVerifier';
 import * as resolvedAnalysisContext from '../../services/resolvedAnalysisContext';
@@ -551,7 +552,9 @@ function createTestServer(options: {
       },
     } : {}),
   } as any;
-  const { server, allowedTools, toolDefinitions, sourceUse, sourceAuthorization } = createClaudeMcpServer(serverOptions);
+  const { allowedTools, toolDefinitions, sourceUse, sourceAuthorization } = createClaudeMcpServer(serverOptions);
+  // The in-process SDK server the Claude runtime builds from the run's definitions.
+  const server = createClaudeSdkMcpServer(toolDefinitions);
 
   // Extract tool handlers from the mock SDK server
   const tools: Map<string, ToolDef> = new Map();
@@ -2006,10 +2009,12 @@ describe('createClaudeMcpServer', () => {
     });
 
     it.each([false, true])('allows existing artifacts but denies held acquisition handlers with lightweight=%s', async lightweight => {
-      const factory = jest.spyOn(runtimeToolSpec, 'createClaudeSdkToolFromSharedSpec');
+      const factory = jest.spyOn(runtimeToolSpec, 'withRuntimeToolConcurrency');
       try {
         const server = createTestServer({lightweight, allowNewEvidence: false});
-        const heldSql = factory.mock.calls.map(([spec]) => spec).find(spec => spec.name === 'execute_sql');
+        // Every registered runtime spec, including the ones the request scope hides.
+        const heldSql = factory.mock.results.map(({value}) => value as runtimeToolSpec.SharedToolSpec)
+          .find(spec => spec.name === 'execute_sql');
         if (!heldSql) throw new Error('Expected registered SQL handler');
         const result = await heldSql.handler({sql: 'SELECT 1'}, {allowNewEvidence: true});
         expect(result.isError).toBe(true);
@@ -8381,12 +8386,13 @@ describe('createClaudeMcpServer', () => {
     });
 
     it('denies retained RAG handlers before any retrieval under existing_only', async () => {
-      const factory = jest.spyOn(runtimeToolSpec, 'createClaudeSdkToolFromSharedSpec');
+      const factory = jest.spyOn(runtimeToolSpec, 'withRuntimeToolConcurrency');
       try {
         const search = jest.fn<RagStore['search']>();
         createTestServer({allowNewEvidence: false, ragStore: {search}});
         for (const toolName of ['lookup_aosp_source', 'lookup_oem_sdk']) {
-          const spec = factory.mock.calls.map(([registered]) => registered).find(entry => entry.name === toolName);
+          const spec = factory.mock.results.map(({value}) => value as runtimeToolSpec.SharedToolSpec)
+            .find(entry => entry.name === toolName);
           expect(spec).toBeDefined();
           const result = await spec!.handler({query: 'query'}, {allowNewEvidence: true});
           expect(readRuntimeToolResultFacts(result)).toEqual({success: false});

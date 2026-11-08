@@ -77,8 +77,8 @@ import {admitted} from '../../../tests/helpers/admittedAnalysisOptions';
 import {createRuntimeAdmissionScope} from '../runtimeTaskDeadline';
 
 const mockClaudeVerifierVerifyConclusion = jest.fn();
-jest.mock('../engines/claude/claudeVerifier', () => {
-  const actual = jest.requireActual('../engines/claude/claudeVerifier') as any;
+jest.mock('../runtimeConclusionVerifier', () => {
+  const actual = jest.requireActual('../runtimeConclusionVerifier') as any;
   return {
     ...actual,
     verifyConclusion: (...args: unknown[]) => mockClaudeVerifierVerifyConclusion(...args),
@@ -226,7 +226,7 @@ beforeEach(() => {
     scope: 'bounded_question', recommendedComplexity: 'quick', deliverable: 'answer', evidenceAccess: 'read_new'};
   piClassifierResponses = [];
   piClassifierCalls = [];
-  const actualVerifier = jest.requireActual('../engines/claude/claudeVerifier') as any;
+  const actualVerifier = jest.requireActual('../runtimeConclusionVerifier') as any;
   mockClaudeVerifierVerifyConclusion.mockReset();
   mockClaudeVerifierVerifyConclusion.mockImplementation((...args: unknown[]) => (
     actualVerifier.verifyConclusion(...args)

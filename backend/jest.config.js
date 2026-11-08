@@ -18,7 +18,7 @@ module.exports = {
     '^.+\.ts$': 'ts-jest',
   },
   moduleNameMapper: {
-    '^@anthropic-ai/claude-agent-sdk$': '<rootDir>/src/agentv3/__mocks__/claude-agent-sdk.ts',
+    '^@anthropic-ai/claude-agent-sdk$': '<rootDir>/src/agentRuntime/engines/claude/__mocks__/claude-agent-sdk.ts',
   },
   collectCoverageFrom: [
     'src/**/*.ts',

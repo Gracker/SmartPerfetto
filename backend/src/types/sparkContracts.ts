@@ -1009,9 +1009,9 @@ export interface CaseGraphLibraryContract extends SparkProvenance {
 // Plan 41 — Standalone SmartPerfetto MCP Server / A2A / Host API
 //          (Spark #91, #92, #96, #133, #139, #173)
 //
-// Architecture note: the existing in-process MCP server uses
-// `createSdkMcpServer` from `@anthropic-ai/claude-agent-sdk` and registers
-// short tool names. The `MCP_NAME_PREFIX = 'mcp__smartperfetto__'`
+// Architecture note: the Claude engine's in-process MCP server
+// (`agentRuntime/engines/claude/claudeSdkTools.ts`) registers short tool
+// names. The `MCP_NAME_PREFIX = 'mcp__smartperfetto__'`
 // constant is purely an SDK `allowedTools` prefix — NOT a tool name.
 // Plan 41 introduces a `mcpToolRegistry` that holds short names, plus a
 // stdio adapter that exposes them as native MCP tools. The SDK adapter

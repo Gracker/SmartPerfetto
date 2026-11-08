@@ -51,6 +51,19 @@ describe('claudeSdkQuery', () => {
     expect(offenders).toEqual([]);
   });
 
+  it('keeps every production import of the SDK inside the Claude engine', () => {
+    // The shared tool layer, one-shot calls and diagnostics stay SDK-neutral;
+    // only the Claude engine adapts them to the SDK.
+    const engine = path.join(SRC_ROOT, 'agentRuntime/engines/claude') + path.sep;
+    const anySdkAccess = new RegExp(String.raw`(?:from\s*|(?:import|require)\(\s*)${SDK}`);
+    const offenders = [...productionSources(SRC_ROOT), ...productionSources(path.join(SRC_ROOT, '../bin'))]
+      .filter(file => !file.startsWith(engine))
+      .filter(file => anySdkAccess.test(fs.readFileSync(file, 'utf8')))
+      .map(file => path.relative(SRC_ROOT, file));
+
+    expect(offenders).toEqual([]);
+  });
+
   it('recognises every direct access form it is meant to reject', () => {
     const accesses = [
       "import {query} from '@anthropic-ai/claude-agent-sdk';",

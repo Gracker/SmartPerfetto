@@ -33,11 +33,11 @@
  * agent state.
  */
 
-import {tool} from '@anthropic-ai/claude-agent-sdk';
 import {z} from 'zod';
 import * as path from 'path';
 
 import {McpToolRegistry} from '../src/agentv3/mcpToolRegistry';
+import {defineRuntimeTool as tool} from '../src/agentRuntime/runtimeToolSpec';
 import {
   LineDelimitedJsonSink,
   LineDelimitedJsonSource,
@@ -73,7 +73,7 @@ function buildRegistry(): McpToolRegistry {
 
   // ------- Knowledge retrieval (3 RAG sources) -------
 
-  registry.registerSdk(
+  registry.registerTool(
     tool(
       'lookup_blog_knowledge',
       'Retrieve indexed knowledge chunks from androidperformance.com.',
@@ -92,7 +92,7 @@ function buildRegistry(): McpToolRegistry {
     {summary: 'Retrieve indexed blog knowledge chunks (androidperformance.com).'},
   );
 
-  registry.registerSdk(
+  registry.registerTool(
     tool(
       'lookup_aosp_source',
       'Retrieve indexed AOSP source chunks.',
@@ -111,7 +111,7 @@ function buildRegistry(): McpToolRegistry {
     {summary: 'Retrieve indexed AOSP source chunks.'},
   );
 
-  registry.registerSdk(
+  registry.registerTool(
     tool(
       'lookup_oem_sdk',
       'Retrieve indexed OEM SDK / tuning documentation chunks.',
@@ -132,7 +132,7 @@ function buildRegistry(): McpToolRegistry {
 
   // ------- Baseline lookup + compare -------
 
-  registry.registerSdk(
+  registry.registerTool(
     tool(
       'lookup_baseline',
       'Fetch a stored baseline by canonical id or composite key.',
@@ -206,7 +206,7 @@ function buildRegistry(): McpToolRegistry {
     {summary: 'Fetch a stored App/Device/Build/CUJ baseline.'},
   );
 
-  registry.registerSdk(
+  registry.registerTool(
     tool(
       'compare_baselines',
       'Diff two stored baselines and optionally evaluate a regression gate.',
@@ -304,7 +304,7 @@ function buildRegistry(): McpToolRegistry {
 
   // ------- Memory + case recall -------
 
-  registry.registerSdk(
+  registry.registerTool(
     tool(
       'recall_project_memory',
       'Recall project- or world-scope memory entries by tag overlap.',
@@ -337,7 +337,7 @@ function buildRegistry(): McpToolRegistry {
     {summary: 'Recall project / world memory entries (read-only).'},
   );
 
-  registry.registerSdk(
+  registry.registerTool(
     tool(
       'recall_similar_case',
       'Recall published cases that share tags / key with the current trace.',

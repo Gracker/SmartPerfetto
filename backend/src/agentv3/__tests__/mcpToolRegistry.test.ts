@@ -4,9 +4,10 @@
 
 import {describe, it, expect, jest} from '@jest/globals';
 import {z} from 'zod';
-import type {ClaudeSdkToolLike, RuntimeToolExtra} from '../../agentRuntime/runtimeToolSpec';
+import type {RuntimeToolDefinition, RuntimeToolExtra, SharedToolSpec} from '../../agentRuntime/runtimeToolSpec';
 import type {RuntimeToolInvocationEvent, RuntimeToolObserver} from '../../agentRuntime/runtimeToolObserver';
 import * as runtimeToolSpec from '../../agentRuntime/runtimeToolSpec';
+import {createClaudeSdkMcpServer, createClaudeSdkToolFromSharedSpec} from '../../agentRuntime/engines/claude/claudeSdkTools';
 import {createRuntimeToolResult, readRuntimeToolResultFacts} from '../../agentRuntime/runtimeToolResult';
 import {recordPlanOrPrePlanToolCall} from '../planToolCallRecorder';
 import {isPolicyRefusalResult} from '../toolNarration';
@@ -20,12 +21,11 @@ import {
   buildAllowedTools,
   filterByExposure,
   type McpToolDefinition,
-  type McpToolRegistration,
   isToolAllowedForScope,
 } from '../mcpToolRegistry';
 
-/** Stub SDK tool object with the shape returned by Claude SDK `tool(...)`. */
-function stub(name: string): unknown {
+/** Stub tool definition with the shape `defineRuntimeTool(...)` returns. */
+function stub(name: string): RuntimeToolDefinition {
   return {
     name,
     description: `${name} description`,
@@ -37,6 +37,10 @@ function stub(name: string): unknown {
   };
 }
 
+/** The descriptor the Claude engine hands to its in-process SDK server, called with plain arguments. */
+const claudeDescriptor = (definition: McpToolDefinition) =>
+  createClaudeSdkToolFromSharedSpec(definition.shared) as unknown as RuntimeToolDefinition;
+
 describe('McpToolRegistry — basic registration', () => {
   it('keeps a role-tagged tool out of plan and evidence attribution', async () => {
     const observe = jest.fn<(event: RuntimeToolInvocationEvent) => void>();
@@ -45,7 +49,7 @@ describe('McpToolRegistry — basic registration', () => {
     const events: RuntimeToolInvocationEvent[] = [];
     const registry = new McpToolRegistry({acquisitionPolicy: {observe, admit}, acquisitionObserver,
       toolObserver: event => { events.push(event); }});
-    registry.registerSdk(stub('final_native'), 'final_native', 'internal', {
+    registry.registerTool(stub('final_native'), 'final_native', 'internal', {
       role: 'final_candidate_submission', evidenceEffect: 'none',
     });
     const [definition] = registry.list();
@@ -62,7 +66,7 @@ describe('McpToolRegistry — basic registration', () => {
 
   it('does not infer a role from names or input and never uses it to bypass authorization', async () => {
     const ordinary = new McpToolRegistry();
-    ordinary.registerSdk(stub('submit_final_document'), 'submit_final_document', 'internal');
+    ordinary.registerTool(stub('submit_final_document'), 'submit_final_document', 'internal');
     expect(ordinary.list()[0].shared.role).toBeUndefined();
     expect(ordinary.list()[0].shared.inputSchema).toHaveProperty('planPhaseId');
     await ordinary.list()[0].shared.handler({role: 'final_candidate_submission'}, {role: 'final_candidate_submission'});
@@ -204,9 +208,9 @@ describe('McpToolRegistry — basic registration', () => {
 
   it('register preserves insertion order', () => {
     const registry = new McpToolRegistry();
-    registry.registerSdk(stub('a'), 'execute_sql', 'public');
-    registry.registerSdk(stub('b'), 'invoke_skill', 'public');
-    registry.registerSdk(stub('c'), 'submit_plan', 'internal');
+    registry.registerTool(stub('a'), 'execute_sql', 'public');
+    registry.registerTool(stub('b'), 'invoke_skill', 'public');
+    registry.registerTool(stub('c'), 'submit_plan', 'internal');
 
     const list = registry.list();
     expect(list).toHaveLength(3);
@@ -217,21 +221,17 @@ describe('McpToolRegistry — basic registration', () => {
 
   it('does not deduplicate by name — call sites control uniqueness', () => {
     const registry = new McpToolRegistry();
-    registry.registerSdk(stub('a'), 'dup', 'public');
-    registry.registerSdk(stub('b'), 'dup', 'public');
+    registry.registerTool(stub('a'), 'dup', 'public');
+    registry.registerTool(stub('b'), 'dup', 'public');
     expect(registry.size()).toBe(2);
   });
 
-  it('register accepts a full McpToolDefinition with summary + requires', () => {
+  it('registerTool carries summary + requires into the ACI', () => {
     const registry = new McpToolRegistry();
-    const def: McpToolRegistration = {
-      tool: stub('x'),
-      name: 'execute_sql',
-      exposure: 'public',
+    registry.registerTool(stub('x'), 'execute_sql', 'public', {
       summary: 'Run SQL on the active trace.',
       requires: ['traceProcessor'],
-    };
-    registry.register(def);
+    });
     const aci = registry.getAci();
     expect(aci[0].summary).toBe('Run SQL on the active trace.');
     expect(aci[0].requires).toEqual(['traceProcessor']);
@@ -242,12 +242,11 @@ describe('McpToolRegistry — allowedTools shape', () => {
   it('gives every evidence-capable descriptor explicit attribution without guessing from active state', async () => {
     const registry = new McpToolRegistry({requestScope: {sessionId: 's1', hasCodebaseAccess: true}});
     const body = jest.fn(async () => createRuntimeToolResult({success: true}));
-    registry.registerSdk({name: 'read_codebase_file', description: 'Read source', inputSchema: {}, handler: body},
+    registry.registerTool({name: 'read_codebase_file', description: 'Read source', inputSchema: {}, handler: body},
       'read_codebase_file', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
     const definition = registry.list()[0];
     expect(z.safeParse(definition.shared.inputSchema.planPhaseId, 'p2').success).toBe(true);
-    const descriptor = definition.tool;
-    if (!runtimeToolSpec.isClaudeSdkToolLike(descriptor)) throw new Error('Expected SDK descriptor');
+    const descriptor = claudeDescriptor(definition);
     const plan: AnalysisPlanV3 = {phases: [
       {id: 'p1', name: 'Active', goal: 'Read', expectedTools: ['read_codebase_file'], status: 'in_progress'},
       {id: 'p2', name: 'Pending', goal: 'Read', expectedTools: ['read_codebase_file'], status: 'pending'},
@@ -266,11 +265,11 @@ describe('McpToolRegistry — allowedTools shape', () => {
   it('freezes the bound scope and keeps all discovery views restrict-only', () => {
     const scope = {sessionId: 's1', hasCodebaseAccess: false, allowNewEvidence: false};
     const registry = new McpToolRegistry({requestScope: scope});
-    registry.registerSdk(stub('stored'), 'stored', 'public', {evidenceEffect: 'read_existing'});
-    registry.registerSdk(stub('guide'), 'guide', 'internal', {evidenceEffect: 'none'});
-    registry.registerSdk(stub('new'), 'new', 'public', {evidenceEffect: 'acquire'});
-    registry.registerSdk(stub('unknown'), 'unknown', 'public');
-    registry.registerSdk(stub('source'), 'source', 'requires_codebase_permission', {evidenceEffect: 'none'});
+    registry.registerTool(stub('stored'), 'stored', 'public', {evidenceEffect: 'read_existing'});
+    registry.registerTool(stub('guide'), 'guide', 'internal', {evidenceEffect: 'none'});
+    registry.registerTool(stub('new'), 'new', 'public', {evidenceEffect: 'acquire'});
+    registry.registerTool(stub('unknown'), 'unknown', 'public');
+    registry.registerTool(stub('source'), 'source', 'requires_codebase_permission', {evidenceEffect: 'none'});
     scope.allowNewEvidence = true;
     scope.hasCodebaseAccess = true;
 
@@ -279,7 +278,7 @@ describe('McpToolRegistry — allowedTools shape', () => {
       expect(registry.listForRequest(viewScope).map(def => def.name)).toEqual(expected);
       expect(registry.buildAllowedTools(viewScope)).toEqual(expected.map(name => MCP_NAME_PREFIX + name));
       expect(registry.getAci(viewScope).map(def => def.toolName)).toEqual(expected);
-      const server = registry.buildSdkServer({scope: viewScope}) as unknown as {instance: {tools: Array<{name: string}>}};
+      const server = createClaudeSdkMcpServer(registry.listForRequest(viewScope)) as unknown as {instance: {tools: Array<{name: string}>}};
       expect(server.instance.tools.map(def => def.name.replace(MCP_NAME_PREFIX, ''))).toEqual(expected);
     }
     expect(registry.list().map(def => def.name)).toEqual(expected);
@@ -290,9 +289,9 @@ describe('McpToolRegistry — allowedTools shape', () => {
 
   it('allows a supplied view scope to narrow a permissive bound scope', () => {
     const registry = new McpToolRegistry({requestScope: {sessionId: 's1', hasCodebaseAccess: true}});
-    registry.registerSdk(stub('new'), 'new', 'public', {evidenceEffect: 'acquire'});
-    registry.registerSdk(stub('source'), 'source', 'requires_codebase_permission', {evidenceEffect: 'read_existing'});
-    registry.registerSdk(stub('stored'), 'stored', 'public', {evidenceEffect: 'read_existing'});
+    registry.registerTool(stub('new'), 'new', 'public', {evidenceEffect: 'acquire'});
+    registry.registerTool(stub('source'), 'source', 'requires_codebase_permission', {evidenceEffect: 'read_existing'});
+    registry.registerTool(stub('stored'), 'stored', 'public', {evidenceEffect: 'read_existing'});
     expect(registry.listForRequest({sessionId: 's1', hasCodebaseAccess: false, allowNewEvidence: false})
       .map(def => def.name)).toEqual(['stored']);
     expect(registry.list()).toHaveLength(3);
@@ -335,17 +334,17 @@ describe('McpToolRegistry — allowedTools shape', () => {
   it.each(['acquire', undefined] as const)('rejects held shared/SDK descriptors for effect=%s before executing the body', async evidenceEffect => {
     const body = jest.fn(async () => createRuntimeToolResult({success: true}));
     const events: RuntimeToolInvocationEvent[] = [];
-    const factory = jest.spyOn(runtimeToolSpec, 'createClaudeSdkToolFromSharedSpec');
+    const factory = jest.spyOn(runtimeToolSpec, 'withRuntimeToolConcurrency');
     try {
       const registry = new McpToolRegistry({
         requestScope: {sessionId: 's1', hasCodebaseAccess: true, allowNewEvidence: false},
         toolObserver: event => {events.push(event);},
       });
-      registry.registerSdk({name: 'held', description: 'Held tool', inputSchema: {}, handler: body},
+      registry.registerTool({name: 'held', description: 'Held tool', inputSchema: {}, handler: body},
         'held', 'public', {evidenceEffect});
-      const shared = factory.mock.calls[0][0];
-      const descriptor = factory.mock.results[0].value;
-      if (!runtimeToolSpec.isClaudeSdkToolLike(descriptor)) throw new Error('Expected SDK descriptor');
+      // The registered runtime spec and its SDK descriptor, which discovery hides.
+      const shared = factory.mock.results[0].value as SharedToolSpec;
+      const descriptor = claudeDescriptor({name: shared.name, shared, exposure: shared.exposure});
       for (const handler of [shared.handler, descriptor.handler]) {
         const result = await handler({}, {allowNewEvidence: true});
         expect(result.isError).toBe(true);
@@ -364,8 +363,8 @@ describe('McpToolRegistry — allowedTools shape', () => {
 
   it('prefixes every short name with MCP_NAME_PREFIX', () => {
     const registry = new McpToolRegistry();
-    registry.registerSdk(stub('a'), 'execute_sql', 'public');
-    registry.registerSdk(stub('b'), 'submit_plan', 'internal');
+    registry.registerTool(stub('a'), 'execute_sql', 'public');
+    registry.registerTool(stub('b'), 'submit_plan', 'internal');
 
     const allowed = registry.buildAllowedTools();
     expect(allowed).toEqual([
@@ -376,8 +375,8 @@ describe('McpToolRegistry — allowedTools shape', () => {
 
   it('filters codebase tools through request-scoped allowedTools', () => {
     const registry = new McpToolRegistry();
-    registry.registerSdk(stub('a'), 'execute_sql', 'public');
-    registry.registerSdk(stub('b'), 'lookup_app_source', 'requires_codebase_permission');
+    registry.registerTool(stub('a'), 'execute_sql', 'public');
+    registry.registerTool(stub('b'), 'lookup_app_source', 'requires_codebase_permission');
 
     expect(registry.buildAllowedTools({
       sessionId: 's1',
@@ -394,10 +393,10 @@ describe('McpToolRegistry — allowedTools shape', () => {
 
   it('listForRequest keeps non-deprecated tools and gates code-aware tools by permission', () => {
     const registry = new McpToolRegistry();
-    registry.registerSdk(stub('a'), 'execute_sql', 'public');
-    registry.registerSdk(stub('b'), 'submit_plan', 'internal');
-    registry.registerSdk(stub('c'), 'lookup_app_source', 'requires_codebase_permission');
-    registry.registerSdk(stub('d'), 'old_tool', 'deprecated');
+    registry.registerTool(stub('a'), 'execute_sql', 'public');
+    registry.registerTool(stub('b'), 'submit_plan', 'internal');
+    registry.registerTool(stub('c'), 'lookup_app_source', 'requires_codebase_permission');
+    registry.registerTool(stub('d'), 'old_tool', 'deprecated');
 
     expect(registry.listForRequest({
       sessionId: 's1',
@@ -415,8 +414,8 @@ describe('McpToolRegistry — allowedTools shape', () => {
 
   it('buildAllowedTools (free function) matches registry method', () => {
     const registry = new McpToolRegistry();
-    registry.registerSdk(stub('one'), 'one', 'public');
-    registry.registerSdk(stub('two'), 'two', 'internal');
+    registry.registerTool(stub('one'), 'one', 'public');
+    registry.registerTool(stub('two'), 'two', 'internal');
     const defs: readonly McpToolDefinition[] = registry.list();
     expect(buildAllowedTools(defs)).toEqual([
       `${MCP_NAME_PREFIX}one`,
@@ -426,8 +425,8 @@ describe('McpToolRegistry — allowedTools shape', () => {
 
   it('keeps codebase-permission tools out of every view of a request without codebase access', () => {
     const registry = new McpToolRegistry();
-    registry.registerSdk(stub('trace'), 'execute_sql', 'public');
-    registry.registerSdk(
+    registry.registerTool(stub('trace'), 'execute_sql', 'public');
+    registry.registerTool(
       stub('source-search'),
       'search_codebase',
       'requires_codebase_permission',
@@ -446,9 +445,9 @@ describe('McpToolRegistry — allowedTools shape', () => {
       `${MCP_NAME_PREFIX}search_codebase`,
     );
 
-    const deniedTools = ((registry.buildSdkServer({scope: denied}) as any).instance?.tools ?? [])
+    const deniedTools = ((createClaudeSdkMcpServer(registry.listForRequest(denied)) as any).instance?.tools ?? [])
       .map((entry: {name: string}) => entry.name.replace(MCP_NAME_PREFIX, ''));
-    const allowedTools = ((registry.buildSdkServer({scope: allowed}) as any).instance?.tools ?? [])
+    const allowedTools = ((createClaudeSdkMcpServer(registry.listForRequest(allowed)) as any).instance?.tools ?? [])
       .map((entry: {name: string}) => entry.name.replace(MCP_NAME_PREFIX, ''));
     expect(deniedTools).not.toContain('search_codebase');
     expect(allowedTools).toContain('search_codebase');
@@ -458,10 +457,10 @@ describe('McpToolRegistry — allowedTools shape', () => {
 describe('McpToolRegistry — filterByExposure', () => {
   function seed(): McpToolDefinition[] {
     const registry = new McpToolRegistry();
-    registry.registerSdk(stub('execute_sql'), 'execute_sql', 'public');
-    registry.registerSdk(stub('submit_plan'), 'submit_plan', 'internal');
-    registry.registerSdk(stub('old_tool'), 'old_tool', 'deprecated');
-    registry.registerSdk(stub('invoke_skill'), 'invoke_skill', 'public');
+    registry.registerTool(stub('execute_sql'), 'execute_sql', 'public');
+    registry.registerTool(stub('submit_plan'), 'submit_plan', 'internal');
+    registry.registerTool(stub('old_tool'), 'old_tool', 'deprecated');
+    registry.registerTool(stub('invoke_skill'), 'invoke_skill', 'public');
     return [...registry.list()];
   }
 
@@ -487,8 +486,8 @@ describe('McpToolRegistry — filterByExposure', () => {
 describe('McpToolRegistry — ACI snapshot', () => {
   it('emits one entry per registered tool with prefixed qualified name', () => {
     const registry = new McpToolRegistry();
-    registry.registerSdk(stub('a'), 'execute_sql', 'public');
-    registry.registerSdk(stub('b'), 'submit_plan', 'internal');
+    registry.registerTool(stub('a'), 'execute_sql', 'public');
+    registry.registerTool(stub('b'), 'submit_plan', 'internal');
 
     const aci = registry.getAci();
     expect(aci).toHaveLength(2);
@@ -506,8 +505,8 @@ describe('McpToolRegistry — ACI snapshot', () => {
 
   it('emits empty summary by default; populates explicit summaries when given', () => {
     const registry = new McpToolRegistry();
-    registry.registerSdk(stub('a'), 'execute_sql', 'public');
-    registry.registerSdk(stub('b'), 'invoke_skill', 'public', {
+    registry.registerTool(stub('a'), 'execute_sql', 'public');
+    registry.registerTool(stub('b'), 'invoke_skill', 'public', {
       summary: 'Run a skill.',
     });
     const aci = registry.getAci();
@@ -517,8 +516,8 @@ describe('McpToolRegistry — ACI snapshot', () => {
 
   it('hides requires_codebase_permission tools from request scopes without access', () => {
     const registry = new McpToolRegistry();
-    registry.registerSdk(stub('a'), 'list_codebases', 'public-readonly');
-    registry.registerSdk(stub('b'), 'lookup_app_source', 'requires_codebase_permission');
+    registry.registerTool(stub('a'), 'list_codebases', 'public-readonly');
+    registry.registerTool(stub('b'), 'lookup_app_source', 'requires_codebase_permission');
 
     expect(registry.getAci({
       sessionId: 's1',
@@ -547,7 +546,7 @@ describe('McpToolRegistry — ACI snapshot', () => {
 describe('McpToolRegistry — buildPublicApiContract', () => {
   it('produces a valid McpPublicApiContract with provenance', () => {
     const registry = new McpToolRegistry();
-    registry.registerSdk(stub('a'), 'execute_sql', 'public');
+    registry.registerTool(stub('a'), 'execute_sql', 'public');
     const contract = registry.buildPublicApiContract({
       serverVersion: '1.2.3',
       protocolVersion: '2024-11-05',
@@ -568,15 +567,16 @@ describe('McpToolRegistry — buildPublicApiContract', () => {
   });
 });
 
-describe('McpToolRegistry — buildSdkServer', () => {
-  it('returns an SDK server that the runtime can pass to query()', () => {
+describe('McpToolRegistry — Claude SDK server', () => {
+  it('builds the SDK server the Claude runtime passes to query() from the registry definitions', () => {
     const registry = new McpToolRegistry();
-    registry.registerSdk(stub('a'), 'execute_sql', 'public');
-    const server = registry.buildSdkServer();
+    registry.registerTool(stub('a'), 'execute_sql', 'public');
+    const server = createClaudeSdkMcpServer(registry.list());
     // The SDK server is opaque; we only verify it's not null and has
     // a recognizable shape (the SDK's helper returns an object).
     expect(server).toBeTruthy();
     expect(typeof server).toBe('object');
+    expect(server.name).toBe('smartperfetto');
   });
 });
 
@@ -592,7 +592,7 @@ describe('McpToolRegistry — invocation observation', () => {
         started.push('body'); await gate; return {content: []};
       }});
     const definition = registry.list()[0];
-    const handler = surface === 'shared' ? definition.shared.handler : (definition.tool as ClaudeSdkToolLike).handler;
+    const handler = surface === 'shared' ? definition.shared.handler : claudeDescriptor(definition).handler;
     const pending = handler({}, {});
     try {
       await Promise.resolve();
@@ -611,7 +611,7 @@ describe('McpToolRegistry — invocation observation', () => {
       name: 'execute_sql', description: 'Execute SQL', exposure: 'public', inputSchema: {}, handler,
     });
     const definition = registry.list()[0];
-    const sdkTool = definition.tool as ClaudeSdkToolLike;
+    const sdkTool = claudeDescriptor(definition);
     const params = {sql: 'select 1'};
 
     await expect(definition.shared.handler(params, {toolCallId: 'unknown'})).resolves.toBe(result);
@@ -646,10 +646,10 @@ describe('McpToolRegistry — invocation observation', () => {
         throw new Error('observer failure');
       },
     });
-    registry.registerSdk({
+    registry.registerTool({
       name: 'execute_sql', description: 'Execute SQL', inputSchema: {}, handler,
     }, 'execute_sql', 'public');
-    const sdkTool = registry.list()[0].tool as ClaudeSdkToolLike;
+    const sdkTool = claudeDescriptor(registry.list()[0]);
 
     await expect(sdkTool.handler({}, {})).resolves.toBe(result);
     await expect(sdkTool.handler({}, {})).rejects.toBe(failure);
@@ -673,7 +673,7 @@ describe('McpToolRegistry — invocation observation', () => {
     registry.registerShared({
       name: 'execute_sql', description: 'Execute SQL', exposure: 'public', inputSchema: {}, handler,
     });
-    const sdkTool = registry.list()[0].tool as ClaudeSdkToolLike;
+    const sdkTool = claudeDescriptor(registry.list()[0]);
     const first = sdkTool.handler({}, {toolCallId: 'first'});
     await started;
     const controller = new AbortController();

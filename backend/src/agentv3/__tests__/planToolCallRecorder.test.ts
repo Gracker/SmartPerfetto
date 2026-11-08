@@ -14,7 +14,7 @@ import {
   type AnalysisPlanTracker,
 } from '../planToolCallRecorder';
 import {getAnalysisPlanCompletionStatus} from '../planCompletionStatus';
-import {verifyPlanAdherence} from '../../agentRuntime/engines/claude/claudeVerifier';
+import {verifyPlanAdherence} from '../../agentRuntime/runtimeConclusionVerifier';
 
 describe('producer-owned tool facts', () => {
   it('excludes the registered final role from pre-plan hashes and phase completion', () => {

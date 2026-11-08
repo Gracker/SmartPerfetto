@@ -9,6 +9,7 @@ import {McpToolRegistry, type McpToolDefinition, type RuntimeAcquisitionPolicy} 
 import {createOpenAIToolsFromMcpDefinitions} from '../engines/openai/openAiToolAdapter';
 import {createPiAgentCoreToolFromSharedSpec} from '../engines/pi/piAgentCoreRuntime';
 import {dispatchOpenCodeBridgeRequest} from '../engines/opencode/openCodeRuntime';
+import {createClaudeSdkToolFromSharedSpec} from '../engines/claude/claudeSdkTools';
 import {createRuntimePerformanceScope} from '../runtimePerformanceContext';
 import type {SharedToolSpec} from '../runtimeToolSpec';
 import {
@@ -83,7 +84,7 @@ function createNoopAttributionSink(
 
 function sdkToolsByName(registry: McpToolRegistry): Record<string, {handler: (...args: unknown[]) => Promise<unknown>}> {
   return Object.fromEntries(
-    registry.list().map(definition => [definition.name, definition.tool]),
+    registry.list().map(definition => [definition.name, createClaudeSdkToolFromSharedSpec(definition.shared)]),
   ) as Record<string, {handler: (...args: unknown[]) => Promise<unknown>}>;
 }
 

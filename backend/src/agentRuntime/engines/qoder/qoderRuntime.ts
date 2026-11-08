@@ -36,6 +36,7 @@ import {
   createClaudeMcpServer,
   loadLearnedSqlFixPairs,
 } from '../../../agentv3/claudeMcpServer';
+import {createClaudeSdkMcpServer} from '../claude/claudeSdkTools';
 import {buildSystemPrompt} from '../../../agentv3/claudeSystemPrompt';
 import { extractFindingsFromText } from '../../../agentv3/claudeFindingExtractor';
 import { resolveFocusAppTarget } from '../../focusAppTarget';
@@ -1104,7 +1105,8 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       sourceDepthDecision: runtimeSourceDepth(policy, options),
       analysisContextFingerprint: options?.analysisContextFingerprint,
     });
-    const mcpServer = mcp?.server;
+    // Qoder's SDK takes the Claude Agent SDK's in-process server object.
+    const mcpServer = mcp ? createClaudeSdkMcpServer(mcp.toolDefinitions) : undefined;
     const allowedToolNames = mcp?.allowedTools ?? [];
     const sourceUse = mcp?.sourceUse;
     sessionState.sourceUse = sourceUse;

@@ -54,6 +54,7 @@ import type { AnalysisResult, AnalysisOptions, IOrchestrator } from '../../../ag
 import type { ArchitectureInfo } from '../../../agent/detectors/types';
 
 import { createClaudeMcpServer, loadLearnedSqlFixPairs, MCP_NAME_PREFIX } from '../../../agentv3/claudeMcpServer';
+import {createClaudeSdkMcpServer} from './claudeSdkTools';
 import {
   buildSystemPromptParts,
 } from '../../../agentv3/claudeSystemPrompt';
@@ -125,7 +126,7 @@ import {projectToolResultForExternalSurface} from '../../../services/rag/toolRes
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
 import {diagnosticLogIdentity} from '../../../utils/logger';
 import { runSnapshots } from '../../../agentv3/selfImprove/strategyFingerprint';
-import {generateCorrectionPrompt} from './claudeVerifier';
+import {generateCorrectionPrompt} from '../../runtimeConclusionVerifier';
 import {assessRuntimeDraft} from '../../runtimeDraftDiagnostics';
 import {isRuntimeCandidateAdmitted} from '../../runtimeCandidateAdmission';
 import { getProductionEngineCapabilities } from '../../runtimeDescriptors';
@@ -2576,7 +2577,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     const sceneRunContext = await activateSceneRuntime(options, {sessionId, traceId, runId: options.runId ?? '',
       deadlineMs: precomputed.sceneDeadlineMs ?? 0, traceProcessorService: this.traceProcessorService,
       artifactStore, sceneCoverageRegistry, signal: precomputed.workSignal ?? executionLease?.signal, canInvokeTool, pacing: precomputed.scenePacing});
-    const { server: mcpServer, allowedTools, toolDefinitions, sourceUse, sourceAuthorization } = createClaudeMcpServer({
+    const { allowedTools, toolDefinitions, sourceUse, sourceAuthorization } = createClaudeMcpServer({
       sceneRunContext,
       runId: precomputed.runId,
       toolObserver: precomputed.toolObserver,
@@ -2625,6 +2626,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       sourceDepthDecision: runtimeSourceDepth(turnPolicy, options),
       analysisContextFingerprint: options.analysisContextFingerprint,
     });
+    const mcpServer = createClaudeSdkMcpServer(toolDefinitions);
 
     // Phase 9: (removed — skillCatalog was populated but never used in prompt;
     //           Claude uses list_skills MCP tool on demand instead)

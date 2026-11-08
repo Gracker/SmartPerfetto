@@ -10,7 +10,12 @@ import {createRuntimeToolResult, readRuntimeToolResultFacts} from '../../agentRu
 import {McpToolRegistry} from '../../agentv3/mcpToolRegistry';
 import {Agent, OpenAIProvider, Runner, RunContext, setTracingDisabled, tool} from '@openai/agents';
 import OpenAI from 'openai';
-import {createJsonSchemaFromZodRawShape, preserveRuntimeLiteralStrings} from '../../agentRuntime/runtimeToolSpec';
+import {
+  createJsonSchemaFromZodRawShape,
+  preserveRuntimeLiteralStrings,
+  sharedToolSpecFromRuntimeToolDefinition,
+  type RuntimeToolDefinition,
+} from '../../agentRuntime/runtimeToolSpec';
 import {chatCompletionResponse} from '../../../tests/helpers/openAiRuntimeFixture';
 import {SQL_EXECUTION_CONTEXTS} from '../../types/queryReviewContract';
 
@@ -121,7 +126,7 @@ describe('createOpenAIToolsFromMcpDefinitions', () => {
     const [adapted] = createOpenAIToolsFromMcpDefinitions([
       {
         name: 'invoke_skill',
-        tool: {
+        shared: sharedToolSpecFromRuntimeToolDefinition('invoke_skill', {
           name: 'invoke_skill',
           description: 'Invoke a SmartPerfetto skill',
           inputSchema: {
@@ -129,7 +134,7 @@ describe('createOpenAIToolsFromMcpDefinitions', () => {
             params: z.record(z.string(), z.any()).optional().describe('Optional skill parameters'),
           },
           handler,
-        },
+        } as RuntimeToolDefinition, 'core' as any),
         exposure: 'core',
       },
     ] as any);
@@ -180,12 +185,12 @@ describe('createOpenAIToolsFromMcpDefinitions', () => {
     const [adapted] = createOpenAIToolsFromMcpDefinitions([
       {
         name: 'invoke_skill',
-        tool: {
+        shared: sharedToolSpecFromRuntimeToolDefinition('invoke_skill', {
           name: 'invoke_skill',
           description: 'Invoke a SmartPerfetto skill',
           inputSchema: { skillId: z.string() },
           handler,
-        },
+        } as RuntimeToolDefinition, 'core' as any),
         exposure: 'core',
       },
     ] as any);
@@ -212,7 +217,9 @@ describe('createOpenAIToolsFromMcpDefinitions', () => {
     const [adapted] = createOpenAIToolsFromMcpDefinitions([
       {
         name: 'invoke_skill',
-        tool: {name: 'invoke_skill', description: 'Invoke a SmartPerfetto skill', inputSchema: {skillId: z.string()}, handler},
+        shared: sharedToolSpecFromRuntimeToolDefinition('invoke_skill', {name: 'invoke_skill',
+          description: 'Invoke a SmartPerfetto skill', inputSchema: {skillId: z.string()}, handler} as RuntimeToolDefinition,
+        'core' as any),
         exposure: 'core',
       },
     ] as any);
@@ -227,14 +234,14 @@ describe('createOpenAIToolsFromMcpDefinitions', () => {
     const [adapted] = createOpenAIToolsFromMcpDefinitions([
       {
         name: 'invoke_skill',
-        tool: {
+        shared: sharedToolSpecFromRuntimeToolDefinition('invoke_skill', {
           name: 'invoke_skill',
           description: 'Invoke a SmartPerfetto skill',
           inputSchema: { skillId: z.string() },
           handler: jest.fn(async () => {
             throw createTraceProcessorQueryCancelledError();
           }),
-        },
+        } as RuntimeToolDefinition, 'core' as any),
         exposure: 'core',
       },
     ] as any);
@@ -250,12 +257,12 @@ describe('createOpenAIToolsFromMcpDefinitions', () => {
     const tools = createOpenAIToolsFromMcpDefinitions([
       {
         name: 'submit_hypothesis',
-        tool: {
+        shared: sharedToolSpecFromRuntimeToolDefinition('submit_hypothesis', {
           name: 'submit_hypothesis',
           description: 'Submit a hypothesis',
           inputSchema: { statement: z.string() },
           handler: jest.fn(async () => ({ content: [{ type: 'text', text: '{"success":true}' }] })),
-        },
+        } as RuntimeToolDefinition, 'internal'),
         exposure: 'internal',
       },
     ] as any);
@@ -263,15 +270,14 @@ describe('createOpenAIToolsFromMcpDefinitions', () => {
     expect((tools[0] as any).name).toBe('submit_hypothesis');
   });
 
-  it('fails closed when the registry entry is not a Claude SDK-like descriptor', () => {
-    expect(() => createOpenAIToolsFromMcpDefinitions([
-      {
-        name: 'broken_tool',
-        tool: { description: 'missing schema and handler' },
-        exposure: 'public',
-      },
-    ] as any)).toThrow(
-      'Cannot adapt MCP tool broken_tool: unsupported SDK descriptor shape',
+  it('fails closed when a registered tool body has no schema or handler', () => {
+    // The adapter reads only registry entries, which carry a shared spec built from a validated body.
+    expect(() => new McpToolRegistry().registerTool(
+      {description: 'missing schema and handler'} as unknown as RuntimeToolDefinition,
+      'broken_tool',
+      'public',
+    )).toThrow(
+      'Cannot build shared tool spec for broken_tool: unsupported tool definition shape',
     );
   });
 });

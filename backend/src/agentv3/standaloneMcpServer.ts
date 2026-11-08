@@ -33,12 +33,12 @@
 import {
   McpToolRegistry,
   filterByExposure,
+  MCP_SERVER_NAME,
   type McpToolDefinition,
 } from './mcpToolRegistry';
 import { createJsonSchemaFromZodRawShape } from '../agentRuntime/runtimeToolSpec';
 
 const PROTOCOL_VERSION = '2024-11-05';
-const SERVER_NAME = 'smartperfetto';
 const SERVER_VERSION = '1.0.0';
 
 /** JSON-RPC 2.0 request shape. `id` is optional for notifications. */
@@ -91,7 +91,7 @@ export async function dispatch(
       id,
       result: {
         protocolVersion: PROTOCOL_VERSION,
-        serverInfo: {name: SERVER_NAME, version: SERVER_VERSION},
+        serverInfo: {name: MCP_SERVER_NAME, version: SERVER_VERSION},
         capabilities: {tools: {}},
       },
     };

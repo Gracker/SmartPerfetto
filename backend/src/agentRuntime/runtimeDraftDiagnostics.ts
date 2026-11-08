@@ -19,7 +19,7 @@
 import type {AnalysisPlanV3, Hypothesis, VerificationIssue} from '../agentv3/types';
 import type {OutputLanguage} from '../agentv3/outputLanguage';
 import type {AnalysisDeliveryContext} from '../types/analysisDelivery';
-import {verifyConclusion} from './engines/claude/claudeVerifier';
+import {verifyConclusion} from './runtimeConclusionVerifier';
 
 export interface RuntimeDraftDiagnostics {
   /** Errors about the delivered candidate itself, not about plan or hypothesis bookkeeping. */

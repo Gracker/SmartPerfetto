@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {claudeSdkQuery as sdkQuery} from '../../agentRuntime/engines/claude/claudeSdkQuery';
+import {runClaudeTriageQuery} from '../../agentRuntime/engines/claude/claudeAuxiliaryQueries';
 
 import {buildChatCompletionsUrl} from '../../agentOpenAI/openAiComplexityClassifier';
 import {
@@ -11,7 +11,6 @@ import {
 } from '../../agentOpenAI/openAiConfig';
 import {
   createSdkEnv,
-  getSdkBinaryOption,
   hasClaudeCredentials,
   loadClaudeConfig,
   resolveRuntimeConfig,
@@ -403,52 +402,15 @@ async function completeWithClaude(input: {
     input.providerScope,
   );
   const model = input.model ?? config.lightModel ?? config.model;
-  const stream = sdkQuery({
+  const {timedOut, text} = await runClaudeTriageQuery({
     prompt: input.prompt,
-    options: {
-      model,
-      maxTurns: 1,
-      includePartialMessages: false,
-      settingSources: [],
-      tools: [],
-      permissionMode: 'bypassPermissions' as const,
-      allowDangerouslySkipPermissions: true,
-      cwd: config.cwd,
-      effort: 'low',
-      env,
-      ...getSdkBinaryOption(env),
-    },
+    model,
+    cwd: config.cwd,
+    env,
+    timeoutMs: input.timeoutMs,
   });
-  let result = '';
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    try {
-      stream.close();
-    } catch {
-      // Best-effort cancellation.
-    }
-  }, input.timeoutMs);
-  try {
-    for await (const message of stream) {
-      if (timedOut) break;
-      if (
-        message.type === 'result' &&
-        typeof (message as {result?: unknown}).result === 'string'
-      ) {
-        result = (message as {result: string}).result;
-      }
-    }
-  } finally {
-    clearTimeout(timer);
-    try {
-      stream.close();
-    } catch {
-      // The captured result remains authoritative.
-    }
-  }
   if (timedOut) throw new Error('external_issue_triage_timeout');
-  return {text: result, model};
+  return {text, model};
 }
 
 function isCredentialError(error: unknown): boolean {

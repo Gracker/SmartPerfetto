@@ -10,13 +10,12 @@ import {AI_CAPABILITY_ENV_KEY, resolveAiCapabilityPolicy} from '../aiCapabilityP
 import {createPiAgentCoreProviderRuntime} from '../../agentRuntime/engines/pi/piAgentCoreProvider';
 import {runPiIntentTransport} from '../../agentRuntime/engines/pi/piIntentTransport';
 import {
-  isolatedClaudeOneShotOptions,
   oneShotFallbackWarning,
   resolveOneShotProvider,
-  runIsolatedClaudeOneShot,
   runIsolatedPiOneShot,
   runOneShotSummary,
 } from '../oneShotModelCall';
+import {isolatedClaudeOneShotOptions, runIsolatedClaudeOneShot} from '../../agentRuntime/engines/claude/claudeOneShot';
 
 jest.mock('../../agentRuntime/engines/pi/piAgentCoreProvider', () => ({
   createPiAgentCoreProviderRuntime: jest.fn(),
@@ -33,7 +32,8 @@ jest.mock('../../agentRuntime/runtimeSelection', () => ({
   selectRuntimeForProvider: jest.fn(),
 }));
 
-jest.mock('../../agentv3/claudeConfig', () => ({
+// The Claude engine's config module, which the agentv3 entry re-exports.
+jest.mock('../../agentRuntime/engines/claude/claudeConfig', () => ({
   sdkEnvForProviderEnv: jest.fn(),
   hasClaudeCredentials: jest.fn(),
   loadClaudeConfig: jest.fn(() => ({model: 'env-model', lightModel: 'env-light'})),

@@ -8,7 +8,7 @@ import {
   parseStage3Summaries,
 } from '../sceneStage3Summarizer';
 import type {DisplayedScene} from '../types';
-import {isolatedClaudeOneShotOptions} from '../../../services/oneShotModelCall';
+import {isolatedClaudeOneShotOptions} from '../../../agentRuntime/engines/claude/claudeOneShot';
 import {resolveClaudeSdkPermissionOptions} from '../../../agentv3/claudeConfig';
 
 const scene: DisplayedScene = {
