@@ -14,6 +14,8 @@ import {isPlainObject} from '../utils/llmJson';
 import type {RuntimeToolConcurrencyFallbackReason} from './runtimeToolConcurrency';
 import {isSceneEntryNotRunReason, type RuntimePerformanceSceneEvidenceReceiptV1} from '../types/sceneEntryEvidence';
 import type {ModelExecutionPolicyReceipt} from './modelExecutionPolicy';
+import {AGENT_REQUEST_PURPOSES, INVESTIGATION_CONTRACT_STATUSES, INVESTIGATION_DECISIONS, INVESTIGATION_EVIDENCE_STATUSES,
+  type InvestigationRequestObservationV1} from './investigation/investigationReceipt';
 import type {ReasoningSetting} from '../services/providerManager/modelExecutionProfile';
 import {CONCLUSION_PROTOCOL_VALUES} from '../agent/core/conclusionContract';
 import {getFinalSubmissionModeDescriptor, getOpenAiTypedFinalContractIdentity,
@@ -426,12 +428,16 @@ function parseObservedHash(value: unknown): RuntimeObservedHash {
   if (input.status !== 'observed') throw new Error('runtime_observation_status_invalid');
   return {status: 'observed', hash: observationHash(input.hash)};
 }
-function observationCount(value: unknown, maximum = Number.MAX_SAFE_INTEGER): number {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > maximum) throw new Error('runtime_observation_count_invalid');
+function observationCount(value: unknown, maximum = Number.MAX_SAFE_INTEGER, minimum = 0): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum || value > maximum) throw new Error('runtime_observation_count_invalid');
   return value;
 }
 function observationCounts<K extends string>(value: unknown, keys: readonly K[], maximum = Number.MAX_SAFE_INTEGER): Readonly<Record<K, number>> {
-  const input = exactObservationObject(value, keys);
+  return observationFields(exactObservationObject(value, keys), keys, maximum);
+}
+/** The named counts of an object whose own fields were already checked. */
+function observationFields<K extends string>(input: Record<string, unknown>, keys: readonly K[],
+  maximum = Number.MAX_SAFE_INTEGER): Record<K, number> {
   return Object.fromEntries(keys.map(key => [key, observationCount(input[key], maximum)])) as Record<K, number>;
 }
 function materialInvariant(valid: boolean): void {
@@ -745,6 +751,8 @@ export interface RuntimePerformanceModelCallReceiptV1 {
   /** Visible body vs machine declaration characters of the text this call produced. */
   output?: RuntimeModelCallOutput;
   usage?: RuntimeModelCallUsageV1;
+  /** The native Agent request this call answered (`investigationRequests[].requestIndex`). */
+  requestIndex?: number;
 }
 
 export const MODEL_REQUEST_COMPONENTS = ['system', 'toolDescription', 'toolSchema', 'user', 'assistant',
@@ -817,6 +825,65 @@ export interface RuntimePerformanceDeclarationReceiptV1 {
   repair: typeof RUNTIME_DECLARATION_REPAIR_OUTCOMES[number];
 }
 
+const RUNTIME_INVESTIGATION_REQUEST_STATUSES = ['observed', 'view_failed', 'inactive'] as const;
+
+/**
+ * One native Agent provider request as the product saw it immediately before
+ * dispatch: Agent context shape, requirement progress and turn budget. Counts
+ * and closed values only. `view_failed` and `inactive` keep the request ordinal
+ * without view facts; `requestIndex` joins `modelCalls[].requestIndex`.
+ */
+export interface RuntimeInvestigationRequestReceiptV1 extends Partial<InvestigationRequestObservationV1> {
+  requestIndex: number;
+  attempt: number;
+  purpose: typeof AGENT_REQUEST_PURPOSES[number];
+  offsetMs: number;
+  status: typeof RUNTIME_INVESTIGATION_REQUEST_STATUSES[number];
+  /**
+   * The Agent context Pi hands to `prepareRequest`, before provider conversion:
+   * approximate string characters (keys included), not tokens. The serialized
+   * wire body is measured separately, at fetch, in `modelRequests[].body`.
+   */
+  agentContext?: {messageCount: number; toolCount: number; approxMessageChars: number; approxToolChars: number;
+    /** A value overran the bounded walk; the character counts are lower bounds. */
+    lowerBound?: true};
+}
+
+const INVESTIGATION_REQUEST_FIELDS = ['requestIndex', 'attempt', 'purpose', 'offsetMs', 'status'] as const;
+const INVESTIGATION_OBSERVATION_FIELDS = ['requirements', 'evidence', 'turns', 'elapsedMs', 'remainingMs', 'decision'] as const;
+const AGENT_CONTEXT_COUNTS = ['messageCount', 'toolCount', 'approxMessageChars', 'approxToolChars'] as const;
+const REQUIREMENT_COUNTS = ['observed', 'notObserved', 'unknownNoProducer', 'notApplicable'] as const;
+
+/** The same closed projection is applied at collection and stored-metrics export; no unknown field passes. */
+export function projectRuntimeInvestigationRequestReceipt(value: unknown): RuntimeInvestigationRequestReceiptV1 | undefined {
+  try {
+    const input = exactObservationObject(value, INVESTIGATION_REQUEST_FIELDS, ['agentContext', ...INVESTIGATION_OBSERVATION_FIELDS]);
+    const observed = INVESTIGATION_OBSERVATION_FIELDS.filter(field => observationOwn(input, field));
+    // View facts come together or not at all.
+    if (observed.length !== 0 && observed.length !== INVESTIGATION_OBSERVATION_FIELDS.length) return undefined;
+    const receipt: RuntimeInvestigationRequestReceiptV1 = {requestIndex: observationCount(input.requestIndex, undefined, 1),
+      attempt: observationCount(input.attempt), purpose: observationMember(input.purpose, AGENT_REQUEST_PURPOSES),
+      offsetMs: observationCount(input.offsetMs, MAX_MS), status: observationMember(input.status, RUNTIME_INVESTIGATION_REQUEST_STATUSES)};
+    if (observationOwn(input, 'agentContext')) {
+      const context = exactObservationObject(input.agentContext, AGENT_CONTEXT_COUNTS, ['lowerBound']);
+      if (observationOwn(context, 'lowerBound') && context.lowerBound !== true) return undefined;
+      receipt.agentContext = {...observationFields(context, AGENT_CONTEXT_COUNTS),
+        ...(context.lowerBound === true ? {lowerBound: true as const} : {})};
+    }
+    if (observed.length) {
+      const requirements = exactObservationObject(input.requirements, ['contract', ...REQUIREMENT_COUNTS]);
+      receipt.requirements = {contract: observationMember(requirements.contract, INVESTIGATION_CONTRACT_STATUSES),
+        ...observationFields(requirements, REQUIREMENT_COUNTS)};
+      receipt.evidence = observationMember(input.evidence, INVESTIGATION_EVIDENCE_STATUSES);
+      receipt.turns = observationCounts(input.turns, ['used', 'limit', 'total']);
+      receipt.elapsedMs = observationCount(input.elapsedMs, MAX_MS);
+      receipt.remainingMs = observationCount(input.remainingMs, MAX_MS);
+      receipt.decision = observationMember(input.decision, INVESTIGATION_DECISIONS);
+    }
+    return receipt;
+  } catch { return undefined; }
+}
+
 export interface RuntimePerformanceReceiptV1 {
   schemaVersion: 1;
   /** Internal run activity, not a verification or progress verdict. */
@@ -835,6 +902,8 @@ export interface RuntimePerformanceReceiptV1 {
   deliveryBudgets?: RuntimePerformanceDeliveryBudgetReceiptV1[];
   /** The run's product-owned scene entry evidence attempt; never a model tool call. */
   sceneEvidence?: RuntimePerformanceSceneEvidenceReceiptV1;
+  /** Absent in receipts recorded before per-request investigation observation existed. */
+  investigationRequests?: RuntimeInvestigationRequestReceiptV1[];
   truncated?: {
     phases: number;
     tools: number;
@@ -842,6 +911,7 @@ export interface RuntimePerformanceReceiptV1 {
     modelCalls?: number;
     modelRequests?: number;
     policyObservations?: number;
+    investigationRequests?: number;
   };
 }
 
@@ -859,6 +929,7 @@ export interface RuntimeModelCallStart {
   reasoningEffort?: RuntimeModelReasoningEffort;
   providerOrigin?: string;
   inputBytesBucket?: RuntimeModelCallInputBytesBucket;
+  requestIndex?: number;
 }
 
 export interface RuntimeModelCallEnd {
@@ -891,6 +962,7 @@ export interface RuntimePerformanceRecorderOptions {
   maxModelCalls?: number;
   maxModelRequests?: number;
   maxPolicyObservations?: number;
+  maxInvestigationRequests?: number;
   maxFinalTransportEvents?: number;
   maxHashInputBytes?: number;
   onActivity?(snapshot: RuntimeActivitySnapshot): void;
@@ -981,6 +1053,7 @@ export class RuntimePerformanceRecorder {
   private readonly maxModelCalls: number;
   private readonly maxModelRequests: number;
   private readonly maxPolicyObservations: number;
+  private readonly maxInvestigationRequests: number;
   private readonly maxFinalTransportEvents: number;
   private readonly maxHashInputBytes: number;
   private readonly startedAt: number;
@@ -992,6 +1065,7 @@ export class RuntimePerformanceRecorder {
   private readonly modelCalls: RuntimePerformanceModelCallReceiptV1[] = [];
   private readonly modelRequests: RuntimeModelRequestReceiptV1[] = [];
   private readonly policyObservations: RuntimeModelPolicyObservation[] = [];
+  private readonly investigationRequests: RuntimeInvestigationRequestReceiptV1[] = [];
   private readonly finalTransportEvents: RuntimeFinalTransportEvent[] = [];
   private finalTransportTruncated = 0;
   private readonly deliveryBudgets: RuntimePerformanceDeliveryBudgetReceiptV1[] = [];
@@ -1004,6 +1078,7 @@ export class RuntimePerformanceRecorder {
     modelCalls: 0,
     modelRequests: 0,
     policyObservations: 0,
+    investigationRequests: 0,
   };
   private sealedReceipt: RuntimePerformanceReceiptV1 | undefined;
   private activityLifetime?: () => boolean;
@@ -1020,6 +1095,8 @@ export class RuntimePerformanceRecorder {
     this.maxModelRequests = positiveCap(options.maxModelRequests, DEFAULT_MAX_RECEIPT_ITEMS);
     this.maxPolicyObservations = Math.min(DEFAULT_MAX_RECEIPT_ITEMS,
       positiveCap(options.maxPolicyObservations, DEFAULT_MAX_RECEIPT_ITEMS));
+    this.maxInvestigationRequests = Math.min(DEFAULT_MAX_RECEIPT_ITEMS,
+      positiveCap(options.maxInvestigationRequests, DEFAULT_MAX_RECEIPT_ITEMS));
     this.maxFinalTransportEvents = Math.min(DEFAULT_MAX_RECEIPT_ITEMS, positiveCap(options.maxFinalTransportEvents, DEFAULT_MAX_RECEIPT_ITEMS));
     this.maxHashInputBytes = positiveCap(
       options.maxHashInputBytes,
@@ -1069,6 +1146,7 @@ export class RuntimePerformanceRecorder {
       || this.modelCalls.length > 0
       || this.modelRequests.length > 0
       || this.policyObservations.length > 0
+      || this.investigationRequests.length > 0
       || this.finalTransportEvents.length > 0
       || this.finalTransportTruncated > 0
       || this.deliveryBudgets.length > 0
@@ -1079,6 +1157,7 @@ export class RuntimePerformanceRecorder {
       || this.truncated.modelCalls > 0
       || this.truncated.modelRequests > 0
       || this.truncated.policyObservations > 0
+      || this.truncated.investigationRequests > 0
     );
   }
 
@@ -1262,6 +1341,9 @@ export class RuntimePerformanceRecorder {
   startModelCall(input: RuntimeModelCallStart): RuntimeModelCallSpan {
     this.assertCollecting('start_model_call');
     const startOffsetMs = this.offsetMs();
+    let requestIndex: number | undefined;
+    try { requestIndex = input.requestIndex === undefined ? undefined : observationCount(input.requestIndex, undefined, 1); }
+    catch { requestIndex = undefined; }
     let firstOutputMs: number | undefined;
     let doneOffsetMs: number | undefined;
     let doneUsage: unknown;
@@ -1314,9 +1396,26 @@ export class RuntimePerformanceRecorder {
           outcome: end.outcome ?? 'ok',
           ...(output ? {output} : {}),
           ...(usage ? {usage} : {}),
+          ...(requestIndex !== undefined ? {requestIndex} : {}),
         });
       },
     };
+  }
+
+  /** Whether the next request receipt would be retained; the caller can skip work for a dropped one. */
+  acceptsInvestigationRequest(): boolean {
+    return this.canObserveActivity() && this.investigationRequests.length < this.maxInvestigationRequests;
+  }
+
+  /** Closed projection only: an invalid receipt is dropped, never partially copied. */
+  recordInvestigationRequest(input: Omit<RuntimeInvestigationRequestReceiptV1, 'offsetMs'>): void {
+    this.assertCollecting('record_investigation_request');
+    if (this.investigationRequests.length >= this.maxInvestigationRequests) {
+      this.truncated.investigationRequests++;
+      return;
+    }
+    const receipt = projectRuntimeInvestigationRequestReceipt({...input, offsetMs: this.offsetMs()});
+    if (receipt) this.investigationRequests.push(receipt);
   }
 
   recordDeliveryBudget(input: RuntimePerformanceDeliveryBudgetReceiptV1): void {
@@ -1372,12 +1471,14 @@ export class RuntimePerformanceRecorder {
         schemaVersion: 'final_transport_observation@1' as const, events: [...this.finalTransportEvents], truncated: this.finalTransportTruncated}} : {}),
       ...(this.deliveryBudgets.length > 0 ? {deliveryBudgets: [...this.deliveryBudgets]} : {}),
       ...(this.sceneEvidence ? {sceneEvidence: this.sceneEvidence} : {}),
+      ...(this.investigationRequests.length > 0 ? {investigationRequests: [...this.investigationRequests]} : {}),
       ...(this.truncated.phases > 0
         || this.truncated.tools > 0
         || this.truncated.sql > 0
         || this.truncated.modelCalls > 0
         || this.truncated.modelRequests > 0
         || this.truncated.policyObservations > 0
+        || this.truncated.investigationRequests > 0
         ? {truncated: {
           phases: this.truncated.phases,
           tools: this.truncated.tools,
@@ -1385,6 +1486,7 @@ export class RuntimePerformanceRecorder {
           ...(this.truncated.modelCalls > 0 ? {modelCalls: this.truncated.modelCalls} : {}),
           ...(this.truncated.modelRequests > 0 ? {modelRequests: this.truncated.modelRequests} : {}),
           ...(this.truncated.policyObservations > 0 ? {policyObservations: this.truncated.policyObservations} : {}),
+          ...(this.truncated.investigationRequests > 0 ? {investigationRequests: this.truncated.investigationRequests} : {}),
         }}
         : {}),
     };
@@ -1481,6 +1583,10 @@ export interface RuntimePerformanceRun {
   startModelCall(input: RuntimeModelCallStart): RuntimeModelCallSpan;
   /** The run's scene entry evidence receipt; never throws. */
   recordSceneEvidence(input: RuntimePerformanceSceneEvidenceReceiptV1): void;
+  /** Whether a request receipt would be retained (recorder present, collecting, under its cap); never throws. */
+  acceptsInvestigationRequest(): boolean;
+  /** One native Agent request observation; never throws. */
+  recordInvestigationRequest(input: Omit<RuntimeInvestigationRequestReceiptV1, 'offsetMs'>): void;
   recordFirstOutput(): void;
   finalize(outcome?: RuntimePerformanceOutcome): void;
 }
@@ -1585,6 +1691,12 @@ export function createRuntimePerformanceRun(
     startModelCall: input => startRuntimeModelCall(recorder, input),
     recordSceneEvidence: input => {
       try { recorder?.recordSceneEvidence(input); } catch { /* Internal observability only. */ }
+    },
+    acceptsInvestigationRequest: () => {
+      try { return recorder?.acceptsInvestigationRequest() ?? false; } catch { return false; }
+    },
+    recordInvestigationRequest: input => {
+      try { recorder?.recordInvestigationRequest(input); } catch { /* Internal observability only. */ }
     },
     recordFirstOutput: () => {
       try {

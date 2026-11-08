@@ -4,10 +4,10 @@
 
 import type {AssistantMessage, AssistantMessageEventStream, Usage} from '@earendil-works/pi-ai';
 import type {ModelExecutionPolicyReceipt} from '../../modelExecutionPolicy';
+import type {AGENT_REQUEST_PURPOSES} from '../../investigation/investigationReceipt';
 import {
   runtimeOutcomeFromError,
   type RuntimeModelCallEnd,
-  type RuntimeModelDispatchPurpose,
   type RuntimeModelCallSpan,
   type RuntimeModelCallStart,
   type RuntimeModelCallUsageV1,
@@ -40,13 +40,18 @@ export function piAssistantModelCallEnd(message: AssistantMessage): RuntimeModel
       : {model: message.model})};
 }
 
-type AgentModelCallPurpose = Extract<RuntimeModelDispatchPurpose, 'answer_turn' | 'continuation'>;
+/** The native Agent request purposes; each must also be a dispatch purpose, or `startModelCall` fails to compile. */
+type AgentModelCallPurpose = typeof AGENT_REQUEST_PURPOSES[number];
 
 export interface PiAgentModelCallTracker {
-  /** Record one native Agent stream dispatch until its final assistant message. */
+  /**
+   * Record one native Agent stream dispatch until its final assistant message.
+   * `requestIndex` is the prepared native request this dispatch answers.
+   */
   dispatch(
     purpose: AgentModelCallPurpose,
     open: (onExecutionPolicy: (receipt: ModelExecutionPolicyReceipt) => void) => AssistantMessageEventStream,
+    requestIndex?: number,
   ): AssistantMessageEventStream;
   /** The call in flight produced visible output. */
   recordFirstOutput(): void;
@@ -63,8 +68,8 @@ export function createPiAgentModelCallTracker(
 ): PiAgentModelCallTracker {
   let current: RuntimeModelCallSpan | undefined;
   return {
-    dispatch(purpose, open) {
-      const span = startModelCall({purpose, ...base});
+    dispatch(purpose, open, requestIndex) {
+      const span = startModelCall({purpose, ...base, ...(requestIndex !== undefined ? {requestIndex} : {})});
       current = span;
       let reasoning: PiReasoning = {};
       const settle = (end: RuntimeModelCallEnd) => {

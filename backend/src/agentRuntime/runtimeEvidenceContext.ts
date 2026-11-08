@@ -10,7 +10,8 @@ import {
   buildAnalysisContextAuthorizationFingerprint,
 } from '../services/resolvedAnalysisContext';
 import {resolveKnowledgeScope} from '../services/scopedKnowledgeStore';
-import type {EvidenceReadView} from '../services/evidence/evidenceReadView';
+import type {EvidenceReadView, EvidenceReadViewOptions} from '../services/evidence/evidenceReadView';
+import type {InvestigationEvidenceSnapshot} from '../services/evidence/investigationEvidenceLedger';
 
 export interface RuntimeEvidenceScopeInput {
   logicalSessionId: string;
@@ -96,7 +97,7 @@ interface RunState {
 // Enumerable symbols survive internal options spreads, but never JSON or snapshots.
 const evidenceBinding = Symbol('runtimeEvidenceBinding');
 const issuedBindings = new WeakMap<object, RunState>();
-const issuedFacades = new WeakSet<object>();
+const issuedFacades = new WeakMap<object, RunState>();
 type BoundOptions = AnalysisOptions & {[evidenceBinding]?: object};
 
 function disposeContext(context: ContextState): void {
@@ -117,17 +118,26 @@ function assertScopeAuthorized(context: ContextState): void {
   }
 }
 
+function assertRunLease(run: RunState): void {
+  if (run.released || run.context.current !== run) {
+    throw new DOMException('Runtime evidence run is no longer active', 'AbortError');
+  }
+  run.input.signal.throwIfAborted();
+}
+
 function assertRunActive(run: RunState): void {
-  const checkLease = () => {
-    if (run.released || run.context.current !== run) {
-      throw new DOMException('Runtime evidence run is no longer active', 'AbortError');
-    }
-    run.input.signal.throwIfAborted();
-  };
-  checkLease();
+  assertRunLease(run);
   assertScopeAuthorized(run.context);
   run.input.assertAuthorized();
-  checkLease();
+  assertRunLease(run);
+}
+
+function assertReadScope(run: RunState, options: EvidenceReadViewOptions): void {
+  const scope = run.context.scope;
+  if (options.allowedTraces.some(trace => trace.traceId !==
+    (trace.traceSide === 'current' ? scope.traceId : scope.referenceTraceId))) {
+    throw new Error('runtime_evidence_read_scope_mismatch');
+  }
 }
 
 async function describeRunArtifacts(run: RunState): Promise<RuntimeEvidenceArtifactCatalog> {
@@ -231,11 +241,7 @@ function createRunStore(run: RunState): ArtifactStore {
     serialize: () => access(() => structuredClone(store.serialize())),
     clear: () => access(() => store.clear()),
     createEvidenceReadView: (...args: Parameters<ArtifactStore['createEvidenceReadView']>): EvidenceReadView => access(() => {
-      const scope = run.context.scope;
-      if (args[0].allowedTraces.some(trace => trace.traceId !==
-        (trace.traceSide === 'current' ? scope.traceId : scope.referenceTraceId))) {
-        throw new Error('runtime_evidence_read_scope_mismatch');
-      }
+      assertReadScope(run, args[0]);
       // ArtifactStore fixes the admitted capture set here, before any async read.
       const view = store.createEvidenceReadView({...args[0], currentRunId: run.input.runId});
       return Object.freeze({
@@ -257,8 +263,27 @@ function createRunStore(run: RunState): ArtifactStore {
   } satisfies Pick<ArtifactStore, keyof ArtifactStore>);
   // Existing consumers type the public store surface as its concrete class.
   // The facade has no inherited fields or reflective access to its backing Maps.
-  issuedFacades.add(facade);
+  issuedFacades.set(facade, run);
   return facade as ArtifactStore;
+}
+
+/**
+ * In-run observation of the producer ledger, for a run's own store. Through an
+ * issued facade it holds the run lease and trace scope, but not the fresh
+ * authorization read: an observer can neither dispose the context nor end the
+ * run. The snapshot grants nothing; every model dispatch and tool call, and
+ * every reference read, keeps the full fence.
+ */
+export function observeRuntimeInvestigationEvidence(store: ArtifactStore,
+  options: EvidenceReadViewOptions): InvestigationEvidenceSnapshot | undefined {
+  const run = issuedFacades.get(store);
+  if (!run) return store.createEvidenceReadView(options).investigationEvidence?.();
+  assertRunLease(run);
+  assertReadScope(run, options);
+  const snapshot = run.context.store.createEvidenceReadView({...options, currentRunId: run.input.runId})
+    .investigationEvidence?.();
+  assertRunLease(run);
+  return snapshot;
 }
 
 /** Only a live product-issued binding can select a store across physical runs. */

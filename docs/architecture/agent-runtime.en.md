@@ -277,6 +277,18 @@ also does not expose admission-grade model, provider snapshot, provider usage,
 or performance fields. The receipt supports internal attribution and controlled
 benchmarks; by itself it does not prove real-provider speed or accuracy.
 
+Before every native Pi provider request, the first included, the
+`prepareRequest` adapter records one bounded `investigationRequests` entry:
+Agent-context message and tool counts with approximate characters
+(`agentContext`, an estimate before provider conversion, distinct from the wire
+bytes `modelRequests[].body` measures at fetch), investigation
+requirement counts by `observed`, `not_observed`, `unknown_no_producer` and
+`not_applicable`, and the turn and deadline budget. `modelCalls[].requestIndex`
+joins each entry to its provider usage, cache reads included. The investigation
+view reads only typed intent, the pinned contract, the producer ledger and the
+run budget; it is created per run and released at finalization, and the adapter
+returns no request update.
+
 The shared tool handoff also records bounded `activity`: attempts, dispatch into
 the guarded pipeline, returns, refusals, exceptions, cancellations, and repeated
 calls with exactly equal complete arguments. Arguments only participate in

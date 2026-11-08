@@ -17,7 +17,7 @@ import {buildAnalysisContextAuthorizationFingerprint} from '../../services/resol
 import {SkillExecutor} from '../../services/skillEngine/skillExecutor';
 import type {TraceProcessorService} from '../../services/traceProcessorService';
 import {buildTraceProcessorQueryProvenance} from '../../services/traceProcessorConnectionModel';
-import {createRuntimeEvidenceContext, resolveRuntimeEvidenceStore,
+import {createRuntimeEvidenceContext, observeRuntimeInvestigationEvidence, resolveRuntimeEvidenceStore,
   type RuntimeEvidenceContext, type RuntimeEvidenceScopeInput} from '../runtimeEvidenceContext';
 import {createAnalysisHistoryReader, toAnalysisHistoryTurn} from '../analysisHistory';
 
@@ -310,6 +310,39 @@ describe('product-owned live evidence continuity', () => {
     registry.setProviderConsent(registered.codebaseId, options, true, 'evidence-test');
     expect(context.matches(scope(options))).toBe(false);
     expect(() => run.store.get(id)).toThrow();
+  });
+
+  it('observes the ledger under the run lease only, so an observer cannot dispose the context', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-evidence-observe-'));
+    roots.push(root);
+    const registry = new CodebaseRegistry(path.join(root, 'registry.json'));
+    const registered = registry.register({kind: 'app_source', displayName: 'Evidence fixture', rootPath: root,
+      rootAuthorization: 'native_picker', sendToProvider: true, ...baseOptions});
+    // A registry whose consent changed, visible only while it is the current one.
+    const changed = new CodebaseRegistry(path.join(root, 'changed.json'));
+    let current = registry;
+    jest.spyOn(codebaseServices, 'getDefaultCodebaseRegistry').mockImplementation(() => current);
+    const options: AnalysisOptions = {...baseOptions, codeAwareMode: 'provider_send', codebaseIds: [registered.codebaseId]};
+    options.analysisContextFingerprint = buildAnalysisContextAuthorizationFingerprint(options, options);
+    const context = contextFor(options);
+    const run = bind(context, 'first', options);
+    const {id} = capture(run.store);
+    current = changed;
+    const snapshot = observeRuntimeInvestigationEvidence(run.store, {...readOptions, currentRunId: 'forged-run'});
+    expect(snapshot).toMatchObject({schemaVersion: 'investigation_evidence@1', currentRunId: 'first', records: []});
+    current = registry;
+    // The guarded store still serves the run: the observation disposed nothing.
+    expect(run.store.get(id)?.id).toBe(id);
+    expect(() => observeRuntimeInvestigationEvidence(run.store, {ownerKey: 'product-finalization',
+      allowedTraces: [{traceId: 'other-trace', traceSide: 'current'}]})).toThrow('runtime_evidence_read_scope_mismatch');
+    // A normal guarded read in the same state does dispose the context.
+    current = changed;
+    expect(() => run.store.createEvidenceReadView(readOptions)).toThrow();
+    current = registry;
+    expect(() => run.store.get(id)).toThrow();
+    expect(() => observeRuntimeInvestigationEvidence(run.store, readOptions)).toThrow();
+    // A store without an issued binding reads its own ledger directly.
+    expect(observeRuntimeInvestigationEvidence(new ArtifactStore(), readOptions)).toMatchObject({records: [], complete: true});
   });
 
   it('serves retained rows through real existing_only MCP without a second acquisition', async () => {

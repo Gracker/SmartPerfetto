@@ -149,6 +149,29 @@ describe('same-process E2E metrics artifact', () => {
       .toBe('invalid_receipt');
   });
 
+  it('projects per-request investigation receipts through the recorder projection, and reads older receipts without them', () => {
+    const request = {requestIndex: 1, attempt: 1, purpose: 'answer_turn', offsetMs: 9, status: 'observed',
+      agentContext: {messageCount: 2, toolCount: 5, approxMessageChars: 900, approxToolChars: 400, lowerBound: true},
+      requirements: {contract: 'resolved', observed: 1, notObserved: 1, unknownNoProducer: 2, notApplicable: 0},
+      evidence: 'read', turns: {used: 0, limit: 6, total: 8}, elapsedMs: 9, remainingMs: 100, decision: 'no_change'};
+    const failed = {requestIndex: 2, attempt: 1, purpose: 'continuation', offsetMs: 20, status: 'view_failed'};
+    const projected = projectAgentE2ePerformance({...performance, investigationRequests: [request, failed],
+      modelCalls: [{...performance.modelCalls[0], requestIndex: 1, usage: {inputTokens: 900, cachedInputTokens: 700}}],
+      truncated: {investigationRequests: 4}});
+    expect(projected.investigationRequests).toEqual([request, failed]);
+    expect(projected.modelCalls?.[0]).toMatchObject({requestIndex: 1, usage: {inputTokens: 900, cachedInputTokens: 700}});
+    expect(projected.truncated).toEqual({investigationRequests: 4});
+    expect(projectAgentE2ePerformance(performance)).not.toHaveProperty('investigationRequests');
+    const canary = 'PRIVATE_INVESTIGATION_CANARY';
+    for (const invalid of [{...request, status: 'passed'}, {...request, agentContext: {...request.agentContext, lowerBound: 'yes'}},
+      {...request, view: canary}, {...request, requirements: {...request.requirements, ids: [canary]}}]) {
+      const stored = {...manifest, performance: {...performance, investigationRequests: [invalid]}};
+      const result = readAgentE2eMetrics(identity, () => stored as unknown as RunManifestV1);
+      expect(result.status).toBe('invalid_receipt');
+      expect(JSON.stringify(result)).not.toContain(canary);
+    }
+  });
+
   it('retains pending requests and truncation rather than counting headers as completed analysis', () => {
     const projected = projectAgentE2ePerformance({...performance,
       modelRequests: [{dispatchOrdinal: 2, startOffsetMs: 20, fetchOutcome: 'pending', body: {status: 'body_unobservable'}}],

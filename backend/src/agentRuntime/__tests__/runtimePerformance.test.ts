@@ -726,6 +726,61 @@ describe('scene entry evidence receipt', () => {
 });
 
 
+describe('investigation request receipt', () => {
+  const observed = {requestIndex: 1, attempt: 1, purpose: 'answer_turn' as const, status: 'observed' as const,
+    agentContext: {messageCount: 3, toolCount: 9, approxMessageChars: 4_096, approxToolChars: 2_048},
+    requirements: {contract: 'resolved' as const, observed: 1, notObserved: 2, unknownNoProducer: 3, notApplicable: 0},
+    evidence: 'read' as const, turns: {used: 0, limit: 6, total: 8}, elapsedMs: 12, remainingMs: 9_000,
+    decision: 'no_change' as const};
+
+  it('records closed per-request facts and joins the model call that answered it', () => {
+    let now = 0;
+    const recorder = createRuntimePerformanceRecorder({now: () => now});
+    const run = createRuntimePerformanceRun({runtimePerformanceRecorder: recorder});
+    now = 5;
+    expect(run.acceptsInvestigationRequest()).toBe(true);
+    run.recordInvestigationRequest(observed);
+    run.recordInvestigationRequest({requestIndex: 2, attempt: 1, purpose: 'continuation', status: 'view_failed'});
+    run.startModelCall({purpose: 'answer_turn', requestIndex: 1}).end({usage: {inputTokens: 10, cachedInputTokens: 8}});
+    run.startModelCall({purpose: 'classification', requestIndex: 0}).end();
+    const receipt = recorder.seal();
+    expect(receipt.investigationRequests).toEqual([{...observed, offsetMs: 5},
+      {requestIndex: 2, attempt: 1, purpose: 'continuation', status: 'view_failed', offsetMs: 5}]);
+    expect(receipt.modelCalls?.map(call => call.requestIndex)).toEqual([1, undefined]);
+    expect(receipt.modelCalls?.[0].usage).toEqual({inputTokens: 10, cachedInputTokens: 8});
+    expect(run.acceptsInvestigationRequest()).toBe(false);
+  });
+
+  it.each([
+    [{requestIndex: 0}], [{attempt: -1}], [{purpose: 'review'}], [{status: 'free_text'}], [{prompt: 'PRIVATE_PROMPT'}],
+    [{agentContext: {...observed.agentContext, approxMessageChars: 1.5}}], [{agentContext: {...observed.agentContext, lowerBound: false}}],
+    [{requirements: {...observed.requirements, contract: 'passed'}}], [{requirements: {...observed.requirements, ids: ['r']}}],
+    [{evidence: 'proved'}], [{decision: 'rewrite'}], [{elapsedMs: 12.4}], [{decision: undefined}],
+  ])('drops a receipt with an open or partial value %#, and the run wrapper never throws', partial => {
+    const recorder = createRuntimePerformanceRecorder();
+    const run = createRuntimePerformanceRun({runtimePerformanceRecorder: recorder});
+    expect(() => run.recordInvestigationRequest({...observed, ...partial} as any)).not.toThrow();
+    const receipt = recorder.seal();
+    expect(receipt).not.toHaveProperty('investigationRequests');
+    expect(JSON.stringify(receipt)).not.toContain('PRIVATE_PROMPT');
+  });
+
+  it('caps requests per run, counts the drop and never throws once sealed', () => {
+    const recorder = createRuntimePerformanceRecorder({maxInvestigationRequests: 2});
+    const run = createRuntimePerformanceRun({runtimePerformanceRecorder: recorder});
+    for (let index = 1; index <= 3; index++) {
+      expect(run.acceptsInvestigationRequest()).toBe(index <= 2);
+      run.recordInvestigationRequest({...observed, requestIndex: index});
+    }
+    const receipt = recorder.seal();
+    expect(receipt.investigationRequests?.map(request => request.requestIndex)).toEqual([1, 2]);
+    expect(receipt.truncated).toEqual({phases: 0, tools: 0, sql: 0, investigationRequests: 1});
+    expect(run.acceptsInvestigationRequest()).toBe(false);
+    expect(() => run.recordInvestigationRequest(observed)).not.toThrow();
+    expect(createRuntimePerformanceRun().acceptsInvestigationRequest()).toBe(false);
+  });
+});
+
 describe('run activity observation', () => {
   const identity = (runId: string) => ({runId, sessionId: `session-${runId}`,
     scope: {tenantId: 'tenant', workspaceId: 'workspace'}});

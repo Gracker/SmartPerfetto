@@ -74,6 +74,7 @@ import {admitLearnedEntry, withDurableLearningPermission} from '../../services/s
 import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
 import {admitted} from '../../../tests/helpers/admittedAnalysisOptions';
 import {createRuntimeAdmissionScope} from '../runtimeTaskDeadline';
+import * as investigationViewModule from '../investigation/investigationView';
 
 const mockClaudeVerifierVerifyConclusion = jest.fn();
 jest.mock('../runtimeConclusionVerifier', () => {
@@ -4389,6 +4390,69 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(result.quickRun).toBeUndefined();
     expect(FakePiAgent.instances[0].promptCount).toBe(1);
     expect(result.completion?.status).toBe('completed');
+  });
+
+  describe('investigation observation before every native request', () => {
+    const answer = 'Observed 18 ms of main-thread binder wait.';
+    // Pi calls prepareRequest before each provider request, the first included, then streams.
+    const requestOnce = async (agent: FakePiAgent, updates: unknown[]) => {
+      const prepare = agent.options!.prepareRequest as (...args: unknown[]) => unknown;
+      const context = {messages: [{role: 'user', content: 'PRIVATE_PI_QUESTION', timestamp: 1}], tools: agent.state.tools};
+      updates.push(await prepare({context, model: agent.state.model, thinkingLevel: 'off'}, new AbortController().signal));
+      await (agent.options!.streamFn as any)(agent.state.model, {messages: []}, {}).result();
+      return [{role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: answer}]}];
+    };
+
+    it('records one bounded receipt per request, joins its model call and returns no update', async () => {
+      passVerification();
+      piClassifierDecision = {...piClassifierDecision, taskKind: 'investigation', sceneId: 'startup', scope: 'scene_wide'};
+      const recorder = createRuntimePerformanceRecorder();
+      const updates: unknown[] = [];
+      let lateAgent: FakePiAgent | undefined;
+      FakePiAgent.promptHandler = async agent => {lateAgent = agent; return requestOnce(agent, updates);};
+      const result = await withEffectiveRuntimeRegistrySnapshot(createEffectiveRuntimeRegistrySnapshot(), () =>
+        typedRuntime().analyze('分析启动', 'pi-investigation-receipt', 'trace-pi', {analysisMode: 'fast',
+          runManifestAttributionSink: createNoopAttributionSink(recorder)}));
+      expect(result.conclusion.trim()).toBe(answer);
+      expect(result.completion?.status).toBe('completed');
+      expect(updates).toEqual([undefined]);
+      // Finalization disposed the adapter: a late request records nothing.
+      expect(await (lateAgent!.options!.prepareRequest as any)({context: {messages: [], tools: []}})).toBeUndefined();
+      const receipt = recorder.seal();
+      expect(receipt.investigationRequests).toHaveLength(1);
+      const [request] = receipt.investigationRequests!;
+      expect(request).toMatchObject({requestIndex: 1, attempt: 1, purpose: 'answer_turn', status: 'observed',
+        agentContext: {messageCount: 1, toolCount: lateAgent!.state.tools.length}, evidence: 'read',
+        turns: {used: 0}, decision: 'no_change', requirements: {contract: 'resolved'}});
+      expect(request.agentContext!.approxMessageChars).toBeGreaterThan('PRIVATE_PI_QUESTION'.length);
+      expect(request.agentContext!.approxToolChars).toBeGreaterThan(0);
+      const counts = request.requirements!;
+      expect(counts.observed + counts.notObserved + counts.unknownNoProducer + counts.notApplicable).toBeGreaterThan(0);
+      expect(receipt.modelCalls?.filter(call => call.purpose === 'answer_turn')).toEqual([expect.objectContaining({requestIndex: 1})]);
+      expect(JSON.stringify(receipt.investigationRequests)).not.toContain('PRIVATE_PI_QUESTION');
+    });
+
+    it('keeps the run unchanged when deriving the view throws', async () => {
+      passVerification();
+      const failing = jest.spyOn(investigationViewModule, 'createInvestigationViewSource').mockReturnValue({
+        derive: () => {throw new Error('PRIVATE_VIEW_FAILURE');}});
+      try {
+        const recorder = createRuntimePerformanceRecorder();
+        const updates: unknown[] = [];
+        FakePiAgent.promptHandler = async agent => requestOnce(agent, updates);
+        const result = await withEffectiveRuntimeRegistrySnapshot(createEffectiveRuntimeRegistrySnapshot(), () =>
+          typedRuntime().analyze('query', 'pi-investigation-view-failure', 'trace-pi',
+            {runManifestAttributionSink: createNoopAttributionSink(recorder)}));
+        expect(result.conclusion.trim()).toBe(answer);
+        expect(result.completion?.status).toBe('completed');
+        expect(updates).toEqual([undefined]);
+        const receipt = recorder.seal();
+        expect(receipt.investigationRequests).toEqual([expect.objectContaining({requestIndex: 1, status: 'view_failed',
+          agentContext: expect.objectContaining({messageCount: 1})})]);
+        expect(receipt.investigationRequests![0]).not.toHaveProperty('requirements');
+        expect(JSON.stringify(receipt)).not.toContain('PRIVATE_VIEW_FAILURE');
+      } finally {failing.mockRestore();}
+    });
   });
 
 });

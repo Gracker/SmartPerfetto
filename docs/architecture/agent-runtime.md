@@ -208,6 +208,8 @@ SQL 工具的 `executionContext` 独立于模型、预算和源码权限。省�
 
 后端把真实阶段、first output、工具调度等待，以及 SQL 排队/执行耗时记录到内部 `RunManifest.performance`。该 `RuntimePerformance` receipt 不进入公开 SSE；公开流也不提供可用于准入的 model、provider snapshot、provider usage 或 performance 字段。它用于内部归因和受控 benchmark，不能单独证明真实 provider 的速度或准确性。
 
+Pi 在每次原生 provider 请求前（包括第一次）经 `prepareRequest` 适配层记录一条有界的 `investigationRequests` receipt：Agent context 的消息/工具数量和近似字符数（`agentContext`，provider 转换前的估算，不同于 fetch 时测得的 `modelRequests[].body` wire 字节）、调查契约要求按 `observed`/`not_observed`/`unknown_no_producer`/`not_applicable` 的计数，以及轮次和截止时间预算；对应的 `modelCalls[].requestIndex` 用于关联 provider usage（含 cache-read）。调查视图只读取 typed intent、钉住的契约、producer ledger 和运行预算，按 run 创建并在收尾时释放；适配层不返回任何请求修改。
+
 共享工具交接边界另外记录有界的 `activity`：调用尝试、进入受控执行链、返回、拒绝、
 异常和取消，以及完整参数完全相同的重复调用数。参数只参与本轮内存中的随机密钥哈希，
 不写入回执；无法完整观察时明确为 `partial/unavailable`，不补零。进入受控执行链不代表

@@ -29,6 +29,8 @@ import type {RuntimeToolObserver} from '../../runtimeToolObserver';
 import {runIntentTransport} from '../../intentTransport';
 import {runPiIntentTransport} from './piIntentTransport';
 import {createPiAgentModelCallTracker} from './piAgentModelCalls';
+import {createPiInvestigationAdapter} from './piInvestigationAdapter';
+import {createInvestigationViewSource} from '../../investigation/investigationView';
 import {admitDeliveryCall, deliveryCallFailsOpen} from '../../../services/runtimeCallStats';
 import {buildComplexityClassifierInput} from '../../../agentv3/queryComplexityContext';
 import type {ReadonlyStrategyRegistrySnapshot} from '../../../services/selfEvolution/effectiveRuntimeRegistryContext';
@@ -70,7 +72,7 @@ import { extractFindingsFromText } from '../../../agentv3/claudeFindingExtractor
 import { resolveFocusAppTarget } from '../../focusAppTarget';
 import { registerFocusAppEvidence } from '../../focusAppEvidence';
 import { ArtifactStore } from '../../../agentv3/artifactStore';
-import {resolveRuntimeEvidenceStore} from '../../runtimeEvidenceContext';
+import {observeRuntimeInvestigationEvidence, resolveRuntimeEvidenceStore} from '../../runtimeEvidenceContext';
 import {activateSceneRuntime, resolveSceneProductScope} from '../../../agent/scene/sceneRuntimeBinding';
 import { probeTraceCompleteness } from '../../../agentv3/traceCompletenessProber';
 import type {SceneType} from '../../../agentv3/sceneClassifier';
@@ -320,6 +322,18 @@ function projectPiAnalysisResult(
   });
 }
 
+function piEvidenceReadOptions(runId: string, sessionId: string, traceId: string, options: AnalysisOptions) {
+  const scope = options.runManifestAttributionSink?.identity.scope;
+  return {
+    currentRunId: runId,
+    ownerKey: piRuntimeFingerprint({runId, sessionId,
+      tenantId: options.tenantId ?? scope?.tenantId,
+      workspaceId: options.workspaceId ?? scope?.workspaceId,
+      userId: options.userId}),
+    allowedTraces: runAllowedTraces(runTraceIdentity(traceId, options)),
+  };
+}
+
 function createPiEvidenceReadView(
   store: ArtifactStore | undefined,
   runId: string,
@@ -328,15 +342,7 @@ function createPiEvidenceReadView(
   options: AnalysisOptions,
 ) {
   if (!store) return undefined;
-  const scope = options.runManifestAttributionSink?.identity.scope;
-  return store.createEvidenceReadView({
-    currentRunId: runId,
-    ownerKey: piRuntimeFingerprint({runId, sessionId,
-      tenantId: options.tenantId ?? scope?.tenantId,
-      workspaceId: options.workspaceId ?? scope?.workspaceId,
-      userId: options.userId}),
-    allowedTraces: runAllowedTraces(runTraceIdentity(traceId, options)),
-  });
+  return store.createEvidenceReadView(piEvidenceReadOptions(runId, sessionId, traceId, options));
 }
 
 function positiveIntegerEnv(env: EnvLike, keys: readonly string[], fallback: number): number {
@@ -1634,6 +1640,21 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const emitUpdate = (update: StreamingUpdate) => this.emit('update', update);
     const agentModelCalls = createPiAgentModelCallTracker(input => runtimePerformance.startModelCall(input),
       {model: providerRuntime.model.id, providerOrigin: providerRuntime.model.baseUrl}, work.signal);
+    const runId = executionLease.key.runId!;
+    const requestPurpose = () => correctionInProgress ? 'continuation' as const : 'answer_turn' as const;
+    const evidenceReadOptions = piEvidenceReadOptions(runId, sessionId, traceId, options);
+    // Observation only: one bounded receipt per native request; never changes it.
+    const investigation = createPiInvestigationAdapter({
+      view: createInvestigationViewSource({runId, intent: turnIntent, strategyRegistry: intentResolver.strategyRegistry,
+        readEvidence: () => observeRuntimeInvestigationEvidence(prep.artifactStore, evidenceReadOptions),
+        readBudget: () => ({providerTurnsUsed: rounds, providerTurnLimit, totalTurnLimit: turnBudget.totalTurns,
+          startedAtMs: startedAt, deadlineMs: getRunDeadlineMs()})}),
+      isActive: () => !work.signal.aborted && !executionLease.signal.aborted,
+      attempt: () => attempt,
+      purpose: requestPurpose,
+      accepts: () => runtimePerformance.acceptsInvestigationRequest(),
+      record: receipt => runtimePerformance.recordInvestigationRequest(receipt),
+    });
     const agent = new Agent({
       initialState: {
         systemPrompt: prep.systemPrompt,
@@ -1647,11 +1668,14 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       },
       sessionId,
       streamFn: (...args: Parameters<PiAgentCoreProviderRuntime['streamFn']>) => {
-        const purpose = correctionInProgress ? 'continuation' : 'answer_turn';
+        // Pi prepares every request before streaming it; that request fixes purpose and ordinal.
+        const request = investigation.currentRequest();
+        const purpose = request?.purpose ?? requestPurpose();
         return agentModelCalls.dispatch(purpose, onExecutionPolicy => (providerRuntime.streamFnForPurpose?.(purpose, {
-          ...(correctionInProgress ? {outputOnly: true} : {}), onExecutionPolicy,
-        }) ?? providerRuntime.streamFn)(...args));
+          ...(purpose === 'continuation' ? {outputOnly: true} : {}), onExecutionPolicy,
+        }) ?? providerRuntime.streamFn)(...args), request?.index);
       },
+      prepareRequest: investigation.prepareRequest,
       toolExecution: resolvePiAgentCoreNativeToolExecutionMode({quickMode: prep.quickMode, tools: prep.tools, env: this.env}),
       transport: modelConfig.transport ?? 'auto',
       maxRetryDelayMs: modelConfig.maxRetryDelayMs,
@@ -1705,7 +1729,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       const assistant = latestAssistantMessage((agent.state.messages ?? []).slice(boundary));
       return {assistant, attemptId, text: extractAssistantText(assistant).trim(), turnLimitReached};
     };
-    const runId = executionLease.key.runId!;
     const candidateIdentity = (text: string, attemptId: string): AnalysisCandidateIdentity => ({
       runId, attemptId, candidateRef: `${runId}:pi:${attemptId}`,
       conclusionFingerprint: analysisDeliveryFingerprint(text),
@@ -1871,6 +1894,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     } finally {
       acceptingProviderEvents = false;
       toolAdmissionsOpen = false;
+      investigation.dispose();
       providerIdle.clear();
       unsubscribe();
       if (this.activeAgents.get(sessionId) === agent) this.activeAgents.delete(sessionId);

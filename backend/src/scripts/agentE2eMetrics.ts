@@ -4,7 +4,7 @@
 import {createHash} from 'node:crypto';
 import {MODEL_REQUEST_COMPONENTS, RUNTIME_MODEL_CALL_PURPOSES, RUNTIME_MODEL_CALL_TRIGGERS,
   RUNTIME_MODEL_REASONING_EFFORTS, RUNTIME_DECLARATION_AUTHORING_STATUSES, RUNTIME_DECLARATION_AUTHORING_VERSIONS,
-  projectRuntimeModelPolicyReceipt, projectRuntimeFinalTransportObservation} from '../agentRuntime/runtimePerformance';
+  projectRuntimeInvestigationRequestReceipt, projectRuntimeModelPolicyReceipt, projectRuntimeFinalTransportObservation} from '../agentRuntime/runtimePerformance';
 import {getFinalSubmissionModeDescriptor, type FinalSubmissionModeKey} from '../agentRuntime/finalSubmissionImplementation';
 import {RECORDED_PRODUCTION_RUNTIME_KINDS} from '../agentRuntime/runtimeKinds';
 import {getRunManifestStore} from '../services/selfEvolution/runManifestStore';
@@ -98,7 +98,7 @@ export function projectAgentE2ePerformance(value: unknown) {
       purpose: member(row.purpose, RUNTIME_MODEL_CALL_PURPOSES), outcome: member(row.outcome, OUTCOMES),
       ...(row.trigger === undefined ? {} : {trigger: member(row.trigger, RUNTIME_MODEL_CALL_TRIGGERS)}),
       modelHash: optionalHash(row.model), ...modelSource(row), providerOriginHash: optionalHash(row.providerOrigin),
-      ...numbers(row, ['startOffsetMs', 'durationMs', 'firstOutputMs']),
+      ...numbers(row, ['startOffsetMs', 'durationMs', 'firstOutputMs', 'requestIndex']),
       ...(row.reasoning === undefined ? {} : {reasoning: member(row.reasoning, ['provider_default', 'disabled', 'enabled'])}),
       ...(row.reasoningEffort === undefined ? {} : {reasoningEffort: member(row.reasoningEffort, RUNTIME_MODEL_REASONING_EFFORTS)}),
       ...(row.output === undefined ? {} : {output: modelOutput(row.output)}),
@@ -133,8 +133,15 @@ export function projectAgentE2ePerformance(value: unknown) {
       return {...receipt, observationOrdinal: row.observationOrdinal as number,
         observedOffsetMs: number(row.observedOffsetMs)};
     })}),
+    ...(source.investigationRequests === undefined ? {} : {
+      investigationRequests: rows(source.investigationRequests, row => {
+        // The recorder's own closed projection; joins `modelCalls[].requestIndex`.
+        const receipt = projectRuntimeInvestigationRequestReceipt(row);
+        if (!receipt) throw new Error('metrics_investigation_request_invalid');
+        return receipt;
+      })}),
     ...(source.truncated === undefined ? {} : {truncated: numbers(source.truncated,
-      ['phases', 'tools', 'sql', 'modelCalls', 'modelRequests', 'policyObservations'])}),
+      ['phases', 'tools', 'sql', 'modelCalls', 'modelRequests', 'policyObservations', 'investigationRequests'])}),
   };
 }
 
