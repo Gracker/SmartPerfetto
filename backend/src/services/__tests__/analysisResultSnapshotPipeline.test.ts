@@ -114,6 +114,15 @@ describe('analysis result snapshot pipeline', () => {
     } finally { verify.mockRestore(); sanitize.mockRestore(); }
   });
 
+  test('stores the delivered run supplement count without any text', () => {
+    const counted = buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT, tenantId: 'tenant-a', workspaceId: 'workspace-a',
+      traceId: 't', sessionId: 's', runId: 'r', query: 'q', traceLabel: 't', conclusion: 'c', runSupplementCount: 2});
+    expect(counted?.summary.runSupplementCount).toBe(2);
+    const none = buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT, tenantId: 'tenant-a', workspaceId: 'workspace-a',
+      traceId: 't', sessionId: 's', runId: 'r', query: 'q', traceLabel: 't', conclusion: 'c'});
+    expect(none?.summary).not.toHaveProperty('runSupplementCount');
+  });
+
   test('private persistence invalidates body bindings and retains failed terminal status', () => {
     useTempEnterpriseDb();
     const sessionId = 'snapshot-private-binding';

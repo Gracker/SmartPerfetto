@@ -19,7 +19,7 @@ import {
   attachRunDeliveryRecord,
   sourceUseFinalizationFields,
 } from '../../analysisFinalizationContext';
-import {createAnalysisTurnIntentResolver, type AnalysisTurnIntent} from '../../analysisTurnIntent';
+import {analysisOptionsSelectSource, createAnalysisTurnIntentResolver, type AnalysisTurnIntent} from '../../analysisTurnIntent';
 import {resolveRunTurnPolicy, usesLightweightToolCatalog, type RuntimeTurnPolicy} from '../../runtimeTurnPolicy';
 import {conversationTraceAttachedOption, runAllowedTraces, runTraceIdentity} from '../../runtimeTraceAttachment';
 import {createRuntimeTurnCloseoutTape, resolveRuntimeTurnBudget} from '../../runtimeTurnCloseout';
@@ -27,8 +27,9 @@ import {candidateHasAnswerBody, buildNativeOutputCompletionPrompt} from '../../r
 import {createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext, toAnalysisHistoryTurn,
   type AnalysisHistoryReader} from '../../analysisHistory';
 import type {RuntimeToolObserver} from '../../runtimeToolObserver';
-import {runIntentTransport} from '../../intentTransport';
+import {runIntentTransport, type IntentTransportInput} from '../../intentTransport';
 import {runPiIntentTransport} from './piIntentTransport';
+import {createPiRunSupplementBinding} from './piRunSupplementBinding';
 import {createPiAgentModelCallTracker} from './piAgentModelCalls';
 import {createPiInvestigationAdapter} from './piInvestigationAdapter';
 import {prepareInvestigationAcquisition} from '../../investigation/investigationAcquisition';
@@ -215,6 +216,9 @@ interface PiAgentCoreAgent {
   prompt(input: string): Promise<void>;
   abort(): void;
   reset(): void;
+  /** Optional: the installed SDK has these; a module loaded by path may not. */
+  steer?(message: unknown): void;
+  clearSteeringQueue?(): void;
 }
 
 /**
@@ -1322,6 +1326,8 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       }
       throw error;
     } finally {
+      const deliveredSupplements = options.runSupplementChannel?.deliveredRecords({includeText: false}).length ?? 0;
+      if (deliveredSupplements > 0) runtimePerformance.recordRunSupplementsDelivered(deliveredSupplements);
       executionAbort.clear();
       admission.admission.task?.deadlineSignal.removeEventListener('abort', expireRequest);
       admission.disposeOwned();
@@ -1579,6 +1585,10 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         }}), args[0])} : {}),
     }));
     const classifierTimeoutMs = positiveIntegerEnv(this.env, ['AGENT_CLASSIFIER_TIMEOUT_MS'], 30_000);
+    const classificationDispatch = (input: IntentTransportInput) => runIntentTransport(input, async scope => runPiIntentTransport({
+      ...input, signal: scope.signal, providerRuntime: await providerPromise, maxOutputTokens: 1024,
+      purpose: 'classification',
+    }));
     const intentResolver = createAnalysisTurnIntentResolver({
       productRun: {options, runId: executionLease.key.runId!, sessionId, traceId},
       context: buildComplexityClassifierInput({
@@ -1592,16 +1602,24 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       },
       signal: work.signal,
       deadlineMs: Math.min(getRunDeadlineMs(), Date.now() + classifierTimeoutMs),
-      dispatch: input => runIntentTransport(input, async scope => runPiIntentTransport({
-        ...input, signal: scope.signal, providerRuntime: await providerPromise, maxOutputTokens: 1024,
-        purpose: 'classification',
-      })),
+      dispatch: classificationDispatch,
     });
     const turnIntent = await intentResolver.resolve();
     work.assertActive();
     const policy = resolveRunTurnPolicy(turnIntent, options);
     onPolicyReady(turnIntent, policy, intentResolver.strategyRegistry);
     runtimePerformance.finishClassification(turnIntent.status === 'resolved' ? 'ok' : 'error');
+    // Bound here so a supplement sent during preflight is classified before the first request.
+    const supplements = createPiRunSupplementBinding({channel: options.runSupplementChannel, runId: executionLease.key.runId!,
+      outputLanguage, signal: work.signal, getRunDeadlineMs, dispatch: classificationDispatch,
+      intent: turnIntent, registry: intentResolver.strategyRegistry,
+      run: {sourceSelected: analysisOptionsSelectSource(options), knowledgeSelected: Boolean(options.knowledgeSourceIds?.length)},
+      recorder: resolveRuntimePerformanceRecorder(options.runManifestAttributionSink),
+      modelCallAttribution: {
+        ...(typeof modelConfig.model.id === 'string' ? {model: modelConfig.model.id} : {}),
+        ...(typeof modelConfig.model.baseUrl === 'string' ? {providerOrigin: modelConfig.model.baseUrl} : {}),
+      },
+    });
     const sdkStartPhase = runtimePerformance.startPhase('sdk_start');
     let Agent: Awaited<ReturnType<PiAgentCoreModuleLoader>>['Agent'];
     let providerRuntime: Awaited<ReturnType<PiAgentCoreProviderRuntimeLoader>>;
@@ -1677,15 +1695,26 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           ...(purpose === 'continuation' ? {outputOnly: true} : {}), onExecutionPolicy,
         }) ?? providerRuntime.streamFn)(...args), request?.index);
       },
-      prepareRequest: investigation.prepareRequest,
+      ...(supplements ? {steeringMode: 'all' as const} : {}),
+      prepareRequest: supplements ? ((request: Parameters<typeof investigation.prepareRequest>[0], signal?: AbortSignal) => {
+        const update = investigation.prepareRequest(request, signal);
+        supplements.onPrepareRequest(investigation.currentRequest()?.index);
+        return update;
+      }) : investigation.prepareRequest,
       toolExecution: resolvePiAgentCoreNativeToolExecutionMode({quickMode: prep.quickMode, tools: prep.tools, env: this.env}),
       transport: modelConfig.transport ?? 'auto',
       maxRetryDelayMs: modelConfig.maxRetryDelayMs,
       thinkingBudgets: modelConfig.thinkingBudgets,
       // Pi calls this after the real assistant/tool turn, before dispatching another.
       finishTurn: (({message}) => {
-        if (rounds < providerTurnLimit) return undefined;
+        if (!supplements && rounds < providerTurnLimit) return undefined;
         const toolCall = Array.isArray(message.content) && message.content.some(part => part?.type === 'toolCall');
+        // Never steer onto a finished answer: it would buy a provider request of its own.
+        // Error and aborted turns are hard exits; the run's outcome settles those instead.
+        const declinedSupplements = !toolCall && message.stopReason !== 'error' && message.stopReason !== 'aborted'
+          ? supplements?.closeOnFinishedAnswer() ?? false : false;
+        if (rounds < providerTurnLimit) return declinedSupplements ? {action: 'end' as const} : undefined;
+        supplements?.closeWindow('turn_budget');
         const finished = message.stopReason === 'stop' && !message.errorMessage
           && message.deferred === undefined && !toolCall;
         turnLimitReached = !finished && message.stopReason !== 'error'
@@ -1704,6 +1733,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     runAgent = agent;
     this.activeAgents.set(sessionId, agent);
     work.setAgent(agent);
+    supplements?.bindAgent(agent);
     const providerIdle = createPiProviderIdleSupervisor({
       sessionId, timeoutMs: streamIdleTimeoutMs, markTimeout,
       abort: () => {
@@ -1742,6 +1772,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const unsubscribe = agent.subscribe(event => {
       if (!acceptingProviderEvents || work.signal.aborted) return;
       providerIdle.onEvent(event);
+      supplements?.onEvent(event);
       if (event.type === 'turn_end') rounds++;
       if (event.type === 'done') recordEvaluationTokenDeltaIfPresent(event.message);
       const visibleOutput = isPiAgentCoreVisibleOutputEvent(event);
@@ -1804,10 +1835,14 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         providerPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
         throw error;
       }
+      // The main prompt ended: nothing later may pick up a queued supplement.
+      supplements?.closeWindow('window_closed');
       toolAdmissionsOpen = false;
       if (acceptedTurnLimitReached && turnBudget.deliveryTurns > 0
         && rounds < turnBudget.totalTurns && Date.now() < getRunDeadlineMs()) {
-        const closeoutPrompt = closeoutTape.buildPrompt({query, priorConclusion: acceptedText, outputLanguage});
+        const closeoutTapePrompt = closeoutTape.buildPrompt({query, priorConclusion: acceptedText, outputLanguage});
+        // The closeout transport sends only this prompt: delivered supplements must be carried explicitly.
+        const closeoutPrompt = closeoutTapePrompt && `${closeoutTapePrompt}${supplements?.renderCloseoutSection() ?? ''}`;
         if (closeoutPrompt) {
           try {
             executionLease.throwIfAborted();
@@ -1894,6 +1929,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         }
       }
     } finally {
+      supplements?.closeWindow(work.signal.aborted ? 'run_stopped' : 'run_failed');
       acceptingProviderEvents = false;
       toolAdmissionsOpen = false;
       investigation.dispose();

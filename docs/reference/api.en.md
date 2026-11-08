@@ -446,6 +446,7 @@ Base path: `/api/agent/v1`
 | `POST` | `/conversation/:sessionId/cancel` | Cancel the exact conversation run |
 | `GET` | `/conversation/:sessionId/full-handoff` | Read a recommended full-analysis handoff |
 | `POST` | `/sessions/:sessionId/runs` | Start a new run in an existing session |
+| `POST` | `/sessions/:sessionId/runs/:runId/supplements` | Add a user supplement to a running run (when `SMARTPERFETTO_RUN_SUPPLEMENT` is on) |
 | `GET` | `/:sessionId/stream` | Subscribe to SSE |
 | `GET` | `/runs/:runId/stream` | Subscribe to SSE by run id |
 | `GET` | `/:sessionId/status` | Poll status |
@@ -483,6 +484,18 @@ and are counted by legacy telemetry.
 `*` scope can read it, everyone else gets 404. Reading and setting `/admin/log-level`
 require the `runtime:manage` permission (the level is process-wide); without
 it the route answers 403.
+
+### Run Supplements
+
+`POST /api/agent/v1/sessions/:sessionId/runs/:runId/supplements` adds a user note to an analysis in progress. It reaches the running agent without a restart, extra turns or a deadline change. Default off behind `SMARTPERFETTO_RUN_SUPPLEMENT`; otherwise it always returns `409 RUN_SUPPLEMENT_UNSUPPORTED`. The run start response carries `runSupplement: {"supported": true}` when available.
+
+The body is exactly `{"idempotencyKey": string, "text": string}`; `idempotencyKey` matches `[a-zA-Z0-9_.:-]{1,128}`, `text` is capped at 4 KiB and a run accepts at most 6 supplements. A retry with the same `idempotencyKey` replays the original receipt. Success is `202 {"receipt": {"id", "runId", "sequence", "state", "reason?", "disposition?"}}`:
+
+- `state`: `classifying` -> `queued` -> `delivered` (entered the agent's context, which does not claim the provider received it), or `restart_required`, `rejected`, `not_applied`.
+- `restart_required` means the supplement would change scope, evidence access, trace, provider or authorization and cannot apply in place; the user confirms a restart.
+- `rejected` reasons are `classification_unavailable` and `policy`; `not_applied` reasons are `window_closed`, `turn_budget`, `run_stopped`, `run_failed`. In both cases the run is unaffected and the text should go back to the user.
+
+Error codes, never retried automatically: `400 RUN_SUPPLEMENT_INVALID_BODY`, `413 RUN_SUPPLEMENT_TOO_LARGE`, `404 RUN_NOT_FOUND`, `409 RUN_SUPPLEMENT_UNSUPPORTED`, `409 RUN_NOT_ACTIVE`, `409 CANCELLATION_IN_PROGRESS`, `409 RUN_SUPPLEMENT_WINDOW_CLOSED`, `409 RUN_SUPPLEMENT_CAPACITY_EXCEEDED`, `409 RUN_SUPPLEMENT_IDEMPOTENCY_CONFLICT`. State changes are published as the SSE event `run_supplement`, which carries ids and enums only, never the text or its hash.
 
 ### Lightweight Conversation
 

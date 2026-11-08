@@ -772,6 +772,8 @@ export function projectPrivateAnalysisResult(
       ? {terminationMessage: projectPrivateTerminationMessage(result.terminationMessage, language, result, sessionId)}
       : {}),
     ...(result.quickRun ? {quickRun: result.quickRun} : {}),
+    // The record of what entered the run, never its private text.
+    ...(result.runSupplements?.length ? {runSupplements: result.runSupplements.map(({text: _text, ...record}) => record)} : {}),
     ...(conclusionContract ? {conclusionContract} : {}),
     ...(claimSupport ? {claimSupport} : {}),
     ...(claimVerificationResult ? {claimVerificationResult} : {}),
@@ -824,6 +826,7 @@ export function copyAnalysisResultForSnapshot(result: AnalysisResult): AnalysisR
     ...(result.analysisReceipt !== undefined ? {analysisReceipt: result.analysisReceipt} : {}),
     ...(result.uiActionProposals !== undefined ? {uiActionProposals: result.uiActionProposals} : {}),
     ...(result.quickRun !== undefined ? {quickRun: result.quickRun} : {}),
+    ...(result.runSupplements !== undefined ? {runSupplements: result.runSupplements} : {}),
     ...(result.smartScenePreview !== undefined ? {smartScenePreview: result.smartScenePreview} : {}),
     ...(result.sceneTimeline !== undefined ? {sceneTimeline: structuredClone(result.sceneTimeline)} : {}),
     ...(result.sceneReport !== undefined ? {sceneReport: {...result.sceneReport}} : {}),

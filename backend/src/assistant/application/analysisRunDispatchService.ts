@@ -34,13 +34,16 @@ import type {EnhancedSessionContext} from '../../agent/context/enhancedSessionCo
 import type {AgentRuntimeAnalysisResult, StreamingUpdate} from '../../agent';
 import type {TraceProcessorHolderType} from '../../services/traceProcessorLeaseStore';
 import type {TraceProcessorLeaseModeDecision} from '../../services/traceProcessorLeaseModeDecision';
-import type {PersistedAnalysisRunStatus} from '../../services/analysisRunStore';
+import {isTerminalRunStatus, type PersistedAnalysisRunStatus} from '../../services/analysisRunStore';
 import type {AnalyzeMode, NormalizedAnalyzeOptions} from '../../routes/agent/normalizeAnalyzeOptions';
 import type {SceneAnalysisSelection} from '../../agent/scene/types';
 import type {ResourceOwnerFields} from '../../services/resourceOwnership';
 import type {KnowledgeScope} from '../../services/scopedKnowledgeStore';
 import type {RunManifestAttributionSink} from '../../types/selfEvolution';
 import {AiDisabledError, assertAiFeatureEnabled, buildAiDisabledPayload} from '../../services/aiCapabilityPolicy';
+import {RunSupplementChannel, runSupplementFeatureEnabled, type RunSupplementUpdate} from '../../agentRuntime/runSupplementChannel';
+import type {RunSupplementNotAppliedReason} from '../../types/runSupplementContract';
+import {runtimeSupportsRunSupplement} from '../../agentRuntime/runtimeDescriptors';
 import {readTraceMetadataForContext} from '../../services/traceMetadataStore';
 import {
   analysisHasPrivateContext,
@@ -52,6 +55,8 @@ export interface AnalysisDispatchSession extends AnalyzeManagedSession {
   sceneStoryReport?: SceneReport;
   cancellationInFlightRunId?: string;
   sceneExecutionInFlightRunId?: string;
+  /** The current run's supplement channel; retained after the run for idempotent replay. */
+  runSupplementChannel?: RunSupplementChannel;
 }
 
 /** Entry is supplied by the server route, never copied from body/options. */
@@ -80,6 +85,8 @@ export interface AnalysisRunExecutionOptions extends NormalizedAnalyzeOptions {
   knowledgeScope?: KnowledgeScope;
   runManifestAttributionSink: RunManifestAttributionSink;
   sceneRunBinding?: SceneRunDispatchBinding;
+  /** A product-issued run capability; never read from HTTP options. */
+  runSupplementChannel?: RunSupplementChannel;
 }
 
 export interface AnalysisRunDispatchResponse {
@@ -174,6 +181,14 @@ export interface AnalysisRunDispatchDependencies<TSession extends AnalysisDispat
   broadcastToAgentDrivenClients(sessionId: string, update: StreamingUpdate, runId?: string): void;
 }
 
+/** The run's outcome settles any supplement still open when execution ends. */
+function runSupplementTerminalReason(session: AnalysisDispatchSession, runId: string,
+  cancelled: boolean): RunSupplementNotAppliedReason {
+  const run = session.activeRun?.runId === runId ? session.activeRun : session.lastRun?.runId === runId ? session.lastRun : undefined;
+  if (cancelled || session.cancellationInFlightRunId === runId || run?.status === 'cancelled') return 'run_stopped';
+  return run?.status === 'failed' || run?.status === 'quota_exceeded' ? 'run_failed' : 'window_closed';
+}
+
 export class SmartPreviewSelectionError extends Error {
   readonly code = 'smart_preview_selection_stale';
   readonly reportId: string;
@@ -233,6 +248,16 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
     }
     return false;
   };
+  /** Ids and enums only reach the log and the event; the text never leaves the channel here. */
+  const createRunSupplementChannel = (session: TSession, runId: string) => new RunSupplementChannel({runId,
+    onUpdate: ({receipt, byteLength}: RunSupplementUpdate) => {
+      try {
+        session.logger.info('RunSupplement', 'state_changed', {id: receipt.id, sequence: receipt.sequence,
+          byteLength, state: receipt.state, reason: receipt.reason});
+      } catch { /* Logging never changes a supplement's state. */ }
+      broadcastToAgentDrivenClients(session.sessionId,
+        {type: 'run_supplement', content: receipt, timestamp: Date.now()}, runId);
+    }});
   const dispatch = async (): Promise<void> => {
     let executionSession: TSession | undefined;
     let executionRunId: string | undefined;
@@ -241,6 +266,7 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
     let runTraceProcessorLeases: AnalysisRunTraceProcessorLeases | undefined;
     let releaseLeaseOwner = () => {};
     let sceneRunBinding: SceneRunDispatchBinding | undefined;
+    let runSupplementChannel: RunSupplementChannel | undefined;
     let runAdmission: RuntimeAdmissionScope | undefined;
     let executionSettled = false;
     // Attempt every cleanup even if a binding's release or manifest persistence fails.
@@ -256,6 +282,11 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
       const cleanup = (label: string, operation: () => void): void => {
         try { operation(); } catch (error) { logCleanupFailure(label, error); }
       };
+      if (session && runId && runSupplementChannel) {
+        const channel = runSupplementChannel;
+        cleanup('settle run supplements', () => channel.terminate(
+          runSupplementTerminalReason(session, runId, isSessionRunCancelled(session, runId))));
+      }
       if (session && executionRunManifestLifecycle) {
         cleanup('finalize run manifest', () => finalizeHttpRunManifestLifecycle(session, executionRunManifestLifecycle!));
       }
@@ -643,6 +674,12 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
       }
       executionSession = sessionForRun;
       executionRunId = runContext.runId;
+      // Normal analysis runs only. Created before admission so every later failure settles it.
+      if (input.entry === 'analysis' && options.preset !== 'smart' &&
+        runSupplementFeatureEnabled() && runtimeSupportsRunSupplement(sessionForRun.runtimeKind)) {
+        runSupplementChannel = createRunSupplementChannel(sessionForRun, runContext.runId);
+        sessionForRun.runSupplementChannel = runSupplementChannel;
+      }
       const leaseController = new AbortController();
       runAdmission = createRuntimeAdmissionScope({runId: runContext.runId,
         // runContext.startedAt is registration time; native budgets must inherit
@@ -757,7 +794,7 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
         // Runtime owns publication once it has claimed a terminal run. This outer
         // handler covers startup failures, without producing a second error event.
         if (session.activeRun?.runId === runContext.runId &&
-          ['completed', 'failed', 'cancelled', 'quota_exceeded'].includes(session.activeRun.status)) return;
+          isTerminalRunStatus(session.activeRun.status)) return;
         const privateKnowledge = privateContextRestrictsAudience(runContext.privateContext);
         const publicErrorMessage = projectAnalysisFailure(error, {privateContext: runContext.privateContext,
           guardSessionId: sessionId, language: sessionOutputLanguage(session), requestId: runContext.requestId});
@@ -848,6 +885,7 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
             ...(sceneRunBinding ? {sceneRunBinding} : {}),
             knowledgeScope: knowledgeScopeFromRequestContext(requestContext),
             runManifestAttributionSink: runManifestLifecycle.builder,
+            ...(runSupplementChannel ? {runSupplementChannel} : {}),
           })),
         )
           .then(() => {
@@ -890,6 +928,7 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
           requestId: runContext.requestId,
           runSequence: runContext.sequence,
         },
+        ...(runSupplementChannel ? {runSupplement: {supported: true}} : {}),
       });
     } catch (error: any) {
       if (executionSession && executionRunId && !executionHandedOff &&

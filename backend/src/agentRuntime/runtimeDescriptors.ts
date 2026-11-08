@@ -40,8 +40,8 @@ const PI_PROVIDER_TYPES = PROVIDER_TYPES;
 function createCapabilities<K extends AgentRuntimeKind>(
   kind: K,
   displayName: string,
-  {systemPromptDynamicBoundary = false, draftAnswerStreaming = false}:
-    {systemPromptDynamicBoundary?: boolean; draftAnswerStreaming?: boolean} = {},
+  {systemPromptDynamicBoundary = false, draftAnswerStreaming = false, runSupplement = false}:
+    {systemPromptDynamicBoundary?: boolean; draftAnswerStreaming?: boolean; runSupplement?: boolean} = {},
 ): RuntimeEngineDescriptor<K>['capabilities'] {
   return {
     kind,
@@ -50,6 +50,7 @@ function createCapabilities<K extends AgentRuntimeKind>(
     publicRuntime: true,
     promptCache: { systemPromptDynamicBoundary },
     draftAnswerStreaming,
+    runSupplement,
   };
 }
 
@@ -104,7 +105,7 @@ export const PRODUCTION_RUNTIME_DESCRIPTORS = [
     production: true,
     publicRuntime: true,
     providerTypes: PI_PROVIDER_TYPES,
-    capabilities: createCapabilities(PI_AGENT_CORE_RUNTIME_KIND, 'Pi Agent Core'),
+    capabilities: createCapabilities(PI_AGENT_CORE_RUNTIME_KIND, 'Pi Agent Core', {runSupplement: true}),
     createOrchestrator: input => {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const { createPiAgentCoreRuntime } = require('./engines/pi/piAgentCoreRuntime') as typeof import('./engines/pi/piAgentCoreRuntime');
@@ -145,6 +146,12 @@ export function getProductionEngineCapabilities(kind: string): EngineCapabilitie
 export function runtimeSupportsDraftAnswerStreaming(kind: string | undefined): boolean {
   return kind !== undefined && isProductionAgentRuntimeKind(kind) &&
     getProductionEngineCapabilities(kind).draftAnswerStreaming;
+}
+
+/** Discovered from the capability table; unknown or unpinned runtimes accept none. */
+export function runtimeSupportsRunSupplement(kind: string | undefined): boolean {
+  return kind !== undefined && isProductionAgentRuntimeKind(kind) &&
+    getProductionEngineCapabilities(kind).runSupplement;
 }
 
 export function getProviderTypesForRuntime(kind: AgentRuntimeKind): readonly string[] {

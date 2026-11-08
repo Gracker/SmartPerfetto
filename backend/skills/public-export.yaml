@@ -1568,6 +1568,21 @@ strategies:
   backend/strategies/prompt-conversation-evidence-context.template.md:
     disposition: product-only
     reason: SmartPerfetto conversation artifact retention and authorization
+  backend/strategies/prompt-run-supplement-intent.template.md:
+    disposition: product-only
+    reason: SmartPerfetto in-run supplement classification protocol
+  backend/strategies/prompt-run-supplement-message-en.template.md:
+    disposition: product-only
+    reason: SmartPerfetto in-run supplement user-input framing
+  backend/strategies/prompt-run-supplement-message-zh.template.md:
+    disposition: product-only
+    reason: SmartPerfetto in-run supplement user-input framing
+  backend/strategies/prompt-run-supplement-closeout-en.template.md:
+    disposition: product-only
+    reason: SmartPerfetto in-run supplement closeout delivery section
+  backend/strategies/prompt-run-supplement-closeout-zh.template.md:
+    disposition: product-only
+    reason: SmartPerfetto in-run supplement closeout delivery section
   backend/strategies/prompt-conversation-supplement-en.template.md:
     disposition: product-only
     reason: SmartPerfetto next-turn supplemental input and authorization

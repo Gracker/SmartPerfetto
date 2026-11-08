@@ -25,6 +25,8 @@ export interface EngineCapabilities {
    * contract may set this; product surfaces forward drafts for no other runtime.
    */
   draftAnswerStreaming: boolean;
+  /** Accepts in-run user supplements through `RunSupplementChannel`; gated by the release flag. */
+  runSupplement: boolean;
 }
 
 export interface RuntimeFactoryInput {

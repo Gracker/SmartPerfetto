@@ -280,6 +280,8 @@ ${externalIssueReportingContent}
 ${criticalPathContractContent}
 
 ${contractFragments.assistantWork}
+
+${contractFragments.runSupplement}
 `);
 
 // Column Types Section
@@ -882,6 +884,7 @@ export type SSEEvent =
   | FindingEvent
   | ProgressEvent
   | ConversationStepEvent
+  | RunSupplementEvent
   | AnalysisCompletedEvent;
 
 // =============================================================================

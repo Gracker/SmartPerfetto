@@ -170,6 +170,7 @@ export interface AgentDrivenReportData {
     terminationMessage?: string;
     analysisReceipt?: AnalysisReceipt;
     uiActionProposals?: UiActionProposalV1[];
+    runSupplements?: import('../types/runSupplementContract').RunSupplementRecord[];
   };
   hypotheses: Array<{
     id: string;
@@ -4192,6 +4193,7 @@ ${REPORT_DOCUMENT_NO_SCRIPT}
     </div>
 
     ${this.renderAnalysisReceiptSection(result.analysisReceipt, outputLanguage)}
+    ${this.renderRunSupplementProvenance(result.runSupplements, outputLanguage)}
     ${renderSceneTimelineHtml({timeline: result.sceneTimeline, reference: result.sceneReport, outputLanguage, backendBaseUrl: data.backendBaseUrl})}
     ${investigationLines.length || evidencePresentation?.investigationAssessment?.requirements.length ||
       evidencePresentation?.investigationAssessment?.evidenceRecords?.length ? `<div class="section">
@@ -4416,6 +4418,18 @@ ${REPORT_DOCUMENT_NO_SCRIPT}
 ${REPORT_DOCUMENT_NO_SCRIPT}
 </body>
 </html>`;
+  }
+
+  /** Provenance only: how many supplements entered the run, never their text. */
+  private renderRunSupplementProvenance(
+    supplements: AgentDrivenReportData['result']['runSupplements'],
+    outputLanguage: OutputLanguage,
+  ): string {
+    const count = supplements?.length ?? 0;
+    if (count === 0) return '';
+    return `<div class="section"><p>${this.escapeHtml(localize(outputLanguage,
+      `本次分析在运行过程中收到 ${count} 条用户补充说明，均已进入 Agent 上下文。`,
+      `${count} user supplement(s) entered the agent's context while this analysis was running.`))}</p></div>`;
   }
 
   private renderAnalysisReceiptSection(

@@ -2901,6 +2901,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       publicRuntime: false,
       promptCache: { systemPromptDynamicBoundary: false },
       draftAnswerStreaming: false,
+      runSupplement: false,
     });
 
     expect(sdkPrompt).toBe('stable\n\nvolatile');

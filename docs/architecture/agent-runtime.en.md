@@ -592,6 +592,16 @@ RunManifests; CLI does not aggregate samples, uses defaults, and records
 `stats_not_configured`. Admission decisions and actual durations are internal
 performance receipts, neither proof nor public SSE.
 
+### In-run supplements
+
+When `SMARTPERFETTO_RUN_SUPPLEMENT` is on and the runtime declares `EngineCapabilities.runSupplement` (currently Pi only), each normal analysis run gets a `RunSupplementChannel`. `finishExecution` calls `terminate` on every end path, so no supplement outlives its run. The channel reaches the runtime only through a run-bound sidecar (`analysisRunDispatchService.ts` to `agentRoutes.ts` `baseAnalyzeOptions`); it is not in the HTTP options whitelist, and Pi binds it only after checking `channel.runId === executionLease.key.runId`.
+
+A small classifier decides what happens to it: `runSupplementIntent.ts` parses a closed schema and a deterministic table maps it to in-place or `restart_required`. Budget is fixed: `providerTurnLimit`, `totalTurns` and the deadline never grow. Each classification is one `classification` model call with a `min(run deadline, now+5s)` deadline, strictly serial per run. Any classification failure is `rejected`. When the window closes or the run ends, an in-flight classification is aborted and the channel drops the text and its update closure, keeping only an in-memory digest for idempotent replay, so no provider call carrying supplement text outlives the run. Runs with delivered supplements are excluded by Self-Evolution curation (`curation_run_supplemented`) and never enter a paired baseline.
+
+Delivery uses Pi `steer` (`steeringMode: 'all'`) with a `user`-role message framed by a template as user input, not evidence and granting nothing. `steer` only enqueues; the fact of delivery is `message_end`, so `delivered` means the supplement entered the agent's context, and `deliveredRequestIndex` comes from the next `prepareRequest`. A supplement that arrives before the first prompt joins request 1; one that arrives during a tool batch enters at the next tool boundary; one that arrives on the final answer turn or after the turn budget is `not_applied` and adds no provider request. After the main prompt, `closeAcquisition` clears the agent's steering queue and closes the window, so a later correction prompt cannot pick up an undelivered supplement. Closeout carries delivered supplements explicitly because it only sends `query`.
+
+The `run_supplement` SSE event carries ids and enums only; the frontend consumes it in the plugin phase, and until then it is kept as a documented contract.
+
 ## SSE Events
 
 All runtimes emit the same SmartPerfetto streaming update categories to the

@@ -757,6 +757,7 @@ export const SSE_EVENT_TYPES = [
   'tool_call',
   'answer_token',
   'answer_segment_reset',
+  'run_supplement',
   'conclusion',
   'scene_detected',
   'track_data',

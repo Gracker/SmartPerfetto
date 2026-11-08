@@ -126,6 +126,8 @@ export interface AnalysisResult {
   quickRun?: QuickRunReceipt;
   analysisReceipt?: AnalysisReceipt;
   uiActionProposals?: UiActionProposalV1[];
+  /** Supplements that entered the agent's context; private runs carry no text. Never in `conclusion`. */
+  runSupplements?: import('../../types/runSupplementContract').RunSupplementRecord[];
 }
 
 export type AgentRuntimeAnalysisResult = AnalysisResult;
@@ -137,6 +139,8 @@ export type AgentRuntimeAnalysisResult = AnalysisResult;
 export interface AnalysisOptions {
   /** Internal, run-scoped attribution sink. Never sourced from request JSON. */
   runManifestAttributionSink?: RunManifestAttributionSink;
+  /** Issued by the dispatch service for one run; a sidecar, never a request field. */
+  runSupplementChannel?: import('../../agentRuntime/runSupplementChannel').RunSupplementChannel;
   /** Request/session-pinned presentation language. */
   outputLanguage?: import('../../agentv3/outputLanguage').OutputLanguage;
   traceProcessorService?: any;

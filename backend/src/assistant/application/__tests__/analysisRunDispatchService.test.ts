@@ -24,6 +24,7 @@ import {readRuntimeAdmission} from '../../../agentRuntime/runtimeTaskDeadline';
 import * as traceUploadPaths from '../../../services/traceUploadPaths';
 import * as enterpriseMigration from '../../../services/enterpriseMigration';
 import {TraceProcessorFactory, type WorkingTraceProcessor} from '../../../services/workingTraceProcessor';
+import {RUN_SUPPLEMENT_FLAG_ENV} from '../../../agentRuntime/runSupplementChannel';
 
 type Deps = AnalysisRunDispatchDependencies<AnalysisDispatchSession>;
 
@@ -605,6 +606,99 @@ describe('shared analysis run dispatch', () => {
     expect(f.runner).not.toHaveBeenCalled();
     expect(f.session.activeRun?.status).toBe('cancelled');
     expect(f.session.sceneExecutionInFlightRunId).toBeUndefined();
+  });
+
+  describe('run supplement channel', () => {
+    const flagEnv = RUN_SUPPLEMENT_FLAG_ENV;
+    const originalFlag = process.env[flagEnv];
+    const piFixture = (entry: AnalysisRunDispatchInput['entry'] = 'analysis') => {
+      const f = fixture(entry);
+      (f.session as {runtimeKind?: string}).runtimeKind = 'pi-agent-core';
+      return f;
+    };
+    afterEach(() => {
+      if (originalFlag === undefined) delete process.env[flagEnv];
+      else process.env[flagEnv] = originalFlag;
+    });
+
+    it('issues nothing and leaves the response unchanged when the flag is off', async () => {
+      delete process.env[flagEnv];
+      const f = piFixture();
+      const response = await dispatchAnalysisRun(f.input, f.deps);
+      await tick();
+      expect(response.body).not.toHaveProperty('runSupplement');
+      expect(f.session.runSupplementChannel).toBeUndefined();
+      expect(f.runner.mock.calls[0][3]).not.toHaveProperty('runSupplementChannel');
+    });
+
+    it('issues a run-bound channel, advertises it and settles it when the run finishes', async () => {
+      process.env[flagEnv] = 'true';
+      const f = piFixture();
+      const finished = deferred();
+      f.runner.mockImplementation(async () => { await finished.promise; });
+      const response = await dispatchAnalysisRun(f.input, f.deps);
+      await tick();
+      expect(response.body).toMatchObject({runSupplement: {supported: true}});
+      const channel = f.session.runSupplementChannel!;
+      expect(channel.runId).toBe('run');
+      expect(f.runner.mock.calls[0][3].runSupplementChannel).toBe(channel);
+      channel.submit({idempotencyKey: 'a', text: 'mind the binder'});
+      expect(channel.isTerminated).toBe(false);
+      finished.resolve();
+      await tick();
+      expect(channel.isTerminated).toBe(true);
+      expect(channel.receipts()[0]).toMatchObject({state: 'not_applied'});
+      const update = (f.deps.broadcastToAgentDrivenClients as jest.Mock).mock.calls
+        .map(call => call[1] as {type: string; content: unknown})
+        .find(event => event.type === 'run_supplement');
+      expect(update?.content).toMatchObject({id: expect.any(String), runId: 'run', sequence: 1, state: 'classifying'});
+      expect(JSON.stringify(update)).not.toContain('mind the binder');
+    });
+
+    it.each([
+      ['smart preset', () => { const f = piFixture(); f.input.body.options = {preset: 'smart'}; return f; }],
+      ['scene reconstruction', () => piFixture('scene_reconstruction')],
+      ['another runtime', () => { const f = fixture(); (f.session as {runtimeKind?: string}).runtimeKind = 'claude-agent-sdk'; return f; }],
+    ])('issues no channel for %s', async (_name, build) => {
+      process.env[flagEnv] = 'true';
+      const f = build();
+      const response = await dispatchAnalysisRun(f.input, f.deps);
+      await tick();
+      expect(response.body).not.toHaveProperty('runSupplement');
+      expect(f.session.runSupplementChannel).toBeUndefined();
+    });
+
+    it('settles an accepted supplement as run_failed when admission fails before the agent starts', async () => {
+      process.env[flagEnv] = 'true';
+      const f = piFixture();
+      let channel: AnalysisDispatchSession['runSupplementChannel'];
+      f.admit.mockImplementation(async () => {
+        channel = f.session.runSupplementChannel;
+        channel!.submit({idempotencyKey: 'a', text: 'early note'});
+        throw new Error('lease denied');
+      });
+      await dispatchAnalysisRun(f.input, f.deps);
+      await tick();
+      expect(channel!.isTerminated).toBe(true);
+      expect(channel!.receipts()[0]).toMatchObject({state: 'not_applied', reason: 'run_failed'});
+      expect(f.runner).not.toHaveBeenCalled();
+    });
+
+    it('settles an accepted supplement as run_stopped when the run is cancelled before the agent starts', async () => {
+      process.env[flagEnv] = 'true';
+      const f = piFixture();
+      let channel: AnalysisDispatchSession['runSupplementChannel'];
+      f.admit.mockImplementation(async () => {
+        channel = f.session.runSupplementChannel;
+        channel!.submit({idempotencyKey: 'a', text: 'early note'});
+        f.session.activeRun = {...f.session.activeRun!, status: 'cancelled'};
+        throw new DOMException('stopped', 'AbortError');
+      });
+      await dispatchAnalysisRun(f.input, f.deps);
+      await tick();
+      expect(channel!.isTerminated).toBe(true);
+      expect(channel!.receipts()[0]).toMatchObject({state: 'not_applied', reason: 'run_stopped'});
+    });
   });
 
   it('late failures cannot mutate a replacement run or publish errors for it', async () => {

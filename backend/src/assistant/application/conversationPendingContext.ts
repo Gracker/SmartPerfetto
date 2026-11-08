@@ -12,7 +12,8 @@ const MAX_PENDING = 8;
 const MAX_PENDING_BYTES = 16 * 1024;
 const MAX_RECEIPTS = 64;
 const MAX_EFFECTIVE_QUERY_CHARS = 50_000;
-const ID = /^[a-zA-Z0-9_.:-]{1,128}$/;
+/** Client-supplied opaque ids (idempotency keys, context ids). */
+export const CLIENT_ID_PATTERN = /^[a-zA-Z0-9_.:-]{1,128}$/;
 interface Entry {receipt: ConversationContextReceipt; payloadHash: string; text?: string}
 
 /** Process-memory inbox, owned by one logical session instance; never serialized. */
@@ -27,7 +28,7 @@ export class ConversationPendingContext {
     if (request.expectedQueueEpoch !== this.epoch) throw new ConversationContextError('CONVERSATION_CONTEXT_EXPIRED',
       'Pending context is no longer available; read the current status and submit it again', 409);
     if (typeof request.idempotencyKey !== 'string' || typeof request.expectedRunId !== 'string' ||
-      !ID.test(request.idempotencyKey) || !ID.test(request.expectedRunId) || typeof request.text !== 'string' || !request.text.trim()) {
+      !CLIENT_ID_PATTERN.test(request.idempotencyKey) || !CLIENT_ID_PATTERN.test(request.expectedRunId) || typeof request.text !== 'string' || !request.text.trim()) {
       throw new ConversationContextError('CONVERSATION_CONTEXT_INVALID', 'A context request needs valid identifiers and nonempty text', 400);
     }
     if (Buffer.byteLength(request.text, 'utf8') > MAX_PENDING_BYTES) {

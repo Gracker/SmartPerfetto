@@ -127,6 +127,7 @@ import {
 import {
   heartbeatAnalysisRun,
   isAnalysisRunHeartbeatFresh,
+  isTerminalRunStatus,
   persistAnalysisRunState,
   type AnalysisRunPersistenceScope,
   type PersistedAnalysisRunStatus,
@@ -218,6 +219,8 @@ import {
 } from './agentConversationRoutes';
 import type { AgentRuntimeKind } from '../agentRuntime/runtimeKinds';
 import {createAnswerDraftRelay} from '../services/answerDraftRelay';
+import type {RunSupplementChannel} from '../agentRuntime/runSupplementChannel';
+import {registerRunSupplementRoutes} from './agentRunSupplementRoutes';
 import {buildSkillRegistryAttribution} from '../services/selfEvolution/skillFingerprint';
 import {
   currentEffectiveSkillRegistry,
@@ -479,7 +482,7 @@ function markSessionRunStatus(
 ): void {
   if (!runId) return;
   const completedAt =
-    status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'quota_exceeded'
+    isTerminalRunStatus(status)
       ? Date.now()
       : undefined;
   const nextRun = updateRegisteredSessionRun(session, runId, {
@@ -1578,7 +1581,7 @@ function sanitizePersistedAnalysisCompletedEvent(
         reportError: trustedPrivateProjection && typeof data.reportError === 'string' && data.reportError
           ? projectOwnerAnalysisError(session.sessionId, data.reportError, outputLanguage)
           : undefined,
-        terminalRunStatus: ['completed', 'failed', 'cancelled', 'quota_exceeded'].includes(data?.terminalRunStatus)
+        terminalRunStatus: isTerminalRunStatus(data?.terminalRunStatus)
           ? data.terminalRunStatus
           : undefined,
         observability: data?.observability && typeof data.observability === 'object'
@@ -3282,6 +3285,14 @@ const sceneStoryService = new SceneStoryService({
   probeDuration: (traceId) => probeTraceDuration(getTraceProcessorService(), traceId),
 });
 
+registerRunSupplementRoutes<AnalysisSession>(router, {
+  getAuthorizedSession,
+  resolveSessionRun: (session, runId) => resolveSessionRun(session, runId),
+  isCurrentRunOwner,
+  sessionRunHasPrivateContext,
+  sessionOutputLanguage,
+});
+
 registerSceneReconstructRoutes(router, {
   streamSceneAnalysis: handleAuthorizedSessionStream,
   checkSceneHistory: async (req, res, sessionId) => {
@@ -4677,6 +4688,7 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
             userId: session.userId,
             runId: runIdForAnalysis,
             runManifestAttributionSink: options.runManifestAttributionSink,
+            ...(options.runSupplementChannel ? {runSupplementChannel: options.runSupplementChannel} : {}),
           };
         // The run may learn across sessions only under its own marker, fixed at admission.
         const scopedAnalyzeOptions = forwardRuntimeAdmission(options, baseAnalyzeOptions);
@@ -4817,6 +4829,8 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
     });
     finalizationRun.assertCurrent();
     result = finalized.result;
+    attachRunSupplementRecords(result, options.runSupplementChannel,
+      sessionRunHasPrivateContext(session, runIdForAnalysis));
     // The finalized text goes out now, ahead of report and snapshot generation;
     // its delivery assurance arrives with analysis_completed. Scene runs own
     // their terminal delivery.
@@ -4952,6 +4966,16 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
       session.orchestratorUpdateHandler = undefined;
     }
   }
+}
+
+/** Taken after finalization from the channel snapshot, so interrupted results keep it too. */
+function attachRunSupplementRecords(
+  result: AgentRuntimeAnalysisResult,
+  channel: RunSupplementChannel | undefined,
+  privateRun: boolean,
+): void {
+  const records = channel?.deliveredRecords({includeText: !privateRun});
+  if (records?.length) result.runSupplements = records;
 }
 
 function escapeHtmlForInlineHtml(value: unknown): string {
@@ -6866,6 +6890,7 @@ function ensureCompletedAnalysisFinalArtifacts(
         analysisReceipt: privateKnowledge
           ? projectOwnerAnalysisReceipt(snapshotReceipt)
           : snapshotReceipt,
+        runSupplementCount: durableResultForClient.runSupplements?.length,
         traceSummary: session.traceSummary,
         uiActionProposals: durableResultForClient.uiActionProposals,
         privateContext,

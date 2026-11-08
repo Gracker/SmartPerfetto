@@ -134,6 +134,14 @@ export class CurationService {
         });
         return [];
       }
+      // A user steered this run mid-flight, so it does not measure the baseline it would pair against.
+      if (manifest.performance?.runSupplements?.delivered) {
+        diagnostics.push({
+          code: 'curation_run_supplemented',
+          details: {feedbackId: feedback.feedbackId, runId: manifest.runId},
+        });
+        return [];
+      }
       const matchingCases = evalCases.filter(evalCase =>
         evalCase.origin === 'labeled_run' &&
         evalCase.sourceRunId === manifest.runId &&

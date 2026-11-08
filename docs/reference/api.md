@@ -400,6 +400,7 @@ Base path: `/api/agent/v1`
 | `POST` | `/conversation/:sessionId/cancel` | 取消精确对话 run |
 | `GET` | `/conversation/:sessionId/full-handoff` | 读取已建议的完整分析交接 |
 | `POST` | `/sessions/:sessionId/runs` | 在已有 session 下启动新 run |
+| `POST` | `/sessions/:sessionId/runs/:runId/supplements` | 向运行中的 run 追加用户补充说明（`SMARTPERFETTO_RUN_SUPPLEMENT` 开启时） |
 | `GET` | `/:sessionId/stream` | SSE 流 |
 | `GET` | `/runs/:runId/stream` | 按 run id 订阅 SSE |
 | `GET` | `/:sessionId/status` | 查询状态 |
@@ -431,6 +432,18 @@ Workspace-scoped agent base 为 `/api/workspaces/:workspaceId/agent`，其子路
 
 `/logs*` 受 `FEATURE_AGENT_LOGS_API`（默认开启）控制，关闭时返回 503 `FEATURE_DISABLED`；只有
 `org_admin` 角色或 `*` scope 的调用方可访问，其他调用方得到 404。`/admin/log-level` 的读取和设置都需要 `runtime:manage` 权限（日志级别作用于整个进程），缺权限返回 403。
+
+### 运行中补充说明
+
+`POST /api/agent/v1/sessions/:sessionId/runs/:runId/supplements` 在分析进行中追加一段用户说明，把它带给正在运行的 Agent，不重启、不增加轮次、不改变期限。默认关闭，需要 `SMARTPERFETTO_RUN_SUPPLEMENT` 开启；否则一律返回 `409 RUN_SUPPLEMENT_UNSUPPORTED`。启动 run 的响应在支持时带 `runSupplement: {"supported": true}`。
+
+请求体严格为 `{"idempotencyKey": string, "text": string}`，`idempotencyKey` 匹配 `[a-zA-Z0-9_.:-]{1,128}`，`text` 上限 4 KiB，每个 run 最多 6 条；相同 `idempotencyKey` 重试返回原回执。成功返回 `202 {"receipt": {"id", "runId", "sequence", "state", "reason?", "disposition?"}}`：
+
+- `state`：`classifying` → `queued` → `delivered`（已进入 Agent 上下文，不代表 provider 已收到）；或 `restart_required`、`rejected`、`not_applied`。
+- `restart_required` 表示这段补充说明会改变范围、证据访问、Trace、provider 或授权，不能就地应用，由用户确认后重新发起。
+- `rejected` 原因 `classification_unavailable`（分类失败）或 `policy`；`not_applied` 原因 `window_closed`、`turn_budget`、`run_stopped`、`run_failed`。这两种情况下运行本身不受影响，文本应退回给用户。
+
+错误码（均不自动重试）：`400 RUN_SUPPLEMENT_INVALID_BODY`、`413 RUN_SUPPLEMENT_TOO_LARGE`、`404 RUN_NOT_FOUND`、`409 RUN_SUPPLEMENT_UNSUPPORTED`、`409 RUN_NOT_ACTIVE`、`409 CANCELLATION_IN_PROGRESS`、`409 RUN_SUPPLEMENT_WINDOW_CLOSED`、`409 RUN_SUPPLEMENT_CAPACITY_EXCEEDED`、`409 RUN_SUPPLEMENT_IDEMPOTENCY_CONFLICT`。状态变化通过 SSE 事件 `run_supplement` 推送，只含 ID 和枚举，不含文本或其哈希。
 
 ### 轻量对话
 

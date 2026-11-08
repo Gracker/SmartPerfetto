@@ -11,6 +11,7 @@ import {attachFinalizationContext, takeFinalizationContext, type RuntimeFinaliza
 import {buildStrategyRegistrySnapshotFromDefinitions} from '../../agentv3/strategyLoader';
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
 import {createDataEnvelope} from '../../types/dataContract';
+import {RunSupplementChannel} from '../../agentRuntime/runSupplementChannel';
 import {ArtifactStore} from '../../agentv3/artifactStore';
 import type {IdentityResolutionV1} from '../../types/identityContract';
 import {captureEvidenceTable} from '../../services/evidence/evidenceCapture';
@@ -1146,6 +1147,45 @@ describe('HTTP shared finalization ownership', () => {
       // The route borrows the application-owned scope; only its owner disposes it.
       expect(readRuntimeAdmission(scope.bind({}, id), {runId: f.runId, sessionId: id})).toBe(expected);
     } finally {scope.dispose(); agentRoutesCancellationTestSeam.deleteSession(id);}
+  });
+
+  it.each([false, true])('forwards the run supplement sidecar through the explicit option chain and records delivered supplements (private=%s)', async isPrivate => {
+    const id = `http-run-supplement-${isPrivate}`;
+    const f = fixture(id);
+    if (isPrivate) {
+      f.session.activeRun.privateContext = {codebase: true, knowledge: false};
+      f.session.lastRun = f.session.activeRun;
+      f.session.runRegistry[f.runId] = f.session.activeRun;
+    }
+    f.attach({});
+    const channel = new RunSupplementChannel({runId: f.runId});
+    channel.bindClassifier(async () => ({disposition: 'in_place'}));
+    let steeredId = '';
+    channel.bindSteerTarget({steer: delivery => { steeredId = delivery.id; }, clear: () => undefined});
+    f.analyze.mockImplementation(async (_query, _session, _trace, options) => {
+      expect(options?.runSupplementChannel).toBe(channel);
+      channel.submit({idempotencyKey: 'a', text: 'note the binder'});
+      await new Promise(resolve => setImmediate(resolve));
+      channel.markDelivered(steeredId);
+      channel.assignRequestIndex(2);
+      return f.native;
+    });
+    let finalizedResult: AnalysisResult | undefined;
+    jest.spyOn(finalization, 'finalizeAnalysisResult').mockImplementation(async input => {
+      input.context?.dispose();
+      finalizedResult = input.result;
+      return {result: input.result};
+    });
+    try {
+      await agentRoutesCancellationTestSeam.runAgentDrivenAnalysis(id, 'fact', 'trace-a', {
+        runContext: f.session.activeRun, generateTracks: false, runSupplementChannel: channel,
+      });
+      expect(finalizedResult?.conclusion).toBe('exact\r\nbody');
+      const records = f.session.result?.runSupplements ?? finalizedResult?.runSupplements;
+      expect(records).toEqual([expect.objectContaining({deliveredRequestIndex: 2})]);
+      if (isPrivate) expect(records?.[0].text).toBeUndefined();
+      else expect(records?.[0].text).toBe('note the binder');
+    } finally { agentRoutesCancellationTestSeam.deleteSession(id); }
   });
 
   it.each(['existing_only', 'unavailable', 'missing_context', 'expired'] as const)(

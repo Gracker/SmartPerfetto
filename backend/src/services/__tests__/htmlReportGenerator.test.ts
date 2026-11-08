@@ -114,6 +114,21 @@ describe('HTMLReportGenerator', () => {
     expect(html).not.toContain('1,435,508');
   });
 
+  test('adds one provenance line counting delivered run supplements, never their text', () => {
+    const html = new HTMLReportGenerator().generateAgentDrivenHTML({
+      result: {success: true, conclusion: 'x', findings: [], hypotheses: [], confidence: 0.5, rounds: 1, totalDurationMs: 1,
+        runSupplements: [{id: 'a', sequence: 1, deliveredRequestIndex: 2, text: 'SECRET_SUPPLEMENT_TEXT'}]},
+      hypotheses: [], dataEnvelopes: [], traceId: 't', query: 'q', timestamp: 1, outputLanguage: 'en',
+    } as any);
+    expect(html).toContain('1 user supplement(s) entered');
+    expect(html).not.toContain('SECRET_SUPPLEMENT_TEXT');
+    const none = new HTMLReportGenerator().generateAgentDrivenHTML({
+      result: {success: true, conclusion: 'x', findings: [], hypotheses: [], confidence: 0.5, rounds: 1, totalDurationMs: 1},
+      hypotheses: [], dataEnvelopes: [], traceId: 't', query: 'q', timestamp: 1, outputLanguage: 'en',
+    } as any);
+    expect(none).not.toContain('user supplement');
+  });
+
   test('escapes nested report keys and object values', () => {
     const generator = new HTMLReportGenerator();
     const renderDeepAnalysisCard = (

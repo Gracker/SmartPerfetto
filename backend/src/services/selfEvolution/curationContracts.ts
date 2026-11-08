@@ -108,6 +108,7 @@ export interface CurationDiagnostic {
     | 'curation_scope_mismatch'
     | 'curation_feedback_manifest_missing'
     | 'curation_feedback_manifest_mismatch'
+    | 'curation_run_supplemented'
     | 'curation_eval_case_missing'
     | 'curation_eval_case_ambiguous'
     | 'curation_threshold_not_met'

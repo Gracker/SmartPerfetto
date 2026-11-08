@@ -146,7 +146,7 @@ export function getAnalysisRunPrivateContext(
   return decodePrivateContextColumn(row?.private_context);
 }
 
-function isTerminalStatus(status: string): boolean {
+export function isTerminalRunStatus(status: string): boolean {
   return status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'quota_exceeded';
 }
 
@@ -232,7 +232,7 @@ export function persistAnalysisRunState(
   options: { now?: number; error?: string; updateSessionStatus?: boolean } = {},
 ): void {
   const now = options.now ?? Date.now();
-  const terminal = isTerminalStatus(status);
+  const terminal = isTerminalRunStatus(status);
   const updateSessionStatus = options.updateSessionStatus !== false;
   const db = getAnalysisRunDb();
   const write = db.transaction(() => {
@@ -346,7 +346,7 @@ export function isAnalysisRunHeartbeatFresh(
   maxStaleMs: number,
 ): boolean {
   const lifecycle = getAnalysisRunLifecycle(scope, runId);
-  if (!lifecycle || isTerminalStatus(lifecycle.status)) return false;
+  if (!lifecycle || isTerminalRunStatus(lifecycle.status)) return false;
   const heartbeatAt = lifecycle.heartbeatAt ?? lifecycle.updatedAt ?? lifecycle.startedAt;
   return now - heartbeatAt <= maxStaleMs;
 }

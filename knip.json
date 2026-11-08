@@ -63,6 +63,7 @@
         "src/services/traceProcessorSqlWorkerThread.ts!",
         "src/types/claimVerification.ts!",
         "src/types/criticalPathContract.ts!",
+        "src/types/runSupplementContract.ts!",
         "src/types/dataContract.ts!",
         "src/types/evidenceContract.ts!",
         "src/types/externalIssueReporting.ts!",

@@ -85,6 +85,8 @@ export interface CompletedAnalysisSnapshotInput extends AnalysisDeliveryFields {
   terminationMessage?: string;
   dataEnvelopes?: DataEnvelope[];
   analysisReceipt?: import('../types/dataContract').AnalysisReceipt;
+  /** Count only: the snapshot never holds a supplement's text. */
+  runSupplementCount?: number;
   capabilityManifest?: import('../types/capabilityManifest').CapabilityManifestAttributionV1;
   traceSummary?: import('../types/traceSummaryAttribution').TraceSummaryAttributionV1;
   uiActionProposals?: import('../types/dataContract').UiActionProposalV1[];
@@ -630,6 +632,7 @@ export function buildCompletedAnalysisResultSnapshot(
       ...(input.confidence !== undefined ? { confidence: input.confidence } : {}),
       ...(partialReasons.length > 0 ? { partialReasons } : {}),
       ...(storedResult.analysisReceipt ? {analysisReceipt: storedResult.analysisReceipt} : {}),
+      ...(input.runSupplementCount ? {runSupplementCount: input.runSupplementCount} : {}),
       ...(traceSummary ? {traceSummary} : {}),
       ...(input.uiActionProposals && input.uiActionProposals.length > 0 ? { uiActionProposals: input.uiActionProposals } : {}),
     },

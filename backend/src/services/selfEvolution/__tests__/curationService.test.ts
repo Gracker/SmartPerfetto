@@ -294,6 +294,37 @@ describe('CurationService', () => {
       proposals.close();
     }
   });
+
+  it('excludes runs with delivered supplements from curated baselines', async () => {
+    const source = PublicFeedbackCurationSource.open({scope});
+    const manifest = {
+      ...makeManifest(0, false),
+      performance: {schemaVersion: 1 as const, phases: [], tools: [], sql: [], runSupplements: {delivered: 1}},
+    };
+    await source.append({
+      kind: 'created', idempotencyKey: 'supplemented', runId: manifest.runId,
+      runManifestId: manifest.runManifestId, sessionId: manifest.sessionId, rating: 'positive', dimensions: [],
+      targetKind: 'session', targetId: manifest.sessionId, source: 'api', actor: {userId: 'user-a'}, scope,
+    });
+    const proposals = new ProposalStore({databasePath: ':memory:'});
+    const service = new CurationService({
+      manifests: {get: () => manifest},
+      evalCases: {listCases: () => []},
+      proposals,
+    });
+    try {
+      const result = await service.runExplicit({scope, source, env: {SELF_EVOLUTION_ENABLED: '1'}});
+      expect(result.observationsAnalyzed).toBe(0);
+      expect(result.diagnostics).toContainEqual({
+        code: 'curation_run_supplemented',
+        details: expect.objectContaining({runId: manifest.runId}),
+      });
+      expect(result.diagnostics.map(diagnostic => diagnostic.code)).not.toContain('curation_eval_case_missing');
+    } finally {
+      source.close();
+      proposals.close();
+    }
+  });
 });
 
 function makeManifest(index: number, negative: boolean): RunManifestV1 {

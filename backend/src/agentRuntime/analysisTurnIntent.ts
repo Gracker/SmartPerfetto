@@ -21,6 +21,7 @@ import {currentRunManifestAttributionSink} from '../services/selfEvolution/runMa
 import type {AnalysisOptions} from '../agent/core/orchestratorTypes';
 import {resolveSceneProductScope} from '../agent/scene/sceneRuntimeBinding';
 import {SOURCE_NEEDS, type SourceNeed} from '../types/sourceNeed';
+import {parseStrictJsonObject} from '../utils/llmJson';
 
 const TASK_KINDS = ['acknowledgement', 'fact', 'investigation', 'comparison'] as const;
 const SCOPES = ['bounded_question', 'scene_wide'] as const;
@@ -57,7 +58,7 @@ export type AnalysisTurnIntent = Readonly<AnalysisTurnIntentDecision & {
 const OUTPUT_BYTE_LIMIT = 8192;
 const PROMPT_BYTE_LIMIT = 64 * 1024;
 
-function member<T extends string>(value: unknown, values: readonly T[]): value is T {
+export function member<T extends string>(value: unknown, values: readonly T[]): value is T {
   return typeof value === 'string' && values.includes(value as T);
 }
 
@@ -67,15 +68,8 @@ export function parseAnalysisTurnIntentDecision(
   registry: ReadonlyStrategyRegistrySnapshot,
   options: {sourceSelected?: boolean} = {},
 ): AnalysisTurnIntentDecision | undefined {
-  if (Buffer.byteLength(text, 'utf8') > OUTPUT_BYTE_LIMIT) return undefined;
-  const trimmed = text.trim();
-  const fenced = /^```(?:json)?\s*\n([\s\S]*)\n```$/.exec(trimmed);
-  let value: Record<string, unknown>;
-  try {
-    const parsed: unknown = JSON.parse(fenced ? fenced[1] : trimmed);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
-    value = parsed as Record<string, unknown>;
-  } catch { return undefined; }
+  const value = parseStrictJsonObject(text, OUTPUT_BYTE_LIMIT);
+  if (!value) return undefined;
   const keys = ['schemaVersion', 'taskKind', 'sceneId', 'scope', 'recommendedComplexity', 'deliverable', 'evidenceAccess',
     'reason', 'targetUse', ...(options.sourceSelected ? ['sourceNeed'] : [])];
   if (Object.keys(value).some(key => !keys.includes(key))) return undefined;
@@ -108,7 +102,7 @@ export function parseAnalysisTurnIntentDecision(
 }
 
 /** Whether a run's request selects source, which is when its intent judges the source need. */
-function analysisOptionsSelectSource(options: Pick<AnalysisOptions, 'codeAwareMode' | 'codebaseIds'> | undefined): boolean {
+export function analysisOptionsSelectSource(options: Pick<AnalysisOptions, 'codeAwareMode' | 'codebaseIds'> | undefined): boolean {
   return Boolean(options?.codeAwareMode && options.codeAwareMode !== 'off' && options.codebaseIds?.length);
 }
 

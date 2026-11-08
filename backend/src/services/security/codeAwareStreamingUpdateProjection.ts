@@ -36,6 +36,8 @@ const PRIVATE_EVENT_POLICIES: Record<StreamingUpdate['type'], PrivateEventPolicy
   answer_token: 'answer',
   // Carries only the run id and a segment counter.
   answer_segment_reset: 'deterministic',
+  // Ids and enums only; the supplement text never enters this event.
+  run_supplement: 'deterministic',
   conclusion: 'conclusion',
   error: 'error',
   thought: 'suppress',

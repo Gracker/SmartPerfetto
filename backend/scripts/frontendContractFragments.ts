@@ -244,6 +244,7 @@ export const FRONTEND_CONTRACT_SOURCES = {
   identity: {path: 'backend/src/types/identityContract.ts', fragment: identityContractFragment},
   externalIssueReporting: {path: 'backend/src/types/externalIssueReporting.ts', fragment: externalIssueReportingFragment},
   criticalPath: {path: 'backend/src/types/criticalPathContract.ts', fragment: criticalPathContractFragment},
+  runSupplement: {path: 'backend/src/types/runSupplementContract.ts', fragment: verbatimContractFragment},
 } as const satisfies Record<string, {path: string; fragment: (content: string) => string}>;
 
 export type FrontendContractSourceName = keyof typeof FRONTEND_CONTRACT_SOURCES;

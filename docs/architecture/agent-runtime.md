@@ -379,6 +379,16 @@ OpenAI 的采集截止时间可随实际进展延后，但不侵占预留交付�
 服务端从 sealed RunManifest 的成功调用生成本机时长样本；CLI 不汇总样本，使用默认值，
 回执注明 `stats_not_configured`。准入决策和实际调用时长是内部性能记录，不是证明或公开 SSE。
 
+### 运行中补充说明
+
+`SMARTPERFETTO_RUN_SUPPLEMENT` 开启且 runtime 声明 `EngineCapabilities.runSupplement` 时（目前只有 Pi），每个普通分析 run 创建一个 `RunSupplementChannel`，由 `finishExecution` 在所有结束路径上调用 `terminate`。Channel 不读取 session 级别的 agent，只通过 run 绑定的 sidecar 进入 runtime（`analysisRunDispatchService.ts` → `agentRoutes.ts` 的 `baseAnalyzeOptions`），sidecar 不在 HTTP options 白名单里，Pi 绑定前校验 `channel.runId === executionLease.key.runId`。
+
+Agent 是否接收由小型分类器决定：`runSupplementIntent.ts` 解析封闭 schema，确定性决策表把结果映射为就地应用或 `restart_required`。不改变的是预算：`providerTurnLimit`、`totalTurns`、期限都不增加，一次分类记为一次 `classification` model call，deadline 为 `min(run deadline, now+5s)`，且按 run 严格串行。分类失败一律 `rejected`。窗口关闭或 run 结束时，进行中的分类请求会被 abort，channel 随后清除文本和回调闭包，只保留内存摘要用于幂等重放，携带补充文本的 provider 调用不会比 run 活得更久。有已送达补充说明的 run 被 Self-Evolution curation 排除（`curation_run_supplemented`），不进入配对基线。
+
+投递用 Pi `steer`（`steeringMode: 'all'`），消息角色为 `user` 并由模板标注为“用户输入、不是证据、不授予权限”。`steer` 只入队，真正生效的事实是 `message_end`，因此 `delivered` 的含义是“已进入 Agent 上下文”，`deliveredRequestIndex` 来自下一次 `prepareRequest`。分析在首次 prompt 前到达的补充说明进入第 1 次请求；工具执行中到达的，在下一次工具边界进入；到达时已无工具调用（最后答案轮）或轮次用尽的，标记 `not_applied`，不会增加 provider 请求。主 prompt 结束后 `closeAcquisition` 清空 Agent 的 steering 队列并关闭窗口，后续的 correction prompt 不会带入未送达的补充说明；closeout 显式携带已送达的补充说明，因为它只发送 `query`。
+
+事件 `run_supplement` 只含 ID 和枚举；前端在 D 阶段消费（`perfetto/ui`），在此之前作为已记录的契约保留。
+
 ## SSE 事件
 
 所有 runtime 都向路由层发同一类 SmartPerfetto streaming update：

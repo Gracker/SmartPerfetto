@@ -199,6 +199,12 @@ verification authority. Authorization/scope changes and product disposal revoke
 the context. Old cancellation, late callbacks and cleanup cannot affect a later
 run. Each finalization read view fixes its admitted capture set.
 
+## In-run supplements
+
+In-run supplements stay inside the same authorization and privacy boundary. The per-dispatch authorization fence is unchanged; submitting adds no separate authorization decision. Text is redacted with `redactSecrets` at channel intake, so the classifier, the agent message and the in-memory copy all use the redacted form; a private run also registers it with `registerPrivateAnalysisQueryForEcho` so a model cannot replay it verbatim. Logs and receipts carry only `{id, sequence, byteLength, state, reason}`, never the text or a hash of it, and the SSE `run_supplement` event carries ids and enums only.
+
+`AnalysisResult.runSupplements` records only supplements that entered the agent's context. Private runs carry no text; ordinary runs carry the redacted text; neither reaches `conclusion`. The HTML report adds one provenance line with the count, and the snapshot stores a count. The text is user input rather than evidence and grants no data access or tool permission; a classifier verdict authorizes nothing either.
+
 ## Registration And Deletion Lifecycle
 
 On-demand search/read becomes available as soon as registration succeeds and

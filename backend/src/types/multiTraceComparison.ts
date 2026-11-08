@@ -137,6 +137,8 @@ export interface AnalysisSummary {
   sourceUseDecision?: import('../services/codebase/sourceUseDecision').SourceUseDecisionV1;
   sourceClaimVerificationResult?: import('../services/codebase/sourceClaimVerifier').StoredSourceClaimVerificationResult;
   knowledgeUse?: import('../services/knowledge/knowledgeUse').KnowledgeUseV1;
+  /** Run supplements that entered the agent's context; absent when the run had none. */
+  runSupplementCount?: number;
   details?: string[];
   risks?: string[];
   recommendations?: string[];

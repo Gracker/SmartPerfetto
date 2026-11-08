@@ -904,6 +904,8 @@ export interface RuntimePerformanceReceiptV1 {
   sceneEvidence?: RuntimePerformanceSceneEvidenceReceiptV1;
   /** Absent in receipts recorded before per-request investigation observation existed. */
   investigationRequests?: RuntimeInvestigationRequestReceiptV1[];
+  /** Supplements that entered the agent's context; absent when the run had none. */
+  runSupplements?: {delivered: number};
   truncated?: {
     phases: number;
     tools: number;
@@ -1066,6 +1068,7 @@ export class RuntimePerformanceRecorder {
   private readonly modelRequests: RuntimeModelRequestReceiptV1[] = [];
   private readonly policyObservations: RuntimeModelPolicyObservation[] = [];
   private readonly investigationRequests: RuntimeInvestigationRequestReceiptV1[] = [];
+  private runSupplementsDelivered = 0;
   private readonly finalTransportEvents: RuntimeFinalTransportEvent[] = [];
   private finalTransportTruncated = 0;
   private readonly deliveryBudgets: RuntimePerformanceDeliveryBudgetReceiptV1[] = [];
@@ -1418,6 +1421,11 @@ export class RuntimePerformanceRecorder {
     if (receipt) this.investigationRequests.push(receipt);
   }
 
+  recordRunSupplementsDelivered(count: number): void {
+    this.assertCollecting('record_run_supplements_delivered');
+    this.runSupplementsDelivered = Math.max(0, Math.trunc(count));
+  }
+
   recordDeliveryBudget(input: RuntimePerformanceDeliveryBudgetReceiptV1): void {
     this.assertCollecting('record_delivery_budget');
     if (this.deliveryBudgets.length >= DEFAULT_MAX_RECEIPT_ITEMS) return;
@@ -1472,6 +1480,7 @@ export class RuntimePerformanceRecorder {
       ...(this.deliveryBudgets.length > 0 ? {deliveryBudgets: [...this.deliveryBudgets]} : {}),
       ...(this.sceneEvidence ? {sceneEvidence: this.sceneEvidence} : {}),
       ...(this.investigationRequests.length > 0 ? {investigationRequests: [...this.investigationRequests]} : {}),
+      ...(this.runSupplementsDelivered > 0 ? {runSupplements: {delivered: this.runSupplementsDelivered}} : {}),
       ...(this.truncated.phases > 0
         || this.truncated.tools > 0
         || this.truncated.sql > 0
@@ -1587,6 +1596,8 @@ export interface RuntimePerformanceRun {
   acceptsInvestigationRequest(): boolean;
   /** One native Agent request observation; never throws. */
   recordInvestigationRequest(input: Omit<RuntimeInvestigationRequestReceiptV1, 'offsetMs'>): void;
+  /** Delivered run supplements for this run's receipt; never throws. */
+  recordRunSupplementsDelivered(count: number): void;
   recordFirstOutput(): void;
   finalize(outcome?: RuntimePerformanceOutcome): void;
 }
@@ -1697,6 +1708,9 @@ export function createRuntimePerformanceRun(
     },
     recordInvestigationRequest: input => {
       try { recorder?.recordInvestigationRequest(input); } catch { /* Internal observability only. */ }
+    },
+    recordRunSupplementsDelivered: count => {
+      try { recorder?.recordRunSupplementsDelivered(count); } catch { /* Internal observability only. */ }
     },
     recordFirstOutput: () => {
       try {

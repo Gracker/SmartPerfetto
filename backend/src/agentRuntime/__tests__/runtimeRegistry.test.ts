@@ -37,6 +37,7 @@ function fakeCapabilities(kind = 'fake-runtime'): EngineCapabilities {
     publicRuntime: false,
     promptCache: { systemPromptDynamicBoundary: false },
     draftAnswerStreaming: false,
+    runSupplement: false,
   };
 }
 
@@ -84,6 +85,7 @@ describe('runtime registry', () => {
       publicRuntime: true,
       promptCache: { systemPromptDynamicBoundary: true },
       draftAnswerStreaming: true,
+      runSupplement: false,
     });
     expect(openai).toEqual({
       kind: 'openai-agents-sdk',
@@ -92,6 +94,7 @@ describe('runtime registry', () => {
       publicRuntime: true,
       promptCache: { systemPromptDynamicBoundary: false },
       draftAnswerStreaming: true,
+      runSupplement: false,
     });
     expect(pi).toEqual({
       kind: 'pi-agent-core',
@@ -100,6 +103,7 @@ describe('runtime registry', () => {
       publicRuntime: true,
       promptCache: { systemPromptDynamicBoundary: false },
       draftAnswerStreaming: false,
+      runSupplement: true,
     });
     for (const capabilities of [claude, openai, pi]) {
       expect(capabilities).not.toHaveProperty('toolTransport');

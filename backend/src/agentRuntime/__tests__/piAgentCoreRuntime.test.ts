@@ -41,6 +41,8 @@ import {
   SOURCE_FINALIZATION_RAW_SOURCE,
 } from './sourceFinalizationFixture';
 import {createRuntimePerformanceRecorder} from '../runtimePerformance';
+import {RunSupplementChannel} from '../runSupplementChannel';
+import * as localizedStrategyTemplate from '../../agentv3/localizedStrategyTemplate';
 import {withEffectiveRuntimeRegistrySnapshot} from '../../services/selfEvolution/effectiveRuntimeRegistryContext';
 import type {EffectiveRuntimeRegistrySnapshot} from '../../services/selfEvolution/effectiveRuntimeRegistryContext';
 import type {RunManifestAttributionSink} from '../../types/selfEvolution';
@@ -206,6 +208,22 @@ class FakePiAgent {
 
   emitForTest(event: PiAgentCoreEvent): void {
     this.emit(event);
+  }
+
+  steeringQueue: unknown[] = [];
+
+  steer(message: unknown): void {
+    this.steeringQueue.push(message);
+  }
+
+  clearSteeringQueue(): void {
+    this.steeringQueue = [];
+  }
+
+  drainSteeringForTest(): unknown[] {
+    const drained = this.steeringQueue;
+    this.steeringQueue = [];
+    return drained;
   }
 
   private emit(event: PiAgentCoreEvent): void {
@@ -4513,6 +4531,305 @@ describe('experimental Pi agent-core runtime contract', () => {
           expect(Object.keys(on.observed.options!)).toEqual(Object.keys(off.observed.options!));
         } finally {buildSpy.mockRestore();}
       });
+    });
+  });
+
+  describe('run supplements', () => {
+    const supplementDecision = {goal: 'refine_current_goal', sceneId: 'general', scopeEffect: 'none',
+      target: 'current_trace', evidenceNeed: 'none', requiredAccess: 'none', deliverable: 'answer', budget: 'unchanged'};
+    const answer = (text: string, stopReason = 'stop') =>
+      ({role: 'assistant', stopReason, content: [{type: 'text', text}]});
+    const toolTurn = () => ({role: 'assistant', stopReason: 'toolUse',
+      content: [{type: 'toolCall', id: 'call-1', name: 'execute_sql', arguments: {}}]});
+    const flushAsync = async () => {
+      for (let i = 0; i < 30; i++) await new Promise(resolve => setImmediate(resolve));
+    };
+    const classifierReply = (value: unknown) => ({role: 'assistant', stopReason: 'stop',
+      content: [{type: 'text', text: JSON.stringify(value)}]});
+    /** Same scheduling as Pi's agent loop: steering polls before each request and after finishTurn. */
+    async function scriptedLoop(agent: FakePiAgent, turns: Array<Record<string, any>>,
+      duringTurn?: (turn: number) => Promise<void>): Promise<number> {
+      let pending = agent.drainSteeringForTest();
+      let requests = 0;
+      let index = 0;
+      for (;;) {
+        for (const message of pending) {
+          agent.emitForTest({type: 'message_end', message});
+          agent.state.messages.push(message);
+        }
+        await (agent.options?.prepareRequest as any)?.({context: {messages: agent.state.messages, tools: []}}, undefined);
+        requests++;
+        await duringTurn?.(index);
+        const message = turns[Math.min(index++, turns.length - 1)];
+        agent.state.messages.push(message);
+        const decision = await (agent.options?.finishTurn as any)({message, toolResults: []});
+        agent.emitForTest({type: 'turn_end', message, toolResults: []});
+        if (decision?.action === 'end') return requests;
+        pending = agent.drainSteeringForTest();
+        const hasToolCall = message.content.some((part: any) => part?.type === 'toolCall');
+        if (!hasToolCall && pending.length === 0) return requests;
+      }
+    }
+    function runWithChannel(channel: RunSupplementChannel, input: {
+      runtime?: PiAgentCoreRuntime;
+      env?: Record<string, string>;
+      sink?: RunManifestAttributionSink;
+    } = {}) {
+      const runtime = input.runtime ?? typedRuntime({env: input.env});
+      return runtime.analyze('question', channel.runId, 'trace-pi', {
+        analysisMode: 'fast', runId: channel.runId, runSupplementChannel: channel,
+        ...(input.sink ? {runManifestAttributionSink: input.sink} : {}),
+      });
+    }
+
+    it('joins a supplement submitted before the first prompt to request one, as a user-role JSON body', async () => {
+      passVerification();
+      piClassifierResponses.push(classifierReply(piClassifierDecision), classifierReply(supplementDecision));
+      const channel = new RunSupplementChannel({runId: 'run-steer-before-prompt'});
+      channel.submit({idempotencyKey: 'key-1', text: 'focus on the render thread'});
+      const recorder = createRuntimePerformanceRecorder();
+      FakePiAgent.promptHandler = async agent => {
+        await flushAsync();
+        expect(agent.options?.steeringMode).toBe('all');
+        expect((agent.steeringQueue as any[]).length).toBe(1);
+        await scriptedLoop(agent, [answer('done')]);
+        return [answer('done')];
+      };
+      const sink = createNoopAttributionSink(recorder);
+      const result = await withEffectiveRuntimeRegistrySnapshot(createEffectiveRuntimeRegistrySnapshot(),
+        () => runWithChannel(channel, {sink}));
+      takeFinalizationContext(result)?.dispose();
+      const [receipt] = channel.receipts();
+      expect(receipt).toMatchObject({state: 'delivered'});
+      const records = channel.deliveredRecords({includeText: true});
+      expect(records).toEqual([expect.objectContaining({deliveredRequestIndex: 1, text: 'focus on the render thread'})]);
+      const [agent] = FakePiAgent.instances;
+      const delivered = agent.state.messages.find((m: any) => m.role === 'user') as any;
+      expect(delivered.content[0].text).toContain(JSON.stringify({text: 'focus on the render thread'}));
+      expect(recorder.seal().runSupplements).toEqual({delivered: 1});
+    });
+
+    it('enters at the tool boundary of the running turn, not before it', async () => {
+      passVerification();
+      piClassifierResponses.push(classifierReply(piClassifierDecision), classifierReply(supplementDecision));
+      const channel = new RunSupplementChannel({runId: 'run-steer-during-tool'});
+      FakePiAgent.promptHandler = async agent => {
+        await scriptedLoop(agent, [toolTurn(), answer('done')], async turn => {
+          if (turn !== 0) return;
+          channel.submit({idempotencyKey: 'key-1', text: 'mid tool note'});
+          await flushAsync();
+        });
+        return [answer('done')];
+      };
+      takeFinalizationContext(await runWithChannel(channel))?.dispose();
+      expect(channel.receipts()[0]).toMatchObject({state: 'delivered'});
+      expect(channel.deliveredRecords({includeText: false})).toEqual([
+        expect.objectContaining({deliveredRequestIndex: 2}),
+      ]);
+    });
+
+    it('never steers onto a finished answer: not_applied with no extra provider request', async () => {
+      passVerification();
+      piClassifierResponses.push(classifierReply(piClassifierDecision), classifierReply(supplementDecision));
+      const channel = new RunSupplementChannel({runId: 'run-finished-answer'});
+      let withSupplement = 0;
+      FakePiAgent.promptHandler = async agent => {
+        withSupplement = await scriptedLoop(agent, [answer('done')], async () => {
+          channel.submit({idempotencyKey: 'key-1', text: 'too late'});
+          await flushAsync();
+        });
+        return [answer('done')];
+      };
+      takeFinalizationContext(await runWithChannel(channel))?.dispose();
+      expect(channel.receipts()[0]).toMatchObject({state: 'not_applied', reason: 'window_closed'});
+
+      let without = 0;
+      FakePiAgent.promptHandler = async agent => {
+        without = await scriptedLoop(agent, [answer('done')]);
+        return [answer('done')];
+      };
+      const baseline = await typedRuntime().analyze('question', 'run-baseline', 'trace-pi',
+        {analysisMode: 'fast', runId: 'run-baseline'});
+      takeFinalizationContext(baseline)?.dispose();
+      expect(withSupplement).toBeLessThanOrEqual(without);
+      expect(withSupplement).toBe(1);
+    });
+
+    it('marks a supplement queued when the turn budget runs out as not_applied and sends no further request', async () => {
+      passVerification();
+      piClassifierResponses.push(classifierReply(piClassifierDecision), classifierReply(supplementDecision));
+      const channel = new RunSupplementChannel({runId: 'run-turn-limit'});
+      let requests = 0;
+      FakePiAgent.promptHandler = async agent => {
+        requests = await scriptedLoop(agent, [toolTurn(), toolTurn(), toolTurn()], async turn => {
+          if (turn !== 1) return;
+          channel.submit({idempotencyKey: 'key-1', text: 'at the limit'});
+          await flushAsync();
+        });
+        return [answer('limit reached')];
+      };
+      takeFinalizationContext(await runWithChannel(channel, {env: {AGENT_QUICK_MAX_TURNS: '2'}}))?.dispose();
+      // Submitted during the last permitted turn: the limit ended the loop before the boundary drained it.
+      expect(channel.receipts()[0]).toMatchObject({state: 'not_applied', reason: 'turn_budget'});
+      expect(requests).toBe(2);
+    });
+
+    it('clears undelivered supplements before the correction prompt so they cannot contaminate it', async () => {
+      passVerification();
+      piClassifierResponses.push(classifierReply(piClassifierDecision), classifierReply(supplementDecision));
+      const channel = new RunSupplementChannel({runId: 'run-correction'});
+      const queueDuringCorrection: unknown[][] = [];
+      FakePiAgent.promptHandler = async (agent, _input, index) => {
+        if (index === 2) {
+          queueDuringCorrection.push([...agent.steeringQueue]);
+          return [answer('The corrected final answer has a body.')];
+        }
+        channel.submit({idempotencyKey: 'key-1', text: 'never delivered'});
+        await flushAsync();
+        // A truncated answer with no tool call: finishTurn ends the turn with the supplement still queued.
+        await (agent.options?.finishTurn as any)({message: answer('', 'length'), toolResults: []});
+        return [answer('', 'length')];
+      };
+      takeFinalizationContext(await runWithChannel(channel))?.dispose();
+      expect(channel.receipts()[0]).toMatchObject({state: 'not_applied', reason: 'window_closed'});
+      expect(queueDuringCorrection).toEqual([[]]);
+      expect(FakePiAgent.instances[0].prompts.join('\n')).not.toContain('never delivered');
+    });
+
+    it('carries delivered supplements into the closeout prompt', async () => {
+      passVerification();
+      const trace = createFakeTraceProcessorService();
+      trace.query.mockResolvedValue({columns: ['duration_ms'], rows: [{duration_ms: 23}], durationMs: 1});
+      piClassifierResponses.push(
+        classifierReply(piClassifierDecision), classifierReply(supplementDecision),
+        {role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: 'Observed 23 ms.'}]},
+      );
+      const channel = new RunSupplementChannel({runId: 'run-closeout'});
+      FakePiAgent.promptHandler = async agent => {
+        const sql = agent.state.tools.find((tool: any) => tool.name === 'execute_sql') as any;
+        await sql.execute('closeout-evidence', {sql: 'SELECT 23 AS duration_ms'});
+        channel.submit({idempotencyKey: 'key-1', text: 'mention the 23 ms figure'});
+        await flushAsync();
+        const message = toolTurn();
+        const pending = agent.drainSteeringForTest();
+        for (const steered of pending) agent.emitForTest({type: 'message_end', message: steered});
+        await (agent.options?.prepareRequest as any)?.({context: {messages: agent.state.messages, tools: []}}, undefined);
+        agent.emitForTest({type: 'turn_end', message});
+        expect(await (agent.options?.finishTurn as any)({message, toolResults: []})).toEqual({action: 'end'});
+        return [message];
+      };
+      const result = await runWithChannel(channel, {
+        runtime: typedRuntime({trace, env: {AGENT_QUICK_MAX_TURNS: '2'}}),
+      });
+      takeFinalizationContext(result)?.dispose();
+      expect(channel.receipts()[0]).toMatchObject({state: 'delivered'});
+      const closeoutPrompt = (piClassifierCalls[piClassifierCalls.length - 1] as any).context.messages[0].content;
+      expect(closeoutPrompt).toContain('mention the 23 ms figure');
+    });
+
+    it('still carries delivered supplements into the closeout prompt when the closeout template is missing', async () => {
+      passVerification();
+      const trace = createFakeTraceProcessorService();
+      trace.query.mockResolvedValue({columns: ['duration_ms'], rows: [{duration_ms: 23}], durationMs: 1});
+      piClassifierResponses.push(
+        classifierReply(piClassifierDecision), classifierReply(supplementDecision),
+        {role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: 'Observed 23 ms.'}]},
+      );
+      const realRender = localizedStrategyTemplate.renderRequiredLocalizedStrategyTemplate;
+      const render = jest.spyOn(localizedStrategyTemplate, 'renderRequiredLocalizedStrategyTemplate')
+        .mockImplementation((name, language, vars) => {
+          if (name === 'prompt-run-supplement-closeout') throw new Error('Required strategy template is missing');
+          return realRender(name, language, vars);
+        });
+      const channel = new RunSupplementChannel({runId: 'run-closeout-fallback'});
+      FakePiAgent.promptHandler = async agent => {
+        const sql = agent.state.tools.find((tool: any) => tool.name === 'execute_sql') as any;
+        await sql.execute('closeout-evidence', {sql: 'SELECT 23 AS duration_ms'});
+        channel.submit({idempotencyKey: 'key-1', text: 'keep this note'});
+        await flushAsync();
+        for (const steered of agent.drainSteeringForTest()) agent.emitForTest({type: 'message_end', message: steered});
+        const message = toolTurn();
+        agent.emitForTest({type: 'turn_end', message});
+        await (agent.options?.finishTurn as any)({message, toolResults: []});
+        return [message];
+      };
+      try {
+        const result = await runWithChannel(channel, {runtime: typedRuntime({trace, env: {AGENT_QUICK_MAX_TURNS: '2'}})});
+        takeFinalizationContext(result)?.dispose();
+      } finally { render.mockRestore(); }
+      const closeoutPrompt = (piClassifierCalls[piClassifierCalls.length - 1] as any).context.messages[0].content;
+      expect(closeoutPrompt).toContain('keep this note');
+    });
+
+    it('aborts an in-flight classification when the window closes, so no provider call outlives it', async () => {
+      passVerification();
+      const verdict = createDeferred<Record<string, unknown>>();
+      piClassifierResponses.push(classifierReply(piClassifierDecision), verdict.promise as any);
+      const channel = new RunSupplementChannel({runId: 'run-classification-abort'});
+      let aborted: boolean | undefined;
+      FakePiAgent.promptHandler = async () => {
+        channel.submit({idempotencyKey: 'key-1', text: 'still classifying'});
+        await flushAsync();
+        const call = piClassifierCalls[piClassifierCalls.length - 1] as any;
+        expect(call.options.signal.aborted).toBe(false);
+        channel.closeAcquisition('window_closed');
+        aborted = call.options.signal.aborted;
+        verdict.resolve(classifierReply(supplementDecision));
+        return [answer('done')];
+      };
+      takeFinalizationContext(await runWithChannel(channel))?.dispose();
+      expect(aborted).toBe(true);
+      expect(channel.receipts()[0]).toMatchObject({state: 'not_applied', reason: 'window_closed'});
+    });
+
+    it('settles queued supplements as run_stopped when the run is aborted', async () => {
+      passVerification();
+      piClassifierResponses.push(classifierReply(piClassifierDecision), classifierReply(supplementDecision));
+      const runId = 'run-abort';
+      const channel = new RunSupplementChannel({runId});
+      const never = createDeferred<unknown[]>();
+      const entered = createDeferred<void>();
+      FakePiAgent.promptHandler = async () => {
+        channel.submit({idempotencyKey: 'key-1', text: 'abort me'});
+        await flushAsync();
+        // An aborted turn is a hard exit; it must not relabel the queued supplement as window_closed.
+        await (FakePiAgent.instances[FakePiAgent.instances.length - 1].options?.finishTurn as any)({
+          message: {role: 'assistant', stopReason: 'aborted', content: []}, toolResults: []});
+        expect(channel.receipts()[0].state).toBe('queued');
+        entered.resolve();
+        return never.promise;
+      };
+      const runtime = typedRuntime();
+      const running = runWithChannel(channel, {runtime});
+      await entered.promise;
+      expect(channel.receipts()[0].state).toBe('queued');
+      await runtime.abortSession(runId);
+      never.resolve([answer('late')]);
+      await running.catch(() => undefined);
+      expect(channel.receipts()[0]).toMatchObject({state: 'not_applied', reason: 'run_stopped'});
+    });
+
+    it('reports the run as unsupported when the loaded module cannot steer', async () => {
+      passVerification();
+      class ModuleWithoutSteer extends FakePiAgent {
+        override steer = undefined as any;
+      }
+      const channel = new RunSupplementChannel({runId: 'run-no-steer'});
+      const runtime = typedRuntime({loader: async () => ({Agent: ModuleWithoutSteer})});
+      FakePiAgent.promptHandler = async () => [answer('done')];
+      takeFinalizationContext(await runWithChannel(channel, {runtime}))?.dispose();
+      expect(channel.isUnsupported).toBe(true);
+      expect(channel.submit({idempotencyKey: 'key-2', text: 'late'})).toEqual({status: 'unsupported'});
+    });
+
+    it('leaves the request unchanged when no channel is issued', async () => {
+      passVerification();
+      FakePiAgent.promptHandler = async () => [answer('done')];
+      const result = await typedRuntime().analyze('question', 'run-no-channel', 'trace-pi',
+        {analysisMode: 'fast', runId: 'run-no-channel'});
+      takeFinalizationContext(result)?.dispose();
+      expect(FakePiAgent.instances[0].options?.steeringMode).toBeUndefined();
+      expect(FakePiAgent.instances[0].state.messages.some((m: any) => m.role === 'user')).toBe(false);
     });
   });
 

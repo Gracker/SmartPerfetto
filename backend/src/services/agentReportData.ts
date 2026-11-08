@@ -147,6 +147,7 @@ interface ReportResultLike {
   terminationMessage?: string;
   analysisReceipt?: AgentDrivenReportData['result']['analysisReceipt'];
   uiActionProposals?: AgentDrivenReportData['result']['uiActionProposals'];
+  runSupplements?: AgentDrivenReportData['result']['runSupplements'];
 }
 
 export interface BuildAgentReportDataInput {

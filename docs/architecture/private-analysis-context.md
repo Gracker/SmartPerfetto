@@ -137,6 +137,12 @@ JSON、历史正文或 snapshot 都不能恢复该能力。模型得到的有界
 artifact，不包含 rows 或验证权。授权/范围变化和会话销毁撤销 context；旧轮次取消、
 迟到回调或 cleanup 不能影响新轮次。每次 finalization 的读取视图固定其可读取的采集集合。
 
+## 运行中补充说明
+
+运行中补充说明沿用同一套授权与隐私边界。每次 model dispatch 的授权栅栏不变；提交时不额外做一次授权判断。文本在进入 channel 时用 `redactSecrets` 去除凭据，分类器、Agent 消息和内存中的副本都使用去除后的文本；私有 run 还通过 `registerPrivateAnalysisQueryForEcho` 注册，避免模型原样复述。日志和回执只有 `{id, sequence, byteLength, state, reason}`，不含文本或文本哈希；SSE `run_supplement` 只含 ID 和枚举。
+
+结果只在 `AnalysisResult.runSupplements` 记录已进入 Agent 上下文的补充说明：私有 run 不带文本，普通 run 带去除凭据后的文本，二者都不进入 `conclusion`。HTML 报告只写一行来源说明（数量），快照只存计数。这段文本是用户输入，不是证据，也不授予任何数据访问或工具权限；分类结果同样不授权任何事。
+
 ## 注册与删除生命周期
 
 注册完成且根目录仍可访问时，按需搜索/读取立即可用。索引是语义/符号检索与 patch 的
