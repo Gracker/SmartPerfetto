@@ -2121,7 +2121,7 @@ describe('createClaudeMcpServer', () => {
         expect(description).toContain('Numerator/denominator+unrounded REAL ratio');
         expect(description).toContain('CAST/ROUND=display');
         expect(description).toContain('aliases/formats!=authority');
-        expect(description).toContain('columnUnits=issued; unlisted=unknown');
+        expect(description).toContain('columnUnits=issued; else stdlibColumnDocs unit=documented; else unknown');
         expect(description).toContain('modelEvidence=availability, not proof');
         expect(description).toContain('empty/unknown!=zero/absence');
         expect(description).toContain('list_skills');

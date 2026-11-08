@@ -15,7 +15,7 @@
   "trace": {
     "file": "trace.overlay.pftrace",
     "format": "perfetto-protobuf",
-    "sha256": "7995348e5e3ed903b23b132525a0aac45988cf16403b53351f34e1f7d2637fc7",
+    "sha256": "fb2e257a2a7fed901b586feb9b2291ff0834f698402ea9cede81e029ef6bfd94",
     "materialization": "base-plus-overlay"
   },
   "android": {
@@ -97,10 +97,14 @@
           "pool_size",
           "pool_size_basis",
           "named_binder_threads",
+          "inactive_binder_threads",
           "reply_serving_threads",
+          "busy_basis",
           "peak_busy_threads",
           "saturated_ns",
           "busy_thread_ns",
+          "busy_slices",
+          "unfinished_busy_slices",
           "in_progress_replies",
           "unfinished_replies",
           "waiting_sync_calls",
@@ -129,7 +133,7 @@
           {
             "column": "pool_size_basis",
             "operator": "eq",
-            "value": "observed_reply_threads"
+            "value": "observed_active_binder_threads"
           },
           {
             "column": "named_binder_threads",
@@ -190,6 +194,26 @@
             "column": "window_dur_ns",
             "operator": "eq",
             "value": 590000000
+          },
+          {
+            "column": "busy_basis",
+            "operator": "eq",
+            "value": "depth0_thread_slice"
+          },
+          {
+            "column": "inactive_binder_threads",
+            "operator": "eq",
+            "value": 0
+          },
+          {
+            "column": "busy_slices",
+            "operator": "eq",
+            "value": 3
+          },
+          {
+            "column": "unfinished_busy_slices",
+            "operator": "eq",
+            "value": 1
           }
         ],
         "required_marker": "SmartPerfetto::CASE::binder-pool-saturation",
@@ -210,10 +234,14 @@
                 "pool_size",
                 "pool_size_basis",
                 "named_binder_threads",
+                "inactive_binder_threads",
                 "reply_serving_threads",
+                "busy_basis",
                 "peak_busy_threads",
                 "saturated_ns",
                 "busy_thread_ns",
+                "busy_slices",
+                "unfinished_busy_slices",
                 "in_progress_replies",
                 "unfinished_replies",
                 "waiting_sync_calls",
@@ -242,7 +270,7 @@
                 {
                   "column": "pool_size_basis",
                   "operator": "eq",
-                  "value": "observed_reply_threads"
+                  "value": "observed_active_binder_threads"
                 },
                 {
                   "column": "named_binder_threads",
@@ -303,6 +331,26 @@
                   "column": "window_dur_ns",
                   "operator": "eq",
                   "value": 590000000
+                },
+                {
+                  "column": "busy_basis",
+                  "operator": "eq",
+                  "value": "depth0_thread_slice"
+                },
+                {
+                  "column": "inactive_binder_threads",
+                  "operator": "eq",
+                  "value": 0
+                },
+                {
+                  "column": "busy_slices",
+                  "operator": "eq",
+                  "value": 3
+                },
+                {
+                  "column": "unfinished_busy_slices",
+                  "operator": "eq",
+                  "value": 1
                 }
               ]
             },
@@ -482,10 +530,14 @@
           "pool_size",
           "pool_size_basis",
           "named_binder_threads",
+          "inactive_binder_threads",
           "reply_serving_threads",
+          "busy_basis",
           "peak_busy_threads",
           "saturated_ns",
           "busy_thread_ns",
+          "busy_slices",
+          "unfinished_busy_slices",
           "in_progress_replies",
           "unfinished_replies",
           "waiting_sync_calls",
@@ -749,10 +801,14 @@
           "pool_size",
           "pool_size_basis",
           "named_binder_threads",
+          "inactive_binder_threads",
           "reply_serving_threads",
+          "busy_basis",
           "peak_busy_threads",
           "saturated_ns",
           "busy_thread_ns",
+          "busy_slices",
+          "unfinished_busy_slices",
           "in_progress_replies",
           "unfinished_replies",
           "waiting_sync_calls",
@@ -817,6 +873,16 @@
             "column": "unreplied_sync_calls",
             "operator": "eq",
             "value": 0
+          },
+          {
+            "column": "inactive_binder_threads",
+            "operator": "eq",
+            "value": 0
+          },
+          {
+            "column": "busy_slices",
+            "operator": "eq",
+            "value": 1
           }
         ],
         "required_marker": "SmartPerfetto::CASE::binder-pool-saturation"

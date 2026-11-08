@@ -149,6 +149,14 @@
       "cpu": 0,
       "server_cpu": 6,
       "duration_ns": "10000000"
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "30000000",
+      "duration_ns": "1000000",
+      "thread": "quiet-binder-2",
+      "cpu": 7,
+      "end_state": "S"
     }
   ]
 }

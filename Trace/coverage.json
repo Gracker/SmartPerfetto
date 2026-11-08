@@ -1801,7 +1801,7 @@
         "steps": [
           {
             "id": "pool_saturation",
-            "sha256": "5186b1052cec4a8cdf488e757021d802ee31accd3f23b4e4ee86d3299e85d389",
+            "sha256": "27575bfcc9703830750f7c5f5234459a7b170ad2c2955c9720606813cd2aedd5",
             "required_columns": [
               "window_start_ts",
               "window_end_ts",
@@ -1813,10 +1813,14 @@
               "pool_size",
               "pool_size_basis",
               "named_binder_threads",
+              "inactive_binder_threads",
               "reply_serving_threads",
+              "busy_basis",
               "peak_busy_threads",
               "saturated_ns",
               "busy_thread_ns",
+              "busy_slices",
+              "unfinished_busy_slices",
               "in_progress_replies",
               "unfinished_replies",
               "waiting_sync_calls",
@@ -1829,7 +1833,7 @@
           },
           {
             "id": "in_progress_replies",
-            "sha256": "574c85f224cee1ada615009a3f2418028985633e0d13a025b83c3922ce96eda0",
+            "sha256": "2f1f982c56264a48375b35cad3121863f8d2b7b42ddbc7dabd571654311cb924",
             "required_columns": [
               "upid",
               "process_name",

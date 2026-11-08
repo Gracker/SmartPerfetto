@@ -11,7 +11,7 @@
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
     "stepCount": 1389,
-    "explicitColumnCount": 5294
+    "explicitColumnCount": 5298
   },
   "skills": {
     "ams_module": {
@@ -6577,10 +6577,22 @@
                 "en": "named_binder_threads"
               }
             },
+            "inactive_binder_threads": {
+              "label": {
+                "zh-CN": "InactiveBinderThreads",
+                "en": "inactive_binder_threads"
+              }
+            },
             "reply_serving_threads": {
               "label": {
                 "zh-CN": "ReplyServingThreads",
                 "en": "reply_serving_threads"
+              }
+            },
+            "busy_basis": {
+              "label": {
+                "zh-CN": "BusyBasis",
+                "en": "busy_basis"
               }
             },
             "peak_busy_threads": {
@@ -6599,6 +6611,18 @@
               "label": {
                 "zh-CN": "Busy线程ns",
                 "en": "busy_thread_ns"
+              }
+            },
+            "busy_slices": {
+              "label": {
+                "zh-CN": "BusySlices",
+                "en": "busy_slices"
+              }
+            },
+            "unfinished_busy_slices": {
+              "label": {
+                "zh-CN": "UnfinishedBusySlices",
+                "en": "unfinished_busy_slices"
               }
             },
             "in_progress_replies": {

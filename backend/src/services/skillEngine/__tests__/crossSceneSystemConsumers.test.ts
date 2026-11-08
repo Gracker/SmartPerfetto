@@ -251,6 +251,46 @@ describe('cross-scene canonical system consumers', () => {
     });
   });
 
+  // Pool threads busy in their own work (no `binder reply`), beside a named thread
+  // the trace never shows: busy is any depth-0 slice, and the phantom is no member.
+  it('binder pool saturation counts depth-0 work as busy and leaves out phantom pool threads', () => {
+    const db = new Database(':memory:');
+    db.function('extract_arg', (_argSetId: unknown, _key: unknown) => null);
+    try {
+      db.exec(`
+        CREATE TABLE trace_bounds(start_ts INTEGER, end_ts INTEGER); INSERT INTO trace_bounds VALUES(0, 50000000);
+        CREATE TABLE process(upid INTEGER PRIMARY KEY, pid INTEGER, name TEXT, start_ts INTEGER, end_ts INTEGER);
+        INSERT INTO process VALUES(42, 100, 'com.example.app', NULL, NULL);
+        CREATE TABLE thread(utid INTEGER PRIMARY KEY, upid INTEGER, tid INTEGER, name TEXT);
+        INSERT INTO thread VALUES(1, 42, 100, 'main'), (2, 42, 101, 'binder:100_1'), (3, 42, 102, 'binder:100_2'),
+          (4, 42, 103, 'binder:100_3');
+        CREATE TABLE thread_state(utid INTEGER, ts INTEGER, dur INTEGER, state TEXT);
+        INSERT INTO thread_state VALUES(2, 0, 50000000, 'S'), (3, 0, 50000000, 'S');
+        CREATE TABLE thread_track(id INTEGER PRIMARY KEY, utid INTEGER);
+        INSERT INTO thread_track VALUES(1, 1), (2, 2), (3, 3);
+        CREATE TABLE slice(id INTEGER PRIMARY KEY, track_id INTEGER, ts INTEGER, dur INTEGER, depth INTEGER,
+          name TEXT, arg_set_id INTEGER);
+        INSERT INTO slice VALUES(1, 2, 10000000, -1, 0, 'binder transaction', NULL),
+          (2, 2, 11000000, 20000000, 1, 'SlowProvider.query', NULL),
+          (3, 3, 15000000, 20000000, 0, 'SyncService.onCreate', NULL),
+          (4, 1, 20000000, 0, 0, 'binder reply', NULL);
+        CREATE TABLE flow(slice_out INTEGER, slice_in INTEGER);`);
+      const params = {'__process_scope.upid': 'NULL', utid: 'NULL'};
+      const [pool] = query(db, 'atomic/binder_pool_saturation_in_range', 'pool_saturation', params);
+      expect(pool).toMatchObject({upid: 42, target_role: 'target_process', pool_size: 2,
+        pool_size_basis: 'observed_active_binder_threads', named_binder_threads: 3, inactive_binder_threads: 1,
+        reply_serving_threads: 0, busy_basis: 'depth0_thread_slice', peak_busy_threads: 2,
+        saturated_ns: 20000000, busy_slices: 2, unfinished_busy_slices: 1, in_progress_replies: 0,
+        saturation_evidence: 'saturated_observed'});
+      expect(query(db, 'atomic/binder_pool_saturation_in_range', 'in_progress_replies', params)).toEqual([]);
+      // Once the trace shows the third thread (idle), it is a member and the pool is never all busy.
+      db.exec("INSERT INTO thread_state VALUES(4, 0, 50000000, 'S')");
+      expect(query(db, 'atomic/binder_pool_saturation_in_range', 'pool_saturation', params)[0]).toMatchObject({
+        pool_size: 3, inactive_binder_threads: 0, peak_busy_threads: 2, saturated_ns: 0,
+        saturation_evidence: 'not_saturated_observed'});
+    } finally { db.close(); }
+  });
+
   it('discovers anchorless app waits without declaring idle sleep a freeze', () => {
     const db = fixture();
     try {

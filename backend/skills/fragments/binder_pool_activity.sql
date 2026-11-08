@@ -17,12 +17,18 @@
 --   binder_pool_target_processes the target process (target_process) and the
 --                                servers of the sync calls of its main thread in
 --                                the window (sync_binder_server)
---   binder_pool_threads          per target, threads the binder name rule of
---                                thread_roles matches (binder_named) and threads
---                                that served a `binder reply`: the observed pool
---   binder_pool_busy             the `binder reply` slices of each pool thread
---                                overlapping the window; an unfinished reply
---                                (dur = -1) is busy until the trace end
+--   binder_pool_named_threads    per target, threads the binder name rule of
+--                                thread_roles matches (binder_named)
+--   binder_pool_threads          those the trace shows active (a thread_state
+--                                row or a slice): the observed pool. A named
+--                                thread with neither is a phantom left out
+--   binder_pool_busy             the depth-0 slices (any name) of each pool
+--                                thread overlapping the window: a pool thread
+--                                is busy while one covers it, idle ones carry
+--                                none; an unfinished slice (dur = -1) is busy
+--                                until the trace end
+--   binder_pool_replies          the `binder reply` slices of each pool thread
+--                                overlapping the window (descriptive)
 binder_pool_call_slices AS MATERIALIZED (
   SELECT * FROM (
     SELECT w.window_id, w.window_start_ts, w.window_end_ts, c.id, c.ts, c.dur, c.track_id,
@@ -75,35 +81,56 @@ binder_pool_target_processes AS MATERIALIZED (
   )
   GROUP BY window_id, upid
 ),
--- One pass over the reply slices, kept only for target threads.
+binder_pool_named_threads AS MATERIALIZED (
+  SELECT tp.window_id, tp.upid, t.utid
+  FROM binder_pool_target_processes tp
+  JOIN thread t ON t.upid = tp.upid
+  JOIN thread_roles tr ON tr.utid = t.utid
+  WHERE tr.binder_named
+),
+binder_pool_active_threads AS MATERIALIZED (
+  SELECT DISTINCT s.utid FROM thread_state s
+  WHERE s.utid IN (SELECT utid FROM binder_pool_named_threads)
+  UNION
+  SELECT tt.utid FROM thread_track tt
+  WHERE tt.utid IN (SELECT utid FROM binder_pool_named_threads)
+    AND EXISTS (SELECT 1 FROM slice s WHERE s.track_id = tt.id)
+),
+-- One pass over the reply slices, kept only for named target threads.
 binder_pool_reply_threads AS MATERIALIZED (
   SELECT DISTINCT tt.utid
   FROM slice r
   CROSS JOIN thread_track tt ON tt.id = r.track_id
-  CROSS JOIN thread t ON t.utid = tt.utid
-  WHERE r.name = 'binder reply' AND t.upid IN (SELECT upid FROM binder_pool_target_processes)
+  WHERE r.name = 'binder reply' AND tt.utid IN (SELECT utid FROM binder_pool_named_threads)
 ),
 binder_pool_threads AS MATERIALIZED (
-  SELECT tp.window_id, tp.upid, t.utid,
-    tr.binder_named AS is_named_binder,
-    rt.utid IS NOT NULL AS served_reply
-  FROM binder_pool_target_processes tp
-  JOIN thread t ON t.upid = tp.upid
-  JOIN thread_roles tr ON tr.utid = t.utid
-  LEFT JOIN binder_pool_reply_threads rt ON rt.utid = t.utid
-  WHERE rt.utid IS NOT NULL OR tr.binder_named
+  SELECT nt.window_id, nt.upid, nt.utid, rt.utid IS NOT NULL AS served_reply
+  FROM binder_pool_named_threads nt
+  JOIN binder_pool_active_threads at ON at.utid = nt.utid
+  LEFT JOIN binder_pool_reply_threads rt ON rt.utid = nt.utid
 ),
-binder_pool_busy AS MATERIALIZED (
-  SELECT window_id, upid, utid, reply_slice_id, reply_ts, reply_dur,
-    MAX(reply_ts, window_start_ts) AS busy_start_ts, MIN(raw_end_ts, window_end_ts) AS busy_end_ts,
-    reply_dur = -1 AS is_unfinished
+-- Depth-0 and `binder reply` slices of the pool threads overlapping the window.
+binder_pool_thread_slices AS MATERIALIZED (
+  SELECT window_id, upid, utid, slice_id, slice_name, slice_depth, slice_ts, slice_dur,
+    MAX(slice_ts, window_start_ts) AS busy_start_ts, MIN(raw_end_ts, window_end_ts) AS busy_end_ts,
+    slice_dur = -1 AS is_unfinished
   FROM (
     SELECT pt.window_id, pt.upid, pt.utid, w.window_start_ts, w.window_end_ts,
-      r.id AS reply_slice_id, r.ts AS reply_ts, r.dur AS reply_dur,
-      CASE WHEN r.dur = -1 THEN (SELECT end_ts FROM trace_bounds) ELSE r.ts + r.dur END AS raw_end_ts
+      s.id AS slice_id, s.name AS slice_name, s.depth AS slice_depth, s.ts AS slice_ts, s.dur AS slice_dur,
+      CASE WHEN s.dur = -1 THEN (SELECT end_ts FROM trace_bounds) ELSE s.ts + s.dur END AS raw_end_ts
     FROM binder_pool_threads pt
     JOIN system_windows w ON w.window_id = pt.window_id
     JOIN thread_track tt ON tt.utid = pt.utid
-    JOIN slice r ON r.track_id = tt.id AND r.name = 'binder reply' AND r.dur >= -1 AND r.ts < w.window_end_ts
+    JOIN slice s ON s.track_id = tt.id AND (s.depth = 0 OR s.name = 'binder reply')
+      AND s.dur >= -1 AND s.ts < w.window_end_ts
   ) WHERE raw_end_ts > window_start_ts
+),
+binder_pool_busy AS (
+  SELECT window_id, upid, utid, slice_id, slice_name, slice_ts, slice_dur, busy_start_ts, busy_end_ts, is_unfinished
+  FROM binder_pool_thread_slices WHERE slice_depth = 0
+),
+binder_pool_replies AS (
+  SELECT window_id, upid, utid, slice_id AS reply_slice_id, slice_ts AS reply_ts, slice_dur AS reply_dur,
+    busy_start_ts, busy_end_ts, is_unfinished
+  FROM binder_pool_thread_slices WHERE slice_name = 'binder reply'
 )
