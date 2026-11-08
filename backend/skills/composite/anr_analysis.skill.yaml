@@ -853,6 +853,12 @@ steps:
           type: duration
           format: duration_ms
           unit: ms
+        - name: timer_delay
+          label: "ANR 计时器到期→ANR 记录延迟（非超时时长）"
+          label_i18n:
+            en: "ANR timer expiry → ANR record delay (not the ANR timeout)"
+          type: duration
+          unit: ns
         - name: anr_ts
           label: "ANR 时间"
           type: timestamp
@@ -917,6 +923,7 @@ steps:
         anr_type,
         trigger_type,
         ROUND(anr_dur_ms, 2) as anr_dur_ms,
+        timer_delay,
         ROUND(analysis_timeout_ms, 2) as timeout_ms,
         printf('%d', ts) as anr_ts,
         printf('%d', CAST(analysis_timeout_ms * 1e6 AS INTEGER)) as timeout_ns,
@@ -1007,6 +1014,24 @@ steps:
       LIMIT 15
     save_as: top_processes
     condition: detection.data[0]?.total_anr_count > 0 && anr_ctx.data?.length > 0
+    optional: true
+
+  # 首个 ANR 窗口内，ANR 进程及其主线程同步 Binder 对端的线程池是否饱和。
+  # 逐 ANR 深度分析开启时 anr_detail 的同名步骤已覆盖每个 ANR，这里只在关闭时补上。
+  - id: first_anr_binder_pool_saturation
+    type: skill
+    name: "首个 ANR 窗口 Binder 线程池饱和"
+    skill: binder_pool_saturation_in_range
+    params:
+      start_ts: "${anr_ctx.data[0].window_start_ts}"
+      end_ts: "${anr_ctx.data[0].anr_ts}"
+      package: "${anr_ctx.data[0].process_name}"
+    save_as: first_anr_binder_pool
+    display:
+      level: key
+      layer: deep
+      title: "首个 ANR 窗口 Binder 线程池饱和"
+    condition: "detection.data[0]?.total_anr_count > 0 && anr_ctx.data?.length > 0 && enable_detail_analysis === false"
     optional: true
 
   # ============================================================================

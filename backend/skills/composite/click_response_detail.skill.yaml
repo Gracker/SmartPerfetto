@@ -131,6 +131,20 @@ steps:
       level: detail
       layer: deep
 
+  - id: system_runnable_cpu_occupancy
+    type: skill
+    name: "Runnable 等待期间目标 CPU 占用"
+    skill: runnable_cpu_occupancy_in_range
+    optional: true
+    params:
+      start_ts: "${system_context_window.data[0].start_ts}"
+      end_ts: "${system_context_window.data[0].end_ts}"
+      package: "${process_name}"
+    save_as: system_runnable_cpu_occupancy
+    display:
+      level: detail
+      layer: deep
+
   # ========== 初始化 CPU 拓扑 ==========
   - id: init_cpu_topology
     type: skill

@@ -21,6 +21,12 @@ const {camelCase} = require('protobufjs').util;
 const FIRST_SYNTHETIC_PID = 700000;
 // uid of a process actor that does not declare one.
 const DEFAULT_APP_UID = 10999;
+// Linux kernel threads are children of kthreadd, which is always pid 2.
+const KTHREADD_PID = 2;
+// How far a binder-transaction signal's call gets: `replied` is a complete
+// synchronous call; `unreplied` is received by the server thread but never
+// answered; `unreceived` is sent to the server process but no thread takes it.
+const BINDER_REPLY_STATES = new Set(['replied', 'unreplied', 'unreceived']);
 const PROCESS_STATE_ENUM = 'com.android.internal.ProcessStateEnum';
 const HEAP_GRAPH_EXTENSION = '.com.android.art.tracing.ArtHeapGraphTracePacket.heapGraph';
 const NETWORK_PACKET_EXTENSION = '.android.net.connectivity.tracing.ConnectivityTracePacket.networkPacket';
@@ -277,9 +283,15 @@ function buildIdentities(scenario, usedPids) {
   for (const actor of scenario.actors.processes) {
     const id = nonEmptyString(actor.id, 'process.id');
     if (processDefinitions.has(id)) throw new Error(`duplicate process actor: ${id}`);
+    if (actor.kernel_thread !== undefined && typeof actor.kernel_thread !== 'boolean') {
+      throw new Error(`process ${id} kernel_thread must be a boolean`);
+    }
     const pid = allocatePid(usedPids);
     processes[id] = pid;
-    processDefinitions.set(id, {...actor, pid, uid: actor.uid ?? DEFAULT_APP_UID});
+    processDefinitions.set(id, {
+      ...actor, pid, uid: actor.uid ?? (actor.kernel_thread ? 0 : DEFAULT_APP_UID),
+      ppid: actor.kernel_thread ? KTHREADD_PID : 1,
+    });
   }
   for (const actor of scenario.actors.threads) {
     const id = nonEmptyString(actor.id, 'thread.id');
@@ -802,12 +814,23 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
       // 1 ns later, replies 1 ns before the end and the client receives the
       // reply at at_ns + duration_ns. Trace processor pairs each send with its
       // receipt by debug id and derives android_binder_txns from the pairs.
+      // An unreplied or unreceived call stops after the receipt or the send, so
+      // its slices stay open to the end of the trace.
       const client = schedActor(signal.thread, identities, 'binder-transaction thread');
       const server = schedActor(signal.server_thread, identities, 'binder-transaction server_thread');
       if (client.tid === 0 || server.tid === 0) throw new Error('binder-transaction needs a client and a server thread');
       if (client.tid === server.tid) throw new Error('binder-transaction client and server must be different threads');
-      const duration = BigInt(positiveUint64String(signal.duration_ns, 'binder-transaction duration_ns'));
-      if (duration < 3n) throw new Error('binder-transaction duration_ns must leave room for the server to receive and reply');
+      const replyState = signal.reply_state ?? 'replied';
+      if (!BINDER_REPLY_STATES.has(replyState)) {
+        throw new Error(`binder-transaction reply_state must be one of ${[...BINDER_REPLY_STATES].join(', ')}`);
+      }
+      let duration;
+      if (replyState === 'replied') {
+        duration = BigInt(positiveUint64String(signal.duration_ns, 'binder-transaction duration_ns'));
+        if (duration < 3n) throw new Error('binder-transaction duration_ns must leave room for the server to receive and reply');
+      } else if (signal.duration_ns !== undefined) {
+        throw new Error('binder-transaction duration_ns is not allowed for an unreplied or unreceived call');
+      }
       const code = signal.code === undefined ? 1 : uint32(signal.code, 'binder-transaction code');
       const clientCpu = signal.cpu ?? 0;
       const serverCpu = signal.server_cpu ?? clientCpu;
@@ -816,13 +839,20 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
       const transaction = (to, debugId, reply) => ({
         debugId, targetNode: reply ? 0 : 1, toProc: to.tgid, toThread: to.tid, reply: reply ? 1 : 0, code, flags: 0,
       });
+      // An unreceived call names only the server process: no thread has taken it.
+      const callee = replyState === 'unreceived' ? {tgid: server.tgid, tid: 0} : server;
       eventsForCpu(clientCpu).push(
-        {timestamp, pid: client.tid, binderTransaction: transaction(server, callId, false)});
-      eventsForCpu(serverCpu).push(
-        {timestamp: at(1n), pid: server.tid, binderTransactionReceived: {debugId: callId}},
-        {timestamp: at(duration - 1n), pid: server.tid, binderTransaction: transaction(client, callId + 1, true)});
-      eventsForCpu(clientCpu).push(
-        {timestamp: at(duration), pid: client.tid, binderTransactionReceived: {debugId: callId + 1}});
+        {timestamp, pid: client.tid, binderTransaction: transaction(callee, callId, false)});
+      if (replyState !== 'unreceived') {
+        eventsForCpu(serverCpu).push(
+          {timestamp: at(1n), pid: server.tid, binderTransactionReceived: {debugId: callId}});
+      }
+      if (duration !== undefined) {
+        eventsForCpu(serverCpu).push(
+          {timestamp: at(duration - 1n), pid: server.tid, binderTransaction: transaction(client, callId + 1, true)});
+        eventsForCpu(clientCpu).push(
+          {timestamp: at(duration), pid: client.tid, binderTransactionReceived: {debugId: callId + 1}});
+      }
     } else if (signal.type === 'sched-switch') {
       const prev = schedActor(signal.prev_thread, identities, 'sched-switch prev_thread');
       const next = schedActor(signal.next_thread, identities, 'sched-switch next_thread');
@@ -1360,7 +1390,7 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
   const processTree = {
     processes: [...identities.processDefinitions.values()].map((actor) => ({
       pid: actor.pid,
-      ppid: 1,
+      ppid: actor.ppid,
       cmdline: [actor.name],
       uid: actor.uid,
     })),

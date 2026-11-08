@@ -92,6 +92,12 @@ sql_fragments:
   backend/skills/fragments/effective_target_processes.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/effective_target_processes.sql
+  backend/skills/fragments/binder_pool_activity.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/binder_pool_activity.sql
+  backend/skills/fragments/system_target_threads.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/system_target_threads.sql
   backend/skills/fragments/buffer_tx_frame_production.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/buffer_tx_frame_production.sql
@@ -252,6 +258,11 @@ skills:
     workflow: cpu-scheduling
     disposition: exported
     destination: references/generated/skills/thread_preemption_handoffs_in_range.md
+  runnable_cpu_occupancy_in_range:
+    source: backend/skills/atomic/runnable_cpu_occupancy_in_range.skill.yaml
+    workflow: cpu-scheduling
+    disposition: exported
+    destination: references/generated/skills/runnable_cpu_occupancy_in_range.md
   thread_cpu_placement_timeline:
     source: backend/skills/atomic/thread_cpu_placement_timeline.skill.yaml
     workflow: cpu-scheduling
@@ -357,6 +368,11 @@ skills:
     workflow: anr-blocking
     disposition: exported
     destination: references/generated/skills/binder_in_range.md
+  binder_pool_saturation_in_range:
+    source: backend/skills/atomic/binder_pool_saturation_in_range.skill.yaml
+    workflow: anr-blocking
+    disposition: exported
+    destination: references/generated/skills/binder_pool_saturation_in_range.md
   binder_root_cause:
     source: backend/skills/atomic/binder_root_cause.skill.yaml
     workflow: anr-blocking

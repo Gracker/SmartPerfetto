@@ -1233,7 +1233,7 @@
     },
     "anr_analysis": {
       "source_file": "backend/skills/composite/anr_analysis.skill.yaml",
-      "source_sha256": "1fa589ef5136298372b33fb125b7e0ffa15108e83ecabe89690df65f9bf71ed2",
+      "source_sha256": "66a6107ad0eba64ff35f415400d42955bbc9c9d40b774ca59cd40724a3f51fa9",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -1255,6 +1255,7 @@
         "anr_overview",
         "get_anr_events",
         "top_cpu_processes",
+        "first_anr_binder_pool_saturation",
         "analyze_anr_events",
         "anr_diagnosis"
       ],
@@ -1436,7 +1437,7 @@
           "id": "get_anr_events",
           "at": "steps[11].sql",
           "top_level_index": 11,
-          "sha256": "f148524c27567a1098cb3f7e88dd2b77ec93d47c3adb0b9e983a94006b92d77f",
+          "sha256": "d047e82f7a2b7a8e37d01aec43b22ed9565beeaf3f46de84c0262d867f7c9dce",
           "required_columns": [
             "error_id",
             "process_name",
@@ -1444,6 +1445,7 @@
             "anr_type",
             "trigger_type",
             "anr_dur_ms",
+            "timer_delay",
             "anr_ts",
             "perfetto_start",
             "type_display",
@@ -1481,7 +1483,7 @@
     },
     "anr_context_in_range": {
       "source_file": "backend/skills/atomic/anr_context_in_range.skill.yaml",
-      "source_sha256": "4a14d85ad7cd54b07f817c9c76948eefd985a4e2af90e0864f7f4360abc171d3",
+      "source_sha256": "12268384a412579c3608b7264236daa60aebfd8910ef3afdf4d25c7e3775e591",
       "type": "atomic",
       "execution": "root",
       "declared_modules": [
@@ -1494,13 +1496,14 @@
           "id": "root",
           "at": "sql",
           "top_level_index": null,
-          "sha256": "332c7050027e52233296895e7013f84a9325cd8df8e5aed4c1bc60899aade0e6",
+          "sha256": "1060e1eb981c0e1def412496edbd331af9e5bd4cf3cb5e378a5c01fbb6583e0e",
           "required_columns": [
             "anr_ts",
             "window_start_ts",
             "timeout_ns",
             "timeout_ms",
             "timeout_source",
+            "timer_delay",
             "process_name",
             "upid",
             "anr_type"
@@ -1515,7 +1518,7 @@
     },
     "anr_detail": {
       "source_file": "backend/skills/composite/anr_detail.skill.yaml",
-      "source_sha256": "74e651ef4fa4d3949dacf7c4db5b28bd3f522b40e1ff76c40cb2829ea17d44a5",
+      "source_sha256": "2b162c546b2c3deaf2ed036f091794cad816297ae62ace13146d474b0350007a",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -1528,6 +1531,7 @@
         "system_cpu_context",
         "system_task_summary",
         "system_task_handoffs",
+        "system_runnable_cpu_occupancy",
         "init_cpu_topology",
         "anr_info",
         "main_thread_quadrant",
@@ -1535,6 +1539,7 @@
         "render_thread_analysis",
         "binder_calls",
         "main_thread_sync_binder",
+        "binder_pool_saturation",
         "sched_latency",
         "lock_contention",
         "app_freeze_check",
@@ -1572,8 +1577,8 @@
         },
         {
           "id": "anr_info",
-          "at": "steps[5].sql",
-          "top_level_index": 5,
+          "at": "steps[6].sql",
+          "top_level_index": 6,
           "sha256": "a8ed97b01dc96fb3689307c4c4ecc803ffd9b9c69b60526778dbb09242c8012e",
           "required_columns": [
             "process_name",
@@ -1606,8 +1611,8 @@
         },
         {
           "id": "main_thread_quadrant",
-          "at": "steps[6].sql",
-          "top_level_index": 6,
+          "at": "steps[7].sql",
+          "top_level_index": 7,
           "sha256": "6bdfc926e69f39c3d5fd542fffd2a2e363c93d9b32f08943d8f923c23a41f92b",
           "required_columns": [
             "upid",
@@ -1644,8 +1649,8 @@
         },
         {
           "id": "render_thread_analysis",
-          "at": "steps[8].sql",
-          "top_level_index": 8,
+          "at": "steps[9].sql",
+          "top_level_index": 9,
           "sha256": "0d730ecd9a22540ad5a8e60de7b728fa4bfd7a11a8b1c25289100c53fbd3af45",
           "required_columns": [
             "type",
@@ -1668,8 +1673,8 @@
         },
         {
           "id": "lock_contention",
-          "at": "steps[12].sql",
-          "top_level_index": 12,
+          "at": "steps[14].sql",
+          "top_level_index": 14,
           "sha256": "7a310ef365d659ed7dc5c814ad235d8c962fe494d4c0c2f5186e25c04ac01ee3",
           "required_columns": [
             "blocking_method",
@@ -1695,8 +1700,8 @@
         },
         {
           "id": "app_freeze_check",
-          "at": "steps[13].sql",
-          "top_level_index": 13,
+          "at": "steps[15].sql",
+          "top_level_index": 15,
           "sha256": "9adacbb5df3c96a9fdd9daeac7719750533735dd4f622de9b8198294461e405e",
           "required_columns": [
             "thread_type",
@@ -1720,8 +1725,8 @@
         },
         {
           "id": "wakeup_chain",
-          "at": "steps[14].sql",
-          "top_level_index": 14,
+          "at": "steps[16].sql",
+          "top_level_index": 16,
           "sha256": "0096c22272b63da81e0b796e65f0038ec048246e942f3213c8be6180e7de353b",
           "required_columns": [
             "upid",
@@ -1755,8 +1760,8 @@
         },
         {
           "id": "thread_evidence_availability",
-          "at": "steps[16].sql",
-          "top_level_index": 16,
+          "at": "steps[18].sql",
+          "top_level_index": 18,
           "sha256": "4b57bd9022ab3f51f5338833441b05a4dddfbda35b90a8e85647c8f2850e2ec0",
           "required_columns": [
             "has_thread_state",
@@ -1771,8 +1776,8 @@
         },
         {
           "id": "direct_blocker_evidence_gap",
-          "at": "steps[17].sql",
-          "top_level_index": 17,
+          "at": "steps[19].sql",
+          "top_level_index": 19,
           "sha256": "1c034d80cbcb083ab59e347effd0bfa7d73b77303c2ee9352a5e12673579aa43",
           "required_columns": [
             "direct_blocker_type",
@@ -1791,8 +1796,8 @@
         },
         {
           "id": "direct_blocker_classification",
-          "at": "steps[18].sql",
-          "top_level_index": 18,
+          "at": "steps[20].sql",
+          "top_level_index": 20,
           "sha256": "2d9b60739998601723e2b9d75cc16e121204cd72c839c0ed92526dc18aaa0ecd",
           "required_columns": [
             "direct_blocker_type",
@@ -1818,8 +1823,8 @@
         },
         {
           "id": "direct_blocker_slice_evidence_gap",
-          "at": "steps[19].sql",
-          "top_level_index": 19,
+          "at": "steps[21].sql",
+          "top_level_index": 21,
           "sha256": "9068628a61bcabc15f8d8d3609f646bb9210a92724e16b8be90cf66c8949c24f",
           "required_columns": [
             "direct_blocker_type",
@@ -1838,8 +1843,8 @@
         },
         {
           "id": "direct_blocker_slice_classification",
-          "at": "steps[20].sql",
-          "top_level_index": 20,
+          "at": "steps[22].sql",
+          "top_level_index": 22,
           "sha256": "dd3818a4d92493164f057af135477c1c361b71920bab5ba0060605c287fffbd7",
           "required_columns": [
             "direct_blocker_type",
@@ -1865,8 +1870,8 @@
         },
         {
           "id": "logcat_availability",
-          "at": "steps[21].sql",
-          "top_level_index": 21,
+          "at": "steps[23].sql",
+          "top_level_index": 23,
           "sha256": "eb1c451cf57b84c33206297a0e51ea70321663bab3d2c32d170f12858abb7188",
           "required_columns": [
             "has_android_logs"
@@ -1879,8 +1884,8 @@
         },
         {
           "id": "anr_logcat_evidence_gap",
-          "at": "steps[22].sql",
-          "top_level_index": 22,
+          "at": "steps[24].sql",
+          "top_level_index": 24,
           "sha256": "82fc84bc40eef5ae84fa03263ba3010b614fba602b383ff879961116dd38dba8",
           "required_columns": [
             "error_id",
@@ -1899,8 +1904,8 @@
         },
         {
           "id": "anr_logcat_context",
-          "at": "steps[23].sql",
-          "top_level_index": 23,
+          "at": "steps[25].sql",
+          "top_level_index": 25,
           "sha256": "44f39f5a5dc8956894587966447f39a992da76ffba693fd7d20a8a185dc0f554",
           "required_columns": [
             "error_id",
@@ -2986,6 +2991,128 @@
             "${package}"
           ],
           "process_scope_valid": null,
+          "forceable": true
+        }
+      ]
+    },
+    "binder_pool_saturation_in_range": {
+      "source_file": "backend/skills/atomic/binder_pool_saturation_in_range.skill.yaml",
+      "source_sha256": "001ffe183f36f58572d8ca6faa086de9c88c5a05b661a97fc63923862c527f37",
+      "type": "atomic",
+      "execution": "steps",
+      "declared_modules": [],
+      "top_level_steps": [
+        "pool_saturation",
+        "in_progress_replies",
+        "waiting_sync_calls"
+      ],
+      "unexecuted_sql": false,
+      "units": [
+        {
+          "id": "pool_saturation",
+          "at": "steps[0].sql",
+          "top_level_index": 0,
+          "sha256": "5186b1052cec4a8cdf488e757021d802ee31accd3f23b4e4ee86d3299e85d389",
+          "required_columns": [
+            "window_start_ts",
+            "window_end_ts",
+            "window_dur_ns",
+            "upid",
+            "pid",
+            "process_name",
+            "target_role",
+            "pool_size",
+            "pool_size_basis",
+            "named_binder_threads",
+            "reply_serving_threads",
+            "peak_busy_threads",
+            "saturated_ns",
+            "busy_thread_ns",
+            "in_progress_replies",
+            "unfinished_replies",
+            "waiting_sync_calls",
+            "unreplied_sync_calls",
+            "unreceived_sync_calls",
+            "max_sync_wait_ns",
+            "saturation_evidence",
+            "evidence_scope"
+          ],
+          "has_condition": false,
+          "read_only": true,
+          "placeholders": [
+            "${start_ts}",
+            "${end_ts}"
+          ],
+          "process_scope_valid": true,
+          "forceable": true
+        },
+        {
+          "id": "in_progress_replies",
+          "at": "steps[1].sql",
+          "top_level_index": 1,
+          "sha256": "574c85f224cee1ada615009a3f2418028985633e0d13a025b83c3922ce96eda0",
+          "required_columns": [
+            "upid",
+            "process_name",
+            "target_role",
+            "server_utid",
+            "server_tid",
+            "server_thread_name",
+            "reply_slice_id",
+            "reply_ts",
+            "reply_dur",
+            "is_unfinished",
+            "busy_in_window_ns",
+            "client_utid",
+            "client_tid",
+            "client_thread_name",
+            "client_upid",
+            "client_process_name"
+          ],
+          "has_condition": false,
+          "read_only": true,
+          "placeholders": [
+            "${start_ts}",
+            "${end_ts}",
+            "${max_rows|10}"
+          ],
+          "process_scope_valid": true,
+          "forceable": true
+        },
+        {
+          "id": "waiting_sync_calls",
+          "at": "steps[2].sql",
+          "top_level_index": 2,
+          "sha256": "d823423149cca1f732d21c9875da700f7b680856005af49904113f5e72c3303c",
+          "required_columns": [
+            "server_upid",
+            "server_process_name",
+            "target_role",
+            "call_slice_id",
+            "call_ts",
+            "call_dur",
+            "is_unfinished",
+            "waited_in_window_ns",
+            "call_state",
+            "client_utid",
+            "client_tid",
+            "client_thread_name",
+            "client_upid",
+            "client_process_name",
+            "client_is_main_thread",
+            "server_utid",
+            "server_tid",
+            "server_thread_name",
+            "reply_dur"
+          ],
+          "has_condition": false,
+          "read_only": true,
+          "placeholders": [
+            "${start_ts}",
+            "${end_ts}",
+            "${max_rows|10}"
+          ],
+          "process_scope_valid": true,
           "forceable": true
         }
       ]
@@ -4438,7 +4565,7 @@
     },
     "click_response_detail": {
       "source_file": "backend/skills/composite/click_response_detail.skill.yaml",
-      "source_sha256": "9e44f27b6343d60763ebf83af07b3dd5c2d9c22a357c8f8527c54a3f67b5e497",
+      "source_sha256": "739620401ba5e6216fd3b859ac13dc3c768242f05ca6c155d0d9ae7e95a307cf",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -4451,6 +4578,7 @@
         "system_cpu_context",
         "system_task_summary",
         "system_task_handoffs",
+        "system_runnable_cpu_occupancy",
         "init_cpu_topology",
         "event_info",
         "input_dispatch_breakdown",
@@ -4487,8 +4615,8 @@
         },
         {
           "id": "event_info",
-          "at": "steps[5].sql",
-          "top_level_index": 5,
+          "at": "steps[6].sql",
+          "top_level_index": 6,
           "sha256": "c0bffa57576a2ae92a63ef27e9ebbb002b071a090dc66edca2f9a86d6e842670",
           "required_columns": [
             "event_type",
@@ -4523,8 +4651,8 @@
         },
         {
           "id": "input_dispatch_breakdown",
-          "at": "steps[6].sql",
-          "top_level_index": 6,
+          "at": "steps[7].sql",
+          "top_level_index": 7,
           "sha256": "342942b8096b5201690d5d92f5a71aef259faa2e12148c05a302895417a66ba7",
           "required_columns": [
             "stage",
@@ -4543,8 +4671,8 @@
         },
         {
           "id": "input_app_receive",
-          "at": "steps[7].sql",
-          "top_level_index": 7,
+          "at": "steps[8].sql",
+          "top_level_index": 8,
           "sha256": "c43f1cdbf1d3670327305135ea20ea69a8e7680576c1d27d1f4d4bc5ea20b0f3",
           "required_columns": [
             "stage",
@@ -4566,8 +4694,8 @@
         },
         {
           "id": "input_pipeline_lifecycle",
-          "at": "steps[8].sql",
-          "top_level_index": 8,
+          "at": "steps[9].sql",
+          "top_level_index": 9,
           "sha256": "369f194396556889c2b3d7c973d40a8df9781cdc75be34af8ef18f48da2dffde",
           "required_columns": [
             "input_id",
@@ -4598,8 +4726,8 @@
         },
         {
           "id": "cpu_core_analysis",
-          "at": "steps[9].sql",
-          "top_level_index": 9,
+          "at": "steps[10].sql",
+          "top_level_index": 10,
           "sha256": "c87ad6f118493d06b3ba6bdeff5cfe7599e368796d810d3f398f84f044a15efb",
           "required_columns": [
             "upid",
@@ -4635,8 +4763,8 @@
         },
         {
           "id": "quadrant_analysis",
-          "at": "steps[10].sql",
-          "top_level_index": 10,
+          "at": "steps[11].sql",
+          "top_level_index": 11,
           "sha256": "4a1e23b7a7ea1e21628d5be17c803caeecabc5e598563228949fecc6ce5fbc1f",
           "required_columns": [
             "upid",
@@ -12228,7 +12356,7 @@
     },
     "main_thread_frame_work": {
       "source_file": "backend/skills/composite/main_thread_frame_work.skill.yaml",
-      "source_sha256": "335e554b31f16b090c6d224e21718bd9e2c194ef268a06f9efdf4a36c9ec79d0",
+      "source_sha256": "afd9012024e1d46194fffd127e3507c4594bc3eb0990c1d19ced0b57f795a490",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [],
@@ -12237,6 +12365,7 @@
         "system_cpu_context",
         "system_task_summary",
         "system_task_handoffs",
+        "system_runnable_cpu_occupancy",
         "main_thread_work_summary",
         "main_thread_work_tasks",
         "main_thread_work_sources",
@@ -12264,8 +12393,8 @@
         },
         {
           "id": "main_thread_work_summary",
-          "at": "steps[4].sql",
-          "top_level_index": 4,
+          "at": "steps[5].sql",
+          "top_level_index": 5,
           "sha256": "e7548386d8f9d9264a14c5b79a78a6c814ac2686234ac75e63a7a141540b0c8a",
           "required_columns": [
             "phase",
@@ -12304,8 +12433,8 @@
         },
         {
           "id": "main_thread_work_tasks",
-          "at": "steps[5].sql",
-          "top_level_index": 5,
+          "at": "steps[6].sql",
+          "top_level_index": 6,
           "sha256": "4d53219e7e6df71e3022ae425a56d2db9ae5f9d3102439e728f5631c3e4b0c57",
           "required_columns": [
             "task_name",
@@ -12366,8 +12495,8 @@
         },
         {
           "id": "main_thread_work_sources",
-          "at": "steps[6].sql",
-          "top_level_index": 6,
+          "at": "steps[7].sql",
+          "top_level_index": 7,
           "sha256": "817c099ee73b8434d9f26614266ebfe188e1cc049016a35a9c8fb83f064f90e8",
           "required_columns": [
             "source_kind",
@@ -12403,8 +12532,8 @@
         },
         {
           "id": "main_thread_work_cadence",
-          "at": "steps[7].sql",
-          "top_level_index": 7,
+          "at": "steps[8].sql",
+          "top_level_index": 8,
           "sha256": "f0aeb222c5e50dcaa38a645d034f43f5fc976728d9a8e60e3eb7a9261ff6ae71",
           "required_columns": [
             "observed_start_interval_ms",
@@ -15305,6 +15434,75 @@
         }
       ]
     },
+    "runnable_cpu_occupancy_in_range": {
+      "source_file": "backend/skills/atomic/runnable_cpu_occupancy_in_range.skill.yaml",
+      "source_sha256": "60bf002df6f8be6664e7d227ecd9850d9ed9ca9ba3b2b6a5793127c6e0bac7fd",
+      "type": "atomic",
+      "execution": "root",
+      "declared_modules": [
+        "intervals.intersect",
+        "linux.threads"
+      ],
+      "top_level_steps": [],
+      "unexecuted_sql": false,
+      "units": [
+        {
+          "id": "root",
+          "at": "sql",
+          "top_level_index": null,
+          "sha256": "85e91231e8d8459d5982797bc0794dba704310c1c9ae1420a2fec95acd0fc1e5",
+          "required_columns": [
+            "window_id",
+            "window_start_ts",
+            "window_end_ts",
+            "window_dur_ns",
+            "upid",
+            "pid",
+            "process_name",
+            "utid",
+            "tid",
+            "thread_name",
+            "role",
+            "runnable_ns",
+            "targets_with_runnable",
+            "targets_omitted",
+            "ucpu",
+            "cpu",
+            "cpu_basis",
+            "cpu_runnable_ns",
+            "cpu_segment_count",
+            "idle_ns",
+            "unattributed_ns",
+            "occupant_kind",
+            "occupant_rank",
+            "occupant_utid",
+            "occupant_tid",
+            "occupant_thread_name",
+            "occupant_upid",
+            "occupant_pid",
+            "occupant_process_name",
+            "occupant_is_kernel",
+            "occupant_count",
+            "occupied_ns",
+            "segment_count",
+            "share_of_runnable",
+            "occupancy_evidence",
+            "kernel_thread_source",
+            "evidence_scope"
+          ],
+          "has_condition": false,
+          "read_only": true,
+          "placeholders": [
+            "${start_ts}",
+            "${end_ts}",
+            "${max_targets|4}",
+            "${max_occupants|5}"
+          ],
+          "process_scope_valid": true,
+          "forceable": true
+        }
+      ]
+    },
     "scene_device_state_changes": {
       "source_file": "backend/skills/atomic/scene_device_state_changes.skill.yaml",
       "source_sha256": "095556b596031e7b8be9188eb7fef73927a190792460e88d97c190453848ed5f",
@@ -16276,7 +16474,7 @@
     },
     "scroll_session_analysis": {
       "source_file": "backend/skills/composite/scroll_session_analysis.skill.yaml",
-      "source_sha256": "59e06a212efc4660c3d1eb10335f4fc1f33c7120448effb115823ec96915d9b5",
+      "source_sha256": "53f8665c4c8edfe4e612f950a053df17c5d3b5da27464e59fbcba96753f5f490",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [],
@@ -16285,6 +16483,7 @@
         "system_cpu_context",
         "system_task_summary",
         "system_task_handoffs",
+        "system_runnable_cpu_occupancy",
         "full_session_stats",
         "touch_phase_stats",
         "fling_phase_stats",
@@ -16314,8 +16513,8 @@
         },
         {
           "id": "full_session_stats",
-          "at": "steps[4].sql",
-          "top_level_index": 4,
+          "at": "steps[5].sql",
+          "top_level_index": 5,
           "sha256": "c6ef5561c850169387017001613540644052f4d9e05f1cc6ae67c54af1034b64",
           "required_columns": [
             "session_id",
@@ -16343,8 +16542,8 @@
         },
         {
           "id": "touch_phase_stats",
-          "at": "steps[5].sql",
-          "top_level_index": 5,
+          "at": "steps[6].sql",
+          "top_level_index": 6,
           "sha256": "354c33772a6fc97a244e5d84fc622e19033f55b0e09c584ea1515081e12e6d55",
           "required_columns": [
             "phase",
@@ -16370,8 +16569,8 @@
         },
         {
           "id": "fling_phase_stats",
-          "at": "steps[6].sql",
-          "top_level_index": 6,
+          "at": "steps[7].sql",
+          "top_level_index": 7,
           "sha256": "e21927ba2bd014b9e331b73a5e78f909c85bca115a9aaed39651590915422bfe",
           "required_columns": [
             "phase",
@@ -16397,8 +16596,8 @@
         },
         {
           "id": "identify_janky_frames",
-          "at": "steps[7].sql",
-          "top_level_index": 7,
+          "at": "steps[8].sql",
+          "top_level_index": 8,
           "sha256": "57ddd1f01c7b90f04ea165de75d14ca6ca19f9c15a5d2719c24af06fe24d99da",
           "required_columns": [
             "frame_number",
@@ -16425,7 +16624,7 @@
     },
     "scrolling_analysis": {
       "source_file": "backend/skills/composite/scrolling_analysis.skill.yaml",
-      "source_sha256": "6477646cef570e1307827660c7b299ca4ecfebabb1a1b3995ac27b00129919a2",
+      "source_sha256": "ca7c1326c0ca6eac9e485114bd94fbfd81e9c8db2f3d8c65974d46831f8db084",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -16441,6 +16640,7 @@
         "system_cpu_context",
         "system_task_summary",
         "system_task_handoffs",
+        "system_runnable_cpu_occupancy",
         "main_thread_work_summary",
         "main_thread_work_tasks",
         "main_thread_work_sources",
@@ -16493,8 +16693,8 @@
         },
         {
           "id": "main_thread_work_summary",
-          "at": "steps[4].sql",
-          "top_level_index": 4,
+          "at": "steps[5].sql",
+          "top_level_index": 5,
           "sha256": "e7548386d8f9d9264a14c5b79a78a6c814ac2686234ac75e63a7a141540b0c8a",
           "required_columns": [
             "phase",
@@ -16533,8 +16733,8 @@
         },
         {
           "id": "main_thread_work_tasks",
-          "at": "steps[5].sql",
-          "top_level_index": 5,
+          "at": "steps[6].sql",
+          "top_level_index": 6,
           "sha256": "4d53219e7e6df71e3022ae425a56d2db9ae5f9d3102439e728f5631c3e4b0c57",
           "required_columns": [
             "task_name",
@@ -16595,8 +16795,8 @@
         },
         {
           "id": "main_thread_work_sources",
-          "at": "steps[6].sql",
-          "top_level_index": 6,
+          "at": "steps[7].sql",
+          "top_level_index": 7,
           "sha256": "817c099ee73b8434d9f26614266ebfe188e1cc049016a35a9c8fb83f064f90e8",
           "required_columns": [
             "source_kind",
@@ -16632,8 +16832,8 @@
         },
         {
           "id": "main_thread_work_cadence",
-          "at": "steps[7].sql",
-          "top_level_index": 7,
+          "at": "steps[8].sql",
+          "top_level_index": 8,
           "sha256": "f0aeb222c5e50dcaa38a645d034f43f5fc976728d9a8e60e3eb7a9261ff6ae71",
           "required_columns": [
             "observed_start_interval_ms",
@@ -16663,8 +16863,8 @@
         },
         {
           "id": "frame_timeline_check",
-          "at": "steps[9].sql",
-          "top_level_index": 9,
+          "at": "steps[10].sql",
+          "top_level_index": 10,
           "sha256": "e3ec03ce45b9b33563bd50d6e4bbbd33dc1d6ce90cc9208b8b62b04ae6717c42",
           "required_columns": [
             "has_frame_timeline"
@@ -16677,8 +16877,8 @@
         },
         {
           "id": "vsync_config",
-          "at": "steps[10].sql",
-          "top_level_index": 10,
+          "at": "steps[11].sql",
+          "top_level_index": 11,
           "sha256": "21bde88271404ffaaad38ace4d78c5c9ef2a880f43fdbd9a87d409eb2bd9585b",
           "required_columns": [
             "refresh_rate_hz",
@@ -16699,8 +16899,8 @@
         },
         {
           "id": "frame_timeline_population",
-          "at": "steps[11].sql",
-          "top_level_index": 11,
+          "at": "steps[12].sql",
+          "top_level_index": 12,
           "sha256": "d75d05c35dbd7f76ce6d7e800e66760cbe1844dec22aff39d517738dad8fc553",
           "required_columns": [
             "total_frames",
@@ -16720,8 +16920,8 @@
         },
         {
           "id": "buffer_tx_coverage_probe",
-          "at": "steps[12].sql",
-          "top_level_index": 12,
+          "at": "steps[13].sql",
+          "top_level_index": 13,
           "sha256": "58e3f404a6b66427f1268df714a7a482c6448c0a9b5a0a684a0dcc4e527d5218",
           "required_columns": [
             "target_process_count",
@@ -16748,8 +16948,8 @@
         },
         {
           "id": "performance_summary",
-          "at": "steps[13].sql",
-          "top_level_index": 13,
+          "at": "steps[14].sql",
+          "top_level_index": 14,
           "sha256": "534c710531d908bb0a41fb4bc946faaa8b51e00140ba25d0099ad56e8ea5127e",
           "required_columns": [
             "total_frames",
@@ -16779,8 +16979,8 @@
         },
         {
           "id": "buffer_tx_performance_fallback",
-          "at": "steps[14].sql",
-          "top_level_index": 14,
+          "at": "steps[15].sql",
+          "top_level_index": 15,
           "sha256": "1d167502030d3526b1566496a4238f14526eb5c420e8147ad94e2d5859874c78",
           "required_columns": [
             "total_frames",
@@ -16808,8 +17008,8 @@
         },
         {
           "id": "smoothness_basis",
-          "at": "steps[15].sql",
-          "top_level_index": 15,
+          "at": "steps[16].sql",
+          "top_level_index": 16,
           "sha256": "dadcf0d5d571680ec9e13d5d0cbdde0b1d5ed6b068f982fa411a75b71cd8e98c",
           "required_columns": [
             "process_name",
@@ -16855,8 +17055,8 @@
         },
         {
           "id": "input_data_fallback_view",
-          "at": "steps[16].sql",
-          "top_level_index": 16,
+          "at": "steps[17].sql",
+          "top_level_index": 17,
           "sha256": "797ec03db4a540ddd186e48e500151a807e2ac0664d51bfadbc4942b46a138b5",
           "required_columns": [
             "dispatch_latency_dur",
@@ -16893,8 +17093,8 @@
         },
         {
           "id": "input_data_check",
-          "at": "steps[17].sql",
-          "top_level_index": 17,
+          "at": "steps[18].sql",
+          "top_level_index": 18,
           "sha256": "d934f8314af4524f26ba5b11a09b578b8cbaac85111fadf744e35835feb5f20a",
           "required_columns": [
             "input_data_status",
@@ -16914,8 +17114,8 @@
         },
         {
           "id": "input_latency_summary",
-          "at": "steps[18].sql",
-          "top_level_index": 18,
+          "at": "steps[19].sql",
+          "top_level_index": 19,
           "sha256": "a49f419a9e11ab1e1aecc1dded9ea39881f18e1c061a23d54ba9546d4c720234",
           "required_columns": [
             "target_process",
@@ -16945,8 +17145,8 @@
         },
         {
           "id": "expert_analysis_window",
-          "at": "steps[19].sql",
-          "top_level_index": 19,
+          "at": "steps[20].sql",
+          "top_level_index": 20,
           "sha256": "ef4a9b5f1aa2fc613db0fa685ca3aaa24ca7dd72fbfc7116a1b10f947fe92c4a",
           "required_columns": [
             "window_start_ts",
@@ -16967,8 +17167,8 @@
         },
         {
           "id": "jank_type_stats",
-          "at": "steps[21].sql",
-          "top_level_index": 21,
+          "at": "steps[22].sql",
+          "top_level_index": 22,
           "sha256": "69839b1893f9ce126571f4315dac7628c6d0c9a8920ad330124ba98046948f30",
           "required_columns": [
             "jank_type",
@@ -16998,8 +17198,8 @@
         },
         {
           "id": "scroll_sessions",
-          "at": "steps[22].sql",
-          "top_level_index": 22,
+          "at": "steps[23].sql",
+          "top_level_index": 23,
           "sha256": "28180efed37ab407fceb9a606b5538e24061885aecb95ccfe9ec720de391a7f4",
           "required_columns": [
             "session_id",
@@ -17026,8 +17226,8 @@
         },
         {
           "id": "session_stats_batch",
-          "at": "steps[23].sql",
-          "top_level_index": 23,
+          "at": "steps[24].sql",
+          "top_level_index": 24,
           "sha256": "2ae328e81205028c807027454acead4d8314d26602dc47d55369fdfbdbdb5253",
           "required_columns": [
             "upid",
@@ -17051,8 +17251,8 @@
         },
         {
           "id": "session_jank",
-          "at": "steps[24].sql",
-          "top_level_index": 24,
+          "at": "steps[25].sql",
+          "top_level_index": 25,
           "sha256": "c9538360f442d987631f482bcde5c3b84356d69f3a32baf0f7588524eb07e09c",
           "required_columns": [
             "session_id",
@@ -17077,8 +17277,8 @@
         },
         {
           "id": "get_app_jank_frames",
-          "at": "steps[25].sql",
-          "top_level_index": 25,
+          "at": "steps[26].sql",
+          "top_level_index": 26,
           "sha256": "845c88b99118261cbb0defbc26de912fdb61f8ca32cbe4182d0614f1486549e9",
           "required_columns": [
             "frame_id",
@@ -17125,8 +17325,8 @@
         },
         {
           "id": "batch_frame_root_cause",
-          "at": "steps[26].sql",
-          "top_level_index": 26,
+          "at": "steps[27].sql",
+          "top_level_index": 27,
           "sha256": "c806bacbc68f741ed7d7ccdb210f207d22b5280110f9fdd19fdde9c7bfb1141b",
           "required_columns": [
             "system_evidence_json",
@@ -17239,8 +17439,8 @@
         },
         {
           "id": "global_context_flags",
-          "at": "steps[27].sql",
-          "top_level_index": 27,
+          "at": "steps[28].sql",
+          "top_level_index": 28,
           "sha256": "cc40526c0a4b844bcfa45f30985a845d8f1d7a09b9aaeef99a8ac726ab1ed9f8",
           "required_columns": [
             "video_during_scroll",
@@ -17276,8 +17476,8 @@
         },
         {
           "id": "session_quadrant_summary",
-          "at": "steps[28].sql",
-          "top_level_index": 28,
+          "at": "steps[29].sql",
+          "top_level_index": 29,
           "sha256": "470a3cec7a602bf939203e4969eaf0bef45822e710c55a7cce835211a9b2298f",
           "required_columns": [
             "window_id",
@@ -17310,8 +17510,8 @@
         },
         {
           "id": "session_cpu_freq",
-          "at": "steps[29].sql",
-          "top_level_index": 29,
+          "at": "steps[30].sql",
+          "top_level_index": 30,
           "sha256": "071f76279ff2a073c0e98875ed25b0fcdb3b82450f4bfc34a1ada1a6e44e21da",
           "required_columns": [
             "window_id",
@@ -17334,8 +17534,8 @@
         },
         {
           "id": "session_thread_core_affinity",
-          "at": "steps[30].sql",
-          "top_level_index": 30,
+          "at": "steps[31].sql",
+          "top_level_index": 31,
           "sha256": "01be20c8375b21163f2527de7de36d9e11621e690157d96ef6b7d574ac3b9ede",
           "required_columns": [
             "window_id",
@@ -17360,8 +17560,8 @@
         },
         {
           "id": "root_cause_classification",
-          "at": "steps[31].sql",
-          "top_level_index": 31,
+          "at": "steps[32].sql",
+          "top_level_index": 32,
           "sha256": "aad23e61096351a712e2f47f436a08789a2f324f89357c7c5d1919168c795b5a",
           "required_columns": [
             "problem_category",
@@ -17384,8 +17584,8 @@
         },
         {
           "id": "fallback_no_frame_timeline",
-          "at": "steps[32].sql",
-          "top_level_index": 32,
+          "at": "steps[33].sql",
+          "top_level_index": 33,
           "sha256": "2b2d963521058e260c0742490de5d54a11b49204824a61e2893622941895a979",
           "required_columns": [
             "status",
@@ -17817,7 +18017,7 @@
     },
     "startup_binder_pool_analysis": {
       "source_file": "backend/skills/atomic/startup_binder_pool_analysis.skill.yaml",
-      "source_sha256": "89f077e064e5a82c5b38e4601ec000cf53e5ac5e84cf735895b7ef5f5c86281a",
+      "source_sha256": "6dc1ad094f6c5fa3d93f9e8bbc7c45845c041036651a7db899ed9a646e2d9f0e",
       "type": "atomic",
       "execution": "root",
       "declared_modules": [],
@@ -17828,7 +18028,7 @@
           "id": "root",
           "at": "sql",
           "top_level_index": null,
-          "sha256": "58291873f2dbe0eec397cacc4b833a8b4facdc1850fe6ef51fd89392e02e2863",
+          "sha256": "961f8aa2d5e2e6827b47e0b6c8b0dd279d2022491d1fd1dfdbbf624ad5a0a3d1",
           "required_columns": [
             "metric",
             "value",
@@ -20922,7 +21122,7 @@
     },
     "thread_preemption_handoffs_in_range": {
       "source_file": "backend/skills/atomic/thread_preemption_handoffs_in_range.skill.yaml",
-      "source_sha256": "0d6aa446f7bc33de7c1867ce6be9c1042f9c3ba2c3da5fa80100744c268332ef",
+      "source_sha256": "314a8d9538add55e06340510e604aa7f4d35524ca0aea870a0beb3f4b859ea10",
       "type": "atomic",
       "execution": "root",
       "declared_modules": [
@@ -20935,7 +21135,7 @@
           "id": "root",
           "at": "sql",
           "top_level_index": null,
-          "sha256": "6d287f238703b86beca8857f1ec09245fa0ccd7e1be3b9e607fe579cbad8e1fb",
+          "sha256": "f635f4f95fcca6f4d044939a904169e54195b04fb4ad1449f4dc06b08283704f",
           "required_columns": [
             "window_id",
             "window_start_ts",
@@ -20983,10 +21183,7 @@
           "read_only": true,
           "placeholders": [
             "${start_ts}",
-            "${end_ts}",
-            "${__process_scope.upid}",
-            "${package}",
-            "${utid}"
+            "${end_ts}"
           ],
           "process_scope_valid": true,
           "forceable": true
@@ -20995,7 +21192,7 @@
     },
     "thread_system_summary_in_range": {
       "source_file": "backend/skills/atomic/thread_system_summary_in_range.skill.yaml",
-      "source_sha256": "5dc870799473652b620c8e5763fa0cafaa0f92b1c6fa3c8c84cdd21017a617b4",
+      "source_sha256": "e6358509d8a9a3186ecf03f06c455ee186afe0bab18fb1b34f58173e2ac3584a",
       "type": "atomic",
       "execution": "root",
       "declared_modules": [
@@ -21008,7 +21205,7 @@
           "id": "root",
           "at": "sql",
           "top_level_index": null,
-          "sha256": "78151d52cf3ef959291b9d75a653ad9c8f0db61571aec66e73d54ac19e21cc59",
+          "sha256": "b50397433404ca7419f61778a8586da145efec1fa567508b112fb07903336774",
           "required_columns": [
             "window_id",
             "window_start_ts",
@@ -21027,6 +21224,7 @@
             "running_ns",
             "runnable_ns",
             "runnable_preempted_ns",
+            "runnable_non_preempted_ns",
             "sleeping_ns",
             "uninterruptible_ns",
             "other_state_ns",
@@ -21061,10 +21259,7 @@
           "read_only": true,
           "placeholders": [
             "${start_ts}",
-            "${end_ts}",
-            "${__process_scope.upid}",
-            "${package}",
-            "${utid}"
+            "${end_ts}"
           ],
           "process_scope_valid": true,
           "forceable": true

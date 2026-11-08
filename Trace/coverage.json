@@ -40,6 +40,7 @@
       "binder_detail",
       "binder_in_range",
       "binder_module",
+      "binder_pool_saturation_in_range",
       "binder_root_cause",
       "binder_storm_detection",
       "block_io_analysis",
@@ -193,6 +194,7 @@
       "rendering_pipeline_detection",
       "rn_bridge_to_frame_jank",
       "rn_fabric_render_jank",
+      "runnable_cpu_occupancy_in_range",
       "scene_device_state_changes",
       "scene_reconstruction",
       "scene_response_markers",
@@ -318,6 +320,7 @@
       "binder_detail",
       "binder_in_range",
       "binder_module",
+      "binder_pool_saturation_in_range",
       "binder_storm_detection",
       "blocking_chain_analysis",
       "buffer_transaction_lifecycle",
@@ -431,6 +434,7 @@
       "rendering_pipeline_detection",
       "rn_bridge_to_frame_jank",
       "rn_fabric_render_jank",
+      "runnable_cpu_occupancy_in_range",
       "scene_device_state_changes",
       "scene_reconstruction",
       "scene_response_markers",
@@ -602,6 +606,7 @@
       "binder_detail",
       "binder_in_range",
       "binder_module",
+      "binder_pool_saturation_in_range",
       "binder_storm_detection",
       "blocking_chain_analysis",
       "buffer_transaction_lifecycle",
@@ -715,6 +720,7 @@
       "rendering_pipeline_detection",
       "rn_bridge_to_frame_jank",
       "rn_fabric_render_jank",
+      "runnable_cpu_occupancy_in_range",
       "scene_device_state_changes",
       "scene_reconstruction",
       "scene_response_markers",
@@ -815,6 +821,7 @@
     "R3": [
       "app-background-power",
       "binder-io-blocking",
+      "binder-pool-saturation",
       "device-identity-honor-300-pro",
       "device-identity-oukitel-wp62",
       "device-identity-pixel-6-pro",
@@ -1469,13 +1476,14 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "332c7050027e52233296895e7013f84a9325cd8df8e5aed4c1bc60899aade0e6",
+            "sha256": "1060e1eb981c0e1def412496edbd331af9e5bd4cf3cb5e378a5c01fbb6583e0e",
             "required_columns": [
               "anr_ts",
               "window_start_ts",
               "timeout_ns",
               "timeout_ms",
               "timeout_source",
+              "timer_delay",
               "process_name",
               "upid",
               "anr_type"
@@ -1774,6 +1782,88 @@
               "max_delay_ms",
               "avg_delay_ms",
               "slow_calls"
+            ]
+          }
+        ]
+      },
+      {
+        "target": "binder_pool_saturation_in_range",
+        "source_file": "backend/skills/atomic/binder_pool_saturation_in_range.skill.yaml",
+        "modules": [],
+        "steps": [
+          {
+            "id": "pool_saturation",
+            "sha256": "5186b1052cec4a8cdf488e757021d802ee31accd3f23b4e4ee86d3299e85d389",
+            "required_columns": [
+              "window_start_ts",
+              "window_end_ts",
+              "window_dur_ns",
+              "upid",
+              "pid",
+              "process_name",
+              "target_role",
+              "pool_size",
+              "pool_size_basis",
+              "named_binder_threads",
+              "reply_serving_threads",
+              "peak_busy_threads",
+              "saturated_ns",
+              "busy_thread_ns",
+              "in_progress_replies",
+              "unfinished_replies",
+              "waiting_sync_calls",
+              "unreplied_sync_calls",
+              "unreceived_sync_calls",
+              "max_sync_wait_ns",
+              "saturation_evidence",
+              "evidence_scope"
+            ]
+          },
+          {
+            "id": "in_progress_replies",
+            "sha256": "574c85f224cee1ada615009a3f2418028985633e0d13a025b83c3922ce96eda0",
+            "required_columns": [
+              "upid",
+              "process_name",
+              "target_role",
+              "server_utid",
+              "server_tid",
+              "server_thread_name",
+              "reply_slice_id",
+              "reply_ts",
+              "reply_dur",
+              "is_unfinished",
+              "busy_in_window_ns",
+              "client_utid",
+              "client_tid",
+              "client_thread_name",
+              "client_upid",
+              "client_process_name"
+            ]
+          },
+          {
+            "id": "waiting_sync_calls",
+            "sha256": "d823423149cca1f732d21c9875da700f7b680856005af49904113f5e72c3303c",
+            "required_columns": [
+              "server_upid",
+              "server_process_name",
+              "target_role",
+              "call_slice_id",
+              "call_ts",
+              "call_dur",
+              "is_unfinished",
+              "waited_in_window_ns",
+              "call_state",
+              "client_utid",
+              "client_tid",
+              "client_thread_name",
+              "client_upid",
+              "client_process_name",
+              "client_is_main_thread",
+              "server_utid",
+              "server_tid",
+              "server_thread_name",
+              "reply_dur"
             ]
           }
         ]
@@ -4851,6 +4941,65 @@
         ]
       },
       {
+        "target": "runnable_cpu_occupancy_in_range",
+        "source_file": "backend/skills/atomic/runnable_cpu_occupancy_in_range.skill.yaml",
+        "modules": [
+          {
+            "name": "intervals.intersect",
+            "source_path": "perfetto/src/trace_processor/perfetto_sql/stdlib/intervals/intersect.sql"
+          },
+          {
+            "name": "linux.threads",
+            "source_path": "perfetto/src/trace_processor/perfetto_sql/stdlib/linux/threads.sql"
+          }
+        ],
+        "steps": [
+          {
+            "id": "root",
+            "sha256": "85e91231e8d8459d5982797bc0794dba704310c1c9ae1420a2fec95acd0fc1e5",
+            "required_columns": [
+              "window_id",
+              "window_start_ts",
+              "window_end_ts",
+              "window_dur_ns",
+              "upid",
+              "pid",
+              "process_name",
+              "utid",
+              "tid",
+              "thread_name",
+              "role",
+              "runnable_ns",
+              "targets_with_runnable",
+              "targets_omitted",
+              "ucpu",
+              "cpu",
+              "cpu_basis",
+              "cpu_runnable_ns",
+              "cpu_segment_count",
+              "idle_ns",
+              "unattributed_ns",
+              "occupant_kind",
+              "occupant_rank",
+              "occupant_utid",
+              "occupant_tid",
+              "occupant_thread_name",
+              "occupant_upid",
+              "occupant_pid",
+              "occupant_process_name",
+              "occupant_is_kernel",
+              "occupant_count",
+              "occupied_ns",
+              "segment_count",
+              "share_of_runnable",
+              "occupancy_evidence",
+              "kernel_thread_source",
+              "evidence_scope"
+            ]
+          }
+        ]
+      },
+      {
         "target": "scene_device_state_changes",
         "source_file": "backend/skills/atomic/scene_device_state_changes.skill.yaml",
         "modules": [
@@ -5156,7 +5305,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "58291873f2dbe0eec397cacc4b833a8b4facdc1850fe6ef51fd89392e02e2863",
+            "sha256": "961f8aa2d5e2e6827b47e0b6c8b0dd279d2022491d1fd1dfdbbf624ad5a0a3d1",
             "required_columns": [
               "metric",
               "value",
@@ -5984,7 +6133,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "6d287f238703b86beca8857f1ec09245fa0ccd7e1be3b9e607fe579cbad8e1fb",
+            "sha256": "f635f4f95fcca6f4d044939a904169e54195b04fb4ad1449f4dc06b08283704f",
             "required_columns": [
               "window_id",
               "window_start_ts",
@@ -6043,7 +6192,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "78151d52cf3ef959291b9d75a653ad9c8f0db61571aec66e73d54ac19e21cc59",
+            "sha256": "b50397433404ca7419f61778a8586da145efec1fa567508b112fb07903336774",
             "required_columns": [
               "window_id",
               "window_start_ts",
@@ -6062,6 +6211,7 @@
               "running_ns",
               "runnable_ns",
               "runnable_preempted_ns",
+              "runnable_non_preempted_ns",
               "sleeping_ns",
               "uninterruptible_ns",
               "other_state_ns",
@@ -6790,7 +6940,7 @@
           },
           {
             "id": "get_anr_events",
-            "sha256": "f148524c27567a1098cb3f7e88dd2b77ec93d47c3adb0b9e983a94006b92d77f",
+            "sha256": "d047e82f7a2b7a8e37d01aec43b22ed9565beeaf3f46de84c0262d867f7c9dce",
             "required_columns": [
               "error_id",
               "process_name",
@@ -6798,6 +6948,7 @@
               "anr_type",
               "trigger_type",
               "anr_dur_ms",
+              "timer_delay",
               "anr_ts",
               "perfetto_start",
               "type_display",

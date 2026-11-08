@@ -126,6 +126,7 @@ import {captureEvidenceTable, captureRawSqlEvidence, evidenceTableFor, nativePro
 import {projectModelEvidenceMetadata} from '../services/evidence/modelEvidenceMetadata';
 import {scopeMetadata, identityForScopeEvidence} from '../types/identityContract';
 import { injectStdlibIncludes } from './sqlIncludeInjector';
+import { StdlibColumnDocMemory } from './sqlStdlibColumnDocs';
 import {
   buildSqlSchemaDiagnostic,
   SqlFailureRepeatMemory,
@@ -1420,6 +1421,21 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   // Owned by this server, which the runtimes build once per run: a repeat count
   // never carries over from another run or session.
   const sqlFailureMemory = new SqlFailureRepeatMemory();
+  // Each stdlib relation.column note reaches the model once per run.
+  const stdlibColumnDocMemory = new StdlibColumnDocMemory();
+  /** The model-facing notes of a raw SQL result: evidence availability, then stdlib column documentation. */
+  function rawSqlResultNotes(
+    result: {columns: string[]; rows: unknown[][]},
+    executionWitness: ReturnType<typeof captureRawSqlEvidence> | undefined,
+    normalizedSql: string,
+    success: boolean,
+  ) {
+    const stdlibColumnDocs = success ? stdlibColumnDocMemory.notesFor(normalizedSql, result.columns) : undefined;
+    return {
+      ...projectModelEvidenceMetadata({columns: result.columns, rows: result.rows}, executionWitness),
+      ...(stdlibColumnDocs ? {stdlibColumnDocs} : {}),
+    };
+  }
   const watchdogRef = options.watchdogWarning;
   const skillNotesBudget = options.skillNotesBudget;
   const outputLanguage = options.outputLanguage ?? DEFAULT_OUTPUT_LANGUAGE;
@@ -2567,8 +2583,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         const processIdentityWarning = rawSqlProcessIdentityWarning(normalizedSql);
         const success = !result.error;
         const executionWitness = success ? captureRawSqlEvidence(result, {traceId, traceSide: 'current'}) : undefined;
-        const evidenceMetadata = projectModelEvidenceMetadata(
-          {columns: result.columns, rows: result.rows}, executionWitness);
+        const resultNotes = rawSqlResultNotes(result, executionWitness, normalizedSql, success);
         const truncated = result.rows.length > 200;
         const rows = truncated ? result.rows.slice(0, 200) : result.rows;
         const sqlArtifact = success && result.columns.length > 0 && result.rows.length > SQL_RAW_INLINE_ROW_LIMIT
@@ -2691,7 +2706,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             mode: 'summary',
             autoSummarized: !summary && !!sqlArtifact,
             ...summaryResult,
-            ...evidenceMetadata,
+            ...resultNotes,
             ...(sqlArtifact ? {
               artifactId: sqlArtifact.artifactId,
               artifact: sqlArtifact.artifactSummary,
@@ -2746,7 +2761,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           success,
           columns: result.columns,
           rows,
-          ...evidenceMetadata,
+          ...resultNotes,
           totalRows: result.rows.length,
           truncated,
           durationMs: result.durationMs,
@@ -6985,8 +7000,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         const processIdentityWarning = rawSqlProcessIdentityWarning(normalizedSql);
         const success = !result.error;
         const executionWitness = success ? captureRawSqlEvidence(result, {traceId: targetTraceId, traceSide: trace}) : undefined;
-        const evidenceMetadata = projectModelEvidenceMetadata(
-          {columns: result.columns, rows: result.rows}, executionWitness);
+        const resultNotes = rawSqlResultNotes(result, executionWitness, normalizedSql, success);
         const truncated = result.rows.length > 200;
         const rows = truncated ? result.rows.slice(0, 200) : result.rows;
         const sqlArtifact = success && result.columns.length > 0 && result.rows.length > SQL_RAW_INLINE_ROW_LIMIT
@@ -7039,7 +7053,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             mode: 'summary',
             autoSummarized: !summary && !!sqlArtifact,
             summary: summaryResult,
-            ...evidenceMetadata,
+            ...resultNotes,
             totalRows: result.rows.length,
             ...(sqlArtifact ? {
               artifactId: sqlArtifact.artifactId,
@@ -7098,7 +7112,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           traceProvenance,
           columns: result.columns,
           rows,
-          ...evidenceMetadata,
+          ...resultNotes,
           totalRows: result.rows.length,
           truncated,
           durationMs,

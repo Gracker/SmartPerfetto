@@ -132,11 +132,29 @@ const SYMBOL_PRECEDENCE: Readonly<Record<string, number>> = {
   '|': 4, '&': 4, '<<': 4, '>>': 4, '+': 5, '-': 5, '*': 6, '/': 6, '%': 6, '||': 7,
 };
 
+interface RawSqlDirectProjectionOptions {
+  /**
+   * Accept leading `INCLUDE PERFETTO MODULE <module>;` statements before the
+   * SELECT. Off by default: an include changes the processor's loaded tables,
+   * so native provenance must keep treating it as outside the pure-read grammar.
+   */
+  readonly allowIncludePrelude?: boolean;
+}
+
 class ReadParser {
   private index = 0;
   private hasAggregate = false;
   private hasSubquery = false;
   constructor(private readonly tokens: readonly Token[], private readonly nestingDepth = 0) {}
+  /** `INCLUDE PERFETTO MODULE a.b.c;` statements, each a dotted module name (a `*` segment allowed). */
+  skipIncludePrelude(): void {
+    while (keyword(this.peek(), 'include')) {
+      this.take(); this.requireWord('perfetto'); this.requireWord('module');
+      this.identifier();
+      while (this.symbol('.')) if (!this.symbol('*')) this.identifier();
+      this.requireSymbol(';');
+    }
+  }
   private peek(): Token | undefined {return this.tokens[this.index];}
   private take(): Token {return this.tokens[this.index++] ?? fail();}
   private word(value: string): boolean {
@@ -348,8 +366,15 @@ class ReadParser {
 }
 
 /** Recognizes a bounded positive read grammar. It does not execute or rewrite SQL. */
-export function analyzeRawSqlDirectProjection(sql: string): RawSqlDirectProjectionAnalysis {
-  try {return new ReadParser(tokenize(sql)).parse();}
+export function analyzeRawSqlDirectProjection(
+  sql: string,
+  options: RawSqlDirectProjectionOptions = {},
+): RawSqlDirectProjectionAnalysis {
+  try {
+    const parser = new ReadParser(tokenize(sql));
+    if (options.allowIncludePrelude) parser.skipIncludePrelude();
+    return parser.parse();
+  }
   catch (error) {
     if (error instanceof UnsupportedSql) return {pureRead: false, reason: error.message};
     throw error;

@@ -159,6 +159,20 @@ steps:
       level: detail
       layer: deep
 
+  - id: system_runnable_cpu_occupancy
+    type: skill
+    name: "Runnable 等待期间目标 CPU 占用"
+    skill: runnable_cpu_occupancy_in_range
+    optional: true
+    params:
+      start_ts: "${system_context_window.data[0].start_ts}"
+      end_ts: "${system_context_window.data[0].end_ts}"
+      package: "${process_name}"
+    save_as: system_runnable_cpu_occupancy
+    display:
+      level: detail
+      layer: deep
+
   # ============================================================================
   # CPU 拓扑视图初始化
   # ============================================================================
@@ -497,6 +511,24 @@ steps:
       end_ts: "${anr_ts}"
       package: "${process_name}"
     save_as: main_sync_binder
+    optional: true
+
+  # ============================================================================
+  # Binder 线程池饱和（ANR 进程与主线程同步调用的对端）
+  # ============================================================================
+  - id: binder_pool_saturation
+    type: skill
+    name: "Binder 线程池饱和"
+    skill: binder_pool_saturation_in_range
+    display:
+      level: key
+      layer: deep
+      title: "Binder 线程池饱和"
+    params:
+      start_ts: "${system_context_window.data[0].start_ts}"
+      end_ts: "${system_context_window.data[0].end_ts}"
+      package: "${process_name}"
+    save_as: binder_pool_saturation
     optional: true
 
   # ============================================================================

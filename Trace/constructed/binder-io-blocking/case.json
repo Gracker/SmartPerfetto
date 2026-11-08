@@ -192,6 +192,7 @@
           "timeout_ns",
           "timeout_ms",
           "timeout_source",
+          "timer_delay",
           "process_name",
           "upid",
           "anr_type"

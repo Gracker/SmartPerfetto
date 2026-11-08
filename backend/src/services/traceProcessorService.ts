@@ -43,7 +43,7 @@ import {copyManagedTraceInput, bindManagedTraceInput, revokeManagedTraceInput,
 import {OriginalTraceEvidenceRefusal, OriginalTraceEvidenceQueryUnknownError,
   type OriginalTraceEvidenceQueryOptions, type RunOwnedOriginalTraceReader} from './originalTraceEvidence';
 import {analyzeRawSqlDirectProjection} from './evidence/rawSqlDirectProjection';
-import {loadPerfettoSqlDocsAsset} from './perfettoSqlDocs';
+import {findPerfettoRelationDoc, loadPerfettoSqlDocsAsset} from './perfettoSqlDocs';
 import {AnalysisContextAuthorizationChangedError} from './resolvedAnalysisContext';
 import {parseStoredJson} from '../utils/storedData';
 
@@ -462,10 +462,8 @@ export class TraceProcessorService extends EventEmitter {
       const binary = await resolveCapabilityTraceProcessorIdentity((parent as WorkingTraceProcessor).getRuntimeBinarySelection());
       assertOwner(options);
       const docs = loadPerfettoSqlDocsAsset();
-      const relations = docs?.entries.filter(entry => entry.package === 'prelude' &&
-        (entry.type === 'table' || entry.type === 'view') && entry.name.toLowerCase() === analysis.relation!.name.toLowerCase());
       if (binary.source !== 'bundled' || !binary.gitRevision || binary.stdlibRevision !== binary.gitRevision ||
-          docs?.generatedFrom !== binary.gitRevision || relations?.length !== 1 || !relations[0].columns?.length) {
+          docs?.generatedFrom !== binary.gitRevision || !findPerfettoRelationDoc(docs, analysis.relation.name, 'prelude')) {
         throw new OriginalTraceEvidenceRefusal('unsupported_query');
       }
       // Cache rejection as well as success: one run never repeatedly loads a failed lane.

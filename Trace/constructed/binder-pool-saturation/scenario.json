@@ -1,0 +1,154 @@
+{
+  "schema_version": 1,
+  "clock": {
+    "anchor": "trace-middle",
+    "duration_ns": "1000000000"
+  },
+  "actors": {
+    "processes": [
+      {
+        "id": "app",
+        "name": "com.smartperfetto.fixture",
+        "uid": 10999
+      },
+      {
+        "id": "server",
+        "name": "com.smartperfetto.binderserver",
+        "uid": 10997
+      },
+      {
+        "id": "quiet",
+        "name": "com.smartperfetto.quietserver",
+        "uid": 10996
+      }
+    ],
+    "threads": [
+      {
+        "id": "main",
+        "process": "app",
+        "name": "main",
+        "is_main": true
+      },
+      {
+        "id": "worker-1",
+        "process": "app",
+        "name": "Worker-1"
+      },
+      {
+        "id": "worker-2",
+        "process": "app",
+        "name": "Worker-2"
+      },
+      {
+        "id": "worker-3",
+        "process": "app",
+        "name": "Worker-3"
+      },
+      {
+        "id": "watch",
+        "process": "app",
+        "name": "WindowWatch"
+      },
+      {
+        "id": "server-main",
+        "process": "server",
+        "name": "binderserver",
+        "is_main": true
+      },
+      {
+        "id": "server-binder-1",
+        "process": "server",
+        "name": "binder:server_1"
+      },
+      {
+        "id": "server-binder-2",
+        "process": "server",
+        "name": "binder:server_2"
+      },
+      {
+        "id": "server-binder-3",
+        "process": "server",
+        "name": "Binder:server_3"
+      },
+      {
+        "id": "quiet-main",
+        "process": "quiet",
+        "name": "quietserver",
+        "is_main": true
+      },
+      {
+        "id": "quiet-binder-1",
+        "process": "quiet",
+        "name": "binder:quiet_1"
+      },
+      {
+        "id": "quiet-binder-2",
+        "process": "quiet",
+        "name": "HwBinder:quiet_2"
+      }
+    ]
+  },
+  "signals": [
+    {
+      "type": "atrace-slice",
+      "at_ns": "10000000",
+      "duration_ns": "18000000",
+      "process": "app",
+      "thread": "main",
+      "name": "SmartPerfetto::CASE::binder-pool-saturation"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "20000000",
+      "duration_ns": "580000000",
+      "process": "app",
+      "thread": "watch",
+      "name": "BinderPoolWindow"
+    },
+    {
+      "type": "binder-transaction",
+      "at_ns": "100000000",
+      "thread": "worker-1",
+      "server_thread": "server-binder-1",
+      "cpu": 0,
+      "server_cpu": 1,
+      "duration_ns": "300000000"
+    },
+    {
+      "type": "binder-transaction",
+      "at_ns": "120000000",
+      "thread": "worker-2",
+      "server_thread": "server-binder-2",
+      "cpu": 2,
+      "server_cpu": 3,
+      "duration_ns": "280000000"
+    },
+    {
+      "type": "binder-transaction",
+      "at_ns": "150000000",
+      "thread": "worker-3",
+      "server_thread": "server-binder-3",
+      "cpu": 4,
+      "server_cpu": 5,
+      "reply_state": "unreplied"
+    },
+    {
+      "type": "binder-transaction",
+      "at_ns": "200000000",
+      "thread": "main",
+      "server_thread": "server-binder-1",
+      "cpu": 0,
+      "server_cpu": 1,
+      "reply_state": "unreceived"
+    },
+    {
+      "type": "binder-transaction",
+      "at_ns": "450000000",
+      "thread": "worker-1",
+      "server_thread": "quiet-binder-1",
+      "cpu": 0,
+      "server_cpu": 6,
+      "duration_ns": "10000000"
+    }
+  ]
+}

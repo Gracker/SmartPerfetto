@@ -43,6 +43,18 @@ describe('raw SQL direct projection', () => {
     expect(resolveRawSqlExpressionUnits(analyzeRawSqlDirectProjection('SELECT SUM(other.dur) AS quantity FROM slice s'),
       ['quantity'], typedColumns)).toEqual({});
   });
+  it('accepts a leading stdlib include prelude only when the caller opts in', () => {
+    const sql = 'INCLUDE PERFETTO MODULE android.anrs; -- note\nINCLUDE PERFETTO MODULE android.*;\nSELECT ts, dur FROM slice';
+    expect(analyzeRawSqlDirectProjection(sql)).toEqual({pureRead: false, reason: 'sql_unrecognized'});
+    const parsed = analyzeRawSqlDirectProjection(sql, {allowIncludePrelude: true});
+    expect(resolveRawSqlDirectProjection(parsed, ['ts', 'dur'], columns)).toEqual([
+      {outputColumn: 'ts', sourceColumn: 'ts'}, {outputColumn: 'dur', sourceColumn: 'dur'}]);
+    for (const invalid of ['INCLUDE PERFETTO MODULE android.anrs SELECT ts FROM slice',
+      'INCLUDE MODULE android.anrs; SELECT ts FROM slice', 'INCLUDE PERFETTO MODULE ; SELECT ts FROM slice']) {
+      expect(analyzeRawSqlDirectProjection(invalid, {allowIncludePrelude: true}).pureRead).toBe(false);
+    }
+  });
+
   it('maps an executed direct projection by formal source column and exact output alias', () => {
     const sql = 'SELECT s.dur AS elapsed, s.id FROM main.slice AS s WHERE s.id = 11140 ORDER BY s.ts DESC LIMIT 1 OFFSET 0;';
     const parsed = analyzeRawSqlDirectProjection(sql);

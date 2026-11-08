@@ -2,7 +2,7 @@
 # Copyright (C) 2024-2026 Gracker (Chris)
 
 name: thread_system_summary_in_range
-version: "1.1"
+version: "1.2"
 type: atomic
 category: kernel
 tier: B
@@ -22,6 +22,7 @@ process_scope:
   binding: effective_target_processes
 sql_fragments:
   - fragments/effective_target_processes.sql
+  - fragments/system_target_threads.sql
   - fragments/system_thread_state_spans.sql
   - fragments/system_sched_spans.sql
   - fragments/system_cpu_frequency_spans.sql
@@ -90,6 +91,7 @@ display:
     - {name: running_ns, label: "running_ns", type: duration, unit: ns}
     - {name: runnable_ns, label: "runnable_ns", type: duration, unit: ns}
     - {name: runnable_preempted_ns, label: "runnable_preempted_ns", type: duration, unit: ns}
+    - {name: runnable_non_preempted_ns, label: "runnable_non_preempted_ns", type: duration, unit: ns}
     - {name: sleeping_ns, label: "sleeping_ns", type: duration, unit: ns}
     - {name: uninterruptible_ns, label: "uninterruptible_ns", type: duration, unit: ns}
     - {name: other_state_ns, label: "other_state_ns", type: duration, unit: ns}
@@ -123,20 +125,12 @@ sql: |
   WITH system_windows AS (
     SELECT 0 AS window_id, ${start_ts} AS window_start_ts, ${end_ts} AS window_end_ts
   ),
-  system_target_threads AS (
-    SELECT w.window_id, p.upid, t.utid,
-      CASE WHEN t.tid = p.pid THEN 'main' ELSE 'target' END AS role
-    FROM system_windows w CROSS JOIN effective_target_processes p
-    JOIN thread t ON t.upid = p.upid
-    WHERE (${__process_scope.upid} IS NOT NULL OR '${package}' = ''
-      OR p.name = '${package}' OR p.name GLOB '${package}:*')
-      AND (${utid} IS NULL OR t.utid = ${utid})
-  ),
   states AS (
     SELECT window_id, utid, COUNT(*) AS state_count, SUM(dur_ns) AS state_covered_ns,
       SUM(CASE WHEN state='Running' THEN dur_ns ELSE 0 END) AS running_ns,
       SUM(CASE WHEN state IN ('R','R+') THEN dur_ns ELSE 0 END) AS runnable_ns,
       SUM(CASE WHEN state='R+' THEN dur_ns ELSE 0 END) AS runnable_preempted_ns,
+      SUM(CASE WHEN state='R' THEN dur_ns ELSE 0 END) AS runnable_non_preempted_ns,
       SUM(CASE WHEN state IN ('S','I') THEN dur_ns ELSE 0 END) AS sleeping_ns,
       SUM(CASE WHEN state IN ('D','DK') THEN dur_ns ELSE 0 END) AS uninterruptible_ns,
       SUM(CASE WHEN state NOT IN ('Running','R','R+','S','I','D','DK') THEN dur_ns ELSE 0 END) AS other_state_ns,
@@ -182,7 +176,7 @@ sql: |
     tt.upid,p.pid,p.name AS process_name,tt.utid,t.tid,t.name AS thread_name,tt.role,
     COUNT(*) OVER (PARTITION BY w.window_id) AS total_target_threads,
     COALESCE(st.state_count,0) AS state_count,COALESCE(st.state_covered_ns,0) AS state_covered_ns,
-    st.running_ns, st.runnable_ns, st.runnable_preempted_ns, st.sleeping_ns, st.uninterruptible_ns, st.other_state_ns, st.unfinished_state_ns,
+    st.running_ns, st.runnable_ns, st.runnable_preempted_ns, st.runnable_non_preempted_ns, st.sleeping_ns, st.uninterruptible_ns, st.other_state_ns, st.unfinished_state_ns,
     CASE WHEN st.state_count IS NULL THEN 'unavailable'
       WHEN st.state_covered_ns>w.window_end_ts-w.window_start_ts THEN 'unsupported'
       WHEN st.state_covered_ns<w.window_end_ts-w.window_start_ts THEN 'partial' ELSE 'observed' END AS state_evidence,

@@ -30,7 +30,8 @@
             "properties": {
               "id": {"type": "string", "minLength": 1},
               "name": {"type": "string", "minLength": 1},
-              "uid": {"type": "integer", "minimum": 0}
+              "uid": {"type": "integer", "minimum": 0},
+              "kernel_thread": {"type": "boolean", "description": "A Linux kernel thread: its parent is kthreadd (pid 2), so stdlib linux_kernel_threads lists it when the trace records kthreadd. Its uid defaults to 0."}
             }
           }
         },
@@ -87,6 +88,7 @@
           "server_thread": {"type": "string", "description": "binder-transaction: the thread that receives the call and replies; `thread` is the caller."},
           "server_cpu": {"type": "integer", "minimum": 0, "description": "binder-transaction: CPU of the server's receive and reply events; defaults to `cpu`."},
           "code": {"type": "integer", "minimum": 0, "maximum": 4294967295, "description": "binder-transaction transaction code; defaults to 1."},
+          "reply_state": {"enum": ["replied", "unreplied", "unreceived"], "description": "binder-transaction: replied (default) is a complete call and needs duration_ns; unreplied is received by server_thread and never answered; unreceived is sent to server_thread's process and taken by no thread. An open call takes no duration_ns."},
           "packages": {
             "type": "array",
             "minItems": 1,
@@ -317,7 +319,15 @@
           },
           {
             "if": {"properties": {"type": {"const": "binder-transaction"}}},
-            "then": {"required": ["thread", "server_thread", "duration_ns"]}
+            "then": {"required": ["thread", "server_thread"]}
+          },
+          {
+            "if": {"properties": {"type": {"const": "binder-transaction"}, "reply_state": {"const": "replied"}}, "required": ["type"]},
+            "then": {"required": ["duration_ns"]}
+          },
+          {
+            "if": {"properties": {"type": {"const": "binder-transaction"}, "reply_state": {"enum": ["unreplied", "unreceived"]}}, "required": ["type", "reply_state"]},
+            "then": {"not": {"required": ["duration_ns"]}}
           },
           {
             "if": {"properties": {"type": {"const": "android-packages-list"}}},

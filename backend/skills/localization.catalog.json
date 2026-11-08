@@ -7,11 +7,11 @@
     "authoredNarrativeRemainsVerbatim": true
   },
   "inventory": {
-    "skillCount": 252,
+    "skillCount": 254,
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
-    "stepCount": 1373,
-    "explicitColumnCount": 5197
+    "stepCount": 1387,
+    "explicitColumnCount": 5294
   },
   "skills": {
     "ams_module": {
@@ -2922,6 +2922,14 @@
           },
           "synthesizeLabels": {}
         },
+        "first_anr_binder_pool_saturation": {
+          "title": {
+            "zh-CN": "首个 ANR 窗口 Binder 线程池饱和",
+            "en": "First ANR Binder Pool Saturation"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        },
         "futex_wait_probe": {
           "title": {
             "zh-CN": "首个 ANR 窗口锁等待分布（专家探针）",
@@ -3009,6 +3017,12 @@
               "label": {
                 "zh-CN": "超时时长",
                 "en": "ANR Dur ms"
+              }
+            },
+            "timer_delay": {
+              "label": {
+                "zh-CN": "ANR 计时器到期→ANR 记录延迟（非超时时长）",
+                "en": "ANR timer expiry → ANR record delay (not the ANR timeout)"
               }
             },
             "anr_ts": {
@@ -3412,6 +3426,12 @@
                 "en": "Timeout Source"
               }
             },
+            "timer_delay": {
+              "label": {
+                "zh-CN": "ANR 计时器到期→ANR 记录延迟（非超时时长）",
+                "en": "ANR timer expiry → ANR record delay (not the ANR timeout)"
+              }
+            },
             "process_name": {
               "label": {
                 "zh-CN": "进程名",
@@ -3682,6 +3702,14 @@
           "title": {
             "zh-CN": "Binder 调用",
             "en": "Binder Calls"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        },
+        "binder_pool_saturation": {
+          "title": {
+            "zh-CN": "Binder 线程池饱和",
+            "en": "Binder Pool Saturation"
           },
           "columns": {},
           "synthesizeLabels": {}
@@ -4171,6 +4199,14 @@
           "title": {
             "zh-CN": "窗口 CPU 系统上下文",
             "en": "System CPU Context"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        },
+        "system_runnable_cpu_occupancy": {
+          "title": {
+            "zh-CN": "Runnable 等待期间目标 CPU 占用",
+            "en": "System Runnable CPU Occupancy"
           },
           "columns": {},
           "synthesizeLabels": {}
@@ -6331,6 +6367,404 @@
             "en": "Binder Module"
           },
           "columns": {},
+          "synthesizeLabels": {}
+        }
+      }
+    },
+    "binder_pool_saturation_in_range": {
+      "displayName": {
+        "zh-CN": "Binder 线程池饱和",
+        "en": "Binder thread pool saturation"
+      },
+      "description": {
+        "zh-CN": "窗口内目标进程及其主线程同步 Binder 对端的线程池：观测池大小、并发忙碌峰值、全部忙碌时长、进行中的 reply 与等待中的同步调用",
+        "en": "Binder pools of the target process and its main thread's sync binder servers in a window: observed pool size, peak concurrent busy threads, all-busy time, in-progress replies and waiting sync calls"
+      },
+      "type": "atomic",
+      "steps": {
+        "__synthesize_summary__": {
+          "title": {
+            "zh-CN": "洞见摘要",
+            "en": "Insight Summary"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        },
+        "in_progress_replies": {
+          "title": {
+            "zh-CN": "目标线程池中最长的进行中 reply",
+            "en": "Longest in-progress replies in the target pools"
+          },
+          "columns": {
+            "upid": {
+              "label": {
+                "zh-CN": "UPID",
+                "en": "upid"
+              }
+            },
+            "process_name": {
+              "label": {
+                "zh-CN": "进程Name",
+                "en": "process_name"
+              }
+            },
+            "target_role": {
+              "label": {
+                "zh-CN": "TargetRole",
+                "en": "target_role"
+              }
+            },
+            "server_utid": {
+              "label": {
+                "zh-CN": "ServerUTID",
+                "en": "server_utid"
+              }
+            },
+            "server_tid": {
+              "label": {
+                "zh-CN": "ServerTID",
+                "en": "server_tid"
+              }
+            },
+            "server_thread_name": {
+              "label": {
+                "zh-CN": "Server线程Name",
+                "en": "server_thread_name"
+              }
+            },
+            "reply_slice_id": {
+              "label": {
+                "zh-CN": "ReplySliceId",
+                "en": "reply_slice_id"
+              }
+            },
+            "reply_ts": {
+              "label": {
+                "zh-CN": "ReplyTs",
+                "en": "reply_ts"
+              }
+            },
+            "reply_dur": {
+              "label": {
+                "zh-CN": "ReplyDur",
+                "en": "reply_dur"
+              }
+            },
+            "is_unfinished": {
+              "label": {
+                "zh-CN": "IsUnfinished",
+                "en": "is_unfinished"
+              }
+            },
+            "busy_in_window_ns": {
+              "label": {
+                "zh-CN": "BusyInWindowns",
+                "en": "busy_in_window_ns"
+              }
+            },
+            "client_utid": {
+              "label": {
+                "zh-CN": "ClientUTID",
+                "en": "client_utid"
+              }
+            },
+            "client_tid": {
+              "label": {
+                "zh-CN": "ClientTID",
+                "en": "client_tid"
+              }
+            },
+            "client_thread_name": {
+              "label": {
+                "zh-CN": "Client线程Name",
+                "en": "client_thread_name"
+              }
+            },
+            "client_upid": {
+              "label": {
+                "zh-CN": "ClientUPID",
+                "en": "client_upid"
+              }
+            },
+            "client_process_name": {
+              "label": {
+                "zh-CN": "Client进程Name",
+                "en": "client_process_name"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "pool_saturation": {
+          "title": {
+            "zh-CN": "Binder 线程池饱和",
+            "en": "Binder thread pool saturation"
+          },
+          "columns": {
+            "window_start_ts": {
+              "label": {
+                "zh-CN": "WindowStartTs",
+                "en": "window_start_ts"
+              }
+            },
+            "window_end_ts": {
+              "label": {
+                "zh-CN": "WindowEndTs",
+                "en": "window_end_ts"
+              }
+            },
+            "window_dur_ns": {
+              "label": {
+                "zh-CN": "WindowDurns",
+                "en": "window_dur_ns"
+              }
+            },
+            "upid": {
+              "label": {
+                "zh-CN": "UPID",
+                "en": "upid"
+              }
+            },
+            "pid": {
+              "label": {
+                "zh-CN": "PID",
+                "en": "pid"
+              }
+            },
+            "process_name": {
+              "label": {
+                "zh-CN": "进程Name",
+                "en": "process_name"
+              }
+            },
+            "target_role": {
+              "label": {
+                "zh-CN": "TargetRole",
+                "en": "target_role"
+              }
+            },
+            "pool_size": {
+              "label": {
+                "zh-CN": "PoolSize",
+                "en": "pool_size"
+              }
+            },
+            "pool_size_basis": {
+              "label": {
+                "zh-CN": "PoolSizeBasis",
+                "en": "pool_size_basis"
+              }
+            },
+            "named_binder_threads": {
+              "label": {
+                "zh-CN": "NamedBinderThreads",
+                "en": "named_binder_threads"
+              }
+            },
+            "reply_serving_threads": {
+              "label": {
+                "zh-CN": "ReplyServingThreads",
+                "en": "reply_serving_threads"
+              }
+            },
+            "peak_busy_threads": {
+              "label": {
+                "zh-CN": "PeakBusyThreads",
+                "en": "peak_busy_threads"
+              }
+            },
+            "saturated_ns": {
+              "label": {
+                "zh-CN": "Saturatedns",
+                "en": "saturated_ns"
+              }
+            },
+            "busy_thread_ns": {
+              "label": {
+                "zh-CN": "Busy线程ns",
+                "en": "busy_thread_ns"
+              }
+            },
+            "in_progress_replies": {
+              "label": {
+                "zh-CN": "InProgressReplies",
+                "en": "in_progress_replies"
+              }
+            },
+            "unfinished_replies": {
+              "label": {
+                "zh-CN": "UnfinishedReplies",
+                "en": "unfinished_replies"
+              }
+            },
+            "waiting_sync_calls": {
+              "label": {
+                "zh-CN": "WaitingSyncCalls",
+                "en": "waiting_sync_calls"
+              }
+            },
+            "unreplied_sync_calls": {
+              "label": {
+                "zh-CN": "UnrepliedSyncCalls",
+                "en": "unreplied_sync_calls"
+              }
+            },
+            "unreceived_sync_calls": {
+              "label": {
+                "zh-CN": "UnreceivedSyncCalls",
+                "en": "unreceived_sync_calls"
+              }
+            },
+            "max_sync_wait_ns": {
+              "label": {
+                "zh-CN": "MaxSyncWaitns",
+                "en": "max_sync_wait_ns"
+              }
+            },
+            "saturation_evidence": {
+              "label": {
+                "zh-CN": "SaturationEvidence",
+                "en": "saturation_evidence"
+              }
+            },
+            "evidence_scope": {
+              "label": {
+                "zh-CN": "EvidenceScope",
+                "en": "evidence_scope"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "root": {
+          "title": {
+            "zh-CN": "Binder 线程池饱和",
+            "en": "Binder thread pool saturation"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        },
+        "waiting_sync_calls": {
+          "title": {
+            "zh-CN": "调用目标线程池的最长同步等待",
+            "en": "Longest synchronous calls waiting on the target pools"
+          },
+          "columns": {
+            "server_upid": {
+              "label": {
+                "zh-CN": "ServerUPID",
+                "en": "server_upid"
+              }
+            },
+            "server_process_name": {
+              "label": {
+                "zh-CN": "Server进程Name",
+                "en": "server_process_name"
+              }
+            },
+            "target_role": {
+              "label": {
+                "zh-CN": "TargetRole",
+                "en": "target_role"
+              }
+            },
+            "call_slice_id": {
+              "label": {
+                "zh-CN": "CallSliceId",
+                "en": "call_slice_id"
+              }
+            },
+            "call_ts": {
+              "label": {
+                "zh-CN": "CallTs",
+                "en": "call_ts"
+              }
+            },
+            "call_dur": {
+              "label": {
+                "zh-CN": "CallDur",
+                "en": "call_dur"
+              }
+            },
+            "is_unfinished": {
+              "label": {
+                "zh-CN": "IsUnfinished",
+                "en": "is_unfinished"
+              }
+            },
+            "waited_in_window_ns": {
+              "label": {
+                "zh-CN": "WaitedInWindowns",
+                "en": "waited_in_window_ns"
+              }
+            },
+            "call_state": {
+              "label": {
+                "zh-CN": "CallState",
+                "en": "call_state"
+              }
+            },
+            "client_utid": {
+              "label": {
+                "zh-CN": "ClientUTID",
+                "en": "client_utid"
+              }
+            },
+            "client_tid": {
+              "label": {
+                "zh-CN": "ClientTID",
+                "en": "client_tid"
+              }
+            },
+            "client_thread_name": {
+              "label": {
+                "zh-CN": "Client线程Name",
+                "en": "client_thread_name"
+              }
+            },
+            "client_upid": {
+              "label": {
+                "zh-CN": "ClientUPID",
+                "en": "client_upid"
+              }
+            },
+            "client_process_name": {
+              "label": {
+                "zh-CN": "Client进程Name",
+                "en": "client_process_name"
+              }
+            },
+            "client_is_main_thread": {
+              "label": {
+                "zh-CN": "ClientIsMain线程",
+                "en": "client_is_main_thread"
+              }
+            },
+            "server_utid": {
+              "label": {
+                "zh-CN": "ServerUTID",
+                "en": "server_utid"
+              }
+            },
+            "server_tid": {
+              "label": {
+                "zh-CN": "ServerTID",
+                "en": "server_tid"
+              }
+            },
+            "server_thread_name": {
+              "label": {
+                "zh-CN": "Server线程Name",
+                "en": "server_thread_name"
+              }
+            },
+            "reply_dur": {
+              "label": {
+                "zh-CN": "ReplyDur",
+                "en": "reply_dur"
+              }
+            }
+          },
           "synthesizeLabels": {}
         }
       }
@@ -10112,6 +10546,14 @@
           "title": {
             "zh-CN": "窗口 CPU 系统上下文",
             "en": "System CPU Context"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        },
+        "system_runnable_cpu_occupancy": {
+          "title": {
+            "zh-CN": "Runnable 等待期间目标 CPU 占用",
+            "en": "System Runnable CPU Occupancy"
           },
           "columns": {},
           "synthesizeLabels": {}
@@ -26445,6 +26887,14 @@
           "columns": {},
           "synthesizeLabels": {}
         },
+        "system_runnable_cpu_occupancy": {
+          "title": {
+            "zh-CN": "Runnable 等待期间目标 CPU 占用",
+            "en": "System Runnable CPU Occupancy"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        },
         "system_task_handoffs": {
           "title": {
             "zh-CN": "目标任务调度交接",
@@ -32311,6 +32761,258 @@
         }
       }
     },
+    "runnable_cpu_occupancy_in_range": {
+      "displayName": {
+        "zh-CN": "Runnable 等待期间目标 CPU 的占用者",
+        "en": "Occupants of the waited-for CPU during Runnable waits"
+      },
+      "description": {
+        "zh-CN": "目标线程 R/R+ 等待期间，其随后运行的 CPU 上实际运行的任务、idle 与未覆盖时间；观测不等于抢占原因",
+        "en": "Tasks, idle and uncovered time on the CPU each target thread later ran on, during its R/R+ waits; an observation, not a preemption cause"
+      },
+      "type": "atomic",
+      "steps": {
+        "__synthesize_summary__": {
+          "title": {
+            "zh-CN": "洞见摘要",
+            "en": "Insight Summary"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        },
+        "root": {
+          "title": {
+            "zh-CN": "Runnable 等待期间目标 CPU 的占用者",
+            "en": "Occupants of the waited-for CPU during Runnable waits"
+          },
+          "columns": {
+            "window_id": {
+              "label": {
+                "zh-CN": "WindowId",
+                "en": "window_id"
+              }
+            },
+            "window_start_ts": {
+              "label": {
+                "zh-CN": "WindowStartTs",
+                "en": "window_start_ts"
+              }
+            },
+            "window_end_ts": {
+              "label": {
+                "zh-CN": "WindowEndTs",
+                "en": "window_end_ts"
+              }
+            },
+            "window_dur_ns": {
+              "label": {
+                "zh-CN": "WindowDurns",
+                "en": "window_dur_ns"
+              }
+            },
+            "upid": {
+              "label": {
+                "zh-CN": "UPID",
+                "en": "upid"
+              }
+            },
+            "pid": {
+              "label": {
+                "zh-CN": "PID",
+                "en": "pid"
+              }
+            },
+            "process_name": {
+              "label": {
+                "zh-CN": "进程Name",
+                "en": "process_name"
+              }
+            },
+            "utid": {
+              "label": {
+                "zh-CN": "UTID",
+                "en": "utid"
+              }
+            },
+            "tid": {
+              "label": {
+                "zh-CN": "TID",
+                "en": "tid"
+              }
+            },
+            "thread_name": {
+              "label": {
+                "zh-CN": "线程Name",
+                "en": "thread_name"
+              }
+            },
+            "role": {
+              "label": {
+                "zh-CN": "Role",
+                "en": "role"
+              }
+            },
+            "runnable_ns": {
+              "label": {
+                "zh-CN": "Runnablens",
+                "en": "runnable_ns"
+              }
+            },
+            "targets_with_runnable": {
+              "label": {
+                "zh-CN": "TargetsWithRunnable",
+                "en": "targets_with_runnable"
+              }
+            },
+            "targets_omitted": {
+              "label": {
+                "zh-CN": "TargetsOmitted",
+                "en": "targets_omitted"
+              }
+            },
+            "ucpu": {
+              "label": {
+                "zh-CN": "Ucpu",
+                "en": "ucpu"
+              }
+            },
+            "cpu": {
+              "label": {
+                "zh-CN": "CPU",
+                "en": "cpu"
+              }
+            },
+            "cpu_basis": {
+              "label": {
+                "zh-CN": "CPUBasis",
+                "en": "cpu_basis"
+              }
+            },
+            "cpu_runnable_ns": {
+              "label": {
+                "zh-CN": "CPURunnablens",
+                "en": "cpu_runnable_ns"
+              }
+            },
+            "cpu_segment_count": {
+              "label": {
+                "zh-CN": "CPUSegmentCount",
+                "en": "cpu_segment_count"
+              }
+            },
+            "idle_ns": {
+              "label": {
+                "zh-CN": "Idlens",
+                "en": "idle_ns"
+              }
+            },
+            "unattributed_ns": {
+              "label": {
+                "zh-CN": "Unattributedns",
+                "en": "unattributed_ns"
+              }
+            },
+            "occupant_kind": {
+              "label": {
+                "zh-CN": "OccupantKind",
+                "en": "occupant_kind"
+              }
+            },
+            "occupant_rank": {
+              "label": {
+                "zh-CN": "OccupantRank",
+                "en": "occupant_rank"
+              }
+            },
+            "occupant_utid": {
+              "label": {
+                "zh-CN": "OccupantUTID",
+                "en": "occupant_utid"
+              }
+            },
+            "occupant_tid": {
+              "label": {
+                "zh-CN": "OccupantTID",
+                "en": "occupant_tid"
+              }
+            },
+            "occupant_thread_name": {
+              "label": {
+                "zh-CN": "Occupant线程Name",
+                "en": "occupant_thread_name"
+              }
+            },
+            "occupant_upid": {
+              "label": {
+                "zh-CN": "OccupantUPID",
+                "en": "occupant_upid"
+              }
+            },
+            "occupant_pid": {
+              "label": {
+                "zh-CN": "OccupantPID",
+                "en": "occupant_pid"
+              }
+            },
+            "occupant_process_name": {
+              "label": {
+                "zh-CN": "Occupant进程Name",
+                "en": "occupant_process_name"
+              }
+            },
+            "occupant_is_kernel": {
+              "label": {
+                "zh-CN": "OccupantIsKernel",
+                "en": "occupant_is_kernel"
+              }
+            },
+            "occupant_count": {
+              "label": {
+                "zh-CN": "OccupantCount",
+                "en": "occupant_count"
+              }
+            },
+            "occupied_ns": {
+              "label": {
+                "zh-CN": "Occupiedns",
+                "en": "occupied_ns"
+              }
+            },
+            "segment_count": {
+              "label": {
+                "zh-CN": "SegmentCount",
+                "en": "segment_count"
+              }
+            },
+            "share_of_runnable": {
+              "label": {
+                "zh-CN": "ShareOfRunnable",
+                "en": "share_of_runnable"
+              }
+            },
+            "occupancy_evidence": {
+              "label": {
+                "zh-CN": "OccupancyEvidence",
+                "en": "occupancy_evidence"
+              }
+            },
+            "kernel_thread_source": {
+              "label": {
+                "zh-CN": "Kernel线程Source",
+                "en": "kernel_thread_source"
+              }
+            },
+            "evidence_scope": {
+              "label": {
+                "zh-CN": "EvidenceScope",
+                "en": "evidence_scope"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        }
+      }
+    },
     "scene_device_state_changes": {
       "displayName": {
         "zh-CN": "场景设备状态变化",
@@ -34268,6 +34970,14 @@
           "title": {
             "zh-CN": "窗口 CPU 系统上下文",
             "en": "System CPU Context"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        },
+        "system_runnable_cpu_occupancy": {
+          "title": {
+            "zh-CN": "Runnable 等待期间目标 CPU 占用",
+            "en": "System Runnable CPU Occupancy"
           },
           "columns": {},
           "synthesizeLabels": {}
@@ -36739,6 +37449,14 @@
           "title": {
             "zh-CN": "窗口 CPU 系统上下文",
             "en": "System CPU Context"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        },
+        "system_runnable_cpu_occupancy": {
+          "title": {
+            "zh-CN": "Runnable 等待期间目标 CPU 占用",
+            "en": "System Runnable CPU Occupancy"
           },
           "columns": {},
           "synthesizeLabels": {}
@@ -46272,6 +46990,12 @@
               "label": {
                 "zh-CN": "RunnablePreemptedns",
                 "en": "runnable_preempted_ns"
+              }
+            },
+            "runnable_non_preempted_ns": {
+              "label": {
+                "zh-CN": "RunnableNonPreemptedns",
+                "en": "runnable_non_preempted_ns"
               }
             },
             "sleeping_ns": {

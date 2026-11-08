@@ -737,6 +737,61 @@ test('encodes a synchronous binder call that trace processor pairs into one tran
   }
 });
 
+test('encodes open binder calls whose slices stay in progress to the end of the trace', () => {
+  const scenario = fixtureScenario();
+  scenario.actors.processes.push({id: 'server', name: 'com.smartperfetto.server', uid: 10998});
+  scenario.actors.threads.push(
+    {id: 'worker', process: 'app', name: 'Worker'},
+    {id: 'server-binder', process: 'server', name: 'binder:server_1'},
+  );
+  scenario.signals.push(
+    {type: 'binder-transaction', at_ns: '10000000', thread: 'worker', server_thread: 'server-binder',
+      reply_state: 'unreplied'},
+    {type: 'binder-transaction', at_ns: '20000000', thread: 'main', server_thread: 'server-binder',
+      reply_state: 'unreceived'},
+  );
+  const overlay = encodeScenarioOverlay(repoRoot, scenario, {anchorNs: '1000000000', usedPids: new Set(), sequenceId: 616161});
+  const outputPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'trace-open-binder-')), 'trace.pftrace');
+  materializeTrace(Buffer.alloc(0), overlay.buffer, outputPath);
+
+  const output = queryTrace(outputPath, `
+    SELECT group_concat(row, ';') AS slices FROM (
+      SELECT t.name || '/' || s.name || '/' || s.dur || '/'
+        || COALESCE(extract_arg(s.arg_set_id, 'destination process') = ${overlay.identities.processes.server}, 'none') AS row
+      FROM slice s JOIN thread_track tt ON tt.id = s.track_id JOIN thread t USING (utid)
+      WHERE s.name GLOB 'binder*' ORDER BY s.ts, s.id)`);
+  // The worker's call is taken by the server thread and never answered; the
+  // main thread's call names the server process and no thread takes it.
+  assert.match(output,
+    /\n"Worker\/binder transaction\/-1\/1;binder:server_1\/binder reply\/-1\/none;main\/binder transaction\/-1\/1"\s*$/);
+  for (const invalid of [{reply_state: 'unreplied', duration_ns: '1000'}, {reply_state: 'replied'},
+    {reply_state: 'pending'}]) {
+    assert.throws(() => encodeScenarioOverlay(repoRoot, {...scenario, signals: [
+      {type: 'binder-transaction', at_ns: '1', thread: 'worker', server_thread: 'server-binder', ...invalid}]},
+    {anchorNs: '1000000000', usedPids: new Set(), sequenceId: 1}), /binder-transaction/);
+  }
+});
+
+test('parents a kernel_thread process to kthreadd so linux_kernel_threads lists it', () => {
+  const scenario = fixtureScenario();
+  scenario.actors.processes.push({id: 'irq', name: 'irq/90-fixture', kernel_thread: true});
+  scenario.actors.threads.push({id: 'irq-thread', process: 'irq', name: 'irq/90-fixture', is_main: true});
+  scenario.signals.push({type: 'sched-running', at_ns: '10000000', duration_ns: '1000000', thread: 'irq-thread',
+    cpu: 1, end_state: 'S'});
+  const overlay = encodeScenarioOverlay(repoRoot, scenario, {anchorNs: '1000000000', usedPids: new Set(), sequenceId: 626262});
+  const outputPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'trace-kthread-')), 'trace.pftrace');
+  materializeTrace(Buffer.alloc(0), overlay.buffer, outputPath);
+
+  const output = queryTrace(outputPath, `
+    INCLUDE PERFETTO MODULE linux.threads;
+    SELECT (SELECT group_concat(thread_name, ';') FROM linux_kernel_threads) AS kernel_threads,
+      (SELECT uid FROM process WHERE name = 'irq/90-fixture') AS irq_uid`);
+  assert.match(output, /\n"irq\/90-fixture",0\s*$/);
+  assert.throws(() => encodeScenarioOverlay(repoRoot, {...scenario, actors: {...scenario.actors,
+    processes: [...scenario.actors.processes.slice(0, -1), {id: 'irq', name: 'irq/90-fixture', kernel_thread: 'yes'}]}},
+  {anchorNs: '1000000000', usedPids: new Set(), sequenceId: 1}), /kernel_thread must be a boolean/);
+});
+
 test('encodes a D-state blocked reason with its kernel symbol, and an interpolated frame', () => {
   const scenario = fixtureScenario();
   scenario.signals.push(

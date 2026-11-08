@@ -1015,6 +1015,6 @@ tenant/workspace 上下文支持。
 
 需求的 `condition` 决定义务何时适用。调查义务用于指导采集，不再有复核按义务评判回答，因此 `kind: semantic` 条件在记录的账本中保持未知。`kind: evidence` 带 `metric_id`、`operator`（`gt`/`gte`/`lt`/`lte`）和数值 `value`，只读生产者绑定的证据账本判定，不依赖模型，产出仅供展示的 `ledgerAcquisition` 行。只有 `observed` 记录参与比较，账本里缺失的指标保持未知，不视为条件不成立。新的 finalization 把调查保证记为 `not_applicable`。
 
-系统 SQL 必须对请求窗口、调度片段和频率样本做区间交集，保留原始时间及裁剪时间、UTID/UPID、CPU/ucpu 和拓扑来源。线程状态区分 Running、R/R+、S/I、D/DK 与未知覆盖。CPU 驻留保留 medium 和 unknown；精确同 ucpu 的 next-task handoff 仅证明切换观测，不证明抢占动机或全部等待归因。priority 观测不等于 FIFO/RR/OTHER 等策略。
+系统 SQL 必须对请求窗口、调度片段和频率样本做区间交集，保留原始时间及裁剪时间、UTID/UPID、CPU/ucpu 和拓扑来源。线程状态区分 Running、R/R+、S/I、D/DK 与未知覆盖。CPU 驻留保留 medium 和 unknown；精确同 ucpu 的 next-task handoff 仅证明切换观测，不证明抢占动机或全部等待归因。R/R+ 等待期间的 CPU 占用按随后 Running 行的 ucpu（eventual_run_cpu）求交，任务、idle 与未覆盖时间分开且合计守恒；它是观测，不是等待原因。Binder 线程池大小是 trace 中观测到的池线程，不是配置上限。priority 观测不等于 FIFO/RR/OTHER 等策略。
 
 `display.columns` 的投影不得丢弃后续证据读取需要的身份、范围及来源字段。复合 Skill、artifact 保存恢复和 fetch 必须保留这些事实；格式化缺失值不能替代原始 typed null。

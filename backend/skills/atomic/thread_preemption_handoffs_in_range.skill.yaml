@@ -22,6 +22,7 @@ process_scope:
   binding: effective_target_processes
 sql_fragments:
   - fragments/effective_target_processes.sql
+  - fragments/system_target_threads.sql
 inputs:
   - {name: start_ts, type: timestamp, required: true}
   - {name: end_ts, type: timestamp, required: true}
@@ -85,15 +86,6 @@ display:
 sql: |
   WITH system_windows AS (
     SELECT 0 AS window_id, ${start_ts} AS window_start_ts, ${end_ts} AS window_end_ts
-  ),
-  system_target_threads AS (
-    SELECT w.window_id, p.upid, t.utid,
-      CASE WHEN t.tid = p.pid THEN 'main' ELSE 'target' END AS role
-    FROM system_windows w CROSS JOIN effective_target_processes p
-    JOIN thread t ON t.upid = p.upid
-    WHERE (${__process_scope.upid} IS NOT NULL OR '${package}' = ''
-      OR p.name = '${package}' OR p.name GLOB '${package}:*')
-      AND (${utid} IS NULL OR t.utid = ${utid})
   )
   SELECT w.window_id,w.window_start_ts,w.window_end_ts,w.window_end_ts-w.window_start_ts AS window_dur_ns,
     tt.upid,p.pid,p.name AS process_name,tt.utid,t.tid,t.name AS thread_name,tt.role,

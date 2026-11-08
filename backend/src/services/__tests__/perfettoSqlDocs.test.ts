@@ -4,6 +4,7 @@
 
 import {
   clearPerfettoSqlDocsCache,
+  findPerfettoRelationDoc,
   listPerfettoSqlModuleDocs,
   loadPerfettoSqlDocsAsset,
   moduleCoveredByPerfettoSqlLineage,
@@ -100,5 +101,21 @@ describe('perfettoSqlDocs', () => {
     expect(perfettoRelationColumns('thread')?.has('app')).toBe(false);
     expect(perfettoRelationColumns('android_frames')?.has('frame_id')).toBe(true);
     expect(perfettoRelationColumns('no_such_table')).toBeUndefined();
+  });
+
+  it('finds the single documented relation of a name within prelude or stdlib module scope', () => {
+    const docs = loadPerfettoSqlDocsAsset()!;
+    expect(findPerfettoRelationDoc(docs, 'ANDROID_ANRS', 'module')?.module).toBe('android.anrs');
+    expect(findPerfettoRelationDoc(docs, 'android_anrs', 'prelude')).toBeUndefined();
+    expect(findPerfettoRelationDoc(docs, 'slice', 'prelude')?.package).toBe('prelude');
+    expect(findPerfettoRelationDoc(docs, 'slice', 'module')).toBeUndefined();
+    const entry = (name: string, pkg: string, columns: string[]) => ({id: name, name, type: 'table' as const,
+      category: pkg, module: `${pkg}.x`, package: pkg, description: '', columns: columns.map(column => ({name: column}))});
+    const synthetic = {version: 1, modules: [], symbolToModule: {}, entries: [
+      entry('twice', 'android', ['a']), entry('twice', 'chrome', ['a']), entry('bare', 'android', []),
+      entry('twice', 'prelude', ['a'])]};
+    expect(findPerfettoRelationDoc(synthetic, 'twice', 'module')).toBeUndefined();
+    expect(findPerfettoRelationDoc(synthetic, 'twice', 'prelude')?.package).toBe('prelude');
+    expect(findPerfettoRelationDoc(synthetic, 'bare', 'module')).toBeUndefined();
   });
 });

@@ -143,6 +143,34 @@ export function clearPerfettoSqlDocsCache(): void {
   cachedRelationColumns = null;
 }
 
+// Keyed by the asset object, so a reloaded or substituted asset never reads a stale index.
+const relationDocIndexes = new WeakMap<PerfettoSqlDocsAsset, Map<string, PerfettoSqlDocEntry | null>>();
+
+/**
+ * The single documented table or view called `name` among trace-processor
+ * prelude built-ins (`prelude`) or stdlib module relations (`module`).
+ * Undefined when it is absent, documented more than once in that scope, or
+ * documented without columns.
+ */
+export function findPerfettoRelationDoc(
+  docs: PerfettoSqlDocsAsset,
+  name: string,
+  scope: 'prelude' | 'module',
+): PerfettoSqlDocEntry | undefined {
+  let index = relationDocIndexes.get(docs);
+  if (!index) {
+    index = new Map();
+    for (const entry of docs.entries) {
+      if ((entry.type !== 'table' && entry.type !== 'view') || !entry.name) continue;
+      const key = `${entry.package === 'prelude' ? 'prelude' : 'module'}:${entry.name.toLowerCase()}`;
+      index.set(key, index.has(key) ? null : entry);
+    }
+    relationDocIndexes.set(docs, index);
+  }
+  const entry = index.get(`${scope}:${name.toLowerCase()}`);
+  return entry?.columns?.length ? entry : undefined;
+}
+
 /**
  * The column names of a trace-processor table or view, as the docs generated
  * from the pinned runtime revision list them. Undefined when the name is not

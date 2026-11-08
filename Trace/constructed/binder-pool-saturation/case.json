@@ -1,0 +1,825 @@
+{
+  "schema_version": 1,
+  "id": "binder-pool-saturation",
+  "kind": "constructed",
+  "title": "Binder thread pool saturation with waiting sync calls",
+  "description": "A synthetic server whose three binder threads are all inside replies while the fixture main thread's synchronous call is taken by no thread, beside an unsaturated quiet pool, over the android-startup-light real base trace.",
+  "scene": "io",
+  "tags": [
+    "android",
+    "constructed",
+    "binder",
+    "anr"
+  ],
+  "aliases": [],
+  "trace": {
+    "file": "trace.overlay.pftrace",
+    "format": "perfetto-protobuf",
+    "sha256": "7995348e5e3ed903b23b132525a0aac45988cf16403b53351f34e1f7d2637fc7",
+    "materialization": "base-plus-overlay"
+  },
+  "android": {
+    "release": "16",
+    "api_level": 36,
+    "device": "Google raven base",
+    "build_fingerprint": null,
+    "compatibility": {
+      "min_api": 35,
+      "max_api": 36
+    }
+  },
+  "source": {
+    "origin": "SmartPerfetto deterministic trace generator",
+    "captured_at": null,
+    "imported_at": "2026-11-08T00:00:00.000Z",
+    "license": "AGPL-3.0-or-later",
+    "consent": "generated",
+    "privacy_review": "not-applicable",
+    "sanitization_review": "not-applicable",
+    "publication": "public",
+    "evidence_tier": "R3"
+  },
+  "analysis": {
+    "results": [
+      "analysis/expected.json"
+    ],
+    "logs": []
+  },
+  "construction": {
+    "base_case_id": "android-startup-light",
+    "scenario_file": "scenario.json",
+    "generator_version": 1,
+    "seed": "binder-pool-saturation-v1",
+    "output": "Trace/.generated/constructed/binder-pool-saturation/trace.pftrace",
+    "runtime_revision": "1e9c61e9844affd7dccd3d42d9ea9f3a3d10cf6d"
+  },
+  "coverage": {
+    "skills": [
+      "binder_pool_saturation_in_range"
+    ],
+    "strategies": [],
+    "expectations": [
+      {
+        "id": "saturated-sync-binder-server-pool",
+        "type": "skill",
+        "target": "binder_pool_saturation_in_range",
+        "mode": "semantic",
+        "source_file": "backend/skills/atomic/binder_pool_saturation_in_range.skill.yaml",
+        "parameters": {
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}",
+          "package": "com.smartperfetto.fixture",
+          "upid": "${fixture_upid}"
+        },
+        "required_steps": [
+          "pool_saturation",
+          "in_progress_replies",
+          "waiting_sync_calls"
+        ],
+        "required_sql_steps": [
+          "pool_saturation",
+          "in_progress_replies",
+          "waiting_sync_calls"
+        ],
+        "forced_sql_steps": [],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [],
+        "semantic_step": "pool_saturation",
+        "required_columns": [
+          "window_start_ts",
+          "window_end_ts",
+          "window_dur_ns",
+          "upid",
+          "pid",
+          "process_name",
+          "target_role",
+          "pool_size",
+          "pool_size_basis",
+          "named_binder_threads",
+          "reply_serving_threads",
+          "peak_busy_threads",
+          "saturated_ns",
+          "busy_thread_ns",
+          "in_progress_replies",
+          "unfinished_replies",
+          "waiting_sync_calls",
+          "unreplied_sync_calls",
+          "unreceived_sync_calls",
+          "max_sync_wait_ns",
+          "saturation_evidence",
+          "evidence_scope"
+        ],
+        "assertions": [
+          {
+            "column": "process_name",
+            "operator": "eq",
+            "value": "com.smartperfetto.binderserver"
+          },
+          {
+            "column": "target_role",
+            "operator": "eq",
+            "value": "sync_binder_server"
+          },
+          {
+            "column": "pool_size",
+            "operator": "eq",
+            "value": 3
+          },
+          {
+            "column": "pool_size_basis",
+            "operator": "eq",
+            "value": "observed_reply_threads"
+          },
+          {
+            "column": "named_binder_threads",
+            "operator": "eq",
+            "value": 3
+          },
+          {
+            "column": "reply_serving_threads",
+            "operator": "eq",
+            "value": 3
+          },
+          {
+            "column": "peak_busy_threads",
+            "operator": "eq",
+            "value": 3
+          },
+          {
+            "column": "saturated_ns",
+            "operator": "eq",
+            "value": 249999998
+          },
+          {
+            "column": "saturation_evidence",
+            "operator": "eq",
+            "value": "saturated_observed"
+          },
+          {
+            "column": "in_progress_replies",
+            "operator": "eq",
+            "value": 3
+          },
+          {
+            "column": "unfinished_replies",
+            "operator": "eq",
+            "value": 1
+          },
+          {
+            "column": "waiting_sync_calls",
+            "operator": "eq",
+            "value": 4
+          },
+          {
+            "column": "unreplied_sync_calls",
+            "operator": "eq",
+            "value": 2
+          },
+          {
+            "column": "unreceived_sync_calls",
+            "operator": "eq",
+            "value": 1
+          },
+          {
+            "column": "max_sync_wait_ns",
+            "operator": "eq",
+            "value": 450000000
+          },
+          {
+            "column": "window_dur_ns",
+            "operator": "eq",
+            "value": 590000000
+          }
+        ],
+        "required_marker": "SmartPerfetto::CASE::binder-pool-saturation",
+        "exact_scope": {
+          "process_name": "com.smartperfetto.fixture",
+          "units": [
+            {
+              "unit": "pool_saturation",
+              "mode": "semantic",
+              "required_columns": [
+                "window_start_ts",
+                "window_end_ts",
+                "window_dur_ns",
+                "upid",
+                "pid",
+                "process_name",
+                "target_role",
+                "pool_size",
+                "pool_size_basis",
+                "named_binder_threads",
+                "reply_serving_threads",
+                "peak_busy_threads",
+                "saturated_ns",
+                "busy_thread_ns",
+                "in_progress_replies",
+                "unfinished_replies",
+                "waiting_sync_calls",
+                "unreplied_sync_calls",
+                "unreceived_sync_calls",
+                "max_sync_wait_ns",
+                "saturation_evidence",
+                "evidence_scope"
+              ],
+              "assertions": [
+                {
+                  "column": "process_name",
+                  "operator": "eq",
+                  "value": "com.smartperfetto.binderserver"
+                },
+                {
+                  "column": "target_role",
+                  "operator": "eq",
+                  "value": "sync_binder_server"
+                },
+                {
+                  "column": "pool_size",
+                  "operator": "eq",
+                  "value": 3
+                },
+                {
+                  "column": "pool_size_basis",
+                  "operator": "eq",
+                  "value": "observed_reply_threads"
+                },
+                {
+                  "column": "named_binder_threads",
+                  "operator": "eq",
+                  "value": 3
+                },
+                {
+                  "column": "reply_serving_threads",
+                  "operator": "eq",
+                  "value": 3
+                },
+                {
+                  "column": "peak_busy_threads",
+                  "operator": "eq",
+                  "value": 3
+                },
+                {
+                  "column": "saturated_ns",
+                  "operator": "eq",
+                  "value": 249999998
+                },
+                {
+                  "column": "saturation_evidence",
+                  "operator": "eq",
+                  "value": "saturated_observed"
+                },
+                {
+                  "column": "in_progress_replies",
+                  "operator": "eq",
+                  "value": 3
+                },
+                {
+                  "column": "unfinished_replies",
+                  "operator": "eq",
+                  "value": 1
+                },
+                {
+                  "column": "waiting_sync_calls",
+                  "operator": "eq",
+                  "value": 4
+                },
+                {
+                  "column": "unreplied_sync_calls",
+                  "operator": "eq",
+                  "value": 2
+                },
+                {
+                  "column": "unreceived_sync_calls",
+                  "operator": "eq",
+                  "value": 1
+                },
+                {
+                  "column": "max_sync_wait_ns",
+                  "operator": "eq",
+                  "value": 450000000
+                },
+                {
+                  "column": "window_dur_ns",
+                  "operator": "eq",
+                  "value": 590000000
+                }
+              ]
+            },
+            {
+              "unit": "in_progress_replies",
+              "mode": "semantic",
+              "required_columns": [
+                "upid",
+                "process_name",
+                "target_role",
+                "server_utid",
+                "server_tid",
+                "server_thread_name",
+                "reply_slice_id",
+                "reply_ts",
+                "reply_dur",
+                "is_unfinished",
+                "busy_in_window_ns",
+                "client_utid",
+                "client_tid",
+                "client_thread_name",
+                "client_upid",
+                "client_process_name"
+              ],
+              "assertions": [
+                {
+                  "column": "process_name",
+                  "operator": "eq",
+                  "value": "com.smartperfetto.binderserver"
+                },
+                {
+                  "column": "target_role",
+                  "operator": "eq",
+                  "value": "sync_binder_server"
+                },
+                {
+                  "column": "server_thread_name",
+                  "operator": "eq",
+                  "value": "Binder:server_3"
+                },
+                {
+                  "column": "is_unfinished",
+                  "operator": "eq",
+                  "value": 1
+                },
+                {
+                  "column": "reply_dur",
+                  "operator": "eq",
+                  "value": -1
+                },
+                {
+                  "column": "busy_in_window_ns",
+                  "operator": "eq",
+                  "value": 449999999
+                },
+                {
+                  "column": "client_thread_name",
+                  "operator": "eq",
+                  "value": "Worker-3"
+                },
+                {
+                  "column": "client_process_name",
+                  "operator": "eq",
+                  "value": "com.smartperfetto.fixture"
+                }
+              ]
+            },
+            {
+              "unit": "waiting_sync_calls",
+              "mode": "semantic",
+              "required_columns": [
+                "server_upid",
+                "server_process_name",
+                "target_role",
+                "call_slice_id",
+                "call_ts",
+                "call_dur",
+                "is_unfinished",
+                "waited_in_window_ns",
+                "call_state",
+                "client_utid",
+                "client_tid",
+                "client_thread_name",
+                "client_upid",
+                "client_process_name",
+                "client_is_main_thread",
+                "server_utid",
+                "server_tid",
+                "server_thread_name",
+                "reply_dur"
+              ],
+              "assertions": [
+                {
+                  "column": "server_process_name",
+                  "operator": "eq",
+                  "value": "com.smartperfetto.binderserver"
+                },
+                {
+                  "column": "target_role",
+                  "operator": "eq",
+                  "value": "sync_binder_server"
+                },
+                {
+                  "column": "client_thread_name",
+                  "operator": "eq",
+                  "value": "main"
+                },
+                {
+                  "column": "client_is_main_thread",
+                  "operator": "eq",
+                  "value": 1
+                },
+                {
+                  "column": "call_state",
+                  "operator": "eq",
+                  "value": "not_received_by_server_thread"
+                },
+                {
+                  "column": "is_unfinished",
+                  "operator": "eq",
+                  "value": 1
+                },
+                {
+                  "column": "call_dur",
+                  "operator": "eq",
+                  "value": -1
+                },
+                {
+                  "column": "waited_in_window_ns",
+                  "operator": "eq",
+                  "value": 400000000
+                },
+                {
+                  "column": "server_utid",
+                  "operator": "eq",
+                  "value": null
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "id": "target-process-without-observed-pool",
+        "type": "skill",
+        "target": "binder_pool_saturation_in_range",
+        "mode": "semantic",
+        "source_file": "backend/skills/atomic/binder_pool_saturation_in_range.skill.yaml",
+        "parameters": {
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}",
+          "package": "com.smartperfetto.fixture",
+          "upid": "${fixture_upid}"
+        },
+        "required_steps": [
+          "pool_saturation",
+          "in_progress_replies",
+          "waiting_sync_calls"
+        ],
+        "required_sql_steps": [
+          "pool_saturation",
+          "in_progress_replies",
+          "waiting_sync_calls"
+        ],
+        "forced_sql_steps": [],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [],
+        "semantic_step": "pool_saturation",
+        "required_columns": [
+          "window_start_ts",
+          "window_end_ts",
+          "window_dur_ns",
+          "upid",
+          "pid",
+          "process_name",
+          "target_role",
+          "pool_size",
+          "pool_size_basis",
+          "named_binder_threads",
+          "reply_serving_threads",
+          "peak_busy_threads",
+          "saturated_ns",
+          "busy_thread_ns",
+          "in_progress_replies",
+          "unfinished_replies",
+          "waiting_sync_calls",
+          "unreplied_sync_calls",
+          "unreceived_sync_calls",
+          "max_sync_wait_ns",
+          "saturation_evidence",
+          "evidence_scope"
+        ],
+        "assertions": [
+          {
+            "column": "process_name",
+            "operator": "eq",
+            "value": "com.smartperfetto.fixture"
+          },
+          {
+            "column": "target_role",
+            "operator": "eq",
+            "value": "target_process"
+          },
+          {
+            "column": "pool_size",
+            "operator": "eq",
+            "value": 0
+          },
+          {
+            "column": "peak_busy_threads",
+            "operator": "eq",
+            "value": 0
+          },
+          {
+            "column": "saturated_ns",
+            "operator": "eq",
+            "value": 0
+          },
+          {
+            "column": "saturation_evidence",
+            "operator": "eq",
+            "value": "no_observed_pool_threads"
+          }
+        ],
+        "required_marker": "SmartPerfetto::CASE::binder-pool-saturation"
+      },
+      {
+        "id": "longest-in-progress-reply-is-unfinished",
+        "type": "skill",
+        "target": "binder_pool_saturation_in_range",
+        "mode": "semantic",
+        "source_file": "backend/skills/atomic/binder_pool_saturation_in_range.skill.yaml",
+        "parameters": {
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}",
+          "package": "com.smartperfetto.fixture",
+          "upid": "${fixture_upid}"
+        },
+        "required_steps": [
+          "pool_saturation",
+          "in_progress_replies",
+          "waiting_sync_calls"
+        ],
+        "required_sql_steps": [
+          "pool_saturation",
+          "in_progress_replies",
+          "waiting_sync_calls"
+        ],
+        "forced_sql_steps": [],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [],
+        "semantic_step": "in_progress_replies",
+        "required_columns": [
+          "upid",
+          "process_name",
+          "target_role",
+          "server_utid",
+          "server_tid",
+          "server_thread_name",
+          "reply_slice_id",
+          "reply_ts",
+          "reply_dur",
+          "is_unfinished",
+          "busy_in_window_ns",
+          "client_utid",
+          "client_tid",
+          "client_thread_name",
+          "client_upid",
+          "client_process_name"
+        ],
+        "assertions": [
+          {
+            "column": "process_name",
+            "operator": "eq",
+            "value": "com.smartperfetto.binderserver"
+          },
+          {
+            "column": "target_role",
+            "operator": "eq",
+            "value": "sync_binder_server"
+          },
+          {
+            "column": "server_thread_name",
+            "operator": "eq",
+            "value": "Binder:server_3"
+          },
+          {
+            "column": "is_unfinished",
+            "operator": "eq",
+            "value": 1
+          },
+          {
+            "column": "reply_dur",
+            "operator": "eq",
+            "value": -1
+          },
+          {
+            "column": "busy_in_window_ns",
+            "operator": "eq",
+            "value": 449999999
+          },
+          {
+            "column": "client_thread_name",
+            "operator": "eq",
+            "value": "Worker-3"
+          },
+          {
+            "column": "client_process_name",
+            "operator": "eq",
+            "value": "com.smartperfetto.fixture"
+          }
+        ],
+        "required_marker": "SmartPerfetto::CASE::binder-pool-saturation"
+      },
+      {
+        "id": "main-thread-call-not-taken-by-saturated-pool",
+        "type": "skill",
+        "target": "binder_pool_saturation_in_range",
+        "mode": "semantic",
+        "source_file": "backend/skills/atomic/binder_pool_saturation_in_range.skill.yaml",
+        "parameters": {
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}",
+          "package": "com.smartperfetto.fixture",
+          "upid": "${fixture_upid}"
+        },
+        "required_steps": [
+          "pool_saturation",
+          "in_progress_replies",
+          "waiting_sync_calls"
+        ],
+        "required_sql_steps": [
+          "pool_saturation",
+          "in_progress_replies",
+          "waiting_sync_calls"
+        ],
+        "forced_sql_steps": [],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [],
+        "semantic_step": "waiting_sync_calls",
+        "required_columns": [
+          "server_upid",
+          "server_process_name",
+          "target_role",
+          "call_slice_id",
+          "call_ts",
+          "call_dur",
+          "is_unfinished",
+          "waited_in_window_ns",
+          "call_state",
+          "client_utid",
+          "client_tid",
+          "client_thread_name",
+          "client_upid",
+          "client_process_name",
+          "client_is_main_thread",
+          "server_utid",
+          "server_tid",
+          "server_thread_name",
+          "reply_dur"
+        ],
+        "assertions": [
+          {
+            "column": "server_process_name",
+            "operator": "eq",
+            "value": "com.smartperfetto.binderserver"
+          },
+          {
+            "column": "target_role",
+            "operator": "eq",
+            "value": "sync_binder_server"
+          },
+          {
+            "column": "client_thread_name",
+            "operator": "eq",
+            "value": "main"
+          },
+          {
+            "column": "client_is_main_thread",
+            "operator": "eq",
+            "value": 1
+          },
+          {
+            "column": "call_state",
+            "operator": "eq",
+            "value": "not_received_by_server_thread"
+          },
+          {
+            "column": "is_unfinished",
+            "operator": "eq",
+            "value": 1
+          },
+          {
+            "column": "call_dur",
+            "operator": "eq",
+            "value": -1
+          },
+          {
+            "column": "waited_in_window_ns",
+            "operator": "eq",
+            "value": 400000000
+          },
+          {
+            "column": "server_utid",
+            "operator": "eq",
+            "value": null
+          }
+        ],
+        "required_marker": "SmartPerfetto::CASE::binder-pool-saturation"
+      },
+      {
+        "id": "quiet-pool-stays-unsaturated",
+        "type": "skill",
+        "target": "binder_pool_saturation_in_range",
+        "mode": "semantic",
+        "source_file": "backend/skills/atomic/binder_pool_saturation_in_range.skill.yaml",
+        "parameters": {
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}",
+          "package": "com.smartperfetto.quietserver"
+        },
+        "required_steps": [
+          "pool_saturation",
+          "in_progress_replies",
+          "waiting_sync_calls"
+        ],
+        "required_sql_steps": [
+          "pool_saturation",
+          "in_progress_replies",
+          "waiting_sync_calls"
+        ],
+        "forced_sql_steps": [],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [],
+        "semantic_step": "pool_saturation",
+        "required_columns": [
+          "window_start_ts",
+          "window_end_ts",
+          "window_dur_ns",
+          "upid",
+          "pid",
+          "process_name",
+          "target_role",
+          "pool_size",
+          "pool_size_basis",
+          "named_binder_threads",
+          "reply_serving_threads",
+          "peak_busy_threads",
+          "saturated_ns",
+          "busy_thread_ns",
+          "in_progress_replies",
+          "unfinished_replies",
+          "waiting_sync_calls",
+          "unreplied_sync_calls",
+          "unreceived_sync_calls",
+          "max_sync_wait_ns",
+          "saturation_evidence",
+          "evidence_scope"
+        ],
+        "assertions": [
+          {
+            "column": "process_name",
+            "operator": "eq",
+            "value": "com.smartperfetto.quietserver"
+          },
+          {
+            "column": "target_role",
+            "operator": "eq",
+            "value": "target_process"
+          },
+          {
+            "column": "pool_size",
+            "operator": "eq",
+            "value": 2
+          },
+          {
+            "column": "named_binder_threads",
+            "operator": "eq",
+            "value": 2
+          },
+          {
+            "column": "reply_serving_threads",
+            "operator": "eq",
+            "value": 1
+          },
+          {
+            "column": "peak_busy_threads",
+            "operator": "eq",
+            "value": 1
+          },
+          {
+            "column": "saturated_ns",
+            "operator": "eq",
+            "value": 0
+          },
+          {
+            "column": "busy_thread_ns",
+            "operator": "eq",
+            "value": 9999998
+          },
+          {
+            "column": "saturation_evidence",
+            "operator": "eq",
+            "value": "not_saturated_observed"
+          },
+          {
+            "column": "waiting_sync_calls",
+            "operator": "eq",
+            "value": 1
+          },
+          {
+            "column": "unreplied_sync_calls",
+            "operator": "eq",
+            "value": 0
+          }
+        ],
+        "required_marker": "SmartPerfetto::CASE::binder-pool-saturation"
+      }
+    ]
+  }
+}

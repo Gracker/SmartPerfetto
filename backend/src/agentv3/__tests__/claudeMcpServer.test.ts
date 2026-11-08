@@ -3658,6 +3658,29 @@ describe('createClaudeMcpServer', () => {
       } finally { capture.mockRestore(); }
     });
 
+    it.each([
+      ['execute_sql', 'current', false], ['execute_sql', 'current', true],
+      ['execute_sql_on', 'reference', false], ['execute_sql_on', 'reference', true],
+    ] as const)('attaches stdlib column docs once per run for %s %s summary=%s', async (toolName, trace, summary) => {
+      const {tools, mockTpService} = createTestServer({referenceTraceId: 'reference-doc-trace', artifactStore: null});
+      const rows = Array.from({length: summary ? 201 : 2}, (_, index) => [50_000_000 + index, 5000]);
+      mockTpService.query.mockResolvedValue({columns: ['timer_delay', 'anr_dur_ms'], rows, durationMs: 1});
+      const call = (sql: string) => callTool(tools, toolName, {sql, summary,
+        ...(toolName === 'execute_sql_on' ? {trace} : {})});
+      const first = await call('SELECT timer_delay, anr_dur_ms FROM android_anrs');
+      expect(first.stdlibColumnDocs).toMatchObject({source: 'perfetto_stdlib_docs', relation: 'android_anrs',
+        module: 'android.anrs', columns: [
+          {column: 'timer_delay', description: expect.stringMatching(/timer expiration/)},
+          {column: 'anr_dur_ms'},
+        ]});
+      // Documentation never becomes an issued unit or evidence availability fact.
+      expect(first).not.toHaveProperty('columnUnits');
+      expect(first.modelEvidence.columnUnits).toBe('unknown');
+      expect(await call('SELECT timer_delay, anr_dur_ms FROM android_anrs')).not.toHaveProperty('stdlibColumnDocs');
+      mockTpService.query.mockResolvedValue({columns: ['timer_delay'], rows: [[1]], durationMs: 1});
+      expect(await call('SELECT MAX(timer_delay) AS timer_delay FROM android_anrs')).not.toHaveProperty('stdlibColumnDocs');
+    });
+
     it.each(['no_native_capture', 'unissued_capture', 'changed_rows'] as const)(
       'does not infer SQL units from names or serialized metadata: %s', async kind => {
         const evidence = jest.requireActual<typeof import('../../services/evidence/evidenceCapture')>(

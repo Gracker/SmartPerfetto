@@ -230,6 +230,7 @@
           "running_ns",
           "runnable_ns",
           "runnable_preempted_ns",
+          "runnable_non_preempted_ns",
           "sleeping_ns",
           "uninterruptible_ns",
           "other_state_ns",
@@ -290,6 +291,11 @@
             "column": "runnable_ns",
             "operator": "eq",
             "value": 17000000
+          },
+          {
+            "column": "runnable_non_preempted_ns",
+            "operator": "eq",
+            "value": 13000000
           },
           {
             "column": "runnable_preempted_ns",
@@ -434,6 +440,7 @@
           "running_ns",
           "runnable_ns",
           "runnable_preempted_ns",
+          "runnable_non_preempted_ns",
           "sleeping_ns",
           "uninterruptible_ns",
           "other_state_ns",
@@ -479,6 +486,16 @@
             "column": "runnable_ns",
             "operator": "eq",
             "value": 20000000
+          },
+          {
+            "column": "runnable_non_preempted_ns",
+            "operator": "eq",
+            "value": 20000000
+          },
+          {
+            "column": "runnable_preempted_ns",
+            "operator": "eq",
+            "value": 0
           },
           {
             "column": "state_covered_ns",

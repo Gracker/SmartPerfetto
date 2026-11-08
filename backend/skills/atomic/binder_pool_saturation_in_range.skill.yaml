@@ -1,0 +1,308 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2024-2026 Gracker (Chris)
+# This file is part of SmartPerfetto. See LICENSE for details.
+
+# Whether a process's binder thread pool was saturated in a window.
+#
+# Targets are the requested process and the server processes of its main
+# thread's synchronous binder calls in the window. A target's observed pool is
+# its threads named binder:/HwBinder: (any case) plus any thread that served a
+# `binder reply`; it is what the trace shows, not the configured maximum
+# (pool_size_basis = observed_reply_threads). A pool thread is busy while it
+# is inside a `binder reply` slice; an unfinished reply (dur = -1) stays busy
+# until the trace end. The window is saturated while every observed pool
+# thread is busy. Calls are read from the binder slices and their args, so a
+# call that was never replied, or never taken by a server thread, is kept.
+# Saturation is an observation about the pool; it does not by itself prove the
+# waiting client's delay was caused by queueing.
+
+name: binder_pool_saturation_in_range
+version: "1.0"
+type: atomic
+category: ipc
+tier: B
+
+meta:
+  display_name: "Binder 线程池饱和"
+  display_name_i18n:
+    en: "Binder thread pool saturation"
+  description: "窗口内目标进程及其主线程同步 Binder 对端的线程池：观测池大小、并发忙碌峰值、全部忙碌时长、进行中的 reply 与等待中的同步调用"
+  description_i18n:
+    en: "Binder pools of the target process and its main thread's sync binder servers in a window: observed pool size, peak concurrent busy threads, all-busy time, in-progress replies and waiting sync calls"
+  icon: "call_made"
+  tags: [binder, ipc, thread_pool, saturation, atomic]
+
+identity:
+  policy: verify_if_present
+  scope: process
+  aliases: [package]
+
+inputs:
+  - {name: start_ts, type: timestamp, required: true, description: "窗口起点(ns)"}
+  - {name: end_ts, type: timestamp, required: true, description: "窗口终点(ns)"}
+  - name: package
+    type: string
+    required: false
+    description: "目标进程名（精确匹配，含 name:* 子进程）"
+  - name: max_rows
+    type: integer
+    required: false
+    default: 10
+    description: "每个目标进程列出的最长进行中 reply / 等待调用数"
+
+steps:
+  - id: pool_saturation
+    type: atomic
+    name: "Binder 线程池饱和"
+    display:
+      level: key
+      layer: overview
+      title: "Binder 线程池饱和"
+      title_i18n:
+        en: "Binder thread pool saturation"
+      columns:
+        - {name: window_start_ts, label: "window_start_ts", type: timestamp, unit: ns, hidden: true}
+        - {name: window_end_ts, label: "window_end_ts", type: timestamp, unit: ns, hidden: true}
+        - {name: window_dur_ns, label: "window_dur_ns", type: duration, unit: ns}
+        - {name: upid, label: "upid", type: number}
+        - {name: pid, label: "pid", type: number}
+        - {name: process_name, label: "process_name", type: string}
+        - {name: target_role, label: "target_role", type: string}
+        - {name: pool_size, label: "pool_size", type: number, unit: count}
+        - {name: pool_size_basis, label: "pool_size_basis", type: string}
+        - {name: named_binder_threads, label: "named_binder_threads", type: number, unit: count}
+        - {name: reply_serving_threads, label: "reply_serving_threads", type: number, unit: count}
+        - {name: peak_busy_threads, label: "peak_busy_threads", type: number, unit: count}
+        - {name: saturated_ns, label: "saturated_ns", type: duration, unit: ns}
+        - {name: busy_thread_ns, label: "busy_thread_ns", type: duration, unit: ns}
+        - {name: in_progress_replies, label: "in_progress_replies", type: number, unit: count}
+        - {name: unfinished_replies, label: "unfinished_replies", type: number, unit: count}
+        - {name: waiting_sync_calls, label: "waiting_sync_calls", type: number, unit: count}
+        - {name: unreplied_sync_calls, label: "unreplied_sync_calls", type: number, unit: count}
+        - {name: unreceived_sync_calls, label: "unreceived_sync_calls", type: number, unit: count}
+        - {name: max_sync_wait_ns, label: "max_sync_wait_ns", type: duration, unit: ns}
+        - {name: saturation_evidence, label: "saturation_evidence", type: string}
+        - {name: evidence_scope, label: "evidence_scope", type: string}
+    process_scope:
+      role: target
+      binding: effective_target_processes
+      limitations:
+        - "sync_binder_server 行是对端进程：由目标进程主线程在窗口内同步 Binder 调用的目的进程选出"
+    sql_fragments:
+      - fragments/effective_target_processes.sql
+      - fragments/system_target_threads.sql
+      - fragments/thread_role.sql
+      - fragments/binder_pool_activity.sql
+    sql: |
+      WITH system_windows AS (
+        SELECT 0 AS window_id, ${start_ts} AS window_start_ts, ${end_ts} AS window_end_ts
+      ),
+      pools AS (
+        SELECT window_id, upid, COUNT(*) AS pool_size,
+          SUM(is_named_binder) AS named_binder_threads, SUM(served_reply) AS reply_serving_threads
+        FROM binder_pool_threads GROUP BY window_id, upid
+      ),
+      busy_spans AS (
+        SELECT window_id, upid, utid, busy_start_ts, busy_end_ts FROM binder_pool_busy WHERE busy_end_ts > busy_start_ts
+      ),
+      edges AS (
+        SELECT window_id, upid, utid, busy_start_ts AS ts, 1 AS delta FROM busy_spans
+        UNION ALL
+        SELECT window_id, upid, utid, busy_end_ts, -1 FROM busy_spans
+      ),
+      -- A nested reply on the same thread keeps it busy, never busy twice: only
+      -- the idle->busy and busy->idle edges of a thread change the pool level.
+      thread_depth AS (
+        SELECT *, SUM(delta) OVER (PARTITION BY window_id, utid ORDER BY ts, delta
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS depth_after
+        FROM edges
+      ),
+      level_changes AS (
+        SELECT window_id, upid, ts, SUM(delta) AS delta
+        FROM thread_depth WHERE (delta = 1 AND depth_after = 1) OR (delta = -1 AND depth_after = 0)
+        GROUP BY window_id, upid, ts
+      ),
+      levels AS (
+        SELECT window_id, upid, ts,
+          SUM(delta) OVER (PARTITION BY window_id, upid ORDER BY ts) AS busy_threads,
+          LEAD(ts) OVER (PARTITION BY window_id, upid ORDER BY ts) AS next_ts
+        FROM level_changes
+      ),
+      occupancy AS (
+        SELECT l.window_id, l.upid, MAX(l.busy_threads) AS peak_busy_threads,
+          SUM(CASE WHEN l.busy_threads >= pl.pool_size AND l.next_ts IS NOT NULL THEN l.next_ts - l.ts ELSE 0 END) AS saturated_ns,
+          SUM(CASE WHEN l.next_ts IS NOT NULL THEN l.busy_threads * (l.next_ts - l.ts) ELSE 0 END) AS busy_thread_ns
+        FROM levels l JOIN pools pl ON pl.window_id = l.window_id AND pl.upid = l.upid
+        GROUP BY l.window_id, l.upid
+      ),
+      replies AS (
+        SELECT window_id, upid, COUNT(*) AS in_progress_replies, SUM(is_unfinished) AS unfinished_replies
+        FROM binder_pool_busy GROUP BY window_id, upid
+      ),
+      waits AS (
+        SELECT window_id, server_upid AS upid, COUNT(*) AS waiting_sync_calls,
+          SUM(is_unfinished) AS unreplied_sync_calls,
+          SUM(reply_slice_id IS NULL) AS unreceived_sync_calls,
+          MAX(wait_end_ts - wait_start_ts) AS max_sync_wait_ns
+        FROM binder_pool_sync_calls WHERE server_upid IS NOT NULL
+        GROUP BY window_id, server_upid
+      )
+      SELECT w.window_start_ts, w.window_end_ts, w.window_end_ts - w.window_start_ts AS window_dur_ns,
+        tp.upid, p.pid, p.name AS process_name, tp.target_role,
+        COALESCE(pl.pool_size, 0) AS pool_size, 'observed_reply_threads' AS pool_size_basis,
+        COALESCE(pl.named_binder_threads, 0) AS named_binder_threads,
+        COALESCE(pl.reply_serving_threads, 0) AS reply_serving_threads,
+        COALESCE(o.peak_busy_threads, 0) AS peak_busy_threads,
+        COALESCE(o.saturated_ns, 0) AS saturated_ns,
+        COALESCE(o.busy_thread_ns, 0) AS busy_thread_ns,
+        COALESCE(r.in_progress_replies, 0) AS in_progress_replies,
+        COALESCE(r.unfinished_replies, 0) AS unfinished_replies,
+        COALESCE(wt.waiting_sync_calls, 0) AS waiting_sync_calls,
+        COALESCE(wt.unreplied_sync_calls, 0) AS unreplied_sync_calls,
+        COALESCE(wt.unreceived_sync_calls, 0) AS unreceived_sync_calls,
+        wt.max_sync_wait_ns,
+        CASE WHEN COALESCE(pl.pool_size, 0) = 0 THEN 'no_observed_pool_threads'
+          WHEN COALESCE(o.saturated_ns, 0) > 0 AND pl.pool_size = 1 THEN 'single_observed_thread_busy'
+          WHEN COALESCE(o.saturated_ns, 0) > 0 THEN 'saturated_observed'
+          ELSE 'not_saturated_observed' END AS saturation_evidence,
+        'observed_pool_not_configured_max' AS evidence_scope
+      FROM binder_pool_target_processes tp
+      JOIN system_windows w ON w.window_id = tp.window_id
+      JOIN process p ON p.upid = tp.upid
+      LEFT JOIN pools pl ON pl.window_id = tp.window_id AND pl.upid = tp.upid
+      LEFT JOIN occupancy o ON o.window_id = tp.window_id AND o.upid = tp.upid
+      LEFT JOIN replies r ON r.window_id = tp.window_id AND r.upid = tp.upid
+      LEFT JOIN waits wt ON wt.window_id = tp.window_id AND wt.upid = tp.upid
+      ORDER BY CASE tp.target_role WHEN 'target_process' THEN 0 ELSE 1 END,
+        COALESCE(o.saturated_ns, 0) DESC, tp.upid
+    save_as: pool_saturation
+
+  - id: in_progress_replies
+    type: atomic
+    name: "进行中的 Binder reply"
+    display:
+      level: detail
+      layer: list
+      title: "目标线程池中最长的进行中 reply"
+      title_i18n:
+        en: "Longest in-progress replies in the target pools"
+      columns:
+        - {name: upid, label: "upid", type: number}
+        - {name: process_name, label: "process_name", type: string}
+        - {name: target_role, label: "target_role", type: string}
+        - {name: server_utid, label: "server_utid", type: number}
+        - {name: server_tid, label: "server_tid", type: number}
+        - {name: server_thread_name, label: "server_thread_name", type: string}
+        - {name: reply_slice_id, label: "reply_slice_id", type: number, hidden: true}
+        - {name: reply_ts, label: "reply_ts", type: timestamp, unit: ns, clickAction: navigate_timeline}
+        - {name: reply_dur, label: "reply_dur", type: duration, unit: ns}
+        - {name: is_unfinished, label: "is_unfinished", type: number}
+        - {name: busy_in_window_ns, label: "busy_in_window_ns", type: duration, unit: ns}
+        - {name: client_utid, label: "client_utid", type: number}
+        - {name: client_tid, label: "client_tid", type: number}
+        - {name: client_thread_name, label: "client_thread_name", type: string}
+        - {name: client_upid, label: "client_upid", type: number}
+        - {name: client_process_name, label: "client_process_name", type: string}
+    process_scope:
+      role: target
+      binding: effective_target_processes
+      limitations:
+        - "sync_binder_server 行是对端进程：由目标进程主线程在窗口内同步 Binder 调用的目的进程选出"
+    sql_fragments:
+      - fragments/effective_target_processes.sql
+      - fragments/system_target_threads.sql
+      - fragments/thread_role.sql
+      - fragments/binder_pool_activity.sql
+    sql: |
+      WITH system_windows AS (
+        SELECT 0 AS window_id, ${start_ts} AS window_start_ts, ${end_ts} AS window_end_ts
+      ),
+      ranked AS (
+        SELECT b.*, b.busy_end_ts - b.busy_start_ts AS busy_in_window_ns,
+          ROW_NUMBER() OVER (PARTITION BY b.window_id, b.upid
+            ORDER BY b.busy_end_ts - b.busy_start_ts DESC, b.reply_slice_id) AS reply_rank
+        FROM binder_pool_busy b
+      )
+      SELECT r.upid, p.name AS process_name, tp.target_role,
+        r.utid AS server_utid, st.tid AS server_tid, st.name AS server_thread_name,
+        r.reply_slice_id, r.reply_ts, r.reply_dur, r.is_unfinished, r.busy_in_window_ns,
+        sc.client_utid, sc.client_tid, sc.client_thread_name,
+        sc.client_upid, cp.name AS client_process_name
+      FROM ranked r
+      JOIN binder_pool_target_processes tp ON tp.window_id = r.window_id AND tp.upid = r.upid
+      JOIN process p ON p.upid = r.upid
+      JOIN thread st ON st.utid = r.utid
+      LEFT JOIN binder_pool_sync_calls sc ON sc.window_id = r.window_id AND sc.reply_slice_id = r.reply_slice_id
+      LEFT JOIN process cp ON cp.upid = sc.client_upid
+      WHERE r.reply_rank <= ${max_rows|10}
+      ORDER BY CASE tp.target_role WHEN 'target_process' THEN 0 ELSE 1 END, r.upid,
+        r.busy_in_window_ns DESC, r.reply_slice_id
+
+  - id: waiting_sync_calls
+    type: atomic
+    name: "等待中的同步 Binder 调用"
+    display:
+      level: detail
+      layer: list
+      title: "调用目标线程池的最长同步等待"
+      title_i18n:
+        en: "Longest synchronous calls waiting on the target pools"
+      columns:
+        - {name: server_upid, label: "server_upid", type: number}
+        - {name: server_process_name, label: "server_process_name", type: string}
+        - {name: target_role, label: "target_role", type: string}
+        - {name: call_slice_id, label: "call_slice_id", type: number, hidden: true}
+        - {name: call_ts, label: "call_ts", type: timestamp, unit: ns, clickAction: navigate_timeline}
+        - {name: call_dur, label: "call_dur", type: duration, unit: ns}
+        - {name: is_unfinished, label: "is_unfinished", type: number}
+        - {name: waited_in_window_ns, label: "waited_in_window_ns", type: duration, unit: ns}
+        - {name: call_state, label: "call_state", type: string}
+        - {name: client_utid, label: "client_utid", type: number}
+        - {name: client_tid, label: "client_tid", type: number}
+        - {name: client_thread_name, label: "client_thread_name", type: string}
+        - {name: client_upid, label: "client_upid", type: number}
+        - {name: client_process_name, label: "client_process_name", type: string}
+        - {name: client_is_main_thread, label: "client_is_main_thread", type: number}
+        - {name: server_utid, label: "server_utid", type: number}
+        - {name: server_tid, label: "server_tid", type: number}
+        - {name: server_thread_name, label: "server_thread_name", type: string}
+        - {name: reply_dur, label: "reply_dur", type: duration, unit: ns}
+    process_scope:
+      role: target
+      binding: effective_target_processes
+      limitations:
+        - "调用方可以是任意进程；sync_binder_server 行是对端进程：由目标进程主线程在窗口内同步 Binder 调用的目的进程选出"
+    sql_fragments:
+      - fragments/effective_target_processes.sql
+      - fragments/system_target_threads.sql
+      - fragments/thread_role.sql
+      - fragments/binder_pool_activity.sql
+    sql: |
+      WITH system_windows AS (
+        SELECT 0 AS window_id, ${start_ts} AS window_start_ts, ${end_ts} AS window_end_ts
+      ),
+      ranked AS (
+        SELECT sc.*, sc.wait_end_ts - sc.wait_start_ts AS waited_in_window_ns,
+          ROW_NUMBER() OVER (PARTITION BY sc.window_id, sc.server_upid
+            ORDER BY sc.wait_end_ts - sc.wait_start_ts DESC, sc.call_slice_id) AS call_rank
+        FROM binder_pool_sync_calls sc
+        JOIN binder_pool_target_processes tp ON tp.window_id = sc.window_id AND tp.upid = sc.server_upid
+      )
+      SELECT r.server_upid, sp.name AS server_process_name, tp.target_role,
+        r.call_slice_id, r.call_ts, r.call_dur, r.is_unfinished, r.waited_in_window_ns,
+        CASE WHEN r.reply_slice_id IS NULL THEN 'not_received_by_server_thread'
+          WHEN r.is_unfinished THEN 'in_progress_on_server'
+          ELSE 'replied' END AS call_state,
+        r.client_utid, r.client_tid, r.client_thread_name, r.client_upid, cp.name AS client_process_name,
+        r.client_tid = cp.pid AS client_is_main_thread,
+        r.server_utid, r.server_tid, r.server_thread_name, r.reply_dur
+      FROM ranked r
+      JOIN binder_pool_target_processes tp ON tp.window_id = r.window_id AND tp.upid = r.server_upid
+      JOIN process sp ON sp.upid = r.server_upid
+      LEFT JOIN process cp ON cp.upid = r.client_upid
+      WHERE r.call_rank <= ${max_rows|10}
+      ORDER BY CASE tp.target_role WHEN 'target_process' THEN 0 ELSE 1 END, r.server_upid,
+        r.waited_in_window_ns DESC, r.call_slice_id
+
+output:
+  format: structured

@@ -20,6 +20,11 @@
         "id": "sf",
         "name": "/system/bin/surfaceflinger",
         "uid": 1000
+      },
+      {
+        "id": "irq",
+        "name": "irq/90-fixture-crtc",
+        "kernel_thread": true
       }
     ],
     "threads": [
@@ -64,6 +69,12 @@
         "id": "sf-main",
         "process": "sf",
         "name": "surfaceflinger",
+        "is_main": true
+      },
+      {
+        "id": "irq-thread",
+        "process": "irq",
+        "name": "irq/90-fixture-crtc",
         "is_main": true
       }
     ]
@@ -188,6 +199,75 @@
       "track_name": "JobScheduler",
       "name": "scheduled job #12#<10999>com.smartperfetto.fixture/.SyntheticJob#",
       "cookie": 12
+    },
+    {
+      "type": "sched-switch",
+      "at_ns": "30000000",
+      "cpu": 7,
+      "prev_thread": null,
+      "next_thread": "irq-thread",
+      "prev_state_raw": "0",
+      "prev_priority": 120,
+      "next_priority": 49
+    },
+    {
+      "type": "sched-waking",
+      "at_ns": "32000000",
+      "cpu": 7,
+      "thread": "render",
+      "waker_thread": "irq-thread",
+      "target_cpu": 7,
+      "sched_priority": 110
+    },
+    {
+      "type": "sched-switch",
+      "at_ns": "40000000",
+      "cpu": 7,
+      "prev_thread": "irq-thread",
+      "next_thread": null,
+      "prev_state_raw": "1",
+      "prev_priority": 49,
+      "next_priority": 120
+    },
+    {
+      "type": "sched-switch",
+      "at_ns": "42000000",
+      "cpu": 7,
+      "prev_thread": null,
+      "next_thread": "render",
+      "prev_state_raw": "0",
+      "prev_priority": 120,
+      "next_priority": 110
+    },
+    {
+      "type": "sched-switch",
+      "at_ns": "50000000",
+      "cpu": 7,
+      "prev_thread": "render",
+      "next_thread": "sf-main",
+      "prev_state_raw": "256",
+      "prev_priority": 110,
+      "next_priority": 100
+    },
+    {
+      "type": "sched-switch",
+      "at_ns": "56000000",
+      "cpu": 7,
+      "prev_thread": "sf-main",
+      "next_thread": "render",
+      "prev_state_raw": "1",
+      "prev_priority": 100,
+      "next_priority": 110
+    },
+    {
+      "type": "sched-switch",
+      "at_ns": "60000000",
+      "cpu": 7,
+      "prev_thread": "render",
+      "next_thread": null,
+      "prev_state_raw": "1",
+      "prev_priority": 110,
+      "next_priority": 120
     }
   ]
 }

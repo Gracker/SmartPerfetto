@@ -93,6 +93,20 @@ steps:
       level: detail
       layer: deep
 
+  - id: system_runnable_cpu_occupancy
+    type: skill
+    name: "Runnable 等待期间目标 CPU 占用"
+    skill: runnable_cpu_occupancy_in_range
+    optional: true
+    params:
+      start_ts: "${system_context_window.data[0].start_ts}"
+      end_ts: "${system_context_window.data[0].end_ts}"
+      package: "${package}"
+    save_as: system_runnable_cpu_occupancy
+    display:
+      level: detail
+      layer: deep
+
   - id: main_thread_work_summary
     type: atomic
     name: "主线程全窗口与帧内外状态"

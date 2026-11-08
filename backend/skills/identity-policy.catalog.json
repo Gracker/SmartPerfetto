@@ -340,6 +340,15 @@
       "rewriteTo": "recommended_process_name_param",
       "minConfidence": 50
     },
+    "binder_pool_saturation_in_range": {
+      "scope": "process",
+      "aliases": [
+        "package"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "verify_if_present"
+    },
     "binder_root_cause": {
       "policy": "verify_if_present",
       "scope": "process",
@@ -1583,6 +1592,15 @@
       ],
       "rewriteTo": "recommended_process_name_param",
       "minConfidence": 50
+    },
+    "runnable_cpu_occupancy_in_range": {
+      "scope": "process",
+      "aliases": [
+        "package"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "verify_if_present"
     },
     "scene_device_state_changes": {
       "policy": "none"

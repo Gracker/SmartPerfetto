@@ -4,17 +4,17 @@
 This directory is the source-controlled trace test and reference corpus.
 
 - [Real trace cases](./real/README.md): 6
-- [Constructed trace cases](./constructed/README.md): 29
+- [Constructed trace cases](./constructed/README.md): 30
 - [Machine-readable catalog](./catalog.json)
 - [Skill and Strategy coverage](./coverage.json)
 
-Evidence tiers: R1=6, R2=0, R3=29.
+Evidence tiers: R1=6, R2=0, R3=30.
 
-Pinned Perfetto SQL source: `1e9c61e9844affd7dccd3d42d9ea9f3a3d10cf6d`. The generated coverage ledger contains 252 Skill SQL source contracts and 2 canonical portable SQL source checks with exact source hashes and upstream module paths.
+Pinned Perfetto SQL source: `1e9c61e9844affd7dccd3d42d9ea9f3a3d10cf6d`. The generated coverage ledger contains 254 Skill SQL source contracts and 2 canonical portable SQL source checks with exact source hashes and upstream module paths.
 
-Skill execution quality: 277 source-column-backed semantic, 33 execution-only composition, 1 expected-empty negative, 11 explicit deferred prerequisite, 32 definition-only.
+Skill execution quality: 286 source-column-backed semantic, 33 execution-only composition, 1 expected-empty negative, 11 explicit deferred prerequisite, 32 definition-only.
 
-Exact-scope unit bindings (each `exact_sql` and each UPID-bound target step): 27 semantic, 127 execution-only.
+Exact-scope unit bindings (each `exact_sql` and each UPID-bound target step): 31 semantic, 127 execution-only.
 
 ## Commands
 
@@ -59,6 +59,7 @@ Every constructed case is an analysis scenario unless its `case.json` declares `
 | --- | --- | --- | --- | --- | --- |
 | [App background power state layers](./constructed/app-background-power/) | power | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 1 target(s) |
 | [Binder, lock, and I/O blocking](./constructed/binder-io-blocking/) | io | Android 16 / API 36 (tested API 35-36) | android-startup-heavy | 25 target(s) |
+| [Binder thread pool saturation with waiting sync calls](./constructed/binder-pool-saturation/) | io | Android 16 / API 36 (tested API 35-36) | android-startup-light | 1 target(s) |
 | [HONOR 300 Pro device identity metadata](./constructed/device-identity-honor-300-pro/) | general | Android 16 / API 36 | android-startup-light | 0 target(s) |
 | [OUKITEL WP62 device identity metadata](./constructed/device-identity-oukitel-wp62/) | general | Android 15 / API 35 | android-scroll-standard | 0 target(s) |
 | [Google Pixel 6 Pro device identity metadata](./constructed/device-identity-pixel-6-pro/) | general | Android CinnamonBun / API 37 | android-scroll-customer | 0 target(s) |
@@ -80,7 +81,7 @@ Every constructed case is an analysis scenario unless its `case.json` declares `
 | [Framework process state residency](./constructed/process-state-residency/) | memory | Android 16 / API 36 (tested API 35-36) | android-startup-light | 1 target(s) |
 | [Rendering pipeline jank](./constructed/rendering-jank/) | scrolling | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 47 target(s) |
 | [Scene observation and device state contracts](./constructed/scene-observation-contracts/) | scene_reconstruction | Android 16 / API 36 (tested API 35-36) | android-startup-light | 5 target(s) |
-| [Scheduler and CPU contention](./constructed/scheduler-cpu-contention/) | cpu | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 38 target(s) |
+| [Scheduler and CPU contention](./constructed/scheduler-cpu-contention/) | cpu | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 39 target(s) |
 | [Per-frame CPU frequency-limit binding in scrolling](./constructed/scrolling-frequency-limit-jank/) | scrolling | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 2 target(s) |
 | [Source analysis semantic ground truth](./constructed/source-analysis-semantic/) | startup | Android 16 / API 36 (tested API 35-36) | android-startup-light | 0 target(s) |
 | [Startup and process lifecycle](./constructed/startup-lifecycle/) | startup | Android 16 / API 36 (tested API 35-36) | android-startup-heavy | 24 target(s) |

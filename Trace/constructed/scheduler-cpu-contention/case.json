@@ -14,7 +14,7 @@
   "trace": {
     "file": "trace.overlay.pftrace",
     "format": "perfetto-protobuf",
-    "sha256": "d659fd516ff1bc10c215394f12af064da6f51e81ec923f4a53b00fc748d274e0",
+    "sha256": "0ddf69f2958b8a26b12c79791d3f0df983cfe54cfb0eed6d1454feadc36ce1ec",
     "materialization": "base-plus-overlay"
   },
   "android": {
@@ -82,6 +82,7 @@
       "linux_sched_latency_distribution",
       "main_thread_sched_latency_in_range",
       "process_slice_cpu_hotspots",
+      "runnable_cpu_occupancy_in_range",
       "sched_latency_in_range",
       "scheduler_module",
       "scheduling_analysis",
@@ -1559,6 +1560,587 @@
           "cpu",
           "running_ms",
           "freq_mhz"
+        ],
+        "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
+      },
+      {
+        "id": "runnable-occupancy-kernel-irq-on-eventual-cpu",
+        "type": "skill",
+        "target": "runnable_cpu_occupancy_in_range",
+        "mode": "semantic",
+        "source_file": "backend/skills/atomic/runnable_cpu_occupancy_in_range.skill.yaml",
+        "parameters": {
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}",
+          "package": "com.smartperfetto.fixture",
+          "upid": "${fixture_upid}"
+        },
+        "required_steps": [
+          "root"
+        ],
+        "required_sql_steps": [
+          "root"
+        ],
+        "forced_sql_steps": [],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [],
+        "semantic_step": "root",
+        "required_columns": [
+          "window_id",
+          "window_start_ts",
+          "window_end_ts",
+          "window_dur_ns",
+          "upid",
+          "pid",
+          "process_name",
+          "utid",
+          "tid",
+          "thread_name",
+          "role",
+          "runnable_ns",
+          "targets_with_runnable",
+          "targets_omitted",
+          "ucpu",
+          "cpu",
+          "cpu_basis",
+          "cpu_runnable_ns",
+          "cpu_segment_count",
+          "idle_ns",
+          "unattributed_ns",
+          "occupant_kind",
+          "occupant_rank",
+          "occupant_utid",
+          "occupant_tid",
+          "occupant_thread_name",
+          "occupant_upid",
+          "occupant_pid",
+          "occupant_process_name",
+          "occupant_is_kernel",
+          "occupant_count",
+          "occupied_ns",
+          "segment_count",
+          "share_of_runnable",
+          "occupancy_evidence",
+          "kernel_thread_source",
+          "evidence_scope"
+        ],
+        "assertions": [
+          {
+            "column": "thread_name",
+            "operator": "eq",
+            "value": "RenderThread"
+          },
+          {
+            "column": "process_name",
+            "operator": "eq",
+            "value": "com.smartperfetto.fixture"
+          },
+          {
+            "column": "role",
+            "operator": "eq",
+            "value": "target"
+          },
+          {
+            "column": "runnable_ns",
+            "operator": "eq",
+            "value": 16000000
+          },
+          {
+            "column": "cpu_basis",
+            "operator": "eq",
+            "value": "eventual_run_cpu"
+          },
+          {
+            "column": "cpu_runnable_ns",
+            "operator": "eq",
+            "value": 16000000
+          },
+          {
+            "column": "cpu_segment_count",
+            "operator": "eq",
+            "value": 2
+          },
+          {
+            "column": "idle_ns",
+            "operator": "eq",
+            "value": 2000000
+          },
+          {
+            "column": "unattributed_ns",
+            "operator": "eq",
+            "value": 0
+          },
+          {
+            "column": "occupant_kind",
+            "operator": "eq",
+            "value": "task"
+          },
+          {
+            "column": "occupant_rank",
+            "operator": "eq",
+            "value": 1
+          },
+          {
+            "column": "occupant_thread_name",
+            "operator": "eq",
+            "value": "irq/90-fixture-crtc"
+          },
+          {
+            "column": "occupant_is_kernel",
+            "operator": "eq",
+            "value": 1
+          },
+          {
+            "column": "occupied_ns",
+            "operator": "eq",
+            "value": 8000000
+          },
+          {
+            "column": "segment_count",
+            "operator": "eq",
+            "value": 1
+          },
+          {
+            "column": "share_of_runnable",
+            "operator": "eq",
+            "value": 0.5
+          },
+          {
+            "column": "occupancy_evidence",
+            "operator": "eq",
+            "value": "observed"
+          },
+          {
+            "column": "kernel_thread_source",
+            "operator": "eq",
+            "value": "linux_kernel_threads"
+          }
+        ],
+        "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention",
+        "exact_scope": {
+          "process_name": "com.smartperfetto.fixture",
+          "units": [
+            {
+              "unit": "root",
+              "mode": "semantic",
+              "required_columns": [
+                "window_id",
+                "window_start_ts",
+                "window_end_ts",
+                "window_dur_ns",
+                "upid",
+                "pid",
+                "process_name",
+                "utid",
+                "tid",
+                "thread_name",
+                "role",
+                "runnable_ns",
+                "targets_with_runnable",
+                "targets_omitted",
+                "ucpu",
+                "cpu",
+                "cpu_basis",
+                "cpu_runnable_ns",
+                "cpu_segment_count",
+                "idle_ns",
+                "unattributed_ns",
+                "occupant_kind",
+                "occupant_rank",
+                "occupant_utid",
+                "occupant_tid",
+                "occupant_thread_name",
+                "occupant_upid",
+                "occupant_pid",
+                "occupant_process_name",
+                "occupant_is_kernel",
+                "occupant_count",
+                "occupied_ns",
+                "segment_count",
+                "share_of_runnable",
+                "occupancy_evidence",
+                "kernel_thread_source",
+                "evidence_scope"
+              ],
+              "assertions": [
+                {
+                  "column": "thread_name",
+                  "operator": "eq",
+                  "value": "RenderThread"
+                },
+                {
+                  "column": "process_name",
+                  "operator": "eq",
+                  "value": "com.smartperfetto.fixture"
+                },
+                {
+                  "column": "role",
+                  "operator": "eq",
+                  "value": "target"
+                },
+                {
+                  "column": "runnable_ns",
+                  "operator": "eq",
+                  "value": 16000000
+                },
+                {
+                  "column": "cpu_basis",
+                  "operator": "eq",
+                  "value": "eventual_run_cpu"
+                },
+                {
+                  "column": "cpu_runnable_ns",
+                  "operator": "eq",
+                  "value": 16000000
+                },
+                {
+                  "column": "cpu_segment_count",
+                  "operator": "eq",
+                  "value": 2
+                },
+                {
+                  "column": "idle_ns",
+                  "operator": "eq",
+                  "value": 2000000
+                },
+                {
+                  "column": "unattributed_ns",
+                  "operator": "eq",
+                  "value": 0
+                },
+                {
+                  "column": "occupant_kind",
+                  "operator": "eq",
+                  "value": "task"
+                },
+                {
+                  "column": "occupant_rank",
+                  "operator": "eq",
+                  "value": 1
+                },
+                {
+                  "column": "occupant_thread_name",
+                  "operator": "eq",
+                  "value": "irq/90-fixture-crtc"
+                },
+                {
+                  "column": "occupant_is_kernel",
+                  "operator": "eq",
+                  "value": 1
+                },
+                {
+                  "column": "occupied_ns",
+                  "operator": "eq",
+                  "value": 8000000
+                },
+                {
+                  "column": "segment_count",
+                  "operator": "eq",
+                  "value": 1
+                },
+                {
+                  "column": "share_of_runnable",
+                  "operator": "eq",
+                  "value": 0.5
+                },
+                {
+                  "column": "occupancy_evidence",
+                  "operator": "eq",
+                  "value": "observed"
+                },
+                {
+                  "column": "kernel_thread_source",
+                  "operator": "eq",
+                  "value": "linux_kernel_threads"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "id": "runnable-occupancy-preempting-task-and-idle-remainder",
+        "type": "skill",
+        "target": "runnable_cpu_occupancy_in_range",
+        "mode": "semantic",
+        "source_file": "backend/skills/atomic/runnable_cpu_occupancy_in_range.skill.yaml",
+        "parameters": {
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}",
+          "package": "com.smartperfetto.fixture",
+          "upid": "${fixture_upid}"
+        },
+        "required_steps": [
+          "root"
+        ],
+        "required_sql_steps": [
+          "root"
+        ],
+        "forced_sql_steps": [],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [],
+        "semantic_step": "root",
+        "required_columns": [
+          "window_id",
+          "window_start_ts",
+          "window_end_ts",
+          "window_dur_ns",
+          "upid",
+          "pid",
+          "process_name",
+          "utid",
+          "tid",
+          "thread_name",
+          "role",
+          "runnable_ns",
+          "targets_with_runnable",
+          "targets_omitted",
+          "ucpu",
+          "cpu",
+          "cpu_basis",
+          "cpu_runnable_ns",
+          "cpu_segment_count",
+          "idle_ns",
+          "unattributed_ns",
+          "occupant_kind",
+          "occupant_rank",
+          "occupant_utid",
+          "occupant_tid",
+          "occupant_thread_name",
+          "occupant_upid",
+          "occupant_pid",
+          "occupant_process_name",
+          "occupant_is_kernel",
+          "occupant_count",
+          "occupied_ns",
+          "segment_count",
+          "share_of_runnable",
+          "occupancy_evidence",
+          "kernel_thread_source",
+          "evidence_scope"
+        ],
+        "assertions": [
+          {
+            "column": "thread_name",
+            "operator": "eq",
+            "value": "RenderThread"
+          },
+          {
+            "column": "occupant_kind",
+            "operator": "eq",
+            "value": "task"
+          },
+          {
+            "column": "occupant_rank",
+            "operator": "eq",
+            "value": 2
+          },
+          {
+            "column": "occupant_process_name",
+            "operator": "eq",
+            "value": "/system/bin/surfaceflinger"
+          },
+          {
+            "column": "occupant_is_kernel",
+            "operator": "eq",
+            "value": 0
+          },
+          {
+            "column": "occupied_ns",
+            "operator": "eq",
+            "value": 6000000
+          },
+          {
+            "column": "share_of_runnable",
+            "operator": "eq",
+            "value": 0.375
+          }
+        ],
+        "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
+      },
+      {
+        "id": "runnable-occupancy-idle-share",
+        "type": "skill",
+        "target": "runnable_cpu_occupancy_in_range",
+        "mode": "semantic",
+        "source_file": "backend/skills/atomic/runnable_cpu_occupancy_in_range.skill.yaml",
+        "parameters": {
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}",
+          "package": "com.smartperfetto.fixture",
+          "upid": "${fixture_upid}"
+        },
+        "required_steps": [
+          "root"
+        ],
+        "required_sql_steps": [
+          "root"
+        ],
+        "forced_sql_steps": [],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [],
+        "semantic_step": "root",
+        "required_columns": [
+          "window_id",
+          "window_start_ts",
+          "window_end_ts",
+          "window_dur_ns",
+          "upid",
+          "pid",
+          "process_name",
+          "utid",
+          "tid",
+          "thread_name",
+          "role",
+          "runnable_ns",
+          "targets_with_runnable",
+          "targets_omitted",
+          "ucpu",
+          "cpu",
+          "cpu_basis",
+          "cpu_runnable_ns",
+          "cpu_segment_count",
+          "idle_ns",
+          "unattributed_ns",
+          "occupant_kind",
+          "occupant_rank",
+          "occupant_utid",
+          "occupant_tid",
+          "occupant_thread_name",
+          "occupant_upid",
+          "occupant_pid",
+          "occupant_process_name",
+          "occupant_is_kernel",
+          "occupant_count",
+          "occupied_ns",
+          "segment_count",
+          "share_of_runnable",
+          "occupancy_evidence",
+          "kernel_thread_source",
+          "evidence_scope"
+        ],
+        "assertions": [
+          {
+            "column": "thread_name",
+            "operator": "eq",
+            "value": "RenderThread"
+          },
+          {
+            "column": "occupant_kind",
+            "operator": "eq",
+            "value": "idle"
+          },
+          {
+            "column": "occupied_ns",
+            "operator": "eq",
+            "value": 2000000
+          },
+          {
+            "column": "segment_count",
+            "operator": "eq",
+            "value": 1
+          },
+          {
+            "column": "share_of_runnable",
+            "operator": "eq",
+            "value": 0.125
+          },
+          {
+            "column": "occupant_is_kernel",
+            "operator": "eq",
+            "value": null
+          }
+        ],
+        "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
+      },
+      {
+        "id": "runnable-occupancy-capped-occupants-other-row",
+        "type": "skill",
+        "target": "runnable_cpu_occupancy_in_range",
+        "mode": "semantic",
+        "source_file": "backend/skills/atomic/runnable_cpu_occupancy_in_range.skill.yaml",
+        "parameters": {
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}",
+          "package": "com.smartperfetto.fixture",
+          "upid": "${fixture_upid}",
+          "max_occupants": 1
+        },
+        "required_steps": [
+          "root"
+        ],
+        "required_sql_steps": [
+          "root"
+        ],
+        "forced_sql_steps": [],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [],
+        "semantic_step": "root",
+        "required_columns": [
+          "window_id",
+          "window_start_ts",
+          "window_end_ts",
+          "window_dur_ns",
+          "upid",
+          "pid",
+          "process_name",
+          "utid",
+          "tid",
+          "thread_name",
+          "role",
+          "runnable_ns",
+          "targets_with_runnable",
+          "targets_omitted",
+          "ucpu",
+          "cpu",
+          "cpu_basis",
+          "cpu_runnable_ns",
+          "cpu_segment_count",
+          "idle_ns",
+          "unattributed_ns",
+          "occupant_kind",
+          "occupant_rank",
+          "occupant_utid",
+          "occupant_tid",
+          "occupant_thread_name",
+          "occupant_upid",
+          "occupant_pid",
+          "occupant_process_name",
+          "occupant_is_kernel",
+          "occupant_count",
+          "occupied_ns",
+          "segment_count",
+          "share_of_runnable",
+          "occupancy_evidence",
+          "kernel_thread_source",
+          "evidence_scope"
+        ],
+        "assertions": [
+          {
+            "column": "thread_name",
+            "operator": "eq",
+            "value": "RenderThread"
+          },
+          {
+            "column": "occupant_kind",
+            "operator": "eq",
+            "value": "other_tasks"
+          },
+          {
+            "column": "occupant_count",
+            "operator": "eq",
+            "value": 1
+          },
+          {
+            "column": "occupied_ns",
+            "operator": "eq",
+            "value": 6000000
+          },
+          {
+            "column": "occupant_utid",
+            "operator": "eq",
+            "value": null
+          }
         ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       }

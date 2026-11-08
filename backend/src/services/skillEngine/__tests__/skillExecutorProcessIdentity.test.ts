@@ -678,7 +678,8 @@ describe('SkillExecutor trusted exact UPID execution', () => {
     const skillsDir = path.resolve(__dirname, '../../../../skills');
     const definitions = ['composite/scrolling_analysis.skill.yaml', 'atomic/cpu_topology_view.skill.yaml',
       'atomic/frame_pipeline_variance.skill.yaml','atomic/cpu_system_context_in_range.skill.yaml',
-      'atomic/thread_system_summary_in_range.skill.yaml','atomic/thread_preemption_handoffs_in_range.skill.yaml'].map(file => registry.loadSingleSkill(skillsDir, file)!);
+      'atomic/thread_system_summary_in_range.skill.yaml','atomic/thread_preemption_handoffs_in_range.skill.yaml',
+      'atomic/runnable_cpu_occupancy_in_range.skill.yaml'].map(file => registry.loadSingleSkill(skillsDir, file)!);
     const query = jest.fn(async (_trace: string, sql: string) => {
       if (sql.includes('resolver_probe')) return identityRows;
       if (sql.includes('as has_frame_timeline')) return { columns: ['has_frame_timeline'], rows: [[1]] };
@@ -816,7 +817,8 @@ describe('ANR and frame-detail real YAML scope closure', () => {
   const files = [
     'composite/anr_detail.skill.yaml', 'composite/jank_frame_detail.skill.yaml',
     'atomic/cpu_system_context_in_range.skill.yaml','atomic/thread_system_summary_in_range.skill.yaml',
-    'atomic/thread_preemption_handoffs_in_range.skill.yaml',
+    'atomic/thread_preemption_handoffs_in_range.skill.yaml', 'atomic/runnable_cpu_occupancy_in_range.skill.yaml',
+    'atomic/binder_pool_saturation_in_range.skill.yaml',
     'atomic/cpu_topology_view.skill.yaml', 'atomic/main_thread_states_in_range.skill.yaml',
     'atomic/main_thread_slices_in_range.skill.yaml', 'atomic/binder_in_range.skill.yaml',
     'atomic/binder_blocking_in_range.skill.yaml', 'atomic/main_thread_sched_latency_in_range.skill.yaml',

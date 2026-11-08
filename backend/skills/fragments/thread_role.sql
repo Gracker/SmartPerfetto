@@ -32,9 +32,14 @@
 -- roles through fragments/segment_wake_sources.sql rather than a copy, and
 -- backend/src/services/__tests__/threadRoleContract.test.ts executes the
 -- fragment to pin each role.
+--
+-- `binder_named` is the binder thread-name rule on its own, independent of the
+-- main-wins precedence: a native service whose main thread joined its binder
+-- pool keeps role `main` and is still binder_named, so a binder-pool reader
+-- uses this column rather than a second copy of the name rule.
 thread_roles AS (
   SELECT t.utid, t.tid, t.name AS thread_name, t.upid,
-    p.pid AS process_pid, p.name AS process_name,
+    p.pid AS process_pid, p.name AS process_name, t.binder_named,
     CASE
       WHEN p.pid IS NOT NULL AND p.pid > 0 AND t.tid = p.pid THEN 'main'
       WHEN t.name GLOB 'RenderThread*' THEN 'render'
@@ -43,10 +48,7 @@ thread_roles AS (
         OR t.name GLOB 'ReferenceQueueD*' THEN 'gc'
       WHEN t.name GLOB 'Jit thread pool*'
         OR t.name GLOB 'Profile Saver*' THEN 'jit'
-      WHEN t.name GLOB 'Binder:*'
-        OR t.name GLOB 'binder:*'
-        OR t.name GLOB 'HwBinder:*'
-        OR t.name GLOB 'hwbinder:*' THEN 'binder'
+      WHEN t.binder_named THEN 'binder'
       WHEN t.name GLOB 'OkHttp*'
         OR t.name GLOB 'Okio*'
         OR t.name GLOB 'Cronet*'
@@ -74,6 +76,11 @@ thread_roles AS (
       WHEN t.name GLOB 'Signal Catcher*' THEN 'system'
       ELSE 'other'
     END AS role
-  FROM thread t
+  FROM (
+    SELECT thread.*,
+      COALESCE(name GLOB 'Binder:*' OR name GLOB 'binder:*'
+        OR name GLOB 'HwBinder:*' OR name GLOB 'hwbinder:*', 0) AS binder_named
+    FROM thread
+  ) t
   LEFT JOIN process p ON p.upid = t.upid
 )

@@ -15,6 +15,8 @@
 #   - window_start_ts: anr_ts - timeout_ns, computed here so a caller can pass
 #     it as a parameter without template arithmetic on these decimal strings
 #   - timeout_source: whether timeout_ns came from actual duration, stdlib default, or heuristic fallback
+#   - timer_delay: android_anrs.timer_delay, the delay from the ANR timer's
+#     expiry to the ANR counter event (ns); it is not the ANR timeout
 #   - process_name, pid, upid, anr_type, error_id: ANR metadata
 #
 # Usage:
@@ -83,6 +85,12 @@ display:
     - name: timeout_source
       label: "超时来源"
       type: string
+    - name: timer_delay
+      label: "ANR 计时器到期→ANR 记录延迟（非超时时长）"
+      label_i18n:
+        en: "ANR timer expiry → ANR record delay (not the ANR timeout)"
+      type: duration
+      unit: ns
     - name: process_name
       label: "进程名"
       type: string
@@ -104,6 +112,7 @@ sql: |
     printf('%d', ts - CAST(analysis_timeout_ms * 1e6 AS INTEGER)) as window_start_ts,
     ROUND(analysis_timeout_ms, 2) as timeout_ms,
     timeout_source,
+    timer_delay,
     process_name,
     pid,
     upid,

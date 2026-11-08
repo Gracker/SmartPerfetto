@@ -484,6 +484,7 @@
           "running_ns",
           "runnable_ns",
           "runnable_preempted_ns",
+          "runnable_non_preempted_ns",
           "sleeping_ns",
           "uninterruptible_ns",
           "other_state_ns",
