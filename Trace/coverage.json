@@ -6869,6 +6869,15 @@
             ]
           },
           {
+            "id": "anr_event_brief",
+            "sha256": "2370bbc5acb86e4a66ec883f8d4a2fbb3c7187decc12a5c632f2017e6f25e638",
+            "required_columns": [
+              "process_name",
+              "anr_type",
+              "subject_preview"
+            ]
+          },
+          {
             "id": "trigger_classification",
             "sha256": "03ab2b10889854953a901b8b588d3e4f5fdab3069c3ab6a454e02a0e72a37a7f",
             "required_columns": [

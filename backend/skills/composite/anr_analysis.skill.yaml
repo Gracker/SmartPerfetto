@@ -197,6 +197,36 @@ steps:
     optional: true
     on_empty: "未检测到 ANR 事件。请确认 Trace 包含 ANR 数据。"
 
+  # Step 1.1a: 逐 ANR 摘要（进程、类型与主题），放在分类之前，让概览先给出事件本身
+  - id: anr_event_brief
+    type: atomic
+    name: "ANR 事件摘要"
+    display:
+      level: key
+      layer: overview
+      title: "ANR 事件摘要"
+      columns:
+        - name: process_name
+          label: "进程名"
+          type: string
+        - name: anr_type
+          label: "ANR 类型"
+          type: string
+        - name: subject_preview
+          label: "主题"
+          type: string
+    sql_fragments:
+      - fragments/anr_matched.sql
+    sql: |
+      SELECT
+        process_name,
+        anr_type,
+        SUBSTR(subject, 1, 120) AS subject_preview
+      FROM anr_matched
+      ORDER BY ts ASC
+      LIMIT 5
+    condition: detection.data[0]?.total_anr_count > 0
+
   # Step 1.1b: 触发类型分类（触发机制，不等于最终根因）
   - id: trigger_classification
     type: atomic

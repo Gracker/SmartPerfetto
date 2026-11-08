@@ -43,6 +43,7 @@
         "init_cpu_topology",
         "get_anr_context",
         "anr_detection",
+        "anr_event_brief",
         "trigger_classification",
         "system_cpu_health",
         "memory_pressure",
@@ -56,6 +57,7 @@
       ],
       "required_sql_steps": [
         "anr_detection",
+        "anr_event_brief",
         "trigger_classification",
         "system_cpu_health",
         "memory_pressure",
@@ -67,6 +69,7 @@
         "top_cpu_processes"
       ],
       "forced_sql_steps": [
+        "anr_event_brief",
         "trigger_classification",
         "system_cpu_health",
         "memory_pressure",

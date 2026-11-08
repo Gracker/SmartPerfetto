@@ -1233,7 +1233,7 @@
     },
     "anr_analysis": {
       "source_file": "backend/skills/composite/anr_analysis.skill.yaml",
-      "source_sha256": "551c89dca98652359bafda4505bf57f65fdfb4c46352523ccda78982ca2968a2",
+      "source_sha256": "f5a02f9bd8e59acab9537e22bc5ddcc6db2828930cd8fab0d630eb4ae1e079a2",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -1245,6 +1245,7 @@
         "init_cpu_topology",
         "get_anr_context",
         "anr_detection",
+        "anr_event_brief",
         "trigger_classification",
         "system_cpu_health",
         "memory_pressure",
@@ -1280,9 +1281,25 @@
           "forceable": true
         },
         {
-          "id": "trigger_classification",
+          "id": "anr_event_brief",
           "at": "steps[3].sql",
           "top_level_index": 3,
+          "sha256": "2370bbc5acb86e4a66ec883f8d4a2fbb3c7187decc12a5c632f2017e6f25e638",
+          "required_columns": [
+            "process_name",
+            "anr_type",
+            "subject_preview"
+          ],
+          "has_condition": true,
+          "read_only": true,
+          "placeholders": [],
+          "process_scope_valid": null,
+          "forceable": true
+        },
+        {
+          "id": "trigger_classification",
+          "at": "steps[4].sql",
+          "top_level_index": 4,
           "sha256": "03ab2b10889854953a901b8b588d3e4f5fdab3069c3ab6a454e02a0e72a37a7f",
           "required_columns": [
             "source_anr_type",
@@ -1301,8 +1318,8 @@
         },
         {
           "id": "system_cpu_health",
-          "at": "steps[4].sql",
-          "top_level_index": 4,
+          "at": "steps[5].sql",
+          "top_level_index": 5,
           "sha256": "c2031d18f713c72c92c9c97bb9e3f2562d6f041c9c0a57914f9d59db71e0cb35",
           "required_columns": [
             "sched_covered_ns",
@@ -1324,8 +1341,8 @@
         },
         {
           "id": "memory_pressure",
-          "at": "steps[5].sql",
-          "top_level_index": 5,
+          "at": "steps[6].sql",
+          "top_level_index": 6,
           "sha256": "063a9beb430ee2a2730975614df1f6478d3de44f9262d13f70ed940e5bdcb98e",
           "required_columns": [
             "oom_score_adj",
@@ -1343,8 +1360,8 @@
         },
         {
           "id": "io_load",
-          "at": "steps[6].sql",
-          "top_level_index": 6,
+          "at": "steps[7].sql",
+          "top_level_index": 7,
           "sha256": "492318604b2be6bd357806b8523f486ccc3610a536fc1d1e223a062c6e80d32c",
           "required_columns": [
             "process_name",
@@ -1362,8 +1379,8 @@
         },
         {
           "id": "anr_process_io_wait",
-          "at": "steps[7].sql",
-          "top_level_index": 7,
+          "at": "steps[8].sql",
+          "top_level_index": 8,
           "sha256": "a589763a437d1cc115492740d4c988b8199f6081d5ddef35d807df68f5f6068e",
           "required_columns": [
             "process_name",
@@ -1387,8 +1404,8 @@
         },
         {
           "id": "system_freeze_check",
-          "at": "steps[9].sql",
-          "top_level_index": 9,
+          "at": "steps[10].sql",
+          "top_level_index": 10,
           "sha256": "7a31ecab01aa914f1e490de7d32daf3f202d1554c55804e5cb8977809ed135de",
           "required_columns": [
             "total_apps",
@@ -1412,8 +1429,8 @@
         },
         {
           "id": "anr_overview",
-          "at": "steps[10].sql",
-          "top_level_index": 10,
+          "at": "steps[11].sql",
+          "top_level_index": 11,
           "sha256": "aa77dbab34c8a6115a1eca2571c7be5bb7690e0cbdd8691288cc71abf9bf5e9e",
           "required_columns": [
             "anr_type",
@@ -1435,8 +1452,8 @@
         },
         {
           "id": "get_anr_events",
-          "at": "steps[11].sql",
-          "top_level_index": 11,
+          "at": "steps[12].sql",
+          "top_level_index": 12,
           "sha256": "5ccb292c5646013c40a8bff97e560ee8fbe8c867a4e67c34a37afe23d169215f",
           "required_columns": [
             "error_id",
@@ -1465,8 +1482,8 @@
         },
         {
           "id": "top_cpu_processes",
-          "at": "steps[12].sql",
-          "top_level_index": 12,
+          "at": "steps[13].sql",
+          "top_level_index": 13,
           "sha256": "ec32f598217f6a942b01e1bf20bc0b9ebff9b71d60231121fe619c4422d796b1",
           "required_columns": [
             "process_name",

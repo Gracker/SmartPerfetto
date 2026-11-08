@@ -10,8 +10,8 @@
     "skillCount": 254,
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
-    "stepCount": 1389,
-    "explicitColumnCount": 5307
+    "stepCount": 1390,
+    "explicitColumnCount": 5310
   },
   "skills": {
     "ams_module": {
@@ -2774,6 +2774,33 @@
               "en": "Confidence"
             }
           }
+        },
+        "anr_event_brief": {
+          "title": {
+            "zh-CN": "ANR 事件摘要",
+            "en": "ANR Event Brief"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程名",
+                "en": "Process Name"
+              }
+            },
+            "anr_type": {
+              "label": {
+                "zh-CN": "ANR 类型",
+                "en": "ANR Type"
+              }
+            },
+            "subject_preview": {
+              "label": {
+                "zh-CN": "主题",
+                "en": "Subject Preview"
+              }
+            }
+          },
+          "synthesizeLabels": {}
         },
         "anr_overview": {
           "title": {
