@@ -98,14 +98,14 @@ describe('Pi investigation contract progress at turn boundaries', () => {
   const requirement = (id: string): InvestigationProgressRequirementV1 => ({id, domain: 'cpu', description: `Requirement ${id}`,
     evidenceMetrics: [`metric.${id}`], producerSkillIds: [`${id}_producer`]});
   const ids = ['a', 'b', 'c', 'd', 'e', 'f', 'g'];
-  const progressView = (used: number): InvestigationViewV1 => ({...view,
+  const progressView = (): InvestigationViewV1 => ({...view,
     requirements: {...view.requirements, items: ids.map(id => ({id, required: true, status: 'not_observed' as const}))},
-    budget: {...view.budget, providerTurnsUsed: used, providerTurnLimit: 8}});
+    budget: {...view.budget, providerTurnsUsed: 4, providerTurnLimit: 8}});
 
-  function progressAdapter(options: {used?: () => number; purpose?: () => 'answer_turn' | 'continuation'; active?: () => boolean;
+  function progressAdapter(options: {purpose?: () => 'answer_turn' | 'continuation'; active?: () => boolean;
     derive?: () => InvestigationViewV1; progress?: boolean} = {}) {
     const records: Array<Record<string, unknown>> = [];
-    const derive = jest.fn(options.derive ?? (() => progressView(options.used?.() ?? 4)));
+    const derive = jest.fn(options.derive ?? progressView);
     const refreshBudget = jest.fn((current: InvestigationViewV1) => ({...current, budget: {...current.budget, elapsedMs: 999}}));
     const created = createPiInvestigationAdapter({view: {derive, refreshBudget}, isActive: options.active ?? (() => true), attempt: () => 1,
       purpose: options.purpose ?? (() => 'answer_turn'), accepts: () => true, record: receipt => {records.push(receipt as never);},
@@ -124,13 +124,18 @@ describe('Pi investigation contract progress at turn boundaries', () => {
     prepare();
     // The first request has no boundary decision: its receipt derives the view.
     expect(derive).toHaveBeenCalledTimes(1);
-    expect(messageIds(await created.prepareNextTurn())).toEqual(['a', 'b', 'c']);
+    // The second request is before the gate: the boundary reads nothing and its receipt derives the view.
+    expect(await created.prepareNextTurn()).toBeUndefined();
+    expect(derive).toHaveBeenCalledTimes(1);
+    prepare();
     expect(derive).toHaveBeenCalledTimes(2);
+    expect(messageIds(await created.prepareNextTurn())).toEqual(['a', 'b', 'c']);
+    expect(derive).toHaveBeenCalledTimes(3);
     prepare();
     // That request's receipt reuses the boundary's ledger read and re-reads only the budget.
-    expect(derive).toHaveBeenCalledTimes(2);
+    expect(derive).toHaveBeenCalledTimes(3);
     expect(refreshBudget).toHaveBeenCalledTimes(1);
-    expect(records[1].elapsedMs).toBe(999);
+    expect(records[2].elapsedMs).toBe(999);
     expect(messageIds(await created.prepareNextTurn())).toEqual(['d', 'e', 'f']);
     prepare();
     // Two messages per run: later boundaries change nothing.
@@ -138,18 +143,20 @@ describe('Pi investigation contract progress at turn boundaries', () => {
     prepare();
     expect(records.map(receipt => [receipt.requestIndex, receipt.decision, receipt.progress])).toEqual([
       [1, 'no_change', undefined],
-      [2, 'progress', {messages: 1, requirementIds: ['a', 'b', 'c']}],
-      [3, 'progress', {messages: 1, requirementIds: ['d', 'e', 'f']}],
-      [4, 'no_change', undefined],
+      [2, 'no_change', undefined],
+      [3, 'progress', {messages: 1, requirementIds: ['a', 'b', 'c']}],
+      [4, 'progress', {messages: 1, requirementIds: ['d', 'e', 'f']}],
+      [5, 'no_change', undefined],
     ]);
     expect(JSON.stringify(records)).not.toMatch(/Requirement|metric\.|_producer/);
   });
 
   it('records no change for a request without a boundary decision, such as a correction prompt', async () => {
     const {created, prepare, records} = progressAdapter({purpose: () => 'continuation'});
+    prepare();
+    prepare();
+    // The next request would be past the first-request gate; its purpose alone keeps the boundary silent.
     expect(await created.prepareNextTurn()).toBeUndefined();
-    prepare();
-    prepare();
     expect(records.map(receipt => receipt.decision)).toEqual(['no_change', 'no_change']);
   });
 
@@ -166,18 +173,22 @@ describe('Pi investigation contract progress at turn boundaries', () => {
     expect(await aborted.created.prepareNextTurn(controller.signal)).toBeUndefined();
     expect(aborted.derive).not.toHaveBeenCalled();
     const failing = progressAdapter({derive: () => {throw new Error('PRIVATE_VIEW_FAILURE');}});
+    failing.prepare();
+    failing.prepare();
     expect(await failing.created.prepareNextTurn()).toBeUndefined();
     const disposed = progressAdapter();
     disposed.created.dispose();
     expect(await disposed.created.prepareNextTurn()).toBeUndefined();
     expect(disposed.derive).not.toHaveBeenCalled();
-    // The first boundary precedes request two only after request one; before it no message may ride.
+    // A boundary before the first-request gate reads nothing.
     const firstRequest = progressAdapter();
     expect(await firstRequest.created.prepareNextTurn()).toBeUndefined();
     expect(firstRequest.derive).not.toHaveBeenCalled();
     const empty = createPiInvestigationAdapter({view: {derive: firstRequest.derive, refreshBudget: current => current}, isActive: () => true,
       attempt: () => 1, purpose: () => 'answer_turn', accepts: () => true, record: () => undefined, progress: {catalog: new Map()}});
-    empty.prepareRequest({context: {messages: [], tools: []}, model: {} as never, thinkingLevel: 'off'} as never);
+    for (let request = 0; request < 2; request++) {
+      empty.prepareRequest({context: {messages: [], tools: []}, model: {} as never, thinkingLevel: 'off'} as never);
+    }
     const before = firstRequest.derive.mock.calls.length;
     expect(await empty.prepareNextTurn()).toBeUndefined();
     expect(firstRequest.derive.mock.calls.length).toBe(before);

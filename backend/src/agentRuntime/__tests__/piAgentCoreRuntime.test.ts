@@ -4488,7 +4488,7 @@ describe('experimental Pi agent-core runtime contract', () => {
           getAllSkills: () => [producer] as never, getSkill: (id: string) => (id === producer.name ? producer : undefined) as never}};
       };
       const toolTurn = {role: 'assistant', stopReason: 'toolUse', content: [{type: 'toolCall', id: 't', name: 'execute_sql', arguments: {}}]};
-      interface LoopObservation {progressUpdate?: any; secondContext?: any[]; systemPrompt?: string; options?: Record<string, unknown>}
+      interface LoopObservation {progressUpdate?: any; progressContext?: any[]; systemPrompt?: string; options?: Record<string, unknown>}
 
       // Mirrors Pi 1.5.0's loop: prepareRequest before each request, turn_end after each turn,
       // then prepareNextTurn only when the loop continues; its messages join the transcript.
@@ -4507,9 +4507,14 @@ describe('experimental Pi agent-core runtime contract', () => {
               model: agent.state.model, thinkingLevel: 'off'}, new AbortController().signal);
             await (options.streamFn as any)(agent.state.model, {messages: []}, {}).result();
           };
+          const boundary = () => {
+            agent.emitForTest({type: 'turn_end', message: toolTurn});
+            return (options.prepareNextTurn as any)?.(new AbortController().signal);
+          };
           await request();
-          for (let turn = 0; turn < 3; turn++) agent.emitForTest({type: 'turn_end', message: toolTurn});
-          observed.progressUpdate = await (options.prepareNextTurn as any)?.(new AbortController().signal);
+          await boundary();
+          await request();
+          observed.progressUpdate = await boundary();
           for (const message of observed.progressUpdate?.messages ?? []) {
             agent.emitForTest({type: 'message_start', message});
             agent.emitForTest({type: 'message_end', message});
@@ -4517,7 +4522,7 @@ describe('experimental Pi agent-core runtime contract', () => {
           }
           await request();
           const convert = options.convertToLlm as ((messages: unknown[]) => Promise<unknown[]> | unknown[]) | undefined;
-          observed.secondContext = convert ? await convert(agent.state.messages) : undefined;
+          observed.progressContext = convert ? await convert(agent.state.messages) : undefined;
           return [{role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: answer}]}];
         };
         const runtime = typedRuntime({env: {AGENT_QUICK_MAX_TURNS: '6', ...env}});
@@ -4538,7 +4543,7 @@ describe('experimental Pi agent-core runtime contract', () => {
             expect(run.observed.options).not.toHaveProperty('prepareNextTurn');
             expect(run.observed.options).not.toHaveProperty('convertToLlm');
             expect(run.observed.systemPrompt).not.toContain('"acquisition"');
-            expect(run.receipt.investigationRequests!.map(request => request.decision)).toEqual(['no_change', 'no_change']);
+            expect(run.receipt.investigationRequests!.map(request => request.decision)).toEqual(['no_change', 'no_change', 'no_change']);
             expect(run.result.conclusion.trim()).toBe(answer);
           }
           expect(off.observed.systemPrompt).toBe(unset.observed.systemPrompt);
@@ -4565,15 +4570,15 @@ describe('experimental Pi agent-core runtime contract', () => {
         expect(observed.progressUpdate.messages).toHaveLength(1);
         expect(message).toMatchObject({role: 'smartperfettoInvestigationProgress', progress: {schemaVersion: 'investigation_progress@1',
           requirements: [{id: 'thread_state', evidenceMetrics: [producerMetric], producerSkillIds: [producer.name]}]}});
-        const last = observed.secondContext![observed.secondContext!.length - 1] as {role: string; content: Array<{text: string}>};
+        const last = observed.progressContext![observed.progressContext!.length - 1] as {role: string; content: Array<{text: string}>};
         expect(last.role).toBe('user');
         expect(last.content[0].text).toContain('## Investigation contract status');
         expect(last.content[0].text).toContain('"context":"investigation_progress"');
-        expect(observed.secondContext!.filter((entry: any) => entry.role === 'system')).toHaveLength(0);
-        // No extra provider request: two prepared requests, two answer-turn model calls.
+        expect(observed.progressContext!.filter((entry: any) => entry.role === 'system')).toHaveLength(0);
+        // No extra provider request: three prepared requests, three answer-turn model calls.
         expect(receipt.investigationRequests!.map(request => [request.requestIndex, request.decision, request.progress])).toEqual([
-          [1, 'no_change', undefined], [2, 'progress', {messages: 1, requirementIds: ['thread_state']}]]);
-        expect(receipt.modelCalls?.filter(call => call.purpose === 'answer_turn').map(call => call.requestIndex)).toEqual([1, 2]);
+          [1, 'no_change', undefined], [2, 'no_change', undefined], [3, 'progress', {messages: 1, requirementIds: ['thread_state']}]]);
+        expect(receipt.modelCalls?.filter(call => call.purpose === 'answer_turn').map(call => call.requestIndex)).toEqual([1, 2, 3]);
         const turns = sessionContextManager.getOrCreate('pi-progress-message', 'trace-pi').getAllTurns();
         expect(turns.length).toBeGreaterThan(0);
         const surfaces = JSON.stringify({updates, result, turns});

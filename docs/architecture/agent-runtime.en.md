@@ -297,11 +297,11 @@ without the feature. When on, the first request's existing
 turn boundaries (`prepareNextTurn`) and cached under the next request index;
 `prepareRequest` only records. One progress message rides the request already
 scheduled, never adding a provider request or extending the run, only when all
-of these hold: an `answer_turn` request after the first; `allowNewEvidence`
+of these hold: an `answer_turn` request from the third on; `allowNewEvidence`
 (never under `existing_only`, a correction or closeout); a readable ledger; a
 `not_observed` requirement with at least one registered producer that
-`invoke_skill` can reach in the request scope; at least half the acquisition
-turns used and one still left afterwards. Each requirement is named at most
+`invoke_skill` can reach in the request scope; an acquisition turn still left
+afterwards. Each requirement is named at most
 once, with at most 3 per message and 2 messages per run. The message is a
 custom Agent role that `convertToLlm` renders as a `user` message
 (`prompt-investigation-progress.template.md` plus bounded JSON: requirement id,

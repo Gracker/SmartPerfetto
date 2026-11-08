@@ -170,7 +170,7 @@ describe('investigation contract progress decision', () => {
     ['existing_only intent', {view: view({evidenceAccess: 'existing_only'})}],
     ['correction continuation', {request: {index: 5, purpose: 'continuation' as const}}],
     ['the first request', {request: {index: 1, purpose: 'answer_turn' as const}}],
-    ['before half the acquisition turns', {view: view({used: 3, limit: 7})}],
+    ['the second request', {request: {index: 2, purpose: 'answer_turn' as const}}],
     ['no acquisition turn after the next request', {view: view({used: 8, limit: 8})}],
     ['an exhausted deadline', {view: view({remainingMs: 0})}],
     ['an unread ledger', {view: view({evidence: 'unavailable'})}],
@@ -185,9 +185,8 @@ describe('investigation contract progress decision', () => {
     expect(decideInvestigationTurn(state).progressMessages).toEqual([]);
   });
 
-  it('starts at ceil(limit / 2) used turns', () => {
-    expect(named(decideInvestigationTurn(input({view: view({used: 4, limit: 7})})))).toEqual(['b', 'c', 'd']);
-    expect(named(decideInvestigationTurn(input({view: view({used: 1, limit: 2}), request: {index: 2, purpose: 'answer_turn'}}))))
+  it('starts at the third request however large the turn limit is', () => {
+    expect(named(decideInvestigationTurn(input({view: view({used: 2, limit: 49}), request: {index: 3, purpose: 'answer_turn'}}))))
       .toEqual(['b', 'c', 'd']);
   });
 

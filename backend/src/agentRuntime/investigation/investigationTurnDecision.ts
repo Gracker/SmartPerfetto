@@ -9,8 +9,8 @@ import type {InvestigationViewV1} from './investigationView';
 const INVESTIGATION_PROGRESS_LIMITS = Object.freeze({
   requirementsPerMessage: 3,
   messagesPerRun: 2,
-  /** Turn 1 carries status in its prompt instead; a message rides a later request. */
-  firstRequestIndex: 2,
+  /** Turn 1 carries status in its prompt; turn 2 is still the model's own first follow-up. */
+  firstRequestIndex: 3,
 });
 
 /**
@@ -92,15 +92,15 @@ export function applyProgress(state: InvestigationProgressState,
 /**
  * Requirements whose declared metrics have no observed record, that a
  * reachable producer could acquire, and that no earlier message named. Only
- * for an answer turn after the first that may acquire new evidence, once half
- * the acquisition turns are used and while one remains after the next request.
+ * for an answer turn from `firstRequestIndex` on that may acquire new
+ * evidence, while an acquisition turn remains after the next request.
  * The ledger must be readable: an unread one observes nothing, not absence.
  */
 function progressRequirements({view, request, progress}: InvestigationTurnInput): InvestigationProgressRequirementV1[] {
   if (!progress || !progressGateOpen(request, progress) || view.target.evidenceAccess !== 'read_new' ||
       view.requirements.contract !== 'resolved' || view.evidence.status !== 'read') return [];
   const {providerTurnsUsed: used, providerTurnLimit: limit, remainingMs} = view.budget;
-  if (used < Math.ceil(limit / 2) || used >= limit || remainingMs <= 0) return [];
+  if (used >= limit || remainingMs <= 0) return [];
   const candidates = view.requirements.items.filter(item =>
     item.status === 'not_observed' && progress.catalog.has(item.id) && !progress.named.has(item.id));
   // Required requirements first, each group in contract order.
