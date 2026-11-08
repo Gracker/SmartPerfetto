@@ -289,27 +289,13 @@ view reads only typed intent, the pinned contract, the producer ledger and the
 run budget; it is created per run and released at finalization, and the adapter
 returns no request update.
 
-Contract progress is controlled by `SMARTPERFETTO_INVESTIGATION_PROGRESS` and is
-off by default; when off, the Agent options, prompt and requests are exactly as
-without the feature. When on, the first request's existing
-`investigation_requirements` segment gives each requirement its run-start ledger
-`acquisition` status (a status, not a nudge). Later decisions are made only at
-turn boundaries (`prepareNextTurn`) and cached under the next request index;
-`prepareRequest` only records. One progress message rides the request already
-scheduled, never adding a provider request or extending the run, only when all
-of these hold: an `answer_turn` request from the third on; `allowNewEvidence`
-(never under `existing_only`, a correction or closeout); a readable ledger; a
-`not_observed` requirement with at least one registered producer that
-`invoke_skill` can reach in the request scope; an acquisition turn still left
-afterwards. Each requirement is named at most
-once, with at most 3 per message and 2 messages per run. The message is a
-custom Agent role that `convertToLlm` renders as a `user` message
-(`prompt-investigation-progress.template.md` plus bounded JSON: requirement id,
-domain, description, condition as written, metrics and producer Skill ids),
-never a mid-conversation `system` message. It states contract status only, no
-obligation or conclusion, and never reaches narration, drafts, SSE, results,
-reports, snapshots or conversation history. Its receipt records `decision:
-progress` with only `progress.messages` and `requirementIds`.
+By default the first request's existing `investigation_requirements` segment
+gives each requirement its run-start ledger `acquisition` status
+(`prompt-investigation-acquisition.template.md` explains the values). Set
+`SMARTPERFETTO_INVESTIGATION_ACQUISITION_STATUS=false` to turn it off; an
+unreadable ledger yields no status. It is a status, not a nudge: no obligation
+or conclusion, semantic conditions are not evaluated, and neither the Agent
+loop nor the request count changes.
 
 The shared tool handoff also records bounded `activity`: attempts, dispatch into
 the guarded pipeline, returns, refusals, exceptions, cancellations, and repeated

@@ -1764,9 +1764,6 @@ strategies:
   backend/strategies/prompt-investigation-acquisition.template.md:
     disposition: product-only
     reason: SmartPerfetto run-start investigation requirement acquisition status
-  backend/strategies/prompt-investigation-progress.template.md:
-    disposition: product-only
-    reason: SmartPerfetto Pi runtime investigation contract progress message
   backend/strategies/prompt-reasoning-nudge-en.template.md:
     disposition: product-only
     reason: SmartPerfetto MCP data-tool result reasoning reminder (English)

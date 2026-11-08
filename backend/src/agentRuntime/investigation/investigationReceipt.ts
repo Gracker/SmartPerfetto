@@ -15,8 +15,7 @@ export const INVESTIGATION_CONTRACT_STATUSES =
 export const INVESTIGATION_EVIDENCE_STATUSES = ['read', 'unavailable', 'failed'] as const;
 /** Why the native Agent dispatched a provider request; the Pi model-call purposes derive from it. */
 export const AGENT_REQUEST_PURPOSES = ['answer_turn', 'continuation'] as const;
-/** `progress`: a contract progress message rode this request; see `InvestigationRequestObservationV1.progress`. */
-export const INVESTIGATION_DECISIONS = ['no_change', 'progress'] as const;
+export const INVESTIGATION_DECISIONS = ['no_change'] as const;
 
 /**
  * - `observed`: the ledger holds an observed record of a declared metric.
@@ -42,19 +41,13 @@ export interface InvestigationRequestObservationV1 {
   elapsedMs: number;
   remainingMs: number;
   decision: typeof INVESTIGATION_DECISIONS[number];
-  /** Present exactly when `decision` is `progress`: the messages and the requirement ids they named. */
-  progress?: {messages: number; requirementIds: string[]};
 }
 
-function decisionFacts(decision: InvestigationTurnDecisionV1):
-  Pick<InvestigationRequestObservationV1, 'decision' | 'progress'> {
+function decisionKind(decision: InvestigationTurnDecisionV1): InvestigationRequestObservationV1['decision'] {
+  if (decision.tools.kind === 'unchanged' && decision.progressMessages.length === 0 &&
+      decision.foldPlan.kind === 'none' && decision.executionPurpose.kind === 'unchanged') return 'no_change';
   // A decision kind the receipt cannot name is never recorded as no change.
-  if (decision.tools.kind !== 'unchanged' || decision.foldPlan.kind !== 'none' ||
-      decision.executionPurpose.kind !== 'unchanged') throw new Error('investigation_decision_unrecordable');
-  if (decision.progressMessages.length === 0) return {decision: 'no_change'};
-  const requirementIds = decision.progressMessages.flatMap(message =>
-    message.requirements.map(requirement => requirement.id));
-  return {decision: 'progress', progress: {messages: decision.progressMessages.length, requirementIds}};
+  throw new Error('investigation_decision_unrecordable');
 }
 
 /** Pure: the receipt facts of one view and the decision derived from it. */
@@ -65,5 +58,5 @@ export function projectInvestigationReceipt(view: InvestigationViewV1,
     evidence: view.evidence.status,
     turns: {used: budget.providerTurnsUsed, limit: budget.providerTurnLimit, total: budget.totalTurnLimit},
     elapsedMs: Math.round(budget.elapsedMs), remainingMs: Math.round(budget.remainingMs),
-    ...decisionFacts(decision)};
+    decision: decisionKind(decision)};
 }

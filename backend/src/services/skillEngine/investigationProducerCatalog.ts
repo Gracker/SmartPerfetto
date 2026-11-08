@@ -6,40 +6,19 @@ import {getConsumableProcessIdentitySelectors} from '../processIdentity/identity
 import {executableSqlUnits} from './processScopeSql';
 import type {SkillDefinition} from './types';
 
-/** A Skill's SQL producers with a valid declaration, each node once despite named/exact SQL variants. */
-function declaredProducerUnits(skill: SkillDefinition) {
-  const seen = new Set<object>();
-  return executableSqlUnits(skill).flatMap(unit => {
-    // Distinct nodes may share an id, so deduplicate by identity and keep their structural location.
-    if (seen.has(unit.node)) return [];
-    seen.add(unit.node);
-    if (typeof unit.source.sql !== 'string' || !unit.source.sql.trim()) return [];
-    const declaration = unit.node.investigation_evidence as InvestigationEvidenceDeclaration | undefined;
-    if (!declaration || investigationEvidenceDeclarationError(declaration)) return [];
-    return [{unit, declaration}];
-  });
-}
-
-/** Each declared metric's producing Skill ids, in one pass over the registry. */
-export function investigationMetricProducers(skills: readonly SkillDefinition[]): ReadonlyMap<string, ReadonlySet<string>> {
-  const producers = new Map<string, Set<string>>();
-  for (const skill of skills) {
-    for (const {declaration} of declaredProducerUnits(skill)) {
-      for (const metric of declaration.metrics) {
-        const skillIds = producers.get(metric.metric_id) ?? new Set<string>();
-        skillIds.add(skill.name);
-        producers.set(metric.metric_id, skillIds);
-      }
-    }
-  }
-  return producers;
-}
-
 /** Registry metadata only: discovery neither executes SQL nor issues a metric witness. */
 export function investigationProducerCatalog(skills: readonly SkillDefinition[], metricId: string) {
   if (!metricId) return [];
   return skills.flatMap(skill => {
-    return declaredProducerUnits(skill).flatMap(({unit, declaration}) => {
+    const seen = new Set<object>();
+    return executableSqlUnits(skill).flatMap(unit => {
+      // One producer can have named/exact SQL variants. Distinct nodes may share
+      // an id, so retain their structural location and deduplicate by identity.
+      if (seen.has(unit.node)) return [];
+      seen.add(unit.node);
+      if (typeof unit.source.sql !== 'string' || !unit.source.sql.trim()) return [];
+      const declaration = unit.node.investigation_evidence as InvestigationEvidenceDeclaration | undefined;
+      if (!declaration || investigationEvidenceDeclarationError(declaration)) return [];
       const metrics = declaration.metrics.filter(metric => metric.metric_id === metricId);
       if (!metrics.length) return [];
       const inputs = (skill.inputs ?? []).map(input => ({name: input.name, type: input.type,

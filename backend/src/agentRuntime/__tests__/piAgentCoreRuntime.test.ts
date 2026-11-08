@@ -4284,7 +4284,8 @@ describe('experimental Pi agent-core runtime contract', () => {
     passVerification();
     const sessionId = 'pi-finalization-exact-result';
     const trace = createFakeTraceProcessorService();
-    const runtime = typedRuntime({trace});
+    // Only the finalizer's ledger read: the run-start status makes its own.
+    const runtime = typedRuntime({trace, env: {SMARTPERFETTO_INVESTIGATION_ACQUISITION_STATUS: 'false'}});
     const readView = jest.spyOn(ArtifactStore.prototype, 'createEvidenceReadView');
     const observation = observePiProjection();
     registerCodeAwareCanary(sessionId, 'PRIVATE_PI_CANARY');
@@ -4456,7 +4457,7 @@ describe('experimental Pi agent-core runtime contract', () => {
     it('keeps the run unchanged when deriving the view throws', async () => {
       passVerification();
       const failing = jest.spyOn(investigationViewModule, 'createInvestigationViewSource').mockReturnValue({
-        derive: () => {throw new Error('PRIVATE_VIEW_FAILURE');}, refreshBudget: view => view});
+        derive: () => {throw new Error('PRIVATE_VIEW_FAILURE');}});
       try {
         const recorder = createRuntimePerformanceRecorder();
         const updates: unknown[] = [];
@@ -4475,123 +4476,42 @@ describe('experimental Pi agent-core runtime contract', () => {
       } finally {failing.mockRestore();}
     });
 
-    describe('contract progress (SMARTPERFETTO_INVESTIGATION_PROGRESS)', () => {
-      const producerMetric = 'system.thread.state.duration';
-      // One registered producer for the startup contract's thread_state requirement.
-      const producer = {name: 'fixture_thread_state_producer', version: '1', type: 'atomic',
-        meta: {display_name: 'Fixture', description: 'Fixture'}, sql: 'SELECT 1',
-        investigation_evidence: {window: {start: 'begin', end: 'end'},
-          metrics: [{domain: 'scheduling', metric_id: producerMetric, value: 'dur', unit: 'ns', status: 'status'}]}};
-      const snapshotWithProducer = (): EffectiveRuntimeRegistrySnapshot => {
-        const snapshot = createEffectiveRuntimeRegistrySnapshot();
-        return {...snapshot, skillRegistry: {...snapshot.skillRegistry,
-          getAllSkills: () => [producer] as never, getSkill: (id: string) => (id === producer.name ? producer : undefined) as never}};
-      };
-      const toolTurn = {role: 'assistant', stopReason: 'toolUse', content: [{type: 'toolCall', id: 't', name: 'execute_sql', arguments: {}}]};
-      interface LoopObservation {progressUpdate?: any; progressContext?: any[]; systemPrompt?: string; options?: Record<string, unknown>}
-
-      // Mirrors Pi 1.5.0's loop: prepareRequest before each request, turn_end after each turn,
-      // then prepareNextTurn only when the loop continues; its messages join the transcript.
-      async function runLoop(env: Record<string, string>, sessionId: string) {
+    describe('first-turn requirement acquisition status', () => {
+      async function run(env: Record<string, string>, sessionId: string) {
         passVerification();
         piClassifierDecision = {...piClassifierDecision, taskKind: 'investigation', sceneId: 'startup', scope: 'scene_wide'};
-        const recorder = createRuntimePerformanceRecorder();
-        const observed: LoopObservation = {};
-        const updates: StreamingUpdate[] = [];
+        const observed: {systemPrompt?: string; options?: Record<string, unknown>} = {};
         FakePiAgent.promptHandler = async agent => {
-          const options = agent.options!;
-          observed.options = options;
+          observed.options = agent.options!;
           observed.systemPrompt = agent.state.systemPrompt;
-          const request = async () => {
-            await (options.prepareRequest as any)({context: {messages: agent.state.messages, tools: agent.state.tools},
-              model: agent.state.model, thinkingLevel: 'off'}, new AbortController().signal);
-            await (options.streamFn as any)(agent.state.model, {messages: []}, {}).result();
-          };
-          const boundary = () => {
-            agent.emitForTest({type: 'turn_end', message: toolTurn});
-            return (options.prepareNextTurn as any)?.(new AbortController().signal);
-          };
-          await request();
-          await boundary();
-          await request();
-          observed.progressUpdate = await boundary();
-          for (const message of observed.progressUpdate?.messages ?? []) {
-            agent.emitForTest({type: 'message_start', message});
-            agent.emitForTest({type: 'message_end', message});
-            agent.state.messages.push(message);
-          }
-          await request();
-          const convert = options.convertToLlm as ((messages: unknown[]) => Promise<unknown[]> | unknown[]) | undefined;
-          observed.progressContext = convert ? await convert(agent.state.messages) : undefined;
           return [{role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: answer}]}];
         };
-        const runtime = typedRuntime({env: {AGENT_QUICK_MAX_TURNS: '6', ...env}});
-        runtime.on('update', update => updates.push(update));
-        const result = await withEffectiveRuntimeRegistrySnapshot(snapshotWithProducer(), () =>
-          runtime.analyze('分析启动', sessionId, 'trace-pi', {analysisMode: 'fast',
-            runManifestAttributionSink: createNoopAttributionSink(recorder)}));
-        return {result, receipt: recorder.seal(), observed, updates};
+        const result = await typedRuntime({env: {AGENT_QUICK_MAX_TURNS: '6', ...env}}).analyze('分析启动', sessionId, 'trace-pi', {analysisMode: 'fast'});
+        return {result, observed};
       }
 
-      it('keeps the Agent, its prompt and its receipts exactly as before when the flag is off', async () => {
-        const buildSpy = jest.spyOn(systemPromptModule, 'buildSystemPrompt');
-        try {
-          const unset = await runLoop({}, 'pi-progress-unset');
-          const off = await runLoop({SMARTPERFETTO_INVESTIGATION_PROGRESS: 'false'}, 'pi-progress-off');
-          const on = await runLoop({SMARTPERFETTO_INVESTIGATION_PROGRESS: 'true'}, 'pi-progress-on');
-          for (const run of [unset, off]) {
-            expect(run.observed.options).not.toHaveProperty('prepareNextTurn');
-            expect(run.observed.options).not.toHaveProperty('convertToLlm');
-            expect(run.observed.systemPrompt).not.toContain('"acquisition"');
-            expect(run.receipt.investigationRequests!.map(request => request.decision)).toEqual(['no_change', 'no_change', 'no_change']);
-            expect(run.result.conclusion.trim()).toBe(answer);
-          }
-          expect(off.observed.systemPrompt).toBe(unset.observed.systemPrompt);
-          const contexts = buildSpy.mock.calls.map(([context]) => context);
-          expect(contexts.slice(0, 2).every(context => !('investigationAcquisition' in context))).toBe(true);
-          // Flag on changes only the investigation requirements segment: without its status the prompt is the same bytes.
-          expect(contexts[2].investigationAcquisition).toBeDefined();
-          expect(on.observed.systemPrompt).not.toBe(unset.observed.systemPrompt);
-          expect(systemPromptModule.buildSystemPrompt({...contexts[2], investigationAcquisition: undefined}))
-            .toBe(unset.observed.systemPrompt);
-        } finally {buildSpy.mockRestore();}
-      });
-
-      it('rides the scheduled request as a user message and never reaches SSE, the result or history', async () => {
-        const {result, receipt, observed, updates} = await runLoop({SMARTPERFETTO_INVESTIGATION_PROGRESS: 'true'}, 'pi-progress-message');
+      it('gives each requirement its run-start ledger status by default', async () => {
+        const {result, observed} = await run({}, 'pi-acquisition-default');
         expect(result.conclusion.trim()).toBe(answer);
-        expect(result.completion?.status).toBe('completed');
-        // Turn-1 status sits in the existing requirements segment, as a status.
         expect(observed.systemPrompt).toContain('## Requirement acquisition status');
         const segment = JSON.parse(observed.systemPrompt!.match(/\{"context":"investigation_requirements".*$/m)![0]);
         const statuses = Object.fromEntries(segment.data.requirements.map((item: any) => [item.id, item.acquisition]));
         expect(statuses).toMatchObject({thread_state: 'not_observed', finding_coverage: 'unknown_no_producer'});
-        const [message] = observed.progressUpdate.messages;
-        expect(observed.progressUpdate.messages).toHaveLength(1);
-        expect(message).toMatchObject({role: 'smartperfettoInvestigationProgress', progress: {schemaVersion: 'investigation_progress@1',
-          requirements: [{id: 'thread_state', evidenceMetrics: [producerMetric], producerSkillIds: [producer.name]}]}});
-        const last = observed.progressContext![observed.progressContext!.length - 1] as {role: string; content: Array<{text: string}>};
-        expect(last.role).toBe('user');
-        expect(last.content[0].text).toContain('## Investigation contract status');
-        expect(last.content[0].text).toContain('"context":"investigation_progress"');
-        expect(observed.progressContext!.filter((entry: any) => entry.role === 'system')).toHaveLength(0);
-        // No extra provider request: three prepared requests, three answer-turn model calls.
-        expect(receipt.investigationRequests!.map(request => [request.requestIndex, request.decision, request.progress])).toEqual([
-          [1, 'no_change', undefined], [2, 'no_change', undefined], [3, 'progress', {messages: 1, requirementIds: ['thread_state']}]]);
-        expect(receipt.modelCalls?.filter(call => call.purpose === 'answer_turn').map(call => call.requestIndex)).toEqual([1, 2, 3]);
-        const turns = sessionContextManager.getOrCreate('pi-progress-message', 'trace-pi').getAllTurns();
-        expect(turns.length).toBeGreaterThan(0);
-        const surfaces = JSON.stringify({updates, result, turns});
-        expect(surfaces).not.toMatch(/investigation_progress|Investigation contract status|smartperfettoInvestigationProgress/);
       });
 
-      it('sends nothing under existing_only even with the flag on', async () => {
-        piClassifierDecision = {...piClassifierDecision, evidenceAccess: 'existing_only'};
-        const run = await runLoop({SMARTPERFETTO_INVESTIGATION_PROGRESS: 'true'}, 'pi-progress-existing-only');
-        expect(run.result.turnIntent?.evidenceAccess).toBe('existing_only');
-        expect(run.observed.options).toHaveProperty('prepareNextTurn');
-        expect(run.observed.progressUpdate).toBeUndefined();
-        expect(run.receipt.investigationRequests!.every(request => request.decision === 'no_change')).toBe(true);
+      it('leaves the prompt byte-identical without the status when switched off, and never changes the Agent loop', async () => {
+        const buildSpy = jest.spyOn(systemPromptModule, 'buildSystemPrompt');
+        try {
+          const off = await run({SMARTPERFETTO_INVESTIGATION_ACQUISITION_STATUS: 'false'}, 'pi-acquisition-off');
+          const on = await run({}, 'pi-acquisition-on');
+          expect(off.observed.systemPrompt).not.toContain('"acquisition"');
+          const contexts = buildSpy.mock.calls.map(([context]) => context);
+          expect('investigationAcquisition' in contexts[0]).toBe(false);
+          expect(contexts[1].investigationAcquisition).toBeDefined();
+          expect(systemPromptModule.buildSystemPrompt({...contexts[1], investigationAcquisition: undefined}))
+            .toBe(off.observed.systemPrompt);
+          expect(Object.keys(on.observed.options!)).toEqual(Object.keys(off.observed.options!));
+        } finally {buildSpy.mockRestore();}
       });
     });
   });

@@ -78,12 +78,6 @@ export function investigationRequirementStatuses(requirements: readonly Analysis
   });
 }
 
-function budgetView(budget: InvestigationBudgetReading, nowMs: number): InvestigationViewV1['budget'] {
-  return {providerTurnsUsed: budget.providerTurnsUsed, providerTurnLimit: budget.providerTurnLimit,
-    totalTurnLimit: budget.totalTurnLimit, elapsedMs: Math.max(0, nowMs - budget.startedAtMs),
-    remainingMs: Math.max(0, budget.deadlineMs - nowMs)};
-}
-
 /** Pure: identical inputs give an identical view. */
 function deriveInvestigationView(input: {
   runId: string;
@@ -113,15 +107,15 @@ function deriveInvestigationView(input: {
     requirements: {contract: requirements.status, ...(requirements.reason ? {reason: requirements.reason} : {}),
       items, omittedCount: resolved.length - items.length, counts},
     evidence: {status: input.evidence.status, recordCount: ledger?.records.length ?? 0, complete: ledger?.complete ?? false},
-    budget: budgetView(budget, input.nowMs),
+    budget: {providerTurnsUsed: budget.providerTurnsUsed, providerTurnLimit: budget.providerTurnLimit,
+      totalTurnLimit: budget.totalTurnLimit, elapsedMs: Math.max(0, input.nowMs - budget.startedAtMs),
+      remainingMs: Math.max(0, budget.deadlineMs - input.nowMs)},
   };
 }
 
 export interface InvestigationViewSource {
   /** The current view; throws when an owner read throws. Its owner (the run's adapter) ends its use. */
   derive(attempt: number): InvestigationViewV1;
-  /** `view` with a fresh budget, for a request whose ledger has not moved since `view` was derived. */
-  refreshBudget(view: InvestigationViewV1): InvestigationViewV1;
 }
 
 /**
@@ -150,6 +144,5 @@ export function createInvestigationViewSource(input: {
       return deriveInvestigationView({runId: input.runId, attempt, intent: input.intent, requirements, evidence,
         budget: input.readBudget(), nowMs: now()});
     },
-    refreshBudget: view => ({...view, budget: budgetView(input.readBudget(), now())}),
   };
 }

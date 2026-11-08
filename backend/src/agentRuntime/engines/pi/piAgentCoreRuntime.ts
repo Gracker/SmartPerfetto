@@ -31,7 +31,7 @@ import {runIntentTransport} from '../../intentTransport';
 import {runPiIntentTransport} from './piIntentTransport';
 import {createPiAgentModelCallTracker} from './piAgentModelCalls';
 import {createPiInvestigationAdapter} from './piInvestigationAdapter';
-import {createPiInvestigationConvertToLlm, preparePiInvestigationProgress, type PiInvestigationProgressSetup} from './piInvestigationProgress';
+import {prepareInvestigationAcquisition} from '../../investigation/investigationAcquisition';
 import {createInvestigationViewSource} from '../../investigation/investigationView';
 import {admitDeliveryCall, deliveryCallFailsOpen} from '../../../services/runtimeCallStats';
 import {buildComplexityClassifierInput} from '../../../agentv3/queryComplexityContext';
@@ -307,8 +307,6 @@ interface PiAnalysisPreparation {
   quickMemoryContextCounts?: ReturnType<typeof buildQuickMemoryContextPayload>['counts'];
   sourceUse: ReturnType<typeof createClaudeMcpServer>['sourceUse'];
   artifactStore: ArtifactStore;
-  /** Contract progress for this run; absent when the feature is off. */
-  investigationProgress?: PiInvestigationProgressSetup;
 }
 
 /** Bind completion before projection, then carry only the returned candidate context. */
@@ -1658,7 +1656,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       purpose: requestPurpose,
       accepts: () => runtimePerformance.acceptsInvestigationRequest(),
       record: receipt => runtimePerformance.recordInvestigationRequest(receipt),
-      ...(prep.investigationProgress ? {progress: prep.investigationProgress} : {}),
     });
     const agent = new Agent({
       initialState: {
@@ -1681,11 +1678,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         }) ?? providerRuntime.streamFn)(...args), request?.index);
       },
       prepareRequest: investigation.prepareRequest,
-      // Contract progress only: without it the Agent keeps Pi's own conversion and turn preparation.
-      ...(prep.investigationProgress ? {
-        prepareNextTurn: investigation.prepareNextTurn,
-        convertToLlm: createPiInvestigationConvertToLlm(prep.investigationProgress.render),
-      } satisfies Pick<InstalledPiAgentOptions, 'prepareNextTurn' | 'convertToLlm'> : {}),
       toolExecution: resolvePiAgentCoreNativeToolExecutionMode({quickMode: prep.quickMode, tools: prep.tools, env: this.env}),
       transport: modelConfig.transport ?? 'auto',
       maxRetryDelayMs: modelConfig.maxRetryDelayMs,
@@ -2251,9 +2243,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       ...(comparisonContext ? { comparisonContext } : {}),
     });
     const allowedToolNames = new Set(toolDefinitions.map(definition => definition.name));
-    const investigationProgress = preparePiInvestigationProgress({env: this.env, intent: turnIntent, strategyRegistry,
-      invokeSkillExposed: allowedToolNames.has('invoke_skill'),
-      skills: sceneCoverageRegistry ? sceneCoverageRegistry.skills : effectiveSkillRegistry.getAllSkills(),
+    const investigationAcquisition = prepareInvestigationAcquisition({env: this.env, intent: turnIntent, strategyRegistry,
       readEvidence: () => observeRuntimeInvestigationEvidence(artifactStore,
         piEvidenceReadOptions(executionLease.key.runId!, sessionId, traceId, options))});
     const tools = toolDefinitions.map(definition => (
@@ -2287,7 +2277,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       packageName: effectivePackageName,
       focusTarget: citedFocusTarget,
       ...(sceneEvidence ? {sceneEvidence} : {}),
-      ...(investigationProgress?.acquisition ? {investigationAcquisition: investigationProgress.acquisition} : {}),
+      ...(investigationAcquisition ? {investigationAcquisition} : {}),
       knowledgeBaseContext,
       sceneType,
       sqlErrorFixPairs: recentSqlErrors
@@ -2332,7 +2322,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       analysisRunSpec,
       sourceUse,
       artifactStore,
-      ...(investigationProgress ? {investigationProgress} : {}),
     };
   }
 

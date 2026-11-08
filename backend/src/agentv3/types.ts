@@ -109,8 +109,8 @@ export interface ClaudeAnalysisContext {
   sceneEvidence?: import('../agentRuntime/sceneEntryEvidence').SceneEvidencePromptData;
   /**
    * Per-requirement producer-ledger status before the first request, keyed by
-   * requirement id. Only a runtime with contract progress enabled sets it; when
-   * absent the investigation requirements render exactly as without it.
+   * requirement id. Only a runtime that read the ledger sets it; when absent
+   * the investigation requirements render without status.
    */
   investigationAcquisition?: ReadonlyMap<string,
     import('../agentRuntime/investigation/investigationReceipt').InvestigationRequirementStatus>;
