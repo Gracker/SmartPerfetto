@@ -185,6 +185,12 @@ describe('W0 sealed actual transport projection', () => {
     expect(readAgentE2eMetrics(identity, () => manifest)).not.toHaveProperty('requestedOutputConfig');
   });
 
+  it('seals a current manifest that records the output mode but no retired declaration syntax', () => {
+    const result = readAgentE2eMetrics(identity, () => ({...manifest, finalSubmission: 'assistant_text'} as unknown as RunManifestV1));
+    expect(result).toMatchObject({status: 'sealed', requestedOutputConfig: {finalSubmission: 'assistant_text'}});
+    expect((result as {requestedOutputConfig?: object}).requestedOutputConfig).not.toHaveProperty('declarationSyntax');
+  });
+
   it.each([
     {schemaVersion: 'wrong'}, {truncated: -1}, {privateBody: 'PRIVATE'},
     {events: [{...receipt.events[0], eventKey: '0'.repeat(64)}]},

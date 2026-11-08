@@ -157,9 +157,11 @@ export function readAgentE2eMetrics(input: {scope: RunManifestScope; sessionId: 
       ...(manifest.conclusionDeclarationSyntax === undefined ? {} : {
         conclusionDeclarationSyntax: member(manifest.conclusionDeclarationSyntax, ['canonical_v1', 'authoring_v1', 'authoring_v2']),
       }),
+      // Declaration syntax is retired; only a historical manifest still records it.
       ...(manifest.finalSubmission === undefined ? {} : {requestedOutputConfig: {
         finalSubmission: finalSubmissionMode(manifest.finalSubmission),
-        declarationSyntax: member(manifest.conclusionDeclarationSyntax, ['canonical_v1', 'authoring_v1', 'authoring_v2']),
+        ...(manifest.conclusionDeclarationSyntax === undefined ? {} : {declarationSyntax:
+          member(manifest.conclusionDeclarationSyntax, ['canonical_v1', 'authoring_v1', 'authoring_v2'])}),
       }}),
       providerSnapshotHash: typeof manifest.providerSnapshotHash === 'string' &&
         /^(?:sha256:)?[a-f0-9]{64}$/.test(manifest.providerSnapshotHash) ? manifest.providerSnapshotHash : undefined,
