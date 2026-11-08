@@ -6,11 +6,11 @@
 # ANR 主线程阻塞链深度分析（原子 Skill）
 # =============================================================================
 # 深度分析 ANR 事件中主线程的阻塞链：线程状态分布、blocked_function、
-# 唤醒链、Binder 阻塞、锁竞争等，帮助定位 ANR 根因。
+# 唤醒链、Binder 阻塞、Binder 线程池饱和、锁竞争等，帮助定位 ANR 根因。
 #
-# 分析窗口：
-# - 优先使用 anr_ts 前 5s 到后 1s 的窗口
-# - 其次使用 start_ts / end_ts
+# 分析窗口：显式 start_ts / end_ts，否则 anr_ts 前 5s 到后 1s；都缺省时
+# analysis_window（Binder、线程池、锁）取 slice 范围，主线程状态与阻塞函数
+# 取 thread_state 范围，wakeup_chain 取 trace_bounds。
 # - 无进程名时发现应用主线程长等待候选；等待时长不证明无响应
 
 name: anr_main_thread_blocking
@@ -67,6 +67,26 @@ inputs:
     description: "无目标发现模式的分页偏移，默认 0"
 
 steps:
+  # ==========================================================================
+  # 分析窗口（slice 范围兜底）：binder_blocking、binder_pool_saturation、
+  # lock_contention 共用。整数文本保留 int64 精度，NULL 仍为 NULL。
+  # 必需步骤且总返回一行，读取处的 |NULL 默认值不会被用到。
+  # ==========================================================================
+  - id: analysis_window
+    type: atomic
+    process_scope:
+      role: identity_metadata
+    name: "分析窗口"
+    display: false
+    sql: |
+      SELECT CAST(w_start AS TEXT) AS start_ts, CAST(w_end AS TEXT) AS end_ts
+      FROM (
+        SELECT
+          COALESCE(${start_ts}, ${anr_ts} - 5000000000, (SELECT MIN(ts) FROM slice)) AS w_start,
+          COALESCE(${end_ts}, ${anr_ts} + 1000000000, (SELECT MAX(ts + dur) FROM slice)) AS w_end
+      )
+    save_as: analysis_window
+
   # ==========================================================================
   # Step 1: 主线程状态分布
   # ==========================================================================
@@ -126,7 +146,8 @@ steps:
         - condition: "state === 'R' && pct > 80"
           template: "主线程 {{pct}}% 时间处于 Runnable/Running，CPU 争抢或繁忙"
     sql: |
-      WITH analysis_window AS (
+      -- thread_state 范围兜底，与 analysis_window 步骤的 slice 兜底不同
+      WITH thread_state_window AS (
         SELECT
           COALESCE(${start_ts},
             CASE WHEN ${anr_ts} IS NOT NULL THEN ${anr_ts} - 5000000000 ELSE NULL END,
@@ -150,11 +171,11 @@ steps:
           ts_tbl.state,
           COUNT(*) as count,
           SUM(
-            MIN(ts_tbl.ts + ts_tbl.dur, (SELECT w_end FROM analysis_window))
-            - MAX(ts_tbl.ts, (SELECT w_start FROM analysis_window))
+            MIN(ts_tbl.ts + ts_tbl.dur, (SELECT w_end FROM thread_state_window))
+            - MAX(ts_tbl.ts, (SELECT w_start FROM thread_state_window))
           ) as total_dur_ns
         FROM thread_state ts_tbl
-        CROSS JOIN analysis_window aw
+        CROSS JOIN thread_state_window aw
         CROSS JOIN main_thread mt
         WHERE ts_tbl.utid = mt.utid
           AND ts_tbl.ts + ts_tbl.dur > aw.w_start
@@ -181,10 +202,10 @@ steps:
         ROUND(100.0 * sd.total_dur_ns / NULLIF((SELECT total_ns FROM total), 0), 1) as pct,
         ROUND(sd.total_dur_ns / NULLIF(sd.count, 0) / 1e6, 2) as avg_dur_ms,
         ROUND((SELECT MAX(
-            MIN(ts2.ts + ts2.dur, (SELECT w_end FROM analysis_window))
-            - MAX(ts2.ts, (SELECT w_start FROM analysis_window))
+            MIN(ts2.ts + ts2.dur, (SELECT w_end FROM thread_state_window))
+            - MAX(ts2.ts, (SELECT w_start FROM thread_state_window))
           ) FROM thread_state ts2
-          CROSS JOIN analysis_window aw2
+          CROSS JOIN thread_state_window aw2
           CROSS JOIN main_thread mt2
           WHERE ts2.utid = mt2.utid
             AND ts2.state = sd.state
@@ -229,7 +250,8 @@ steps:
           format: duration_ms
           unit: ms
     sql: |
-      WITH analysis_window AS (
+      -- thread_state 范围兜底，与 analysis_window 步骤的 slice 兜底不同
+      WITH thread_state_window AS (
         SELECT
           COALESCE(${start_ts},
             CASE WHEN ${anr_ts} IS NOT NULL THEN ${anr_ts} - 5000000000 ELSE NULL END,
@@ -255,7 +277,7 @@ steps:
         COUNT(*) as count,
         ROUND(SUM(ts_tbl.dur) / 1e6, 2) as total_dur_ms
       FROM thread_state ts_tbl
-      CROSS JOIN analysis_window aw
+      CROSS JOIN thread_state_window aw
       CROSS JOIN main_thread mt
       WHERE ts_tbl.utid = mt.utid
         AND ts_tbl.state = 'S'
@@ -428,17 +450,6 @@ steps:
           type: string
     sql: |
       -- 使用 stdlib android_binder_txns 替代手动 binder slice 解析
-      WITH analysis_window AS (
-        SELECT
-          COALESCE(${start_ts},
-            CASE WHEN ${anr_ts} IS NOT NULL THEN ${anr_ts} - 5000000000 ELSE NULL END,
-            (SELECT MIN(ts) FROM slice)
-          ) as w_start,
-          COALESCE(${end_ts},
-            CASE WHEN ${anr_ts} IS NOT NULL THEN ${anr_ts} + 1000000000 ELSE NULL END,
-            (SELECT MAX(ts + dur) FROM slice)
-          ) as w_end
-      )
       SELECT
         printf('%d', bt.client_ts) as ts,
         COALESCE(bt.aidl_name, 'binder transaction') as slice_name,
@@ -446,7 +457,6 @@ steps:
         bt.server_process,
         bt.server_thread
       FROM android_binder_txns bt
-      CROSS JOIN analysis_window aw
       WHERE bt.is_main_thread = 1
         AND bt.is_sync = 1
         AND bt.client_upid = (
@@ -454,15 +464,39 @@ steps:
           WHERE '${process_name}' != '' AND (p.name = '${process_name}' OR p.name GLOB '${process_name}:*')
           LIMIT 1
         )
-        AND bt.client_ts >= aw.w_start
-        AND bt.client_ts + bt.client_dur <= aw.w_end
+        AND bt.client_ts >= ${analysis_window.data[0].start_ts|NULL}
+        AND bt.client_ts + bt.client_dur <= ${analysis_window.data[0].end_ts|NULL}
       ORDER BY bt.client_dur DESC
       LIMIT 20
     save_as: binder_blocking
     optional: true
 
   # ==========================================================================
-  # Step 5: 锁竞争 (monitor_contention + futex_wait)
+  # Step 5: Binder 线程池饱和（目标进程与主线程同步 Binder 对端）
+  # ==========================================================================
+  # 主线程同步调用阻塞时，对端线程池是否全部忙碌是同一窗口内的关键事实。
+  # 窗口与 binder_blocking 相同（analysis_window）。仅在给定目标进程时运行；
+  # 无目标发现模式不变。
+  - id: binder_pool_saturation
+    type: skill
+    name: "Binder 线程池饱和"
+    skill: binder_pool_saturation_in_range
+    display:
+      level: key
+      layer: deep
+      title: "Binder 线程池饱和（目标进程与主线程同步调用对端）"
+      title_i18n:
+        en: "Binder thread pool saturation (target and main-thread sync binder servers)"
+    params:
+      start_ts: "${analysis_window.data[0].start_ts}"
+      end_ts: "${analysis_window.data[0].end_ts}"
+      package: "${process_name}"
+    condition: "Boolean(process_name)"
+    save_as: binder_pool_saturation
+    optional: true
+
+  # ==========================================================================
+  # Step 6: 锁竞争 (monitor_contention + futex_wait)
   # ==========================================================================
   - id: lock_contention
     type: atomic
@@ -494,18 +528,7 @@ steps:
     sql: |
       -- stdlib android_monitor_contention 提供 blocking_method + blocking_thread
       -- futex 部分保留手动 GLOB（stdlib 不覆盖）
-      WITH analysis_window AS (
-        SELECT
-          COALESCE(${start_ts},
-            CASE WHEN ${anr_ts} IS NOT NULL THEN ${anr_ts} - 5000000000 ELSE NULL END,
-            (SELECT MIN(ts) FROM slice)
-          ) as w_start,
-          COALESCE(${end_ts},
-            CASE WHEN ${anr_ts} IS NOT NULL THEN ${anr_ts} + 1000000000 ELSE NULL END,
-            (SELECT MAX(ts + dur) FROM slice)
-          ) as w_end
-      ),
-      main_thread AS (
+      WITH main_thread AS (
         SELECT t.utid
         FROM thread t
         JOIN process p ON t.upid = p.upid
@@ -522,10 +545,9 @@ steps:
           mc.dur,
           mc.blocked_thread_name as thread_name
         FROM android_monitor_contention mc
-        CROSS JOIN analysis_window aw
         WHERE mc.blocked_utid = (SELECT utid FROM main_thread)
-          AND mc.ts >= aw.w_start
-          AND mc.ts + mc.dur <= aw.w_end
+          AND mc.ts >= ${analysis_window.data[0].start_ts|NULL}
+          AND mc.ts + mc.dur <= ${analysis_window.data[0].end_ts|NULL}
       ),
       -- futex: stdlib 不覆盖，保留手动 GLOB
       futex_locks AS (
@@ -538,12 +560,11 @@ steps:
         FROM slice s
         JOIN thread_track tt ON s.track_id = tt.id
         JOIN thread t ON tt.utid = t.utid
-        CROSS JOIN analysis_window aw
         CROSS JOIN main_thread mt
         WHERE tt.utid = mt.utid
           AND s.name GLOB '*futex*'
-          AND s.ts >= aw.w_start
-          AND s.ts + s.dur <= aw.w_end
+          AND s.ts >= ${analysis_window.data[0].start_ts|NULL}
+          AND s.ts + s.dur <= ${analysis_window.data[0].end_ts|NULL}
       )
       SELECT
         printf('%d', ts) as ts,

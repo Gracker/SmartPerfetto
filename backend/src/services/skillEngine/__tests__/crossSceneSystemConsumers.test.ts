@@ -5,7 +5,7 @@ import path from 'path';
 import Database from 'better-sqlite3';
 import yaml from 'js-yaml';
 import { SkillExecutor } from '../skillExecutor';
-import { normalizeSkillDefinition } from '../skillLoader';
+import { normalizeSkillDefinition, SkillRegistry } from '../skillLoader';
 import { validateSkillInputs } from '../skillValidator';
 import { withStepFragments } from '../../../../tests/helpers/skillFragmentSql';
 
@@ -188,6 +188,67 @@ describe('cross-scene canonical system consumers', () => {
     expect(admission.allowed).toBe(true);
     expect(admission.processScope?.mode).toBe('unscoped');
     expect(query).not.toHaveBeenCalled();
+  });
+
+  describe('anr_main_thread_blocking shared analysis window', () => {
+    // What the identity gate reads from the real resolver: one confirmed target.
+    const resolverRows = {
+      columns: ['rank', 'confidence_score', 'identity_status', 'upid', 'pid', 'process_name',
+        'recommended_process_name_param', 'target_match_sources', 'identity_warning'],
+      rows: [[1, 100, 'confirmed', 42, 100, 'com.example.app', 'com.example.app', 'process.name', 'ok']],
+    };
+    async function run(params: Record<string, unknown>) {
+      const registry = new SkillRegistry();
+      const skillsDir = path.join(process.cwd(), 'skills');
+      const definitions = ['atomic/anr_main_thread_blocking.skill.yaml', 'atomic/binder_pool_saturation_in_range.skill.yaml',
+        'atomic/process_identity_resolver.skill.yaml'].map(file => registry.loadSingleSkill(skillsDir, file)!);
+      const db = new Database(':memory:');
+      db.exec('CREATE TABLE slice(ts INTEGER, dur INTEGER); INSERT INTO slice VALUES (1000, 2000), (4000, 5000);');
+      const sent: string[] = [];
+      const query = jest.fn(async (_trace: string, sql: string) => {
+        const statement = sql.replace(/INCLUDE PERFETTO MODULE [^;]+;/g, '').trim();
+        sent.push(statement);
+        if (statement.includes('recommended_process_name_param')) return resolverRows;
+        if (statement.includes('sqlite_master')) return {columns: ['name'], rows: [['thread_state']]};
+        // The window step is plain SQL over slice bounds: evaluate it for real.
+        if (statement.includes('CAST(w_start AS TEXT)')) {
+          const prepared = db.prepare(statement);
+          return {columns: prepared.columns().map(column => column.name), rows: prepared.raw().all()};
+        }
+        return {columns: [], rows: []};
+      });
+      const executor = new SkillExecutor({query});
+      executor.registerSkills(definitions);
+      executor.setFragmentRegistry(registry.getFragmentCache());
+      try {
+        const result = await executor.execute('anr_main_thread_blocking', 'trace', params);
+        return {result, poolSql: sent.filter(sql => sql.includes('binder_pool_call_slices')), sent};
+      } finally { db.close(); }
+    }
+
+    it.each([
+      [{anr_ts: 10_000_000_000}, '5000000000', '11000000000'],
+      [{start_ts: 2_000_000_000, end_ts: 3_000_000_000, anr_ts: 10_000_000_000}, '2000000000', '3000000000'],
+      [{}, '1000', '9000'],
+    ])('gives Binder, pool and lock steps one window for a named target: %j', async (window, start, end) => {
+      const {result, poolSql, sent} = await run({process_name: 'com.example.app', ...window});
+      expect(result.rawResults?.analysis_window?.data).toEqual([{start_ts: start, end_ts: end}]);
+      expect(result.rawResults?.binder_pool_saturation?.success).toBe(true);
+      expect(poolSql.length).toBeGreaterThan(0);
+      for (const sql of poolSql) {
+        expect(sql).toContain(`SELECT 0 AS window_id, ${start} AS window_start_ts, ${end} AS window_end_ts`);
+      }
+      expect(sent.find(sql => sql.includes('FROM android_binder_txns bt'))).toContain(`bt.client_ts >= ${start}`);
+      expect(sent.find(sql => sql.includes('FROM android_monitor_contention mc'))).toContain(`mc.ts + mc.dur <= ${end}`);
+    });
+
+    it.each([{}, {process_name: ''}])('leaves no-target discovery unchanged: %j', async params => {
+      const {result, poolSql} = await run(params);
+      expect(result.success).toBe(true);
+      expect(poolSql).toEqual([]);
+      expect(result.rawResults?.analysis_window?.success).toBe(true);
+      expect(result.rawResults?.binder_pool_saturation?.code).toBe('condition_not_met');
+    });
   });
 
   it('discovers anchorless app waits without declaring idle sleep a freeze', () => {
@@ -457,11 +518,13 @@ describe('SQL-computed values cited by diagnostic templates', () => {
   it('ANR context gives the exact integer window start of its decimal-string timestamps', () => {
     const db = fixture();
     try {
-      db.exec(`CREATE TABLE android_anrs(ts INTEGER,process_name TEXT,pid INTEGER,upid INTEGER,anr_type TEXT,error_id TEXT,default_anr_dur_ms INTEGER,anr_dur_ms INTEGER);
-        INSERT INTO android_anrs VALUES(9007199254742101,'com.example.app',100,42,'INPUT_DISPATCHING_TIMEOUT','e1',5000,0);`);
+      db.exec(`CREATE TABLE android_anrs(ts INTEGER,process_name TEXT,pid INTEGER,upid INTEGER,anr_type TEXT,error_id TEXT,default_anr_dur_ms INTEGER,anr_dur_ms INTEGER,timer_delay INTEGER);
+        INSERT INTO android_anrs VALUES(9007199254742101,'com.example.app',100,42,'INPUT_DISPATCHING_TIMEOUT','e1',5000,0,50000000);`);
       const rows = query(db, 'atomic/anr_context_in_range', 'root', {anr_type: ''});
+      // timer_delay stays the expiry-to-record delay in ns; the timeout comes from the ANR duration.
       expect(rows).toEqual([expect.objectContaining({
-        anr_ts: '9007199254742101', timeout_ns: '5000000000', window_start_ts: '9007194254742101'})]);
+        anr_ts: '9007199254742101', timeout_ns: '5000000000', window_start_ts: '9007194254742101',
+        timer_delay: 50000000})]);
     } finally { db.close(); }
   });
 });

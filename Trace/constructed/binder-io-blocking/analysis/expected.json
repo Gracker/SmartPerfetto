@@ -212,13 +212,16 @@
         "process_name": "com.smartperfetto.fixture"
       },
       "required_steps": [
+        "analysis_window",
         "main_thread_state",
         "blocked_functions",
         "wakeup_chain",
         "binder_blocking",
+        "binder_pool_saturation",
         "lock_contention"
       ],
       "required_sql_steps": [
+        "analysis_window",
         "main_thread_state",
         "blocked_functions",
         "wakeup_chain",

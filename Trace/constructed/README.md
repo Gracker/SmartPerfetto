@@ -7,7 +7,7 @@ Run `npm run trace:build` to materialize base-plus-overlay traces under `Trace/.
 | --- | --- | --- | --- | --- | --- |
 | [App background power state layers](./app-background-power/) | power | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 1 target(s) |
 | [Binder, lock, and I/O blocking](./binder-io-blocking/) | io | Android 16 / API 36 (tested API 35-36) | android-startup-heavy | 25 target(s) |
-| [Binder thread pool saturation with waiting sync calls](./binder-pool-saturation/) | io | Android 16 / API 36 (tested API 35-36) | android-startup-light | 1 target(s) |
+| [Binder thread pool saturation with waiting sync calls](./binder-pool-saturation/) | io | Android 16 / API 36 (tested API 35-36) | android-startup-light | 2 target(s) |
 | [HONOR 300 Pro device identity metadata](./device-identity-honor-300-pro/) | general | Android 16 / API 36 | android-startup-light | 0 target(s) |
 | [OUKITEL WP62 device identity metadata](./device-identity-oukitel-wp62/) | general | Android 15 / API 35 | android-scroll-standard | 0 target(s) |
 | [Google Pixel 6 Pro device identity metadata](./device-identity-pixel-6-pro/) | general | Android CinnamonBun / API 37 | android-scroll-customer | 0 target(s) |

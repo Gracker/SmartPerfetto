@@ -56,6 +56,7 @@ import {parseSourceDepthPolicy} from '../../services/codebase/sourceDepthPolicy'
 import {parseSourceAnchorNormalization} from '../../services/codebase/traceAnchorLocator';
 import {parseEntrySkill, parseInvestigationContract, parseInvestigationProfiles, REMOVED_STRATEGY_FRONTMATTER_KEYS, type InvestigationProfiles} from '../../agentv3/strategyLoader';
 import {entrySkillExecutabilityErrors, admitInvestigationEntryProducer} from '../../agentv3/entrySkillPolicy';
+import {parseDocumentedStdlibColumnSemantics} from '../../agentv3/sqlStdlibColumnDocs';
 
 // ANSI color codes (fallback for chalk ESM issues)
 const colors = {
@@ -1213,10 +1214,11 @@ function validateStrategySkillReferences(): number {
   return totalMissing + totalUndeclaredParams + totalFrontmatterErrors + policyErrors.length;
 }
 
-/** Policy YAMLs under backend/strategies with the parser each run uses. */
+/** Policy YAMLs under backend/strategies, each checked with the runtime parser, or its stricter docs-checked superset. */
 const STRATEGY_POLICY_PARSERS: ReadonlyArray<readonly [string, (value: unknown) => unknown]> = [
   ['source-depth-policy', parseSourceDepthPolicy],
   ['source-anchor-normalization', parseSourceAnchorNormalization],
+  ['stdlib-column-semantics', parseDocumentedStdlibColumnSemantics],
 ];
 
 /**

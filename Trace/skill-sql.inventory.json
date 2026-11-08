@@ -1935,7 +1935,7 @@
     },
     "anr_main_thread_blocking": {
       "source_file": "backend/skills/atomic/anr_main_thread_blocking.skill.yaml",
-      "source_sha256": "e19ece9595a2bf2bd22ead9b8e4c2236e061a672b7f6e76c0c5cd4cf94478349",
+      "source_sha256": "8473d950b147d634a504428d70f928a4517c0e17426449ab2c3025f9db8f6e7a",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -1943,19 +1943,40 @@
         "android.monitor_contention"
       ],
       "top_level_steps": [
+        "analysis_window",
         "main_thread_state",
         "blocked_functions",
         "wakeup_chain",
         "binder_blocking",
+        "binder_pool_saturation",
         "lock_contention"
       ],
       "unexecuted_sql": false,
       "units": [
         {
-          "id": "main_thread_state",
+          "id": "analysis_window",
           "at": "steps[0].sql",
           "top_level_index": 0,
-          "sha256": "9333ce73931db01b1b4cba03223cf14f938532d4f951f68792b66a738fae335f",
+          "sha256": "3375d6bdb4ccd69c563b3b10661315abe15ca41a493931f4d52d62458342b57a",
+          "required_columns": [
+            "start_ts",
+            "end_ts"
+          ],
+          "has_condition": false,
+          "read_only": true,
+          "placeholders": [
+            "${start_ts}",
+            "${anr_ts}",
+            "${end_ts}"
+          ],
+          "process_scope_valid": true,
+          "forceable": true
+        },
+        {
+          "id": "main_thread_state",
+          "at": "steps[1].sql",
+          "top_level_index": 1,
+          "sha256": "274e5cfc5a90741c36aa40de932742770795d79e97211fef49363a42b62185ab",
           "required_columns": [
             "state",
             "state_display",
@@ -1978,9 +1999,9 @@
         },
         {
           "id": "blocked_functions",
-          "at": "steps[1].sql",
-          "top_level_index": 1,
-          "sha256": "8919103a0d0b33072d0d6e7d18c10b5623ae4a6bc656adfe32e3854fc2b4f743",
+          "at": "steps[2].sql",
+          "top_level_index": 2,
+          "sha256": "d31d66f47a39650fd2db1c162084f5ffb081894a2cd490e2784043bbac3dcc0f",
           "required_columns": [
             "ts",
             "blocked_function",
@@ -2001,8 +2022,8 @@
         },
         {
           "id": "wakeup_chain",
-          "at": "steps[2].sql",
-          "top_level_index": 2,
+          "at": "steps[3].sql",
+          "top_level_index": 3,
           "sha256": "0c2372c968e8bb4675d45cbc23e4118e06e0941b8be7937b8701373f8fee3007",
           "required_columns": [
             "process_name",
@@ -2050,9 +2071,9 @@
         },
         {
           "id": "binder_blocking",
-          "at": "steps[3].sql",
-          "top_level_index": 3,
-          "sha256": "13de7e884727b845ee7233e47fd8ac52cbf4f270414dc98215e732493e5b3898",
+          "at": "steps[4].sql",
+          "top_level_index": 4,
+          "sha256": "e3cc0b861e8a3b077f9b1792014fce2beb0bdd032bd96e534524d73bea89d303",
           "required_columns": [
             "ts",
             "slice_name",
@@ -2063,19 +2084,18 @@
           "has_condition": false,
           "read_only": true,
           "placeholders": [
-            "${start_ts}",
-            "${anr_ts}",
-            "${end_ts}",
-            "${process_name}"
+            "${process_name}",
+            "${analysis_window.data[0].start_ts|NULL}",
+            "${analysis_window.data[0].end_ts|NULL}"
           ],
           "process_scope_valid": null,
           "forceable": true
         },
         {
           "id": "lock_contention",
-          "at": "steps[4].sql",
-          "top_level_index": 4,
-          "sha256": "b3708a7531518a6da3df296de96deb25d4e0fed7ad76e9f10046a31a749f1582",
+          "at": "steps[6].sql",
+          "top_level_index": 6,
+          "sha256": "6426458bf6c8981b9e881dcb2929eedaaa89b840952d31a826e6fc0ea3fe9e6e",
           "required_columns": [
             "ts",
             "lock_type",
@@ -2086,10 +2106,9 @@
           "has_condition": false,
           "read_only": true,
           "placeholders": [
-            "${start_ts}",
-            "${anr_ts}",
-            "${end_ts}",
-            "${process_name}"
+            "${process_name}",
+            "${analysis_window.data[0].start_ts|NULL}",
+            "${analysis_window.data[0].end_ts|NULL}"
           ],
           "process_scope_valid": null,
           "forceable": true

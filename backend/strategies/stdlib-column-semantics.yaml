@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2024-2026 Gracker (Chris) | SmartPerfetto
+#
+# Units and meanings SmartPerfetto knows for Perfetto stdlib columns whose
+# upstream documentation leaves them out. execute_sql adds `unit` and
+# `semantics` to the matching `stdlibColumnDocs` column note, beside the
+# Perfetto `description`, and marks the note with this overlay as their source.
+# They are documentation, never an issued column unit or evidence.
+#
+# Each entry names a documented column of a stdlib module table or view in
+# backend/data/perfettoSqlDocs.json, and is checked against the stdlib SQL
+# that computes it. `validate:strategies` rejects an entry whose relation or
+# column is no longer documented, an unknown unit, and semantics longer than
+# a column note description.
+
+schema_version: stdlib_column_semantics@1
+
+columns:
+  # android/anrs.sql: timer_delay = ANR counter ts - expired(...) timer slice ts.
+  - relation: android_anrs
+    column: timer_delay
+    unit: ns
+    semantics: >-
+      Delay from the ANR timer expiry to the ANR record. It is not the ANR
+      timeout: anr_dur_ms / default_anr_dur_ms are the timeout, in ms.
+  # android/anrs.sql: the expired(...) timer's duration argument, else the
+  # "Blocked in ... for Ns" subject value times 1000.
+  - relation: android_anrs
+    column: anr_dur_ms
+    unit: ms
+    semantics: >-
+      ANR timeout: the expired ANR timer's duration, else the "for Ns" value
+      of a "Blocked in" subject line. NULL when neither is recorded.
+  # android/anrs.sql: _default_anr_dur(anr_type, subject).
+  - relation: android_anrs
+    column: default_anr_dur_ms
+    unit: ms
+    semantics: >-
+      AOSP/Pixel default ANR timeout for this anr_type; NULL for types without
+      one. Devices may configure other timeouts.

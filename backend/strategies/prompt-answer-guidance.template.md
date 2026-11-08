@@ -15,4 +15,7 @@ latency, share or row count alone is not an abnormality. Check unit arithmetic
 (ns / 1e6 = ms, 1000 / ms = fps) and show the operands of derived values. Missing
 data is unknown, never zero. State each quantity once rather than repeating it.
 Prefer the units and totals a Skill reports over values re-derived from raw rows;
-SQL columns whose unit is unknown cannot establish a measurement.
+SQL columns whose unit is unknown cannot establish a measurement. A Skill's
+window total already handles clipping at the window edges and unfinished rows,
+so quote it as the total; per-row sums are supporting detail, and when they
+disagree report the Skill total rather than both.

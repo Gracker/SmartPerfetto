@@ -47,7 +47,7 @@ Full mode 中，`execute_sql` 和 `invoke_skill` 仍要求先提交分析计划�
 
 | Tool | 作用 | 备注 |
 |---|---|---|
-| `execute_sql` | 对当前 trace 执行 Perfetto SQL | 支持 summary 模式；大结果会截断或通过 artifact 分页。摘要结果（显式请求，或在有 artifact store 时超过 50 行自动）按关注度顺序给出 `sampleRows: {rowIndex, values}`，`rowIndex` 是该行在完整结果中从 0 起的行号，并带 `rowShape: "indexed_rows@1"`；较小的原始结果以及没有 artifact store 时的结果，仍是按结果顺序从第 0 行开始的普通 `rows`（最多前 200 行）。结果列若是单个已文档化 stdlib 模块表/视图的直接列投影（含 `*`、别名），附 `stdlibColumnDocs`（来源 `perfetto_stdlib_docs` 的列说明，每个 `relation.column` 每次运行只给一次、有条数与长度上限）；JOIN、聚合与表达式列不附。它只是文档，不是 `columnUnits` 或证据 |
+| `execute_sql` | 对当前 trace 执行 Perfetto SQL | 支持 summary 模式；大结果会截断或通过 artifact 分页。摘要结果（显式请求，或在有 artifact store 时超过 50 行自动）按关注度顺序给出 `sampleRows: {rowIndex, values}`，`rowIndex` 是该行在完整结果中从 0 起的行号，并带 `rowShape: "indexed_rows@1"`；较小的原始结果以及没有 artifact store 时的结果，仍是按结果顺序从第 0 行开始的普通 `rows`（最多前 200 行）。结果列若是单个已文档化 stdlib 模块表/视图的直接列投影（含 `*`、别名），附 `stdlibColumnDocs`（来源 `perfetto_stdlib_docs` 的列说明，每个 `relation.column` 每次运行只给一次、有条数与长度上限）；JOIN、聚合与表达式列不附。Perfetto 说明缺少 SmartPerfetto 已知的单位或含义时，该列另附来自人工维护的 `backend/strategies/stdlib-column-semantics.yaml` 的 `unit` 与 `semantics`，结果以 `overlaySource: "smartperfetto_stdlib_column_semantics"` 标明来源。它们只是文档，不是 `columnUnits` 或证据 |
 | `invoke_skill` | 执行 YAML Skill 分析管线 | 首选证据收集路径，返回 DataEnvelope / artifacts |
 | `list_skills` | 列出可用 Skills | 可按 category 过滤；Skill 数量以文件树为准 |
 | `detect_architecture` | 检测当前 trace 的渲染架构 | 影响策略和渲染管线分析 |

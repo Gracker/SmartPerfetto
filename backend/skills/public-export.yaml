@@ -1583,6 +1583,9 @@ strategies:
   backend/strategies/source-depth-policy.yaml:
     disposition: product-only
     reason: SmartPerfetto per-run source tool budgets by requested depth
+  backend/strategies/stdlib-column-semantics.yaml:
+    disposition: product-only
+    reason: SmartPerfetto execute_sql stdlibColumnDocs overlay of stdlib column units and meanings
   backend/strategies/anr.strategy.md:
     workflow: anr-blocking
     disposition: exported

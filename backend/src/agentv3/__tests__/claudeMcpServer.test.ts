@@ -3669,11 +3669,12 @@ describe('createClaudeMcpServer', () => {
         ...(toolName === 'execute_sql_on' ? {trace} : {})});
       const first = await call('SELECT timer_delay, anr_dur_ms FROM android_anrs');
       expect(first.stdlibColumnDocs).toMatchObject({source: 'perfetto_stdlib_docs', relation: 'android_anrs',
-        module: 'android.anrs', columns: [
-          {column: 'timer_delay', description: expect.stringMatching(/timer expiration/)},
-          {column: 'anr_dur_ms'},
+        module: 'android.anrs', overlaySource: 'smartperfetto_stdlib_column_semantics', columns: [
+          {column: 'timer_delay', description: expect.stringMatching(/timer expiration/), unit: 'ns',
+            semantics: expect.stringMatching(/not the ANR timeout/)},
+          {column: 'anr_dur_ms', unit: 'ms'},
         ]});
-      // Documentation never becomes an issued unit or evidence availability fact.
+      // Documentation, overlay units included, never becomes an issued unit or evidence availability fact.
       expect(first).not.toHaveProperty('columnUnits');
       expect(first.modelEvidence.columnUnits).toBe('unknown');
       expect(await call('SELECT timer_delay, anr_dur_ms FROM android_anrs')).not.toHaveProperty('stdlibColumnDocs');

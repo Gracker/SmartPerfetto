@@ -10,7 +10,7 @@
     "skillCount": 254,
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
-    "stepCount": 1387,
+    "stepCount": 1389,
     "explicitColumnCount": 5294
   },
   "skills": {
@@ -4355,6 +4355,14 @@
           "columns": {},
           "synthesizeLabels": {}
         },
+        "analysis_window": {
+          "title": {
+            "zh-CN": "分析窗口",
+            "en": "Analysis Window"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        },
         "binder_blocking": {
           "title": {
             "zh-CN": "主线程 Binder 同步调用",
@@ -4392,6 +4400,14 @@
               }
             }
           },
+          "synthesizeLabels": {}
+        },
+        "binder_pool_saturation": {
+          "title": {
+            "zh-CN": "Binder 线程池饱和（目标进程与主线程同步调用对端）",
+            "en": "Binder thread pool saturation (target and main-thread sync binder servers)"
+          },
+          "columns": {},
           "synthesizeLabels": {}
         },
         "blocked_functions": {

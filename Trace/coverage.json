@@ -1506,8 +1506,16 @@
         ],
         "steps": [
           {
+            "id": "analysis_window",
+            "sha256": "3375d6bdb4ccd69c563b3b10661315abe15ca41a493931f4d52d62458342b57a",
+            "required_columns": [
+              "start_ts",
+              "end_ts"
+            ]
+          },
+          {
             "id": "main_thread_state",
-            "sha256": "9333ce73931db01b1b4cba03223cf14f938532d4f951f68792b66a738fae335f",
+            "sha256": "274e5cfc5a90741c36aa40de932742770795d79e97211fef49363a42b62185ab",
             "required_columns": [
               "state",
               "state_display",
@@ -1520,7 +1528,7 @@
           },
           {
             "id": "blocked_functions",
-            "sha256": "8919103a0d0b33072d0d6e7d18c10b5623ae4a6bc656adfe32e3854fc2b4f743",
+            "sha256": "d31d66f47a39650fd2db1c162084f5ffb081894a2cd490e2784043bbac3dcc0f",
             "required_columns": [
               "ts",
               "blocked_function",
@@ -1565,7 +1573,7 @@
           },
           {
             "id": "binder_blocking",
-            "sha256": "13de7e884727b845ee7233e47fd8ac52cbf4f270414dc98215e732493e5b3898",
+            "sha256": "e3cc0b861e8a3b077f9b1792014fce2beb0bdd032bd96e534524d73bea89d303",
             "required_columns": [
               "ts",
               "slice_name",
@@ -1576,7 +1584,7 @@
           },
           {
             "id": "lock_contention",
-            "sha256": "b3708a7531518a6da3df296de96deb25d4e0fed7ad76e9f10046a31a749f1582",
+            "sha256": "6426458bf6c8981b9e881dcb2929eedaaa89b840952d31a826e6fc0ea3fe9e6e",
             "required_columns": [
               "ts",
               "lock_type",
