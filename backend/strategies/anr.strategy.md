@@ -12,9 +12,30 @@ investigation_contract:
     - id: anr_critical_path
       domain: critical_path
       description: "Check recorded ANR type, target UPID and timeout window when available. Keep timer_delay (expiry-to-record delay, ns) separate from the ANR timeout/duration: 50000000 ns is 50 ms, not 50 s. If no ANR is recorded but the user asks about unresponsiveness, discover long main-thread waits with anr_main_thread_blocking without process_name/anr_ts, then correlate candidate UPID and exact wait window with target input dispatch and FINISHED acknowledgements; absence of an ANR anchor must not stop this investigation. Identify blocked task, main-thread work and relevant owner/peer tasks rather than equating the longest wait with the full timeout."
+      evidence_metrics:
+        - android.anr.timer_delay
     - id: anr_dependencies
       domain: dependency_chain
       description: "Trace Binder transactions, lock ownership, IO and wakeup dependencies where available; distinguish observed waiting from an established blocking chain and from ANR trigger attribution."
+    # Separate from anr_dependencies: a requirement with one observed metric
+    # reads as observed, so a pool metric added there would never show missing.
+    - id: anr_binder_pool
+      domain: dependency_chain
+      description: "When the ANR main thread waits in synchronous binder calls, check whether the server's binder pool was saturated in the same window (binder_pool_saturation_in_range; anr_main_thread_blocking binder_blocking). The pool is the observed active binder threads, not the configured maximum; all-busy time is an observation about the pool and does not by itself prove the client queued."
+      condition:
+        kind: semantic
+        description: "Applies when the ANR window shows main-thread synchronous binder waits or the question concerns binder servers or thread pools."
+      evidence_metrics:
+        - system.binder.pool.saturated_duration
+        - android.main_thread.binder_wait.duration
+    - id: runnable_cpu_occupancy
+      domain: cpu_capacity
+      description: "When a critical thread waits Runnable, read which tasks occupied the CPU it later ran on during those waits (runnable_cpu_occupancy_in_range). Occupants, idle and unattributed time conserve the wait; an occupant is an observation of who ran there, not a preemption motive or the whole cause."
+      condition:
+        kind: semantic
+        description: "Applies when a critical thread spends material time Runnable (R/R+) in the ANR window."
+      evidence_metrics:
+        - system.thread.runnable.cpu_occupancy
 # Run by the product for a scene-wide investigation before the model's first turn.
 entry_skill:
   id: anr_analysis

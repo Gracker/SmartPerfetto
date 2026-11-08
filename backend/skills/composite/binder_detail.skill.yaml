@@ -371,7 +371,8 @@ steps:
     inputs: [binder_basic, cpu_core, quadrant, blocking]
     rules:
       # Sleeping 占比过高（正常的 Binder 等待）
-      - condition: "quadrant.data[0]?.sleeping_pct > 90"
+      - id: binder_detail.main_thread_sleeping_on_reply
+        condition: "quadrant.data[0]?.sleeping_pct > 90"
         severity: info
         diagnosis: "主线程在等待 Binder 回复 (${quadrant.data[0].sleeping_pct}% Sleeping)"
         confidence: high
@@ -380,7 +381,8 @@ steps:
           - "考虑使用异步 Binder"
 
       # 有明显的 Running 时间（客户端也在工作）
-      - condition: "cpu_core.data[0]?.running_pct > 30"
+      - id: binder_detail.main_thread_running
+        condition: "cpu_core.data[0]?.running_pct > 30"
         severity: info
         diagnosis: "Binder 期间主线程 Running 占比 ${cpu_core.data[0].running_pct}%"
         confidence: medium
@@ -389,7 +391,8 @@ steps:
           - "检查传输数据大小"
 
       # Runnable 等待
-      - condition: "quadrant.data[0]?.q3_runnable_ms > 5"
+      - id: binder_detail.main_thread_runnable_wait
+        condition: "quadrant.data[0]?.q3_runnable_ms > 5"
         severity: warning
         diagnosis: "主线程 Runnable 等待 ${quadrant.data[0].q3_runnable_ms}ms"
         confidence: medium

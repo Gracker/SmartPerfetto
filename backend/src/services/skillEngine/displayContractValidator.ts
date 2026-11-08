@@ -302,6 +302,28 @@ function validateStepDisplay(
   }
 }
 
+/** A Skill's root displays, each object once: the loader may alias legacy `display` as `output.display`. */
+function rootDisplayConfigs(skill: SkillDefinition | Record<string, unknown>): Array<{display: object; path: string}> {
+  const seen = new WeakSet<object>();
+  return ([[(skill as any).display, 'display'], [(skill as any).output?.display, 'output.display']] as Array<[unknown, string]>)
+    .flatMap(([display, path]) => {
+      if (!display || typeof display !== 'object' || Array.isArray(display) || seen.has(display)) return [];
+      seen.add(display);
+      return [{display, path}];
+    });
+}
+
+/** Every display config a Skill authors, at its root and on every step at any depth. */
+export function skillDisplayConfigs(skill: SkillDefinition): Array<{display: unknown; path: string}> {
+  return [...rootDisplayConfigs(skill),
+    ...stepNodesOf(skill).map(({node, at}) => ({display: node?.display as unknown, path: `${at}.display`}))];
+}
+
+/** The display of a Skill's root SQL, on a parsed definition (`display`) or a loaded one (`output.display`). */
+export function skillRootDisplay(skill: SkillDefinition): DisplayConfig | undefined {
+  return skill.output?.display ?? (skill as SkillDefinition & {display?: DisplayConfig}).display;
+}
+
 export function validateSkillDisplayContract(
   skill: SkillDefinition | Record<string, unknown>,
   options: ValidateDisplayContractOptions = {},
@@ -309,16 +331,9 @@ export function validateSkillDisplayContract(
   const issues: DisplayContractIssue[] = [];
   const skillName = typeof skill?.name === 'string' ? skill.name : 'unknown_skill';
 
-  const seenDisplays = new WeakSet<object>();
-  const validateOnce = (display: unknown, path: string): void => {
-    if (!display || typeof display !== 'object' || Array.isArray(display)) return;
-    if (seenDisplays.has(display)) return;
-    seenDisplays.add(display);
+  for (const {display, path} of rootDisplayConfigs(skill)) {
     validateDisplayConfig(issues, skillName, display, path, options);
-  };
-
-  validateOnce((skill as any).display, 'display');
-  validateOnce((skill as any).output?.display, 'output.display');
+  }
   // The catalog translations of the Skill's own name and description.
   for (const field of ['display_name_i18n', 'description_i18n'] as const) {
     const translations = (skill as any).meta?.[field];
@@ -340,6 +355,21 @@ export function formatDisplayContractIssue(issue: DisplayContractIssue): string 
   return `${subject}: ${issue.path} - ${issue.message} (value: ${String(issue.value)})`;
 }
 
+/**
+ * A display config without its model-only producer notes (`row_semantics`, a
+ * column's `semantics` / `semantics_ref`): the one strip both runtime display
+ * paths use, so no note reaches a DataEnvelope, report or snapshot.
+ */
+export function withoutModelOnlyDisplayFields(config: DisplayConfig): DisplayConfig {
+  const {row_semantics: _rowSemantics, ...display} = config;
+  if (!Array.isArray(display.columns)) return display;
+  return {...display, columns: display.columns.map(column => {
+    if (!column || typeof column !== 'object') return column;
+    const {semantics: _semantics, semantics_ref: _semanticsRef, ...runtimeColumn} = column;
+    return runtimeColumn;
+  })};
+}
+
 export function sanitizeDisplayConfigForRuntime(
   config: DisplayConfig,
   context: {
@@ -350,7 +380,7 @@ export function sanitizeDisplayConfigForRuntime(
     defaultFormat?: DisplayConfig['format'];
   } = {},
 ): { config: DisplayConfig; issues: DisplayContractIssue[] } {
-  const sanitized: DisplayConfig = { ...config };
+  const sanitized: DisplayConfig = withoutModelOnlyDisplayFields(config);
   delete sanitized.title_i18n; // Authoring metadata belongs to the localization catalog.
   const issues: DisplayContractIssue[] = [];
   const skillName = context.skillName || 'runtime_display';

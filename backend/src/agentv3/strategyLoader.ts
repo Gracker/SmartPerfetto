@@ -1152,6 +1152,18 @@ export function loadStrategyYaml<T>(
   return parsed;
 }
 
+/** A required prompt template's text; `loaded` checks text a caller already holds. */
+export function requirePromptSegment(templateName: string, loaded?: string): string {
+  const content = loaded === undefined ? loadPromptSegment(templateName) : stripPromptComments(loaded);
+  if (!content) throw new Error(`Required prompt template is missing or empty: ${templateName}`);
+  return content;
+}
+
+/** The JSON a prompt carries structured data in: its context label, then the data. */
+export function promptDataEnvelope(context: string, data: unknown): string {
+  return JSON.stringify({context, data});
+}
+
 /**
  * Substitute `{{key}}` placeholders in a template string with provided values.
  */

@@ -108,6 +108,13 @@ export interface ClaudeAnalysisContext {
   /** Product-run scene entry evidence for this turn (`buildSceneEvidencePromptData`). */
   sceneEvidence?: import('../agentRuntime/sceneEntryEvidence').SceneEvidencePromptData;
   /**
+   * Per-requirement producer-ledger status before the first request, keyed by
+   * requirement id. Only a runtime with contract progress enabled sets it; when
+   * absent the investigation requirements render exactly as without it.
+   */
+  investigationAcquisition?: ReadonlyMap<string,
+    import('../agentRuntime/investigation/investigationReceipt').InvestigationRequirementStatus>;
+  /**
    * The preflight the run actually performed. A runtime may narrow what the
    * intent alone implies — a conversation turn with no attached trace gathers
    * no trace facts — and the prompt must describe that run, not a policy

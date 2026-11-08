@@ -1611,7 +1611,8 @@ steps:
     rules:
       # === 证据可用性 ===
 
-      - condition: "direct_blocker_gap.data?.find(r => r.direct_blocker_type === 'evidence_unavailable')"
+      - id: anr_detail.thread_state_unavailable
+        condition: "direct_blocker_gap.data?.find(r => r.direct_blocker_type === 'evidence_unavailable')"
         severity: info
         diagnosis: "当前 trace 缺少 thread_state，直接阻塞点不可判定"
         confidence: low
@@ -1619,7 +1620,8 @@ steps:
           - "不要仅凭 trigger 或 logcat 作为最终根因"
           - "需要包含 thread_state 的 trace 才能判断主线程直接阻塞形态"
 
-      - condition: "direct_blocker_slice_gap.data?.find(r => r.direct_blocker_type === 'slice_evidence_unavailable')"
+      - id: anr_detail.slice_evidence_unavailable
+        condition: "direct_blocker_slice_gap.data?.find(r => r.direct_blocker_type === 'slice_evidence_unavailable')"
         severity: info
         diagnosis: "当前 trace 缺少 thread_track/slice，无法用 slice 判断 IO/GC/渲染候选"
         confidence: low
@@ -1627,7 +1629,8 @@ steps:
           - "thread_state 直接阻塞点仍可使用"
           - "不要把缺失 slice 解释为没有 IO/GC/渲染等待"
 
-      - condition: "logcat_context_gap.data?.find(r => r.signal_type === 'evidence_unavailable')"
+      - id: anr_detail.logcat_unavailable
+        condition: "logcat_context_gap.data?.find(r => r.signal_type === 'evidence_unavailable')"
         severity: info
         diagnosis: "当前 trace 缺少 android_logs，无法用 Logcat/AnrManager 校验触发上下文"
         confidence: low
@@ -1638,7 +1641,8 @@ steps:
       # === 主线程状态诊断 ===
 
       # 主线程长时间阻塞（Sleeping > 80%，必须有逐事件 direct_blocker 支撑）
-      - condition: "(quadrant.data[0]?.sleeping_pct || 0) > 80 && (direct_blocker_candidates.data?.find(r => ['binder_wait','lock_or_futex_wait','disk_or_page_fault_io','main_thread_sleep'].includes(r.direct_blocker_type) && r.confidence !== 'low') || direct_blocker_slice_candidates.data?.find(r => ['db_or_file_io_slice','render_or_fence_wait','gc_or_stw_wait'].includes(r.direct_blocker_type) && r.confidence !== 'low'))"
+      - id: anr_detail.main_thread_blocked
+        condition: "(quadrant.data[0]?.sleeping_pct || 0) > 80 && (direct_blocker_candidates.data?.find(r => ['binder_wait','lock_or_futex_wait','disk_or_page_fault_io','main_thread_sleep'].includes(r.direct_blocker_type) && r.confidence !== 'low') || direct_blocker_slice_candidates.data?.find(r => ['db_or_file_io_slice','render_or_fence_wait','gc_or_stw_wait'].includes(r.direct_blocker_type) && r.confidence !== 'low'))"
         severity: warning
         diagnosis: "主线程 Sleeping/Blocked 占比 ${quadrant.data[0].sleeping_pct}%，存在逐事件 direct_blocker 候选；仍需对应的对端/owner/系统上下文闭环"
         confidence: medium
@@ -1648,7 +1652,8 @@ steps:
           - "nativePoll/epoll 等待不满足该规则，不能单独作为根因"
 
       # 主线程 CPU 饥饿（Runnable > 30%，需逐事件 scheduler_pressure 候选）
-      - condition: "(quadrant.data[0]?.runnable_pct || 0) > 30 && direct_blocker_candidates.data?.find(r => r.direct_blocker_type === 'scheduler_pressure' && r.confidence !== 'low')"
+      - id: anr_detail.main_thread_runnable_starved
+        condition: "(quadrant.data[0]?.runnable_pct || 0) > 30 && direct_blocker_candidates.data?.find(r => r.direct_blocker_type === 'scheduler_pressure' && r.confidence !== 'low')"
         severity: warning
         diagnosis: "主线程等待调度 ${quadrant.data[0].runnable_pct}%，direct_blocker 标记 scheduler_pressure；需要系统负载/拓扑/调度证据闭环"
         confidence: medium
@@ -1663,7 +1668,8 @@ steps:
       # (unknown_running_ns is unrounded; unknown_running_ms can round to 0).
       # anr_detail collects no cpufreq max-limit evidence. Templates stay within
       # the portable expression subset (no ternary, no Math.*).
-      - condition: "quadrant.data[0]?.running_pct > 50 && quadrant.data[0]?.unknown_running_ns === 0 && quadrant.data[0]?.q1_big_running_ms < quadrant.data[0]?.q2_little_running_ms * 0.3 && quadrant.data[0]?.runnable_pct > 10 && direct_blocker_candidates.data?.find(r => r.direct_blocker_type === 'scheduler_pressure' && r.confidence !== 'low')"
+      - id: anr_detail.main_thread_little_core_placement
+        condition: "quadrant.data[0]?.running_pct > 50 && quadrant.data[0]?.unknown_running_ns === 0 && quadrant.data[0]?.q1_big_running_ms < quadrant.data[0]?.q2_little_running_ms * 0.3 && quadrant.data[0]?.runnable_pct > 10 && direct_blocker_candidates.data?.find(r => r.direct_blocker_type === 'scheduler_pressure' && r.confidence !== 'low')"
         severity: warning
         diagnosis: "主线程运行时间主要在小核：大核组（超大/大/中核）${quadrant.data[0].q1_big_running_ms}ms、小核 ${quadrant.data[0].q2_little_running_ms}ms，同时 Runnable 等待 ${quadrant.data[0].runnable_pct}%"
         confidence: medium
@@ -1675,7 +1681,8 @@ steps:
       # === Binder 阻塞诊断 ===
 
       # Binder 直接阻塞候选（需要对端证据才可定责）
-      - condition: "direct_blocker_candidates.data?.find(r => r.direct_blocker_type === 'binder_wait')"
+      - id: anr_detail.binder_wait_candidate
+        condition: "direct_blocker_candidates.data?.find(r => r.direct_blocker_type === 'binder_wait')"
         severity: warning
         diagnosis: "主线程存在 Binder 等待候选，但该证据只能说明客户端等待，不能直接定责对端"
         confidence: medium
@@ -1686,7 +1693,8 @@ steps:
       # === 锁竞争诊断 ===
 
       # Futex/锁等待候选（没有 owner 时降级）
-      - condition: "direct_blocker_candidates.data?.find(r => r.direct_blocker_type === 'lock_or_futex_wait') && !(lock_contention.data?.find(r => r.blocked_type === 'MainThread'))"
+      - id: anr_detail.lock_wait_without_owner
+        condition: "direct_blocker_candidates.data?.find(r => r.direct_blocker_type === 'lock_or_futex_wait') && !(lock_contention.data?.find(r => r.blocked_type === 'MainThread'))"
         severity: warning
         diagnosis: "主线程存在 futex/lock 等待候选，但缺少持锁线程/锁链证据"
         confidence: medium
@@ -1695,7 +1703,8 @@ steps:
           - "不要把普通 futex_wait 直接写成死锁"
 
       # 严重锁竞争（需主线程阻塞态佐证）
-      - condition: "direct_blocker_candidates.data?.find(r => r.direct_blocker_type === 'lock_or_futex_wait') && lock_contention.data?.find(r => r.blocked_type === 'MainThread' && r.severity === 'critical') && (quadrant.data[0]?.sleeping_pct || 0) > 50"
+      - id: anr_detail.lock_contention_severe
+        condition: "direct_blocker_candidates.data?.find(r => r.direct_blocker_type === 'lock_or_futex_wait') && lock_contention.data?.find(r => r.blocked_type === 'MainThread' && r.severity === 'critical') && (quadrant.data[0]?.sleeping_pct || 0) > 50"
         severity: critical
         diagnosis: "主线程严重锁竞争：等待 ${lock_contention.data.find(r => r.blocked_type === 'MainThread' && r.severity === 'critical')?.blocking_thread_name} ${lock_contention.data.find(r => r.blocked_type === 'MainThread' && r.severity === 'critical')?.wait_ms}ms"
         confidence: high
@@ -1705,7 +1714,8 @@ steps:
           - "阻塞方法：${lock_contention.data.find(r => r.blocked_type === 'MainThread' && r.severity === 'critical')?.blocking_method}"
 
       # 主线程被锁阻塞（需阻塞态佐证）
-      - condition: "direct_blocker_candidates.data?.find(r => r.direct_blocker_type === 'lock_or_futex_wait') && lock_contention.data?.find(r => r.blocked_type === 'MainThread') && (quadrant.data[0]?.sleeping_pct || 0) > 30"
+      - id: anr_detail.main_thread_lock_blocked
+        condition: "direct_blocker_candidates.data?.find(r => r.direct_blocker_type === 'lock_or_futex_wait') && lock_contention.data?.find(r => r.blocked_type === 'MainThread') && (quadrant.data[0]?.sleeping_pct || 0) > 30"
         severity: warning
         diagnosis: "主线程被锁阻塞"
         confidence: high
@@ -1717,7 +1727,8 @@ steps:
       # === RenderThread 诊断 ===
 
       # nativePoll/epoll 只作为降级证据
-      - condition: "direct_blocker_candidates.data?.find(r => r.direct_blocker_type === 'native_poll_idle_or_ambiguous') && !direct_blocker_candidates.data?.find(r => ['binder_wait','lock_or_futex_wait','disk_or_page_fault_io'].includes(r.direct_blocker_type)) && !direct_blocker_slice_candidates.data?.find(r => ['db_or_file_io_slice','render_or_fence_wait'].includes(r.direct_blocker_type))"
+      - id: anr_detail.native_poll_idle_or_ambiguous
+        condition: "direct_blocker_candidates.data?.find(r => r.direct_blocker_type === 'native_poll_idle_or_ambiguous') && !direct_blocker_candidates.data?.find(r => ['binder_wait','lock_or_futex_wait','disk_or_page_fault_io'].includes(r.direct_blocker_type)) && !direct_blocker_slice_candidates.data?.find(r => ['db_or_file_io_slice','render_or_fence_wait'].includes(r.direct_blocker_type))"
         severity: info
         diagnosis: "主线程主要表现为 native poll/epoll 等待；这是 idle-or-ambiguous 证据，不能单独作为 ANR 根因"
         confidence: low
@@ -1726,7 +1737,8 @@ steps:
           - "检查系统负载、焦点窗口、对端 Binder 或渲染链路是否是上游原因"
 
       # nSyncDraw 阻塞（仅在主线程阻塞态明显时作为次要证据）
-      - condition: "render_thread.data?.find(r => r.name?.includes('nSyncDraw') && r.dur_ms > 50) && (quadrant.data[0]?.sleeping_pct || 0) > 30"
+      - id: anr_detail.render_thread_sync_draw_blocked
+        condition: "render_thread.data?.find(r => r.name?.includes('nSyncDraw') && r.dur_ms > 50) && (quadrant.data[0]?.sleeping_pct || 0) > 30"
         severity: warning
         diagnosis: "RenderThread nSyncDraw 阻塞 ${render_thread.data.find(r => r.name?.includes('nSyncDraw'))?.dur_ms}ms"
         confidence: high
@@ -1736,7 +1748,8 @@ steps:
           - "检查是否有复杂绘制操作"
 
       # dequeueBuffer 阻塞（仅在主线程阻塞态明显时作为次要证据）
-      - condition: "render_thread.data?.find(r => r.name?.includes('dequeueBuffer') && r.dur_ms > 50) && (quadrant.data[0]?.sleeping_pct || 0) > 30"
+      - id: anr_detail.render_thread_dequeue_buffer_blocked
+        condition: "render_thread.data?.find(r => r.name?.includes('dequeueBuffer') && r.dur_ms > 50) && (quadrant.data[0]?.sleeping_pct || 0) > 30"
         severity: warning
         diagnosis: "RenderThread dequeueBuffer 阻塞 ${render_thread.data.find(r => r.name?.includes('dequeueBuffer'))?.dur_ms}ms"
         confidence: medium
@@ -1748,7 +1761,8 @@ steps:
       # === 应用冻结诊断 ===
 
       # 应用完全冻结（MainThread、RenderThread、Binder 都冻结）
-      - condition: "app_freeze_check.data?.find(r => r.thread_type === 'MainThread')?.status === 'frozen' && app_freeze_check.data?.find(r => r.thread_type === 'RenderThread')?.status === 'frozen' && app_freeze_check.data?.find(r => r.thread_type === 'Binder')?.status === 'frozen' && (quadrant.data[0]?.sleeping_pct || 0) > 80"
+      - id: anr_detail.app_fully_frozen
+        condition: "app_freeze_check.data?.find(r => r.thread_type === 'MainThread')?.status === 'frozen' && app_freeze_check.data?.find(r => r.thread_type === 'RenderThread')?.status === 'frozen' && app_freeze_check.data?.find(r => r.thread_type === 'Binder')?.status === 'frozen' && (quadrant.data[0]?.sleeping_pct || 0) > 80"
         severity: critical
         diagnosis: "应用完全冻结，主线程活动率仅 ${app_freeze_check.data.find(r => r.thread_type === 'MainThread')?.activity_pct}%"
         confidence: high
@@ -1758,7 +1772,8 @@ steps:
           - "检查 direct_blocker、锁 owner、Binder 对端或系统上下文"
 
       # 主线程冻结但其他线程未全部冻结
-      - condition: "app_freeze_check.data?.find(r => r.thread_type === 'MainThread')?.status === 'frozen' && (quadrant.data[0]?.sleeping_pct || 0) > 80 && !(app_freeze_check.data?.find(r => r.thread_type === 'RenderThread')?.status === 'frozen' && app_freeze_check.data?.find(r => r.thread_type === 'Binder')?.status === 'frozen')"
+      - id: anr_detail.main_thread_frozen_only
+        condition: "app_freeze_check.data?.find(r => r.thread_type === 'MainThread')?.status === 'frozen' && (quadrant.data[0]?.sleeping_pct || 0) > 80 && !(app_freeze_check.data?.find(r => r.thread_type === 'RenderThread')?.status === 'frozen' && app_freeze_check.data?.find(r => r.thread_type === 'Binder')?.status === 'frozen')"
         severity: warning
         diagnosis: "主线程冻结/低活动，不能直接等同应用完全冻结"
         confidence: medium

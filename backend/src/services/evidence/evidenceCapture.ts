@@ -304,6 +304,19 @@ export function capturedNativeRow(witness: EvidenceTableWitness, rowIndex: numbe
 export function capturedRawSqlContext(witness: EvidenceTableWitness): Readonly<{traceId: string; traceSide: 'current' | 'reference'}> | undefined {
   return rawContexts.get(witness);
 }
+/** The authored Skill step whose SQL returned a captured table. Kept beside the witness, never serialized. */
+export interface CapturedProducer {
+  readonly skillId: string;
+  readonly stepId: string;
+}
+const producers = new WeakMap<EvidenceTableWitness, CapturedProducer>();
+export function recordCaptureProducer(witness: EvidenceTableWitness, producer: CapturedProducer): void {
+  producers.set(witness, Object.freeze({skillId: producer.skillId, stepId: producer.stepId}));
+}
+export function capturedProducer(witness: EvidenceTableWitness): CapturedProducer | undefined {
+  return producers.get(witness);
+}
+
 export function attachEvidenceTable(owner: object, witness: EvidenceTableWitness): void {
   if (!tables.has(witness)) throw new Error('Unissued evidence table witness');
   owners.set(owner, witness);

@@ -1476,7 +1476,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "1060e1eb981c0e1def412496edbd331af9e5bd4cf3cb5e378a5c01fbb6583e0e",
+            "sha256": "a4c97377c4a51cd37e92377e21d2c619da22cd04dc375fd93cab4542b974a691",
             "required_columns": [
               "anr_ts",
               "window_start_ts",
@@ -1486,7 +1486,8 @@
               "timer_delay",
               "process_name",
               "upid",
-              "anr_type"
+              "anr_type",
+              "timer_delay_status"
             ]
           }
         ]
@@ -1573,13 +1574,17 @@
           },
           {
             "id": "binder_blocking",
-            "sha256": "e3cc0b861e8a3b077f9b1792014fce2beb0bdd032bd96e534524d73bea89d303",
+            "sha256": "96e0b39033663ed3e3cc44df06c33dc17136b1a9753bcf85ffe238d32b3b7def",
             "required_columns": [
               "ts",
               "slice_name",
               "dur_ms",
               "server_process",
-              "server_thread"
+              "server_thread",
+              "end_ts",
+              "dur_ns",
+              "upid",
+              "wait_evidence"
             ]
           },
           {
@@ -1801,7 +1806,7 @@
         "steps": [
           {
             "id": "pool_saturation",
-            "sha256": "27575bfcc9703830750f7c5f5234459a7b170ad2c2955c9720606813cd2aedd5",
+            "sha256": "8759bad4561c3ac300d0155a2b9a7694fb0cac2e687b8f75ee01b5a31f2a973a",
             "required_columns": [
               "window_start_ts",
               "window_end_ts",
@@ -1828,7 +1833,8 @@
               "unreceived_sync_calls",
               "max_sync_wait_ns",
               "saturation_evidence",
-              "evidence_scope"
+              "evidence_scope",
+              "pool_evidence_status"
             ]
           },
           {
@@ -6952,7 +6958,7 @@
           },
           {
             "id": "get_anr_events",
-            "sha256": "d047e82f7a2b7a8e37d01aec43b22ed9565beeaf3f46de84c0262d867f7c9dce",
+            "sha256": "5ccb292c5646013c40a8bff97e560ee8fbe8c867a4e67c34a37afe23d169215f",
             "required_columns": [
               "error_id",
               "process_name",
@@ -6967,7 +6973,10 @@
               "timeout_source",
               "analysis_focus",
               "subject_preview",
-              "root_cause_pattern_hints"
+              "root_cause_pattern_hints",
+              "upid",
+              "perfetto_end",
+              "timer_delay_status"
             ]
           },
           {

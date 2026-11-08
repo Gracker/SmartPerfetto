@@ -333,7 +333,8 @@ outputs:
   type: diagnostic
   inputs: [startups]
   rules:
-    - condition: "startups.data[0]?.dur_ms > 2000"
+    - id: startup.cold.over_2s
+      condition: "startups.data[0]?.dur_ms > 2000"
       severity: critical
       confidence: high
       diagnosis: "启动耗时 ${startups.data[0].dur_ms}ms，超过 2 秒"
@@ -353,6 +354,29 @@ evidence field 是只读路径，不是 JavaScript 表达式，也不是 `${...}
 布尔或 `null`），每段都可写成 `?.`。它读的就是 condition 里 `name.data` 的同一个值，只读对象自有的数据属性，不调用函数、
 不写数据；谓词只比较标量，缺失或非标量的值一律不匹配。值上报前有界：行集变成 `{_rowCount, _firstRow}`，行只保留标量字段，长字符串截断。
 规则触发时还会附带它的 condition 读到的每个 input 的样本（同样有界），无论写成 `name.data`、`name?.data` 还是 `name?.["data"]`；只在字符串或注释里出现的名字不算读到。
+每条规则有一个稳定的 `id`，在 Skill 内唯一，形式是 `<skill stem>.<condition>`：stem 是 Skill 的 `name` 去掉结尾的
+`_analysis` 或 `_module`（`anr_analysis` → `anr`，`jank_frame_detail` 不变），condition 用 lower_snake_case 写规则判定的
+条件；只有同一维度的一组条件才在两者之间加一段分组（如 `anr.trigger.no_focus_window`、`startup.cold.over_2s`）。
+数据或信号缺失一律以 `_unavailable` 结尾。规则命中时，诊断结果在位置编号 `id`
+（`<step>_<n>`，报告和历史按它引用）之外带上 `ruleId`；规则可以用 `binds` 声明命中时要报告的 producer 值：
+
+```yaml
+      binds:
+        - {name: saturated_ns, field: "pool.data.find(r => r.saturation_evidence === 'saturated_observed').saturated_ns"}
+        - {name: process_name, field: "pool.data[0].process_name"}
+```
+
+`field` 是 evidence field 语法中读一行一列的形式：`input.data[n].column` 或
+`input.data.find(r => r.c OP literal).column`，根必须在本步骤的 `inputs` 里。根所指的步骤要么是 atomic 步骤，
+要么是用 `save_from` 绑定子 Skill atomic 步骤的 Skill 引用（或子 Skill 的根 SQL）。绑定值的单位只来自源列的
+`display.columns` 声明，规则不能自带或覆盖单位；数值类列（number、timestamp、duration、percentage、bytes）
+没有有效 `unit` 时校验失败，字符串等标签列不带单位。`find()` 按谓词挑一行，所以只能读 `display.row_semantics`
+为 `window_total` 或 `per_entity` 的源步骤（每行都是窗口内的聚合值），`per_event` 或未声明时校验失败。
+`ruleId` 和 `bindings` 只在执行器开启 `diagnosticFacts` 时产生（Pi 运行时开启，隐藏的回退运行时不开）。Pi 把命中
+规则作为一个 `facts` 对象交给模型：`{skillId, diagnosticsArtifactId, rules: [{ruleId, bindings}]}`，绑定值带单位和
+各自来源结果的定位，序列化后不超过 2048 字节，超出的规则计入 `omittedRuleCount`。`facts` 从不带 `severity`、
+`diagnosis` 或 `suggestions`：结论由模型自己下。
+
 `validate:skills` 拒绝：不符合该语法或根不在 `inputs` 的 evidence field、读了不在 `inputs`
 里的步骤、condition 不经 `.data` 读步骤数据（按路径解析的占位符 `${name[0].x|默认值}` 或嵌在文本中的 `${name[0].x}` 里仍合法；占位符里的 JS 表达式和不带默认值的整串 `${...}` 按 condition 绑定，同样要经 `.data`），没有
 `inputs` 的 diagnostic 步骤，以及读了任何作用域都不绑定的名字（如 `inputs`）的规则。按根名的这几项检查只在能确定读到哪些根时生效：condition 里含函数体、方法、块语句等可能声明局部名的写法时不报。
@@ -492,6 +516,18 @@ display:
     - name: jank_rate
       label: "掉帧率"
       type: percentage
+    - name: saturated_ns
+      label: "saturated_ns"
+      type: duration
+      unit: ns
+      semantics: >-              # 仅给模型的 producer 含义（英文，≤240 字符）
+        Time in the window while every observed pool thread was busy at once.
+    - name: timer_delay
+      label: "ANR 计时器到期→ANR 记录延迟（非超时时长）"
+      type: duration
+      unit: ns
+      semantics_ref: android_anrs.timer_delay  # 或引用 strategies/stdlib-column-semantics.yaml
+  row_semantics: per_entity    # window_total | per_entity | per_event：一行代表什么
   # 可选高级字段
   severity: warning            # critical | warning | info | normal — 前端按严重度排序
   collapsible: true            # 是否可折叠
@@ -506,6 +542,13 @@ display:
 
 **特殊 layer 值：**
 - `diagnosis` — 诊断层，用于 diagnostic step 输出的结构化诊断结果。
+
+**仅给模型的 producer 注释：** 列的 `semantics`（或 `semantics_ref` 引用的 stdlib 覆盖条目，列必须声明与条目相同的
+`unit`）和步骤的 `row_semantics` 不进入 DataEnvelope、报告或快照。Pi 运行时把它们连同 `investigation_evidence`
+指标的 `metric_id` / `aggregation` / `coverage` / `denominator` 作为 `resultNotes` 交给模型：每个步骤一条，
+不按行重复；每个 `skillId.stepId.column` 在一次运行里只说一次，每个结果最多 24 列，超出的留给后续结果或
+`fetch_artifact`。单位仍由 `columnUnits` 携带。同一个 overlay 条目在一次运行里只说一次，无论来自 Skill 还是 raw SQL 的列文档。`SMARTPERFETTO_SKILL_RESULT_FACTS`
+设为关闭值（`0`、`false`、`no`、`off`）时同时关闭注释和 `facts`。
 
 ### 可展开数据
 
@@ -933,10 +976,13 @@ Skill 可以声明顶层 `tier: S | A | B`，用于表达目标复杂度和 revi
 | `process_scope_invalid` | `process_scope` 声明无效，精确范围不可用，见 [4.8](#48-精确进程范围与调查证据) |
 | `sql_not_executed` | 执行器永远不会运行的 SQL：非 atomic Skill 的根 SQL、atomic 根旁边的 steps、metadata-only Skill 的 steps |
 | `condition_uses_sql_boolean_words` | 步骤 `condition`、conditional 分支 `when` 或诊断规则 `condition` 的代码里写了 SQL `AND` / `OR`（字符串字面量和属性名里的不算）。这些表达式按 JavaScript 求值，`AND` / `OR` 不能编译，结果为 false，步骤被静默跳过（分支不走、规则不触发）。iterator `filter` 例外，其中的 `AND` / `OR` 会被改写 |
+| `diagnostic_rule_id_missing` | 诊断规则没有稳定 `id`。规则照常命中并报告诊断，只是不产生结构化事实 |
+| `diagnostic_rule_id_duplicate`、`diagnostic_bind_*` | 规则 `id` 在 Skill 内重复，或 `binds` 读不到带类型、带单位的源列（见 [4.6](#46-diagnostic--规则诊断)） |
+| `display_column_semantics_ref_invalid` | `semantics_ref` 不是 stdlib 覆盖条目，或列的 `unit` 与条目不一致 |
 | 其他结构错误 | 如 `step_id_duplicate`、`save_as_step_id_collision`、`save_from_target_missing`、`fragment_reference_missing`、`skill_reference_missing`、`display_contract`，在任何地方都是错误 |
 
 其中 `result_path_read_undecided`、`cause_wording_without_evidence`、`process_scope_invalid`、
-`sql_not_executed` 和 `condition_uses_sql_boolean_words` 属于 `PREDATING_RULE_CODES`：它们在
+`sql_not_executed`、`condition_uses_sql_boolean_words` 和 `diagnostic_rule_id_missing` 属于 `PREDATING_RULE_CODES`：它们在
 `validate:skills` 和提案定义或修改的 Skill（含该 Skill 已有覆盖层的步骤；`skill_sql` 候选放进它替换的步骤后检查）
 上是错误，对其他已发布的覆盖层和 Skill Pack 只报警告，避免一个早于规则的覆盖层让同一 scope 的全部覆盖层下线。
 内置 registry 在这些规则下没有错误。

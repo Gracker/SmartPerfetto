@@ -11,7 +11,7 @@
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
     "stepCount": 1389,
-    "explicitColumnCount": 5298
+    "explicitColumnCount": 5307
   },
   "skills": {
     "ams_module": {
@@ -3066,6 +3066,24 @@
                 "zh-CN": "候选提示",
                 "en": "Root Cause Pattern Hints"
               }
+            },
+            "upid": {
+              "label": {
+                "zh-CN": "UPID",
+                "en": "upid"
+              }
+            },
+            "perfetto_end": {
+              "label": {
+                "zh-CN": "PerfettoEnd",
+                "en": "perfetto_end"
+              }
+            },
+            "timer_delay_status": {
+              "label": {
+                "zh-CN": "TimerDelayStatus",
+                "en": "timer_delay_status"
+              }
             }
           },
           "synthesizeLabels": {
@@ -3448,6 +3466,12 @@
               "label": {
                 "zh-CN": "ANR 类型",
                 "en": "ANR Type"
+              }
+            },
+            "timer_delay_status": {
+              "label": {
+                "zh-CN": "TimerDelayStatus",
+                "en": "timer_delay_status"
               }
             }
           },
@@ -4397,6 +4421,30 @@
               "label": {
                 "zh-CN": "服务端线程",
                 "en": "Server Thread"
+              }
+            },
+            "end_ts": {
+              "label": {
+                "zh-CN": "EndTs",
+                "en": "end_ts"
+              }
+            },
+            "dur_ns": {
+              "label": {
+                "zh-CN": "Durns",
+                "en": "dur_ns"
+              }
+            },
+            "upid": {
+              "label": {
+                "zh-CN": "UPID",
+                "en": "upid"
+              }
+            },
+            "wait_evidence": {
+              "label": {
+                "zh-CN": "WaitEvidence",
+                "en": "wait_evidence"
               }
             }
           },
@@ -6671,6 +6719,12 @@
               "label": {
                 "zh-CN": "EvidenceScope",
                 "en": "evidence_scope"
+              }
+            },
+            "pool_evidence_status": {
+              "label": {
+                "zh-CN": "PoolEvidenceStatus",
+                "en": "pool_evidence_status"
               }
             }
           },

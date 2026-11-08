@@ -162,7 +162,7 @@ describe('dataContract column inference', () => {
     const parsed = ts.createSourceFile('public-types.ts', fragment, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
     expect(parsed.statements.every(statement => ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement))).toBe(true);
     const names = parsed.statements.map(statement => (statement as ts.InterfaceDeclaration).name.text);
-    expect(names).toEqual(expect.arrayContaining(['AnalysisTurnIntent', 'AnalysisCompletion', 'AgentRuntimeKind',
+    expect(names).toEqual(expect.arrayContaining(['AnalysisTurnIntent', 'AnalysisCompletion', 'RecordedProductionRuntimeKind',
       'AnalysisCandidateIdentity', 'AnalysisReportBinding', 'AnalysisReportRequirementAssessment',
       'AnalysisDeliveryAssurance', 'SourceUseDecisionV1', 'SourceClaimVerificationResult', 'SourceClaimBindingV1',
       'StoredSourceClaimVerificationResult', 'LegacySourceClaimVerificationResultV1', 'SourceCitationV1',

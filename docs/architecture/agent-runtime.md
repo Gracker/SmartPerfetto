@@ -210,6 +210,8 @@ SQL 工具的 `executionContext` 独立于模型、预算和源码权限。省�
 
 Pi 在每次原生 provider 请求前（包括第一次）经 `prepareRequest` 适配层记录一条有界的 `investigationRequests` receipt：Agent context 的消息/工具数量和近似字符数（`agentContext`，provider 转换前的估算，不同于 fetch 时测得的 `modelRequests[].body` wire 字节）、调查契约要求按 `observed`/`not_observed`/`unknown_no_producer`/`not_applicable` 的计数，以及轮次和截止时间预算；对应的 `modelCalls[].requestIndex` 用于关联 provider usage（含 cache-read）。调查视图只读取 typed intent、钉住的契约、producer ledger 和运行预算，按 run 创建并在收尾时释放；适配层不返回任何请求修改。
 
+契约进度由 `SMARTPERFETTO_INVESTIGATION_PROGRESS` 控制，默认关闭；关闭时 Agent 选项、prompt 和请求与未引入该功能时完全相同。开启后：第 1 轮在已有的 `investigation_requirements` 段里为每条要求附上 run 开始时的 ledger `acquisition` 状态（只是状态，不是催促）；之后的决策只在轮次边界（`prepareNextTurn`）做出，按下一次请求序号缓存，`prepareRequest` 只记录。只有在以下条件全部满足时，才把一条进度消息附到已经排定的那次请求上（从不新增 provider 请求，也不延长 run）：第 2 次及以后的 `answer_turn` 请求；`allowNewEvidence` 为真（`existing_only`、纠正和 closeout 都不发）；ledger 可读；要求为 `not_observed`，且至少有一个本次请求范围内 `invoke_skill` 可达的已注册 producer；已用轮次不少于 acquisition 轮次上限的一半，且之后至少还剩一轮。每条要求最多提一次，每条消息最多 3 条要求，每个 run 最多 2 条消息。消息是自定义 Agent role，经 `convertToLlm` 渲染为 `user` 消息（`prompt-investigation-progress.template.md` 加有界 JSON：要求 id、domain、描述、条件原文、指标和 producer Skill id），从不作为中途 `system` 消息；它只陈述契约状态，不代表义务或结论，也不进入旁白、草稿、SSE、结果、报告、快照或会话历史。receipt 的 `decision` 记为 `progress`，并只记录 `progress.messages` 和 `requirementIds`。
+
 共享工具交接边界另外记录有界的 `activity`：调用尝试、进入受控执行链、返回、拒绝、
 异常和取消，以及完整参数完全相同的重复调用数。参数只参与本轮内存中的随机密钥哈希，
 不写入回执；无法完整观察时明确为 `partial/unavailable`，不补零。进入受控执行链不代表
@@ -309,6 +311,14 @@ artifact、capture 与 queryReview；但它不是模型工具调用：不进 Run
 `RuntimePerformance` 的 `scene_evidence` 阶段与闭合回执 `sceneEvidence`。`allowMemoryPrefetch` 只控制记忆层预取，
 与入口证据无关。
 字符串单元格若被上游截短，就不作为精确值交给模型；artifact 定位仍可用于读取原始证据。
+
+Pi 运行时另外按运行创建 Skill 结果注释记忆，并让执行器产出规则事实（`agentv3/skillResultSemanticNotes.ts`，
+`SMARTPERFETTO_SKILL_RESULT_FACTS` 设为关闭值时关闭），隐藏的回退运行时两者都没有：`invoke_skill` 的两条返回路径、
+`fetch_artifact` 和 `scene_evidence` 段带 producer 的 `resultNotes`（列含义、`row_semantics`、调查指标的
+聚合/覆盖/分母声明；每个 `skillId.stepId.column` 每次运行只说一次，每个结果最多 24 列），以及命中诊断规则的
+`facts`（`ruleId`、带源列单位的绑定值、结果定位，不含严重度、诊断或建议文本，≤2 KiB）。`scene_evidence` 超限时先丢
+summary 单元格，再丢 `resultNotes`、key 单元格和 `facts`；未送达的注释留给后续结果。`facts` 只从运行已写的
+`_diagnostics` 诊断投影；事实不是证据授权。
 
 **当前选区的最低取证。** 已解析的 `bounded_question`、`read_new` investigation 还必须明确
 `targetUse=current_selection`，才可进入 `selectedEvidenceFoundation.ts`。UI 只在真实 renderer 的

@@ -839,7 +839,8 @@ steps:
     inputs: [nav_overview, lifecycle_phases, blocking_ops, layout_inflation, nav_binder]
     rules:
       # 布局膨胀严重
-      - condition: "(layout_inflation?.data?.length || 0) > 0 && layout_inflation.data[0]?.dur_ms > ${inflate_critical_ms|100}"
+      - id: navigation.slow_inflate
+        condition: "(layout_inflation?.data?.length || 0) > 0 && layout_inflation.data[0]?.dur_ms > ${inflate_critical_ms|100}"
         severity: critical
         diagnosis: "SLOW_INFLATE: 布局膨胀严重 (${layout_inflation.data[0].dur_ms}ms)，是跳转耗时主因"
         confidence: high
@@ -849,7 +850,8 @@ steps:
           - "考虑使用异步布局膨胀 (AsyncLayoutInflater)"
 
       # Binder 阻塞
-      - condition: "(nav_binder?.data?.length || 0) > 0 && nav_binder.data[0]?.max_dur_ms > ${binder_blocking_ms|16} && nav_binder.data[0]?.main_thread_calls > 0"
+      - id: navigation.slow_binder
+        condition: "(nav_binder?.data?.length || 0) > 0 && nav_binder.data[0]?.max_dur_ms > ${binder_blocking_ms|16} && nav_binder.data[0]?.main_thread_calls > 0"
         severity: warning
         diagnosis: "SLOW_BINDER: 跳转期间主线程 Binder 阻塞 (最大 ${nav_binder.data[0].max_dur_ms}ms)"
         confidence: high
@@ -859,7 +861,8 @@ steps:
           - "缓存服务调用结果"
 
       # IO 阻塞
-      - condition: "(blocking_ops?.data?.length || 0) > 0 && blocking_ops.data.find(b => b.block_type === 'file_io' || b.block_type === 'database' || b.block_type === 'shared_prefs')?.dur_ms > ${binder_blocking_ms|16}"
+      - id: navigation.slow_io
+        condition: "(blocking_ops?.data?.length || 0) > 0 && blocking_ops.data.find(b => b.block_type === 'file_io' || b.block_type === 'database' || b.block_type === 'shared_prefs')?.dur_ms > ${binder_blocking_ms|16}"
         severity: warning
         diagnosis: "SLOW_IO: 跳转期间存在 IO 阻塞 (${blocking_ops.data.find(b => b.block_type === 'file_io' || b.block_type === 'database' || b.block_type === 'shared_prefs')?.dur_ms}ms)"
         confidence: high
@@ -869,7 +872,8 @@ steps:
           - "使用内存缓存减少磁盘读取"
 
       # onCreate 过慢
-      - condition: "(lifecycle_phases?.data?.length || 0) > 0 && (lifecycle_phases.data.find(p => p.phase === 'onCreate')?.max_dur_ms || 0) > ${oncreate_slow_ms|200}"
+      - id: navigation.slow_oncreate
+        condition: "(lifecycle_phases?.data?.length || 0) > 0 && (lifecycle_phases.data.find(p => p.phase === 'onCreate')?.max_dur_ms || 0) > ${oncreate_slow_ms|200}"
         severity: warning
         diagnosis: "SLOW_ONCREATE: Activity onCreate 耗时过长 (${lifecycle_phases.data.find(p => p.phase === 'onCreate')?.max_dur_ms}ms)"
         confidence: medium
@@ -879,7 +883,8 @@ steps:
           - "使用 Jetpack App Startup 优化初始化顺序"
 
       # 正常
-      - condition: "(nav_overview?.data?.[0]?.avg_nav_dur_ms || 0) <= ${slow_navigation_ms|400}"
+      - id: navigation.normal
+        condition: "(nav_overview?.data?.[0]?.avg_nav_dur_ms || 0) <= ${slow_navigation_ms|400}"
         severity: info
         diagnosis: "NAVIGATION_NORMAL: 跳转性能正常 (平均 ${nav_overview?.data?.[0]?.avg_nav_dur_ms}ms)"
         confidence: high

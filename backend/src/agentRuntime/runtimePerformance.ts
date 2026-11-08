@@ -829,8 +829,9 @@ const RUNTIME_INVESTIGATION_REQUEST_STATUSES = ['observed', 'view_failed', 'inac
 
 /**
  * One native Agent provider request as the product saw it immediately before
- * dispatch: Agent context shape, requirement progress and turn budget. Counts
- * and closed values only. `view_failed` and `inactive` keep the request ordinal
+ * dispatch: Agent context shape, requirement progress and turn budget. Counts,
+ * closed values and contract requirement ids only, never evidence values or
+ * text. `view_failed` and `inactive` keep the request ordinal
  * without view facts; `requestIndex` joins `modelCalls[].requestIndex`.
  */
 export interface RuntimeInvestigationRequestReceiptV1 extends Partial<InvestigationRequestObservationV1> {
@@ -853,11 +854,25 @@ const INVESTIGATION_REQUEST_FIELDS = ['requestIndex', 'attempt', 'purpose', 'off
 const INVESTIGATION_OBSERVATION_FIELDS = ['requirements', 'evidence', 'turns', 'elapsedMs', 'remainingMs', 'decision'] as const;
 const AGENT_CONTEXT_COUNTS = ['messageCount', 'toolCount', 'approxMessageChars', 'approxToolChars'] as const;
 const REQUIREMENT_COUNTS = ['observed', 'notObserved', 'unknownNoProducer', 'notApplicable'] as const;
+/** Contract requirement ids (`^[a-z][a-z0-9_]*$`, the strategy parser's own rule); never values. */
+const INVESTIGATION_REQUIREMENT_ID = /^[a-z][a-z0-9_]{0,127}$/;
+const MAX_INVESTIGATION_PROGRESS_IDS = 16;
+
+function investigationProgressFacts(value: unknown): NonNullable<RuntimeInvestigationRequestReceiptV1['progress']> {
+  const progress = exactObservationObject(value, ['messages', 'requirementIds']);
+  const ids = progress.requirementIds;
+  if (!Array.isArray(ids) || !ids.length || ids.length > MAX_INVESTIGATION_PROGRESS_IDS || new Set(ids).size !== ids.length ||
+      ids.some(id => typeof id !== 'string' || !INVESTIGATION_REQUIREMENT_ID.test(id))) {
+    throw new Error('runtime_observation_progress_invalid');
+  }
+  return {messages: observationCount(progress.messages, ids.length, 1), requirementIds: [...ids] as string[]};
+}
 
 /** The same closed projection is applied at collection and stored-metrics export; no unknown field passes. */
 export function projectRuntimeInvestigationRequestReceipt(value: unknown): RuntimeInvestigationRequestReceiptV1 | undefined {
   try {
-    const input = exactObservationObject(value, INVESTIGATION_REQUEST_FIELDS, ['agentContext', ...INVESTIGATION_OBSERVATION_FIELDS]);
+    const input = exactObservationObject(value, INVESTIGATION_REQUEST_FIELDS,
+      ['agentContext', 'progress', ...INVESTIGATION_OBSERVATION_FIELDS]);
     const observed = INVESTIGATION_OBSERVATION_FIELDS.filter(field => observationOwn(input, field));
     // View facts come together or not at all.
     if (observed.length !== 0 && observed.length !== INVESTIGATION_OBSERVATION_FIELDS.length) return undefined;
@@ -880,6 +895,9 @@ export function projectRuntimeInvestigationRequestReceipt(value: unknown): Runti
       receipt.remainingMs = observationCount(input.remainingMs, MAX_MS);
       receipt.decision = observationMember(input.decision, INVESTIGATION_DECISIONS);
     }
+    // Progress facts exist exactly for a progress decision.
+    if (observationOwn(input, 'progress') !== (receipt.decision === 'progress')) return undefined;
+    if (receipt.decision === 'progress') receipt.progress = investigationProgressFacts(input.progress);
     return receipt;
   } catch { return undefined; }
 }

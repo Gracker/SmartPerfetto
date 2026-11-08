@@ -835,7 +835,8 @@ steps:
     inputs: [event_basic, cpu_core, quadrant, blocking, binder_calls, main_sync_binder, sched_delay, main_file_io]
     rules:
       # Runnable 等待过长（需由调度延迟指标佐证）
-      - condition: "quadrant.data[0]?.q3_runnable_ms > 20 && (sched_delay.data[0]?.severe_count || 0) > 0"
+      - id: click_response_detail.runnable_wait_with_sched_delay
+        condition: "quadrant.data[0]?.q3_runnable_ms > 20 && (sched_delay.data[0]?.severe_count || 0) > 0"
         severity: warning
         diagnosis: "主线程 Runnable 等待 ${quadrant.data[0].q3_runnable_ms}ms，且存在 ${sched_delay.data[0].severe_count} 次 >8ms 调度延迟"
         confidence: high
@@ -844,7 +845,8 @@ steps:
           - "减少并发任务"
 
       # Sleeping 占比过高（需有 IO/Binder 阻塞佐证）
-      - condition: "quadrant.data[0]?.sleeping_pct > 50 && ((main_file_io.data[0]?.percent || 0) > 2 || ((main_sync_binder?.data?.find(r => r.is_main_blocked === 1)?.total_block_ms) || 0) > 15)"
+      - id: click_response_detail.sleeping_with_io_or_binder
+        condition: "quadrant.data[0]?.sleeping_pct > 50 && ((main_file_io.data[0]?.percent || 0) > 2 || ((main_sync_binder?.data?.find(r => r.is_main_blocked === 1)?.total_block_ms) || 0) > 15)"
         severity: warning
         diagnosis: "主线程 Sleeping 占比 ${quadrant.data[0].sleeping_pct}% 且存在 IO/Binder 阻塞证据"
         confidence: medium
@@ -853,7 +855,8 @@ steps:
           - "将阻塞操作移到后台线程"
 
       # 大核占比偏低 + Runnable 明显（仅在判定来源可信且有调度证据时触发）
-      - condition: "cpu_core.data[0]?.unknown_core_ns === 0 && cpu_core.data[0]?.big_core_pct < 20 && cpu_core.data[0]?.total_running_ms > 20 && quadrant.data[0]?.q3_runnable_ms > 20 && (sched_delay.data[0]?.severe_count || 0) > 0 && !(cpu_core.data[0]?.classify_method || '').includes('cpu_id_fallback')"
+      - id: click_response_detail.big_core_share_low_with_runnable
+        condition: "cpu_core.data[0]?.unknown_core_ns === 0 && cpu_core.data[0]?.big_core_pct < 20 && cpu_core.data[0]?.total_running_ms > 20 && quadrant.data[0]?.q3_runnable_ms > 20 && (sched_delay.data[0]?.severe_count || 0) > 0 && !(cpu_core.data[0]?.classify_method || '').includes('cpu_id_fallback')"
         severity: warning
         diagnosis: "主线程大核占比偏低（${cpu_core.data[0].big_core_pct}%）且 Runnable 等待 ${quadrant.data[0].q3_runnable_ms}ms，存在调度供给不足迹象"
         confidence: medium
@@ -862,7 +865,8 @@ steps:
           - "减少点击关键路径中的并发争抢"
 
       # 核判定来源不可靠时，避免把大小核结论当根因
-      - condition: "(cpu_core.data[0]?.classify_method || '').includes('cpu_id_fallback')"
+      - id: click_response_detail.core_type_fallback
+        condition: "(cpu_core.data[0]?.classify_method || '').includes('cpu_id_fallback')"
         severity: info
         diagnosis: "核类型判定回退到 CPU 编号阈值，大小核相关结论置信度有限"
         confidence: medium
@@ -870,7 +874,8 @@ steps:
           - "补充或检查 cpu_frequency/cpu capacity 数据后再判断大小核调度问题"
 
       # 主线程文件 IO 偏高（需与阻塞态相互印证）
-      - condition: "(main_file_io.data[0]?.total_ms > 20 || main_file_io.data[0]?.percent > 5) && (quadrant.data[0]?.sleeping_pct || 0) > 20"
+      - id: click_response_detail.main_thread_file_io
+        condition: "(main_file_io.data[0]?.total_ms > 20 || main_file_io.data[0]?.percent > 5) && (quadrant.data[0]?.sleeping_pct || 0) > 20"
         severity: warning
         diagnosis: "主线程文件 IO '${main_file_io.data[0].io_slice}' 耗时 ${main_file_io.data[0].total_ms}ms（占比 ${main_file_io.data[0].percent}%）"
         confidence: high
@@ -879,7 +884,8 @@ steps:
           - "将数据库/文件访问改为异步或延后"
 
       # Binder 阻塞（需同步 Binder 阻塞证据）
-      - condition: "binder_calls.data[0]?.total_client_ms > 30 && ((main_sync_binder?.data?.find(r => r.is_main_blocked === 1)?.total_block_ms) || 0) > 10"
+      - id: click_response_detail.binder_blocking
+        condition: "binder_calls.data[0]?.total_client_ms > 30 && ((main_sync_binder?.data?.find(r => r.is_main_blocked === 1)?.total_block_ms) || 0) > 10"
         severity: warning
         diagnosis: "Binder 调用 ${binder_calls.data[0].server_process} 耗时 ${binder_calls.data[0].total_client_ms}ms，且主线程同步 Binder 阻塞明显"
         confidence: high

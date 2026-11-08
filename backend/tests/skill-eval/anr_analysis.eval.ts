@@ -1081,6 +1081,18 @@ describeWithTrace('anr_analysis edge cases', TRACE_FILE, () => {
       expect(result.data.map(diagnosis => diagnosis.diagnosis))
         .toEqual(expect.arrayContaining([expect.stringContaining('输入事件超时')]));
     }, 30000);
+
+    it('should name each fired rule by its stable id, beside the positional id reports use', async () => {
+      const result = await evaluator.executeRuntimeSkill({});
+
+      expect(result.success).toBe(true);
+      const fired = result.diagnostics.map(diagnostic => [diagnostic.id, diagnostic.ruleId]);
+      expect(fired).toEqual(expect.arrayContaining([[expect.stringMatching(/^anr_diagnosis_\d+$/), 'anr.trigger.input_dispatching_timeout']]));
+      expect(result.diagnostics.every(diagnostic => typeof diagnostic.ruleId === 'string')).toBe(true);
+      // The first ANR window's pool is not saturated here, so the bound rule stays silent.
+      expect(fired.map(([, ruleId]) => ruleId)).not.toContain('anr.binder_pool_saturated');
+      expect(result.displayResults.map(display => display.stepId)).toContain('first_anr_binder_pool_saturation');
+    }, 120000);
   });
 });
 

@@ -286,7 +286,8 @@ steps:
     name: "Choreographer 诊断"
     inputs: [doframe_overview, callback_breakdown, long_frames, view_traversal]
     rules:
-      - condition: "doframe_overview.data[0]?.jank_rate_pct > 10"
+      - id: choreographer.jank_rate_high
+        condition: "doframe_overview.data[0]?.jank_rate_pct > 10"
         diagnosis: "卡顿率 ${doframe_overview.data[0]?.jank_rate_pct}%，超过 10% 阈值"
         severity: critical
         confidence: high
@@ -299,7 +300,8 @@ steps:
           - doframe_overview.data[0]?.jank_frames
           - doframe_overview.data[0]?.total_frames
 
-      - condition: "doframe_overview.data[0]?.max_dur_ms > 100"
+      - id: choreographer.max_frame_long
+        condition: "doframe_overview.data[0]?.max_dur_ms > 100"
         diagnosis: "最长帧时间 ${doframe_overview.data[0]?.max_dur_ms}ms，严重影响体验"
         severity: critical
         confidence: high
@@ -309,7 +311,8 @@ steps:
         evidence_fields:
           - doframe_overview.data[0]?.max_dur_ms
 
-      - condition: "callback_breakdown.data.find(c => c.callback_type === 'traversal')?.avg_ms > 10"
+      - id: choreographer.traversal_slow
+        condition: "callback_breakdown.data.find(c => c.callback_type === 'traversal')?.avg_ms > 10"
         diagnosis: "View 遍历平均耗时 ${callback_breakdown.data.find(c => c.callback_type === 'traversal')?.avg_ms}ms"
         confidence: high
         suggestions:
@@ -319,7 +322,8 @@ steps:
         evidence_fields:
           - callback_breakdown.data.find(c => c.callback_type === 'traversal')?.avg_ms
 
-      - condition: "view_traversal.data.find(v => v.traversal_phase === 'measure')?.max_ms > 8"
+      - id: choreographer.measure_slow
+        condition: "view_traversal.data.find(v => v.traversal_phase === 'measure')?.max_ms > 8"
         diagnosis: "Measure 阶段最大耗时 ${view_traversal.data.find(v => v.traversal_phase === 'measure')?.max_ms}ms"
         confidence: medium
         suggestions:
@@ -328,7 +332,8 @@ steps:
         evidence_fields:
           - view_traversal.data.find(v => v.traversal_phase === 'measure')?.max_ms
 
-      - condition: "long_frames.data.filter(f => f.jank_severity === 'jank_5plus_frames').length > 0"
+      - id: choreographer.jank_5plus_frames
+        condition: "long_frames.data.filter(f => f.jank_severity === 'jank_5plus_frames').length > 0"
         diagnosis: "检测到 ${long_frames.data.filter(f => f.jank_severity === 'jank_5plus_frames').length} 个严重卡顿帧 (丢失 5+ 帧)"
         severity: critical
         confidence: high

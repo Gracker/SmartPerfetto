@@ -1602,7 +1602,8 @@ steps:
     inputs: [startup_basic, cpu_core, cpu_freq, per_cpu_context, preemption_handoffs, freq_rampup, quadrant, cpu_placement, main_slices, actionable_main_slices, main_file_io, binder_calls, main_sync_binder, binder_pool, sched_delay, thread_states, critical_tasks, blocking_graph, jit_analysis, hot_slice_states]
     rules:
       # 大核占比偏低 + Runnable 明显（仅在判定来源可信时触发）
-      - condition: "cpu_core.data[0]?.big_core_pct < 20 && cpu_core.data[0]?.unknown_core_ns === 0 && quadrant.data[0]?.q3_runnable_ms > 50"
+      - id: startup_detail.big_core_share_low_with_runnable
+        condition: "cpu_core.data[0]?.big_core_pct < 20 && cpu_core.data[0]?.unknown_core_ns === 0 && quadrant.data[0]?.q3_runnable_ms > 50"
         severity: warning
         diagnosis: "主线程大核占比偏低（${cpu_core.data[0].big_core_pct}%）且 Runnable 排队明显（${quadrant.data[0].q3_runnable_ms}ms），可能存在调度供给不足"
         confidence: medium
@@ -1611,7 +1612,8 @@ steps:
           - "对照关键线程 kernel priority、R+ 切换和 affinity/cgroup 证据，再评估调度配置"
 
       # 核判定来源不可靠时，避免把大小核结论当根因
-      - condition: "cpu_core.data[0]?.unknown_core_ns > 0"
+      - id: startup_detail.core_type_unknown
+        condition: "cpu_core.data[0]?.unknown_core_ns > 0"
         severity: info
         diagnosis: "主线程有 ${cpu_core.data[0].unknown_core_ms}ms（${cpu_core.data[0].unknown_core_pct}%）运行时间的核类型未知，不能把未知部分计为小核或据此认定摆核不足"
         confidence: medium
@@ -1619,7 +1621,8 @@ steps:
           - "补充或检查 cpu_frequency/cpu capacity 数据后再判断大小核调度问题"
 
       # Runnable 等待过长（需由调度延迟指标佐证）
-      - condition: "quadrant.data[0]?.q3_runnable_ms > 50 && (sched_delay.data[0]?.severe_count || 0) > 3"
+      - id: startup_detail.runnable_wait_with_sched_delay
+        condition: "quadrant.data[0]?.q3_runnable_ms > 50 && (sched_delay.data[0]?.severe_count || 0) > 3"
         severity: warning
         diagnosis: "主线程 Runnable 等待 ${quadrant.data[0].q3_runnable_ms}ms，且存在 ${sched_delay.data[0].severe_count} 次 >8ms 调度延迟"
         confidence: high
@@ -1628,7 +1631,8 @@ steps:
           - "减少启动期间的并发线程数"
 
       # Q4a 不可中断等待占比过高；只有 io_wait 或 IO/page-cache blocked_function 才升级为 IO 候选
-      - condition: "quadrant.data[0]?.q4a_pct > 15 && ((main_file_io.data[0]?.percent || 0) > 2 || thread_states?.data?.find(r => (r.evidence_strength === 'direct_io_wait' || r.evidence_strength === 'inferred_io_or_page_cache') && ((r.percent || 0) > 5)))"
+      - id: startup_detail.uninterruptible_wait
+        condition: "quadrant.data[0]?.q4a_pct > 15 && ((main_file_io.data[0]?.percent || 0) > 2 || thread_states?.data?.find(r => (r.evidence_strength === 'direct_io_wait' || r.evidence_strength === 'inferred_io_or_page_cache') && ((r.percent || 0) > 5)))"
         severity: warning
         diagnosis: "主线程不可中断等待占比 ${quadrant.data[0].q4a_pct}%，并出现文件 I/O 或 io_wait/page-cache blocked_function 证据，属于 IO/page-cache 等待候选"
         confidence: medium
@@ -1638,7 +1642,8 @@ steps:
           - "检查 APK/DEX 文件读取是否在关键路径"
 
       # Q4b 睡眠等待占比过高（S/I 状态 = 锁/Binder/futex 等待）
-      - condition: "quadrant.data[0]?.q4b_pct > 30 && ((main_sync_binder?.data?.find(r => r.is_main_blocked === 1)?.total_block_ms) || 0) > 20"
+      - id: startup_detail.sleeping_with_sync_binder
+        condition: "quadrant.data[0]?.q4b_pct > 30 && ((main_sync_binder?.data?.find(r => r.is_main_blocked === 1)?.total_block_ms) || 0) > 20"
         severity: warning
         diagnosis: "主线程睡眠等待(S 状态) 占比 ${quadrant.data[0].q4b_pct}% 且存在 Binder 阻塞证据"
         confidence: medium
@@ -1647,7 +1652,8 @@ steps:
           - "减少启动期间的锁竞争"
 
       # 主线程文件 IO 偏高（需与不可中断等待或 io_wait/blocked_function 证据相互印证）
-      - condition: "(main_file_io.data[0]?.total_ms > 50 || main_file_io.data[0]?.percent > 5) && ((quadrant.data[0]?.q4a_pct || 0) > 10 || (quadrant.data[0]?.q4b_pct || 0) > 20)"
+      - id: startup_detail.main_thread_file_io
+        condition: "(main_file_io.data[0]?.total_ms > 50 || main_file_io.data[0]?.percent > 5) && ((quadrant.data[0]?.q4a_pct || 0) > 10 || (quadrant.data[0]?.q4b_pct || 0) > 20)"
         severity: warning
         diagnosis: "主线程文件 IO '${main_file_io.data[0].io_slice}' 耗时 ${main_file_io.data[0].total_ms}ms（占比 ${main_file_io.data[0].percent}%）"
         confidence: high
@@ -1656,7 +1662,8 @@ steps:
           - "数据库初始化改为异步，合并小 IO 为批量 IO"
 
       # 主线程同步 Binder 偏高（仅当确认主线程被阻塞）
-      - condition: "(((main_sync_binder?.data?.find(r => r.is_main_blocked === 1)?.total_block_ms) || 0) > 80 || ((main_sync_binder?.data?.find(r => r.is_main_blocked === 1)?.max_block_ms) || 0) > 16) && ((quadrant.data[0]?.q4b_pct || 0) > 15 || (quadrant.data[0]?.q3_runnable_ms || 0) > 20)"
+      - id: startup_detail.main_sync_binder
+        condition: "(((main_sync_binder?.data?.find(r => r.is_main_blocked === 1)?.total_block_ms) || 0) > 80 || ((main_sync_binder?.data?.find(r => r.is_main_blocked === 1)?.max_block_ms) || 0) > 16) && ((quadrant.data[0]?.q4b_pct || 0) > 15 || (quadrant.data[0]?.q3_runnable_ms || 0) > 20)"
         severity: warning
         diagnosis: "主线程同步 Binder '${main_sync_binder.data.find(r => r.is_main_blocked === 1)?.interface}' 阻塞 ${main_sync_binder.data.find(r => r.is_main_blocked === 1)?.total_block_ms}ms"
         confidence: high
@@ -1665,7 +1672,8 @@ steps:
           - "减少启动首屏前的跨进程依赖调用"
 
       # Binder 调用耗时过长（仅当主线程同步 Binder 也偏高）
-      - condition: "binder_calls.data[0]?.total_client_ms > 100 && ((main_sync_binder?.data?.find(r => r.is_main_blocked === 1)?.total_block_ms) || 0) > 20"
+      - id: startup_detail.binder_calls
+        condition: "binder_calls.data[0]?.total_client_ms > 100 && ((main_sync_binder?.data?.find(r => r.is_main_blocked === 1)?.total_block_ms) || 0) > 20"
         severity: warning
         diagnosis: "Binder 调用 ${binder_calls.data[0].server_process} 总耗时 ${binder_calls.data[0].total_client_ms}ms，且主线程存在同步 Binder 阻塞"
         confidence: high
@@ -1674,7 +1682,8 @@ steps:
           - "使用异步 Binder 或延迟调用"
 
       # 严重调度延迟
-      - condition: "(sched_delay.data[0]?.severe_count || 0) > 5 && (sched_delay.data[0]?.max_latency_ms || 0) > 8"
+      - id: startup_detail.sched_delay_severe
+        condition: "(sched_delay.data[0]?.severe_count || 0) > 5 && (sched_delay.data[0]?.max_latency_ms || 0) > 8"
         severity: warning
         diagnosis: "存在 ${sched_delay.data[0].severe_count} 次严重调度延迟 (>8ms)，最大延迟 ${sched_delay.data[0].max_latency_ms}ms"
         confidence: medium
@@ -1683,7 +1692,8 @@ steps:
           - "核对抢占交接、线程 kernel priority 与实际调度策略；缺少策略证据时保留未知，不能仅凭等待总量建议改为 RT"
 
       # 可操作业务 Slice 耗时过长（优先使用非框架包裹切片）
-      - condition: "((actionable_main_slices.data[0]?.is_framework_wrapper || 0) === 0) && (actionable_main_slices.data[0]?.max_ms || 0) > 80 && (actionable_main_slices.data[0]?.percent || 0) > 15"
+      - id: startup_detail.actionable_main_slice
+        condition: "((actionable_main_slices.data[0]?.is_framework_wrapper || 0) === 0) && (actionable_main_slices.data[0]?.max_ms || 0) > 80 && (actionable_main_slices.data[0]?.percent || 0) > 15"
         severity: warning
         diagnosis: "主线程可操作热点 '${actionable_main_slices.data[0].slice_name}' 最长耗时 ${actionable_main_slices.data[0].max_ms}ms（占比 ${actionable_main_slices.data[0].percent}%）"
         confidence: high
@@ -1692,7 +1702,8 @@ steps:
           - "将首帧前非关键任务延后到 TTID 之后执行"
 
       # 单个 Slice 耗时过长（且区间占比高）
-      - condition: "main_slices.data[0]?.max_ms > 100 && (main_slices.data[0]?.percent || 0) > 20 && !['clientTransactionExecuted', 'activityStart', 'bindApplication'].includes(main_slices.data[0]?.slice_name || '') && !(main_slices.data[0]?.slice_name || '').startsWith('performCreate:')"
+      - id: startup_detail.main_slice_long
+        condition: "main_slices.data[0]?.max_ms > 100 && (main_slices.data[0]?.percent || 0) > 20 && !['clientTransactionExecuted', 'activityStart', 'bindApplication'].includes(main_slices.data[0]?.slice_name || '') && !(main_slices.data[0]?.slice_name || '').startsWith('performCreate:')"
         severity: warning
         diagnosis: "主线程操作 '${main_slices.data[0].slice_name}' 最长耗时 ${main_slices.data[0].max_ms}ms"
         confidence: high
@@ -1701,7 +1712,8 @@ steps:
           - "检查是否可以分批执行"
 
       # Q4b 占比高 + 线程状态 S 占比高 + blocked_functions 含锁等待
-      - condition: "(quadrant.data[0]?.q4b_pct || 0) > 25 && thread_states?.data?.find(r => r.state === 'S')?.percent > 20 && (thread_states?.data?.find(r => r.state === 'S')?.blocked_functions || '').includes('futex')"
+      - id: startup_detail.sleeping_state_high
+        condition: "(quadrant.data[0]?.q4b_pct || 0) > 25 && thread_states?.data?.find(r => r.state === 'S')?.percent > 20 && (thread_states?.data?.find(r => r.state === 'S')?.blocked_functions || '').includes('futex')"
         severity: warning
         diagnosis: "主线程 S(Sleeping) 状态占比 ${thread_states.data.find(r => r.state === 'S').percent}%，blocked_functions 含 futex 相关函数，存在 futex 路径等待；尚不能区分锁竞争、条件变量或线程 join"
         confidence: medium
@@ -1710,7 +1722,8 @@ steps:
           - "仅对确认影响关键路径的同步依赖提出修改"
 
       # Q4a 占比高 + D 状态，需要 io_wait 或 IO/page-cache blocked_function 才判为 IO 候选
-      - condition: "(quadrant.data[0]?.q4a_pct || 0) > 10 && thread_states?.data?.find(r => (r.evidence_strength === 'direct_io_wait' || r.evidence_strength === 'inferred_io_or_page_cache') && ((r.percent || 0) > 5))"
+      - id: startup_detail.uninterruptible_io_wait
+        condition: "(quadrant.data[0]?.q4a_pct || 0) > 10 && thread_states?.data?.find(r => (r.evidence_strength === 'direct_io_wait' || r.evidence_strength === 'inferred_io_or_page_cache') && ((r.percent || 0) > 5))"
         severity: warning
         diagnosis: "主线程 D/不可中断等待中出现 IO/page-cache 证据（${thread_states.data.find(r => r.evidence_strength === 'direct_io_wait' || r.evidence_strength === 'inferred_io_or_page_cache').total_dur_ms}ms），需要结合文件/DB slice 或 block I/O 进一步定因"
         confidence: medium
@@ -1721,7 +1734,8 @@ steps:
       # === Critical Task 诊断规则 ===
 
       # JIT 线程与主线程争抢大核
-      - condition: "(critical_tasks?.data?.find(t => t.role === 'jit')?.total_cpu_ms || 0) > 20 && (critical_tasks?.data?.find(t => t.role === 'jit')?.big_core_pct || 0) > 50"
+      - id: startup_detail.jit_cpu_time
+        condition: "(critical_tasks?.data?.find(t => t.role === 'jit')?.total_cpu_ms || 0) > 20 && (critical_tasks?.data?.find(t => t.role === 'jit')?.big_core_pct || 0) > 50"
         severity: warning
         diagnosis: "JIT 线程 CPU 时间 ${critical_tasks.data.find(t => t.role === 'jit').total_cpu_ms}ms（已分类大核占比 ${critical_tasks.data.find(t => t.role === 'jit').big_core_pct}%）；这是后台执行量，是否竞争需对齐主线程 Runnable 与同 CPU 区间"
         confidence: medium
@@ -1730,7 +1744,8 @@ steps:
           - "检查是否缺少 .prof 或 .dm 文件"
 
       # 主线程核迁移频繁
-      - condition: "(critical_tasks?.data?.find(t => t.role === 'main')?.cross_cluster_migrations || 0) > 10"
+      - id: startup_detail.main_thread_cross_cluster_migration
+        condition: "(critical_tasks?.data?.find(t => t.role === 'main')?.cross_cluster_migrations || 0) > 10"
         severity: warning
         diagnosis: "主线程观测到 ${critical_tasks.data.find(t => t.role === 'main').cross_cluster_migrations} 次跨 cluster 迁移；迁移本身不能证明缓存失效或启动延迟贡献"
         confidence: medium
@@ -1739,7 +1754,8 @@ steps:
           - "检查是否有其他线程/进程在启动期间与主线程争抢 CPU"
 
       # 多线程 CPU 时间可超过墙钟时间；这是并行度观察，不是争抢证据。
-      - condition: "(critical_tasks?.data?.[0]?.returned_total_cpu_ms || 0) > ${dur_ms} * 2"
+      - id: startup_detail.critical_thread_cpu_exceeds_duration
+        condition: "(critical_tasks?.data?.[0]?.returned_total_cpu_ms || 0) > ${dur_ms} * 2"
         severity: info
         diagnosis: "返回的关键线程 CPU 时间合计 ${critical_tasks.data[0].returned_total_cpu_ms}ms，超过启动墙钟时间 ${dur_ms}ms 的 2 倍，表明存在多核并行工作；是否竞争需检查实际 Runnable 与抢占区间"
         confidence: medium
@@ -1748,7 +1764,8 @@ steps:
           - "只有确认干扰关键路径后，才考虑降低后台并发或延迟非关键初始化"
 
       # 主线程被 system_server 阻塞（从 blocking_graph 中检测跨进程阻塞）
-      - condition: "(blocking_graph?.data?.find(b => b.blocked_role === 'main' && b.waker_process === 'system_server')?.total_block_ms || 0) > 30"
+      - id: startup_detail.main_waits_on_system_server
+        condition: "(blocking_graph?.data?.find(b => b.blocked_role === 'main' && b.waker_process === 'system_server')?.total_block_ms || 0) > 30"
         severity: warning
         diagnosis: "观测到一次主线程等待 ${blocking_graph.data.find(b => b.blocked_role === 'main' && b.waker_process === 'system_server').total_block_ms}ms 后由 system_server 唤醒；唤醒者不等于等待发起方，不能把整段等待归因给 system_server"
         confidence: medium
@@ -1757,7 +1774,8 @@ steps:
           - "检查启动期间是否有密集的跨进程 Binder 调用"
 
       # 主线程被 GC 线程阻塞
-      - condition: "(blocking_graph?.data?.find(b => b.blocked_role === 'main' && b.waker_thread === 'HeapTaskDaemon')?.total_block_ms || 0) > 10"
+      - id: startup_detail.main_waits_on_heap_task_daemon
+        condition: "(blocking_graph?.data?.find(b => b.blocked_role === 'main' && b.waker_thread === 'HeapTaskDaemon')?.total_block_ms || 0) > 10"
         severity: warning
         diagnosis: "观测到主线程等待 ${blocking_graph.data.find(b => b.blocked_role === 'main' && b.waker_thread === 'HeapTaskDaemon').total_block_ms}ms 后由 HeapTaskDaemon 唤醒；是否由 GC 引起等待仍需暂停/锁依赖证据"
         confidence: medium
@@ -1768,7 +1786,8 @@ steps:
       # === Phase C 精细化诊断规则 ===
 
       # 仅报告逐核阶段差异；比值不证明调频请求、延迟或性能损失。
-      - condition: "freq_rampup?.data?.some(r => r.rampup_pct > 50)"
+      - id: startup_detail.frequency_rampup
+        condition: "freq_rampup?.data?.some(r => r.rampup_pct > 50)"
         severity: info
         diagnosis: "UCPU ${freq_rampup.data.find(r => r.rampup_pct > 50).ucpu} 的后段频率比初期高 ${freq_rampup.data.find(r => r.rampup_pct > 50).rampup_pct}%；这是覆盖完整的阶段观测，不能直接判定升频延迟或启动损失"
         confidence: high
@@ -1777,7 +1796,8 @@ steps:
 
       # 核驻留变化不等于曾被困小核。A low share needs unknown_core_ns === 0 (see
       # lowBigGroupGuardViolations); a high one is a lower bound.
-      - condition: "cpu_placement?.data?.length > 2 && cpu_placement.data[0]?.big_core_pct != null && cpu_placement.data[2]?.big_core_pct != null && cpu_placement.data[0].unknown_core_ns === 0 && cpu_placement.data[0].big_core_pct < 20 && cpu_placement.data[2].big_core_pct > 60"
+      - id: startup_detail.big_core_share_shift
+        condition: "cpu_placement?.data?.length > 2 && cpu_placement.data[0]?.big_core_pct != null && cpu_placement.data[2]?.big_core_pct != null && cpu_placement.data[0].unknown_core_ns === 0 && cpu_placement.data[0].big_core_pct < 20 && cpu_placement.data[2].big_core_pct > 60"
         severity: info
         diagnosis: "主线程大核组占比从初期 ${cpu_placement.data[0].big_core_pct}% 变为后段 ${cpu_placement.data[2].big_core_pct}%；不能据此认定被困小核或亲和性配置错误"
         confidence: medium
@@ -1785,7 +1805,8 @@ steps:
           - "结合实际 CPU 容量、核驻留时间及任务需求说明变化；未知拓扑保持未知"
 
       # Binder 线程池利用率过高
-      - condition: "binder_pool?.data?.find(r => r.metric === '线程池利用率')?.value?.includes('⚠️')"
+      - id: startup_detail.binder_pool_utilization_high
+        condition: "binder_pool?.data?.find(r => r.metric === '线程池利用率')?.value?.includes('⚠️')"
         severity: warning
         diagnosis: "Binder 线程池利用率过高，新的 Binder 回复可能排队等待"
         confidence: medium

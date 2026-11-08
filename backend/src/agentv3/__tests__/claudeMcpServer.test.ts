@@ -291,8 +291,8 @@ import {
   MCP_NAME_PREFIX,
   loadLearnedSqlFixPairs,
   normalizeOptionalToolString,
-  requireToolDescription,
 } from '../claudeMcpServer';
+import {requirePromptSegment} from '../strategyLoader';
 import {resolveRuntimeToolConcurrencyPolicy} from '../../agentRuntime/runtimeToolConcurrency';
 import {
   resolveDurableLearningPermission,
@@ -2104,8 +2104,8 @@ describe('createClaudeMcpServer', () => {
         const description = descriptionByName.get(name) ?? '';
         const template = name === 'execute_sql'
           ? 'prompt-execute-sql-tool-description' : 'prompt-execute-sql-on-tool-description';
-        expect(description).toBe(requireToolDescription(template) + '\n\n' +
-          requireToolDescription('prompt-sql-evidence-guidance'));
+        expect(description).toBe(requirePromptSegment(template) + '\n\n' +
+          requirePromptSegment('prompt-sql-evidence-guidance'));
         expect(description).toContain('Qualify JOIN columns');
         expect(description).toContain('schema lookup when needed');
         expect(description).not.toContain('schema lookup first');
@@ -2148,12 +2148,12 @@ describe('createClaudeMcpServer', () => {
       // What raw SQL is for, and when a Skill comes first (B.2).
       expect(descriptionByName.get('execute_sql')).toContain('For what Skills and scene_evidence do not cover');
       expect(descriptionByName.get('invoke_skill')).toContain('Use it first for registered metric measurements');
-      expect(descriptionByName.get('invoke_skill')).toBe(requireToolDescription('prompt-invoke-skill-tool-description'));
+      expect(descriptionByName.get('invoke_skill')).toBe(requirePromptSegment('prompt-invoke-skill-tool-description'));
       expect(descriptionByName.get('invoke_skill')).toContain('required detail Skills');
       expect(descriptionByName.get('invoke_skill')).toContain('columnUnits');
       expect(descriptionByName.get('invoke_skill')).toContain('`fetch_artifact` its tables instead of re-running it');
       const proposePatchDescription = descriptionByName.get('propose_patch') ?? '';
-      expect(proposePatchDescription).toBe(requireToolDescription('prompt-propose-patch-tool-description'));
+      expect(proposePatchDescription).toBe(requirePromptSegment('prompt-propose-patch-tool-description'));
       expect(proposePatchDescription).toHaveLength(411);
       expect(proposePatchDescription).toContain('result.hits[].chunkId');
       expect(proposePatchDescription).toContain('context_chunk_ids');
@@ -2163,11 +2163,11 @@ describe('createClaudeMcpServer', () => {
     });
 
     it('fails closed for missing or empty required tool-description templates', () => {
-      expect(() => requireToolDescription('missing-tool-description-fixture')).toThrow(
-        'Required tool description template is missing or empty');
-      expect(() => requireToolDescription('comments-only-fixture', '<!-- no tool contract -->')).toThrow(
-        'Required tool description template is missing or empty');
-      expect(requireToolDescription('inline-fixture', '<!-- comment -->\nUse positive `upid`.')).toBe('Use positive `upid`.');
+      expect(() => requirePromptSegment('missing-tool-description-fixture')).toThrow(
+        'Required prompt template is missing or empty');
+      expect(() => requirePromptSegment('comments-only-fixture', '<!-- no tool contract -->')).toThrow(
+        'Required prompt template is missing or empty');
+      expect(requirePromptSegment('inline-fixture', '<!-- comment -->\nUse positive `upid`.')).toBe('Use positive `upid`.');
     });
 
     it('keeps critical tool families available under the broadest scoped request', () => {
@@ -11186,7 +11186,7 @@ describe('analyze_wait_chain', () => {
     // opening sentence: no selectors, no unavailable reasons, no routing.
     const {toolDefinitions} = createTestServer();
     const description = toolDefinitions.find(def => def.name === 'analyze_wait_chain')?.shared.description;
-    expect(description).toBe(requireToolDescription('prompt-analyze-wait-chain-tool-description'));
+    expect(description).toBe(requirePromptSegment('prompt-analyze-wait-chain-tool-description'));
     expect(description).toContain('attributableMs');
     expect(description).toContain('wait_open_at_trace_end');
   });

@@ -248,7 +248,8 @@ steps:
     name: "电源诊断"
     inputs: [wakelock_overview, long_wakelocks, cpu_idle_states, suspend_resume, wakeup_sources]
     rules:
-      - condition: "long_wakelocks.data.length > 0"
+      - id: power.long_wakelocks
+        condition: "long_wakelocks.data.length > 0"
         diagnosis: "检测到 ${long_wakelocks.data.length} 个长时间持有的 Wakelock，最长 ${long_wakelocks.data[0]?.dur_ms}ms"
         confidence: high
         suggestions:
@@ -260,7 +261,8 @@ steps:
           - long_wakelocks.data[0]?.wakelock_name
           - long_wakelocks.data[0]?.dur_ms
 
-      - condition: "wakelock_overview.data[0]?.total_ms > 10000"
+      - id: power.wakelock_total_long
+        condition: "wakelock_overview.data[0]?.total_ms > 10000"
         diagnosis: "Wakelock 总持有时间 ${wakelock_overview.data[0]?.total_ms}ms，电量消耗较高"
         confidence: high
         suggestions:
@@ -270,7 +272,8 @@ steps:
           - wakelock_overview.data[0]?.wakelock_event
           - wakelock_overview.data[0]?.total_ms
 
-      - condition: "wakeup_sources.data[0]?.wakeup_count > 20"
+      - id: power.wakeup_count_high
+        condition: "wakeup_sources.data[0]?.wakeup_count > 20"
         diagnosis: "唤醒次数过多: ${wakeup_sources.data[0]?.wakeup_source} 唤醒了 ${wakeup_sources.data[0]?.wakeup_count} 次"
         confidence: medium
         suggestions:
@@ -280,7 +283,8 @@ steps:
           - wakeup_sources.data[0]?.wakeup_source
           - wakeup_sources.data[0]?.wakeup_count
 
-      - condition: "suspend_resume.data.length < 2"
+      - id: power.no_deep_suspend
+        condition: "suspend_resume.data.length < 2"
         diagnosis: "设备未进入深度休眠，电量消耗增加"
         confidence: medium
         suggestions:
@@ -289,7 +293,8 @@ steps:
         evidence_fields:
           - suspend_resume.data.length
 
-      - condition: "cpu_idle_states.data[0]?.avg_value < 50"
+      - id: power.cpu_idle_low
+        condition: "cpu_idle_states.data[0]?.avg_value < 50"
         diagnosis: "CPU 空闲状态使用不充分"
         confidence: medium
         suggestions:

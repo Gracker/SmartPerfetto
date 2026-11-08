@@ -2,7 +2,9 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import type {SkillStep} from '../skillEngine/types';
+import {ROW_SEMANTICS, SKILL_COLUMN_SEMANTICS_MAX_CHARS, type SkillStep} from '../skillEngine/types';
+import {DIAGNOSTIC_RULE_ID_PATTERN} from '../skillEngine/skillProducerSteps';
+import {IDENTIFIER, normalizeDocText} from '../../agentv3/sqlStdlibColumnDocs';
 import {isDisplayTitleTranslations} from '../skillEngine/displayContractValidator';
 import {isExactSqlSource, processScopeDeclarationError} from '../skillEngine/processScopeSql';
 import {investigationEvidenceDeclarationError} from '../evidence/investigationEvidenceLedger';
@@ -143,6 +145,12 @@ function validateStringArrayField(
     );
 }
 
+/** `relation.column`, as stdlib-column-semantics.yaml keys its entries. */
+function isStdlibColumnRef(value: unknown): boolean {
+  const parts = typeof value === 'string' ? value.split('.') : [];
+  return parts.length === 2 && parts.every(part => IDENTIFIER.test(part));
+}
+
 function validateColumn(
   value: unknown,
   path: string,
@@ -168,6 +176,8 @@ function validateColumn(
       'tooltip',
       'enumValues',
       'cssClass',
+      'semantics',
+      'semantics_ref',
     ])
   ) {
     return pushIssue(
@@ -180,6 +190,20 @@ function validateColumn(
   if (value.label_i18n !== undefined && !isDisplayTitleTranslations(value.label_i18n)) {
     return pushIssue(issues, `${path}.label_i18n`, 'step_display_column_invalid',
       'label_i18n must map en or zh-CN to non-empty strings.');
+  }
+  if (value.semantics !== undefined && value.semantics_ref !== undefined) {
+    return pushIssue(issues, path, 'step_display_column_semantics_invalid',
+      'A column declares semantics or semantics_ref, not both.');
+  }
+  if (value.semantics !== undefined && (!isNonEmptyString(value.semantics)
+    || normalizeDocText(value.semantics).length > SKILL_COLUMN_SEMANTICS_MAX_CHARS)) {
+    return pushIssue(issues, `${path}.semantics`, 'step_display_column_semantics_invalid',
+      `semantics must be non-empty text of at most ${SKILL_COLUMN_SEMANTICS_MAX_CHARS} characters.`);
+  }
+  if (value.semantics_ref !== undefined
+    && !isStdlibColumnRef(value.semantics_ref)) {
+    return pushIssue(issues, `${path}.semantics_ref`, 'step_display_column_semantics_invalid',
+      'semantics_ref must name relation.column of stdlib-column-semantics.yaml.');
   }
   for (const key of [
     'name',
@@ -238,6 +262,7 @@ function validateDisplay(
       'hidden_columns',
       'collapsible',
       'defaultCollapsed',
+      'row_semantics',
     ])
   ) {
     return pushIssue(
@@ -262,6 +287,10 @@ function validateDisplay(
   if (value.title_i18n !== undefined && !isDisplayTitleTranslations(value.title_i18n)) {
     return pushIssue(issues, `${path}.title_i18n`, 'step_display_invalid',
       'display.title_i18n must map en or zh-CN to non-empty strings.');
+  }
+  if (value.row_semantics !== undefined && !(ROW_SEMANTICS as readonly unknown[]).includes(value.row_semantics)) {
+    return pushIssue(issues, `${path}.row_semantics`, 'step_display_invalid',
+      `display.row_semantics must be one of ${ROW_SEMANTICS.join(', ')}.`);
   }
   if (
     value.level !== undefined
@@ -550,6 +579,8 @@ function validateDiagnosticRules(
     if (
       !isRecord(rule)
       || !hasOnlyKeys(rule, [
+        'id',
+        'binds',
         'condition',
         'diagnosis',
         'confidence',
@@ -559,6 +590,11 @@ function validateDiagnosticRules(
       ])
       || !isNonEmptyString(rule.condition)
       || !isNonEmptyString(rule.diagnosis)
+      // Presence and uniqueness are Skill-level checks (inProcessValidator); the shape is closed here.
+      || (rule.id !== undefined && (typeof rule.id !== 'string' || !DIAGNOSTIC_RULE_ID_PATTERN.test(rule.id)))
+      || (rule.binds !== undefined && (!Array.isArray(rule.binds) || rule.binds.length === 0
+        || rule.binds.some(bind => !isRecord(bind) || !hasOnlyKeys(bind, ['name', 'field'])
+          || !isNonEmptyString(bind.name) || !isNonEmptyString(bind.field))))
       || (
         rule.severity !== undefined
         && rule.severity !== 'info'

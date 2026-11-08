@@ -653,7 +653,8 @@ steps:
     name: "IO 诊断"
     inputs: [io_overview, root_cause]
     rules:
-      - condition: "(io_overview?.data?.[0]?.severity) === 'critical'"
+      - id: io_pressure.pressure_critical
+        condition: "(io_overview?.data?.[0]?.severity) === 'critical'"
         severity: critical
         confidence: low
         diagnosis: "IO 压力严重: 总等待 ${io_overview.data[0].total_io_wait_ms}ms, 影响 ${io_overview.data[0].affected_threads} 个线程"
@@ -662,7 +663,8 @@ steps:
           - "考虑使用异步 IO 或 IO 调度优化"
           - "检查存储设备健康状况"
 
-      - condition: "(io_overview?.data?.[0]?.severity) === 'warning'"
+      - id: io_pressure.pressure_warning
+        condition: "(io_overview?.data?.[0]?.severity) === 'warning'"
         severity: warning
         confidence: low
         diagnosis: "IO 压力偏高: 总等待 ${io_overview.data[0].total_io_wait_ms}ms"
@@ -670,7 +672,8 @@ steps:
           - "分析阻塞函数，定位 IO 热点"
           - "考虑批量化 IO 操作"
 
-      - condition: "(root_cause?.data?.[0]?.root_cause_type) === 'IO_FS_BOUND'"
+      - id: io_pressure.root_cause_fs_bound
+        condition: "(root_cause?.data?.[0]?.root_cause_type) === 'IO_FS_BOUND'"
         severity: warning
         confidence: low
         diagnosis: "文件系统操作是主要 IO 瓶颈 (${root_cause.data[0].primary_pct}%)"
@@ -678,7 +681,8 @@ steps:
           - "优化文件读写模式，减少小文件操作"
           - "使用 mmap 或缓存减少文件系统调用"
 
-      - condition: "(root_cause?.data?.[0]?.root_cause_type) === 'IO_SYNC_BOUND'"
+      - id: io_pressure.root_cause_sync_bound
+        condition: "(root_cause?.data?.[0]?.root_cause_type) === 'IO_SYNC_BOUND'"
         severity: warning
         confidence: low
         diagnosis: "同步操作频繁导致 IO 等待 (${root_cause.data[0].primary_pct}%)"
@@ -686,7 +690,8 @@ steps:
           - "减少 fsync 调用频率"
           - "使用 write-back 缓存策略"
 
-      - condition: "(io_overview?.data?.[0]?.severity) === 'normal' || (io_overview?.data?.[0]?.severity) === 'info'"
+      - id: io_pressure.pressure_normal
+        condition: "(io_overview?.data?.[0]?.severity) === 'normal' || (io_overview?.data?.[0]?.severity) === 'info'"
         severity: info
         confidence: low
         diagnosis: "IO 压力在正常范围内 (${io_overview.data[0].total_io_wait_ms}ms)"

@@ -3,7 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import type {ClaudeAnalysisContext, TraceCompleteness} from './types';
-import {defaultStrategyDetail, getFinalReportContract, loadPromptTemplate} from './strategyLoader';
+import {defaultStrategyDetail, getFinalReportContract, loadPromptTemplate, promptDataEnvelope} from './strategyLoader';
 import {loadSourceUsePrompt} from '../services/codebase/sourceUseDecision';
 import {sourceAuthorizationPayload} from '../services/codebase/selectedCodebaseCapabilities';
 import {knowledgeUsePrompt} from '../services/knowledge/knowledgePrompt';
@@ -175,7 +175,7 @@ function buildTypedTurnSystemPromptParts(
       charCount: content.length, estimatedTokens: estimatePromptTokens(content)});
   };
   const data = (tier: PromptTier, label: string, value: unknown, droppable = false, truncatable = false) => {
-    if (value !== undefined) push(tier, label, JSON.stringify({context: label, data: value}), droppable, truncatable);
+    if (value !== undefined) push(tier, label, promptDataEnvelope(label, value), droppable, truncatable);
   };
   const requiredAsset = (name: string) => {
     const content = stripTemplateComments(loadPromptTemplate(name) ?? '');
@@ -213,10 +213,20 @@ function buildTypedTurnSystemPromptParts(
   }
   if (intent.taskKind === 'investigation' || intent.taskKind === 'comparison') {
     const investigation = resolveAnalysisInvestigationRequirements({intent, strategyRegistry: registry});
-    data(3, 'investigation_requirements', {...investigation,
+    // Producer-ledger status before the first request, only when the runtime supplies it.
+    const acquisition = context.investigationAcquisition;
+    const requirements = {...investigation,
       // Product execution bindings are not model instructions or evidence obligations.
-      requirements: investigation.requirements.map(({entryAcquisition: _entry, ...requirement}) => requirement),
-    });
+      requirements: investigation.requirements.map(({entryAcquisition: _entry, ...requirement}) => {
+        const status = acquisition?.get(requirement.id);
+        return status ? {...requirement, acquisition: status} : requirement;
+      }),
+    };
+    if (acquisition) {
+      push(3, 'investigation_requirements', `${requiredAsset('prompt-investigation-acquisition')}\n\n${promptDataEnvelope('investigation_requirements', requirements)}`);
+    } else {
+      data(3, 'investigation_requirements', requirements);
+    }
     push(3, 'investigation_findings', requiredAsset('prompt-investigation-findings'));
     if (intent.status === 'resolved') {
       data(3, 'scene_strategy_details', (strategy?.detailSections ?? []).map(({ref, title}) =>
@@ -265,8 +275,7 @@ function buildTypedTurnSystemPromptParts(
   if (context.sceneEvidence) {
     const template = 'kind' in context.sceneEvidence && context.sceneEvidence.kind === 'selected_foundation'
       ? 'prompt-selected-evidence' : 'prompt-scene-evidence';
-    push(2, 'scene_evidence', `${requiredAsset(template)}\n\n${JSON.stringify({
-      context: 'scene_evidence', data: context.sceneEvidence})}`);
+    push(2, 'scene_evidence', `${requiredAsset(template)}\n\n${promptDataEnvelope('scene_evidence', context.sceneEvidence)}`);
   }
   const focusApp = buildFocusAppPromptData(context.focusTarget);
   const currentPackage = packageProvenance(context.packageName, context.focusTarget);

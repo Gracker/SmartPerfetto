@@ -4,6 +4,7 @@
 
 import {
   formatDisplayContractIssue,
+  skillDisplayConfigs,
   validateSkillDisplayContract,
 } from '../skillEngine/displayContractValidator';
 import {validateSkillBatchAnalysis} from '../skillEngine/skillBatchAnalysis';
@@ -34,8 +35,10 @@ import {
   type StrategySkillInputs,
 } from '../../agentv3/strategySkillCalls';
 import {validateScopedSqlDeclarations, validateSkillStepListRuntime, type SkillStepRuntimeIssue} from './skillStepRuntimeValidator';
+import {resolveDiagnosticBind} from '../skillEngine/skillProducerSteps';
+import {stdlibColumnSemanticsEntry} from '../../agentv3/sqlStdlibColumnDocs';
 
-export const IN_PROCESS_VALIDATOR_VERSION = '10';
+export const IN_PROCESS_VALIDATOR_VERSION = '11';
 
 /**
  * Rules that already-published overlays and packs may predate. Each is an
@@ -55,6 +58,10 @@ export const IN_PROCESS_VALIDATOR_VERSION = '10';
  * - condition_uses_sql_boolean_words: a condition written with SQL AND/OR,
  *   which never compiles, so its step is silently skipped (or its branch or
  *   rule never fires); it was accepted before validator version 10.
+ * - diagnostic_rule_id_missing: a diagnostic rule without a stable id still
+ *   fires and reports its diagnosis exactly as before; it only yields no
+ *   structured fact (ruleId/bindings). Rule ids did not exist before
+ *   validator version 11, so every earlier overlay rule lacks one.
  */
 export const PREDATING_RULE_CODES: ReadonlySet<string> = new Set([
   'result_path_read_undecided',
@@ -62,6 +69,7 @@ export const PREDATING_RULE_CODES: ReadonlySet<string> = new Set([
   'process_scope_invalid',
   'sql_not_executed',
   'condition_uses_sql_boolean_words',
+  'diagnostic_rule_id_missing',
 ]);
 
 export type InProcessValidationSeverity = 'error' | 'warning';
@@ -318,6 +326,8 @@ export function validateSkillDefinitionInProcess(
     ));
   }
   issues.push(...validateDiagnosticReads(skill));
+  issues.push(...validateDiagnosticRuleFacts(skill, options.definitions));
+  issues.push(...validateColumnSemanticsRefs(skill));
   // Only an iterator filter has AND/OR rewritten; every other condition runs as written.
   const skipped = {condition: 'its step is silently skipped', when: 'its branch is never taken', rule: 'the rule never fires'};
   for (const {text, kind, at} of stepConditionExpressions(skill)) {
@@ -454,6 +464,83 @@ function validateDiagnosticReads(skill: SkillDefinition): InProcessValidationIss
         checkReads(templateRootReads(template),
           `${rulePath}.${templateIndex === 0 ? 'diagnosis' : `suggestions[${templateIndex - 1}]`}`);
       });
+    });
+  }
+  return issues;
+}
+
+/**
+ * Every diagnostic rule has a stable id, unique in its Skill, and each bind
+ * resolves to a typed column of the step it reads (resolveDiagnosticBind),
+ * rooted at one of the step's inputs. Without the complete registry a bind
+ * through a Skill reference cannot be resolved here and is left to the
+ * registry-wide run.
+ */
+function validateDiagnosticRuleFacts(
+  skill: SkillDefinition,
+  definitions: ReadonlyMap<string, SkillDefinition> | undefined,
+): InProcessValidationIssue[] {
+  const issues: InProcessValidationIssue[] = [];
+  const seen = new Map<string, string>();
+  const lookup = (name: string) => definitions?.get(name) ?? (name === skill.name ? skill : undefined);
+  for (const {node, at: path} of stepNodesOf(skill)) {
+    if (node.type !== 'diagnostic' || !Array.isArray(node.rules)) continue;
+    const inputs = new Set(Array.isArray(node.inputs) ? node.inputs : []);
+    (node.rules as DiagnosticStep['rules']).forEach((rule, index) => {
+      const rulePath = `${path}.rules[${index}]`;
+      if (!rule || typeof rule !== 'object') return;
+      if (typeof rule.id !== 'string' || !rule.id) {
+        issues.push(issue('error', 'diagnostic_rule_id_missing', skill.name, `${rulePath}.id`,
+          'A diagnostic rule needs a stable id (`<skill stem>.<condition>`, unique in its Skill) to report a structured fact.'));
+      } else if (seen.has(rule.id)) {
+        issues.push(issue('error', 'diagnostic_rule_id_duplicate', skill.name, `${rulePath}.id`,
+          `Rule id '${rule.id}' is already used at ${seen.get(rule.id)}.`));
+      } else {
+        seen.set(rule.id, rulePath);
+      }
+      const names = new Set<string>();
+      (Array.isArray(rule.binds) ? rule.binds : []).forEach((bind, bindIndex) => {
+        const bindPath = `${rulePath}.binds[${bindIndex}]`;
+        if (bind && typeof bind.name === 'string') {
+          if (names.has(bind.name)) {
+            issues.push(issue('error', 'diagnostic_bind_invalid', skill.name, bindPath, `Bind name '${bind.name}' repeats in this rule.`));
+          }
+          names.add(bind.name);
+        }
+        const resolved = resolveDiagnosticBind(skill, bind, lookup);
+        if (!resolved.ok) {
+          if (!definitions && resolved.code === 'diagnostic_bind_source_unsupported') return;
+          issues.push(issue('error', resolved.code, skill.name, bindPath, resolved.message));
+        } else if (!inputs.has(resolved.path.root)) {
+          issues.push(issue('error', 'diagnostic_bind_root', skill.name, bindPath,
+            `A bind reads this step's inputs only; '${resolved.path.root}' is not one.`));
+        }
+      });
+    });
+  }
+  return issues;
+}
+
+/**
+ * A column's `semantics_ref` names an entry of strategies/stdlib-column-semantics.yaml,
+ * and the column declares that entry's unit: the overlay describes a
+ * producer column, it never supplies or overrides the column's unit.
+ */
+function validateColumnSemanticsRefs(skill: SkillDefinition): InProcessValidationIssue[] {
+  const issues: InProcessValidationIssue[] = [];
+  for (const {display, path} of skillDisplayConfigs(skill)) {
+    const columns = display && typeof display === 'object' ? (display as {columns?: unknown}).columns : undefined;
+    if (!Array.isArray(columns)) continue;
+    columns.forEach((column, index) => {
+      const ref = column && typeof column === 'object' ? (column as {semantics_ref?: unknown}).semantics_ref : undefined;
+      if (typeof ref !== 'string') return;
+      const entry = stdlibColumnSemanticsEntry(ref);
+      const unit = (column as {unit?: unknown}).unit;
+      if (!entry || unit !== entry.unit) {
+        issues.push(issue('error', 'display_column_semantics_ref_invalid', skill.name, `${path}.columns[${index}].semantics_ref`,
+          entry ? `'${ref}' is in ${entry.unit}; the column must declare unit ${entry.unit}.`
+            : `'${ref}' is not an entry of strategies/stdlib-column-semantics.yaml.`));
+      }
     });
   }
   return issues;

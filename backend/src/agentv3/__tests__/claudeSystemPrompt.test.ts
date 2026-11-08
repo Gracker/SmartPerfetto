@@ -22,6 +22,7 @@ import {resolveAnalysisInvestigationRequirements} from '../../agentRuntime/analy
 
 // Mock strategyLoader — return minimal templates
 jest.mock('../strategyLoader', () => ({
+  promptDataEnvelope: (context: string, data: unknown) => JSON.stringify({context, data}),
   // A segment is the mocked template with its authoring comments removed.
   loadPromptSegment: jest.fn((name: string) => {
     const template = jest.requireMock<typeof import('../strategyLoader')>('../strategyLoader').loadPromptTemplate(name);

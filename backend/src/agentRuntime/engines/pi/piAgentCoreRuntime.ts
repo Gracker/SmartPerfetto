@@ -7,6 +7,7 @@ import {ensureRuntimeAdmission} from '../../runtimeTaskDeadline';
 import {createModelRequestMetricsFetch} from '../../modelRequestMetrics';
 
 import {collectSceneEvidenceForPrompt, collectSelectedEvidenceForPrompt, scenePerformanceFromSink} from '../../sceneEntryEvidence';
+import {createSkillResultNoteMemory, skillResultFactsEnabled} from '../../../agentv3/skillResultSemanticNotes';
 import {shouldCollectSelectedEvidenceFoundation} from '../../selectedEvidenceFoundation';
 import {snapshotSceneCoverageRegistry} from '../../../agent/scene/sceneCoveragePlan';
 import { EventEmitter } from 'events';
@@ -30,6 +31,7 @@ import {runIntentTransport} from '../../intentTransport';
 import {runPiIntentTransport} from './piIntentTransport';
 import {createPiAgentModelCallTracker} from './piAgentModelCalls';
 import {createPiInvestigationAdapter} from './piInvestigationAdapter';
+import {createPiInvestigationConvertToLlm, preparePiInvestigationProgress, type PiInvestigationProgressSetup} from './piInvestigationProgress';
 import {createInvestigationViewSource} from '../../investigation/investigationView';
 import {admitDeliveryCall, deliveryCallFailsOpen} from '../../../services/runtimeCallStats';
 import {buildComplexityClassifierInput} from '../../../agentv3/queryComplexityContext';
@@ -305,6 +307,8 @@ interface PiAnalysisPreparation {
   quickMemoryContextCounts?: ReturnType<typeof buildQuickMemoryContextPayload>['counts'];
   sourceUse: ReturnType<typeof createClaudeMcpServer>['sourceUse'];
   artifactStore: ArtifactStore;
+  /** Contract progress for this run; absent when the feature is off. */
+  investigationProgress?: PiInvestigationProgressSetup;
 }
 
 /** Bind completion before projection, then carry only the returned candidate context. */
@@ -1654,6 +1658,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       purpose: requestPurpose,
       accepts: () => runtimePerformance.acceptsInvestigationRequest(),
       record: receipt => runtimePerformance.recordInvestigationRequest(receipt),
+      ...(prep.investigationProgress ? {progress: prep.investigationProgress} : {}),
     });
     const agent = new Agent({
       initialState: {
@@ -1676,6 +1681,11 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         }) ?? providerRuntime.streamFn)(...args), request?.index);
       },
       prepareRequest: investigation.prepareRequest,
+      // Contract progress only: without it the Agent keeps Pi's own conversion and turn preparation.
+      ...(prep.investigationProgress ? {
+        prepareNextTurn: investigation.prepareNextTurn,
+        convertToLlm: createPiInvestigationConvertToLlm(prep.investigationProgress.render),
+      } satisfies Pick<InstalledPiAgentOptions, 'prepareNextTurn' | 'convertToLlm'> : {}),
       toolExecution: resolvePiAgentCoreNativeToolExecutionMode({quickMode: prep.quickMode, tools: prep.tools, env: this.env}),
       transport: modelConfig.transport ?? 'auto',
       maxRetryDelayMs: modelConfig.maxRetryDelayMs,
@@ -2040,7 +2050,8 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const initializeSkills = async () => {
       await ensureSkillRegistryInitialized();
       work.assertActive();
-      const skillExecutor = createSkillExecutor(this.traceProcessorService);
+      const skillExecutor = createSkillExecutor(this.traceProcessorService, undefined,
+        {diagnosticFacts: skillResultFactsEnabled(this.env)});
       const effectiveSkillRegistry =
         resolveEffectiveSkillRegistryForRuntime(skillRegistry);
       const sceneCoverageRegistry = resolveSceneProductScope(options, {sessionId, traceId, runId: options.runId ?? ''})
@@ -2183,8 +2194,10 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const uncertaintyFlags = this.sessionUncertaintyFlags.get(sessionId)!;
     uncertaintyFlags.splice(0);
 
+    // Producer notes on Skill results, once per run; absent when SMARTPERFETTO_SKILL_RESULT_FACTS is off.
+    const skillResultNotes = createSkillResultNoteMemory(this.env);
     // Product-owned scene entry evidence settles before any acquisition-capable MCP server exists.
-    const sceneEvidence = selected.handled ? selected.data : await collectSceneEvidenceForPrompt({runId: executionLease.key.runId!, traceId, turnIntent,
+    const sceneEvidence = selected.handled ? selected.data : await collectSceneEvidenceForPrompt({runId: executionLease.key.runId!, traceId, turnIntent, skillResultNotes,
       referenceTraceId: options.referenceTraceId, tracePairContext: options.tracePairContext, conversationTraceAttached: conversationTraceAttachedOption(options),
       policy, strategyRegistry, skillRegistry: effectiveSkillRegistry, skillExecutor,
       traceProcessorService: this.traceProcessorService, artifactStore, focusTarget, userPackageName: options.packageName,
@@ -2225,6 +2238,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       allowNewEvidence: policy.allowNewEvidence,
       strategyRegistry,
       skillNotesBudget,
+      skillResultNotes,
       outputLanguage,
       knowledgeScope,
       durableLearning: resolveDurableLearningPermission(options),
@@ -2237,6 +2251,11 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       ...(comparisonContext ? { comparisonContext } : {}),
     });
     const allowedToolNames = new Set(toolDefinitions.map(definition => definition.name));
+    const investigationProgress = preparePiInvestigationProgress({env: this.env, intent: turnIntent, strategyRegistry,
+      invokeSkillExposed: allowedToolNames.has('invoke_skill'),
+      skills: sceneCoverageRegistry ? sceneCoverageRegistry.skills : effectiveSkillRegistry.getAllSkills(),
+      readEvidence: () => observeRuntimeInvestigationEvidence(artifactStore,
+        piEvidenceReadOptions(executionLease.key.runId!, sessionId, traceId, options))});
     const tools = toolDefinitions.map(definition => (
       createPiAgentCoreToolFromSharedSpec(definition.shared, {
         allowedToolNames,
@@ -2268,6 +2287,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       packageName: effectivePackageName,
       focusTarget: citedFocusTarget,
       ...(sceneEvidence ? {sceneEvidence} : {}),
+      ...(investigationProgress?.acquisition ? {investigationAcquisition: investigationProgress.acquisition} : {}),
       knowledgeBaseContext,
       sceneType,
       sqlErrorFixPairs: recentSqlErrors
@@ -2312,6 +2332,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       analysisRunSpec,
       sourceUse,
       artifactStore,
+      ...(investigationProgress ? {investigationProgress} : {}),
     };
   }
 

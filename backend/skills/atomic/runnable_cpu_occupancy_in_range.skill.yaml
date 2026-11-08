@@ -72,6 +72,8 @@ display:
   level: detail
   layer: deep
   title: "Runnable 等待期间目标 CPU 的占用者"
+  # One row per target thread x waited-for CPU x occupant, over the window.
+  row_semantics: per_entity
   columns:
     - {name: window_id, label: "window_id", type: number, hidden: true}
     - {name: window_start_ts, label: "window_start_ts", type: timestamp, unit: ns, hidden: true}
@@ -104,9 +106,21 @@ display:
     - {name: occupant_process_name, label: "occupant_process_name", type: string}
     - {name: occupant_is_kernel, label: "occupant_is_kernel", type: number}
     - {name: occupant_count, label: "occupant_count", type: number, unit: count}
-    - {name: occupied_ns, label: "occupied_ns", type: duration, unit: ns}
+    - name: occupied_ns
+      label: "occupied_ns"
+      type: duration
+      unit: ns
+      semantics: >-
+        Time this occupant ran on the CPU while the target thread waited
+        Runnable for it (eventual_run_cpu), clipped to those waits. An
+        observation of who ran there, not a preemption cause.
     - {name: segment_count, label: "segment_count", type: number, unit: count}
-    - {name: share_of_runnable, label: "share_of_runnable", type: number}
+    - name: share_of_runnable
+      label: "share_of_runnable"
+      type: number
+      semantics: >-
+        occupied_ns / cpu_runnable_ns as a 0-1 fraction: the share of this
+        target thread's Runnable wait on this CPU that the occupant covered.
     - {name: occupancy_evidence, label: "occupancy_evidence", type: string}
     - {name: kernel_thread_source, label: "kernel_thread_source", type: string}
     - {name: evidence_scope, label: "evidence_scope", type: string}

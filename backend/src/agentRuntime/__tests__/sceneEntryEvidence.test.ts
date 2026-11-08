@@ -16,9 +16,11 @@ import type {InvestigationEvidenceDeclaration} from '../../services/evidence/inv
 import type {AnalysisTurnIntent} from '../analysisTurnIntent';
 import {resolveFocusAppTarget, type FocusAppTarget} from '../focusAppTarget';
 import {createRuntimePerformanceRun} from '../runtimePerformance';
+import {createSkillResultNoteMemory} from '../../agentv3/skillResultSemanticNotes';
 import {
   acquireSceneEntryEvidence,
   buildSceneEvidencePromptData,
+  collectSceneEvidenceForPrompt,
   ENTRY_SKILL_TOOL_ACCESS,
   SCENE_EVIDENCE_MAX_BYTES,
   SCENE_EVIDENCE_MAX_CELLS,
@@ -126,6 +128,25 @@ describe('product-owned scene entry evidence', () => {
     expect(receipt.tools).toEqual([]);
     expect(h.lifecycle.builder.toolResultAuditRecorder.hasRecordedData).toBe(false);
     expect(JSON.stringify(h.lifecycle.builder.toolResultAuditRecorder)).not.toContain('scene-entry:');
+  });
+
+  it('hands Pi the entry Skill\'s producer notes once, and gives a runtime without the channel none', async () => {
+    const skill = entrySkillDefinition({output: {display: {layer: 'overview', level: 'key', format: 'table', row_semantics: 'window_total',
+      columns: [{name: 'freq', type: 'number', semantics: 'Time-weighted CPU frequency in the window.'}]}}} as Partial<SkillDefinition>);
+    const memory = createSkillResultNoteMemory({})!;
+    const h = harness({skill, overrides: {skillResultNotes: memory}});
+    const data = await withRunManifestLifecycle(h.lifecycle, () => collectSceneEvidenceForPrompt(h.input)) as any;
+    expect(data.resultNotes).toEqual({steps: [{stepId: 'root', artifactId: 'art-1', rows: 'window_total', columns: [
+      {column: 'freq', semantics: 'Time-weighted CPU frequency in the window.', metricId: 'system.cpu.frequency.time_weighted',
+        coverageColumn: 'coverage', denominatorColumn: 'denominator'}]}]});
+    expect(data.facts).toBeUndefined();
+    // Carried once: the run's own later call of the same producer hears nothing new.
+    expect(memory.draft([{stepId: 'root', columns: ['freq'], producer: {skillId: 'entry_fixture', stepId: 'root',
+      display: skill.output!.display}}]).notes).toBeUndefined();
+    const fallback = harness({skill});
+    const plain = await withRunManifestLifecycle(fallback.lifecycle, () => collectSceneEvidenceForPrompt(fallback.input)) as any;
+    expect(plain.resultNotes).toBeUndefined();
+    expect(plain.status).toBe('ran');
   });
 
   it('offers no shortened string as an exact cell value', async () => {
@@ -358,6 +379,32 @@ describe('scene_evidence prompt data', () => {
     expect(bytes(data)).toBeLessThanOrEqual(SCENE_EVIDENCE_MAX_BYTES);
     expect(data).toMatchObject({status: 'ran', skillId: 'scrolling_analysis'});
     expect(data.omittedArtifactCount).toBe(40 - data.artifacts!.length);
+  });
+
+  it('carries rule facts and producer notes inside the bound, notes before key cells to go, and commits only notes it carried', () => {
+    const rule = (index: number) => ({ruleId: `fixture.rule_${index}`, bindings: [{name: 'value', value: index, unit: 'ns',
+      sourceStepId: 'overview', artifactId: 'art-1', evidenceRefId: 'data:skill:scrolling_analysis:overview:current:a:b:c'}]});
+    const facts = (count: number) => ({skillId: 'scrolling_analysis', diagnosticsArtifactId: 'art-9',
+      rules: Array.from({length: count}, (_, index) => rule(index))});
+    const commit = jest.fn();
+    const notes = {steps: [{stepId: 'overview', artifactId: 'art-1', rows: 'window_total' as const,
+      columns: [{column: 'key_0', semantics: 'n'.repeat(200)}]}]};
+    const fits = buildSceneEvidencePromptData({...outcome(cells(4, 'key'), []), facts: facts(1),
+      resultNotes: {notes, commit}})!;
+    expect(fits.facts).toEqual(facts(1));
+    expect(fits.resultNotes).toEqual(notes);
+    expect(bytes(fits)).toBeLessThanOrEqual(SCENE_EVIDENCE_MAX_BYTES);
+    // The builder is pure: the caller commits notes only once a segment carries them.
+    expect(commit).not.toHaveBeenCalled();
+
+    const crowded = buildSceneEvidencePromptData({...outcome(cells(12, 'key', 60), cells(4, 'summary')),
+      facts: facts(4), resultNotes: {notes, commit}})!;
+    expect(bytes(crowded)).toBeLessThanOrEqual(SCENE_EVIDENCE_MAX_BYTES);
+    expect(crowded.cells!.summary).toEqual([]);
+    expect(crowded.resultNotes).toBeUndefined();
+    expect((crowded.facts!.rules?.length ?? 0) + (crowded.facts!.omittedRuleCount ?? 0)).toBe(4);
+    expect(crowded.artifacts).toHaveLength(2);
+    expect(JSON.stringify(crowded)).not.toMatch(/diagnosis|severity|suggestion/);
   });
 
   it('says nothing for reasons the model need not act on', () => {

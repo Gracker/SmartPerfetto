@@ -68,13 +68,13 @@ interface StdlibColumnDocs {
 }
 
 /** Documentation text on one line, as a column note carries it. */
-function normalizeDocText(text: string): string {
+export function normalizeDocText(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
 const OVERLAY_ROOT_KEYS = ['schema_version', 'columns'] as const;
 const OVERLAY_ENTRY_KEYS = ['relation', 'column', 'unit', 'semantics'] as const;
-const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+export const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /** The overlay's structure; whether it still matches the docs is `parseDocumentedStdlibColumnSemantics`. */
 function parseStdlibColumnSemantics(value: unknown): StdlibColumnSemanticsOverlay {
@@ -125,18 +125,82 @@ function loadStdlibColumnSemantics(): StdlibColumnSemanticsOverlay {
   return loadStrategyYaml(OVERLAY_ASSET_NAME, parseStdlibColumnSemantics) ?? new Map();
 }
 
+/**
+ * The shipped overlay entry a Skill column's `semantics_ref` (`relation.column`)
+ * names, or undefined. Whether the entry still matches the stdlib docs is
+ * `validate:strategies`' check of the overlay itself.
+ */
+export function stdlibColumnSemanticsEntry(ref: string): Readonly<{unit: string; semantics: string}> | undefined {
+  const entry = loadStdlibColumnSemantics().get(ref);
+  return entry ? {unit: entry.unit, semantics: entry.semantics} : undefined;
+}
+
 function boundedDescription(description: string): string {
   const text = normalizeDocText(description);
   const limit = STDLIB_COLUMN_DOC_LIMITS.descriptionChars;
   return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
 }
 
+/** One result's notes: what it may still say, within its bound. */
+export interface EmittedNotePass {
+  /** Neither delivered earlier in the run nor considered for this result. */
+  isNew(key: string): boolean;
+  /** Takes a note outside the bound. */
+  claim(key: string): void;
+  /** Takes a note inside the bound; one left out is counted, stays eligible and returns false. */
+  admit(key: string): boolean;
+  readonly omitted: number;
+  /** Marks the taken notes delivered. Until then the run has said none of them. */
+  commit(): void;
+}
+
+/**
+ * The note keys one run has delivered to the model, so each is said once. A
+ * note left out of a result by its bound stays eligible for a later one.
+ */
+export class EmittedNoteKeys {
+  private readonly emitted = new Set<string>();
+
+  has(key: string): boolean {
+    return this.emitted.has(key);
+  }
+
+  begin(limit: number): EmittedNotePass {
+    const seen = new Set<string>();
+    const taken = new Set<string>();
+    let admitted = 0;
+    let omitted = 0;
+    const emitted = this.emitted;
+    const claim = (key: string) => {
+      seen.add(key);
+      taken.add(key);
+    };
+    return {
+      isNew: key => !emitted.has(key) && !seen.has(key),
+      claim,
+      admit(key) {
+        if (admitted >= limit) {
+          seen.add(key);
+          omitted++;
+          return false;
+        }
+        admitted++;
+        claim(key);
+        return true;
+      },
+      get omitted() { return omitted; },
+      commit() { for (const key of taken) emitted.add(key); },
+    };
+  }
+}
+
 /**
  * Emits each `relation.column` note once per owner (one MCP server per run),
- * within the per-result size bound. Notes left out by the bound stay eligible.
+ * within the per-result size bound. Pi shares the owner's keys with Skill
+ * result notes, so one overlay entry reaches the model once by either path.
  */
 export class StdlibColumnDocMemory {
-  private readonly emitted = new Set<string>();
+  constructor(private readonly emitted: EmittedNoteKeys = new EmittedNoteKeys()) {}
 
   notesFor(
     sql: string,
@@ -155,19 +219,13 @@ export class StdlibColumnDocMemory {
     const mapping = resolveRawSqlDirectProjection(analysis, outputColumns, entry.columns.map(column => column.name));
     if (!mapping) return undefined;
     const documented = new Map(entry.columns.map(column => [column.name, column]));
-    const fresh = new Set<string>();
+    const pass = this.emitted.begin(STDLIB_COLUMN_DOC_LIMITS.columns);
     const columns: StdlibColumnDoc[] = [];
-    let omittedColumns = 0;
     for (const {outputColumn, sourceColumn} of mapping) {
       const doc = documented.get(sourceColumn);
       const description = doc?.description?.trim();
       const semantics = overlay.get(key(sourceColumn));
-      if (!doc || (!description && !semantics) || this.emitted.has(key(sourceColumn)) || fresh.has(sourceColumn)) continue;
-      fresh.add(sourceColumn);
-      if (columns.length >= STDLIB_COLUMN_DOC_LIMITS.columns) {
-        omittedColumns++;
-        continue;
-      }
+      if (!doc || (!description && !semantics) || !pass.isNew(key(sourceColumn)) || !pass.admit(key(sourceColumn))) continue;
       columns.push({
         column: outputColumn,
         ...(outputColumn === sourceColumn ? {} : {sourceColumn}),
@@ -177,9 +235,9 @@ export class StdlibColumnDocMemory {
       });
     }
     if (!columns.length) return undefined;
-    for (const doc of columns) this.emitted.add(key(doc.sourceColumn ?? doc.column));
+    pass.commit();
     return {source: 'perfetto_stdlib_docs', relation: entry.name, module: entry.module, columns,
       ...(columns.some(doc => doc.semantics) ? {overlaySource: OVERLAY_SOURCE} : {}),
-      ...(omittedColumns > 0 ? {omittedColumns} : {})};
+      ...(pass.omitted > 0 ? {omittedColumns: pass.omitted} : {})};
   }
 }

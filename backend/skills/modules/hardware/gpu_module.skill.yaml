@@ -158,7 +158,8 @@ steps:
     name: "GPU 诊断"
     inputs: [gpu_freq, gpu_util, render_gpu, slow_gpu_ops]
     rules:
-      - condition: "render_gpu.data[0]?.avg_gpu_ms > 8"
+      - id: gpu.render_thread_gpu_time_long
+        condition: "render_gpu.data[0]?.avg_gpu_ms > 8"
         diagnosis: "RenderThread GPU 平均耗时过长 (${render_gpu.data[0]?.avg_gpu_ms}ms)，超过帧预算"
         confidence: high
         suggestions:
@@ -169,7 +170,8 @@ steps:
           - render_gpu.data[0].avg_gpu_ms
           - render_gpu.data[0].max_gpu_ms
 
-      - condition: "slow_gpu_ops.data.length > 10"
+      - id: gpu.slow_operations
+        condition: "slow_gpu_ops.data.length > 10"
         diagnosis: "存在 ${slow_gpu_ops.data.length} 次慢 GPU 操作"
         confidence: high
         suggestions:
@@ -179,7 +181,8 @@ steps:
           - slow_gpu_ops.data.length
           - slow_gpu_ops.data[0]?.dur_ms
 
-      - condition: "gpu_util.data[0]?.avg_value > 90"
+      - id: gpu.utilization_high
+        condition: "gpu_util.data[0]?.avg_value > 90"
         diagnosis: "GPU 利用率过高 (${gpu_util.data[0]?.avg_value}%)，接近饱和"
         confidence: medium
         suggestions:

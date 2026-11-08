@@ -55,7 +55,8 @@
         "unreceived_sync_calls",
         "max_sync_wait_ns",
         "saturation_evidence",
-        "evidence_scope"
+        "evidence_scope",
+        "pool_evidence_status"
       ],
       "assertions": [
         {
@@ -192,7 +193,8 @@
               "unreceived_sync_calls",
               "max_sync_wait_ns",
               "saturation_evidence",
-              "evidence_scope"
+              "evidence_scope",
+              "pool_evidence_status"
             ],
             "assertions": [
               {
@@ -488,7 +490,8 @@
         "unreceived_sync_calls",
         "max_sync_wait_ns",
         "saturation_evidence",
-        "evidence_scope"
+        "evidence_scope",
+        "pool_evidence_status"
       ],
       "assertions": [
         {
@@ -759,7 +762,8 @@
         "unreceived_sync_calls",
         "max_sync_wait_ns",
         "saturation_evidence",
-        "evidence_scope"
+        "evidence_scope",
+        "pool_evidence_status"
       ],
       "assertions": [
         {
@@ -871,7 +875,8 @@
         "peak_busy_threads",
         "saturated_ns",
         "waiting_sync_calls",
-        "saturation_evidence"
+        "saturation_evidence",
+        "pool_evidence_status"
       ],
       "assertions": [
         {
@@ -953,7 +958,8 @@
         "peak_busy_threads",
         "saturated_ns",
         "waiting_sync_calls",
-        "saturation_evidence"
+        "saturation_evidence",
+        "pool_evidence_status"
       ],
       "assertions": [
         {

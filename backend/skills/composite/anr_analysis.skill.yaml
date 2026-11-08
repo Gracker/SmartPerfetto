@@ -859,6 +859,7 @@ steps:
             en: "ANR timer expiry → ANR record delay (not the ANR timeout)"
           type: duration
           unit: ns
+          semantics_ref: android_anrs.timer_delay
         - name: anr_ts
           label: "ANR 时间"
           type: timestamp
@@ -883,6 +884,20 @@ steps:
         - name: root_cause_pattern_hints
           label: "候选提示"
           type: string
+        - {name: upid, label: "upid", type: number, hidden: true}
+        - {name: perfetto_end, label: "perfetto_end", type: timestamp, unit: ns, hidden: true}
+        - {name: timer_delay_status, label: "timer_delay_status", type: string, hidden: true}
+    # Each ANR's recorded timer delay, for the investigation ledger, over its
+    # analysis window. An ANR without a matched expired timer has none.
+    investigation_evidence:
+      window: {start: perfetto_start, end: perfetto_end}
+      identity: {upid: upid}
+      metrics:
+        - domain: critical_path
+          metric_id: android.anr.timer_delay
+          value: timer_delay
+          unit: ns
+          status: timer_delay_status
     synthesize:
       role: list
       groupBy:
@@ -958,7 +973,8 @@ steps:
           WHEN 'gpu_hang' THEN 'RenderThread/SF/fence 旁证'
           ELSE '确认触发类型后再定根因边界'
         END AS analysis_focus,
-        root_cause_pattern_hints
+        root_cause_pattern_hints,
+        CASE WHEN timer_delay IS NULL THEN 'not_recorded' ELSE 'observed' END AS timer_delay_status
       FROM normalized
       ORDER BY ts ASC
     save_as: anr_events
@@ -1017,7 +1033,9 @@ steps:
     optional: true
 
   # 首个 ANR 窗口内，ANR 进程及其主线程同步 Binder 对端的线程池是否饱和。
-  # 逐 ANR 深度分析开启时 anr_detail 的同名步骤已覆盖每个 ANR，这里只在关闭时补上。
+  # 逐 ANR 深度分析时 anr_detail 的同名步骤也覆盖每个 ANR，但它的结果嵌在逐事件
+  # 行内：这一步是 anr_analysis 自己的结果，进入调查证据账本，也供
+  # anr.binder_pool_saturated 规则读取，所以总在有 ANR 窗口时运行。
   - id: first_anr_binder_pool_saturation
     type: skill
     name: "首个 ANR 窗口 Binder 线程池饱和"
@@ -1027,11 +1045,12 @@ steps:
       end_ts: "${anr_ctx.data[0].anr_ts}"
       package: "${anr_ctx.data[0].process_name}"
     save_as: first_anr_binder_pool
+    save_from: pool_saturation
     display:
       level: key
       layer: deep
       title: "首个 ANR 窗口 Binder 线程池饱和"
-    condition: "detection.data[0]?.total_anr_count > 0 && anr_ctx.data?.length > 0 && enable_detail_analysis === false"
+    condition: "detection.data[0]?.total_anr_count > 0 && anr_ctx.data?.length > 0"
     optional: true
 
   # ============================================================================
@@ -1104,12 +1123,13 @@ steps:
         - condition: "severity === 'warning'"
           template: "🟡 警告：{{diagnosis}}"
         - template: "ANR 诊断：{{diagnosis}}"
-    inputs: [detection, trigger_classification, cpu_health, memory_pressure, io_load, anr_io_wait, lock_waits, freeze_check, overview, anr_events, top_processes]
+    inputs: [detection, trigger_classification, cpu_health, memory_pressure, io_load, anr_io_wait, lock_waits, freeze_check, overview, anr_events, top_processes, first_anr_binder_pool]
     rules:
       # === 系统级问题判定 ===
 
       # system_server 停滞（主线程过半时间可运行等待或不可中断等待）
-      - condition: "(detection.data[0]?.total_anr_count || 0) === 1 && freeze_check.data[0]?.freeze_verdict === 'system_server_freeze'"
+      - id: anr.system_server_freeze
+        condition: "(detection.data[0]?.total_anr_count || 0) === 1 && freeze_check.data[0]?.freeze_verdict === 'system_server_freeze'"
         severity: critical
         diagnosis: "system_server 主线程 ${freeze_check.data[0].system_server_stalled_pct}% 的存活时间处于可运行等待或不可中断等待（系统服务停滞）"
         confidence: high
@@ -1119,7 +1139,8 @@ steps:
           - "结合内核调度与系统服务线程栈定位阻塞点"
 
       # 系统停滞（有运行需求的应用主线程过半同时停滞）
-      - condition: "(detection.data[0]?.total_anr_count || 0) === 1 && freeze_check.data[0]?.freeze_verdict === 'system_freeze'"
+      - id: anr.system_freeze
+        condition: "(detection.data[0]?.total_anr_count || 0) === 1 && freeze_check.data[0]?.freeze_verdict === 'system_freeze'"
         severity: critical
         diagnosis: "系统级停滞：${freeze_check.data[0].stalled_apps}/${freeze_check.data[0].demanding_apps} 个有运行需求的应用主线程过半存活时间处于可运行等待或不可中断等待"
         confidence: high
@@ -1129,7 +1150,8 @@ steps:
           - "检查是否有内核级阻塞（内存/IO/锁）"
 
       # 多 ANR 场景下，首个窗口系统冻结只能作为 baseline context
-      - condition: "(detection.data[0]?.total_anr_count || 0) > 1 && freeze_check.data[0]?.freeze_verdict === 'system_server_freeze'"
+      - id: anr.multi.first_window_system_server_freeze
+        condition: "(detection.data[0]?.total_anr_count || 0) > 1 && freeze_check.data[0]?.freeze_verdict === 'system_server_freeze'"
         severity: warning
         diagnosis: "首个 ANR 窗口 baseline 显示 system_server 主线程 ${freeze_check.data[0].system_server_stalled_pct}% 存活时间停滞，需逐 ANR 复核后才能升级为系统根因"
         confidence: medium
@@ -1138,7 +1160,8 @@ steps:
           - "多 ANR 必须逐事件检查 direct_blocker、日志和系统线程证据"
           - "不要把首个窗口 system_server_freeze 直接推广到所有 ANR"
 
-      - condition: "(detection.data[0]?.total_anr_count || 0) > 1 && freeze_check.data[0]?.freeze_verdict === 'system_freeze'"
+      - id: anr.multi.first_window_system_freeze
+        condition: "(detection.data[0]?.total_anr_count || 0) > 1 && freeze_check.data[0]?.freeze_verdict === 'system_freeze'"
         severity: warning
         diagnosis: "首个 ANR 窗口 baseline 显示 ${freeze_check.data[0].stalled_apps}/${freeze_check.data[0].demanding_apps} 个有运行需求的应用主线程停滞，需逐 ANR 复核后才能升级为系统根因"
         confidence: medium
@@ -1148,7 +1171,8 @@ steps:
           - "若后续 ANR 窗口没有系统冻结证据，只能作为候选背景"
 
       # 多个 ANR 同时发生
-      - condition: "detection.data[0]?.total_anr_count > (multi_anr_threshold || 3) && detection.data[0]?.anr_span_seconds < (multi_anr_span_seconds || 10)"
+      - id: anr.multi.burst
+        condition: "detection.data[0]?.total_anr_count > (multi_anr_threshold || 3) && detection.data[0]?.anr_span_seconds < (multi_anr_span_seconds || 10)"
         severity: critical
         diagnosis: "短时间内发生 ${detection.data[0].total_anr_count} 个 ANR，间隔仅 ${detection.data[0].anr_span_seconds}s"
         confidence: high
@@ -1157,7 +1181,8 @@ steps:
           - "检查系统是否过载或有资源争抢"
 
       # 内存压力导致
-      - condition: "(detection.data[0]?.total_anr_count || 0) === 1 && memory_pressure.data?.length > 0"
+      - id: anr.lmk_during_window
+        condition: "(detection.data[0]?.total_anr_count || 0) === 1 && memory_pressure.data?.length > 0"
         severity: critical
         diagnosis: "ANR 期间发生 LMK 杀进程，系统内存压力大"
         confidence: high
@@ -1167,7 +1192,8 @@ steps:
           - "考虑减少内存使用"
 
       # CPU 过载
-      - condition: "(detection.data[0]?.total_anr_count || 0) === 1 && cpu_health.data?.find(r => r.status === 'overloaded')"
+      - id: anr.cpu_overloaded
+        condition: "(detection.data[0]?.total_anr_count || 0) === 1 && cpu_health.data?.find(r => r.status === 'overloaded')"
         severity: critical
         diagnosis: "CPU ${cpu_health.data.find(r => r.status === 'overloaded').core_type} 核过载 (${cpu_health.data.find(r => r.status === 'overloaded').avg_util_pct}%)"
         confidence: high
@@ -1178,7 +1204,8 @@ steps:
 
       # D-state 不可中断等待：只能作为低置信系统/内核等待候选，不能直接等同磁盘 IO
       # The main thread of the ANR process, never the longest D wait system-wide.
-      - condition: "(detection.data[0]?.total_anr_count || 0) === 1 && (anr_io_wait.data?.[0]?.main_thread_uninterruptible_ms || 0) > (uninterruptible_wait_threshold_ms || io_wait_threshold_ms || 500)"
+      - id: anr.main_thread_uninterruptible_wait
+        condition: "(detection.data[0]?.total_anr_count || 0) === 1 && (anr_io_wait.data?.[0]?.main_thread_uninterruptible_ms || 0) > (uninterruptible_wait_threshold_ms || io_wait_threshold_ms || 500)"
         severity: warning
         diagnosis: "ANR 进程 ${anr_io_wait.data[0].process_name} 主线程在 ANR 窗口内 D-state 不可中断等待 ${anr_io_wait.data[0].main_thread_uninterruptible_ms}ms"
         confidence: low
@@ -1187,7 +1214,8 @@ steps:
           - "只有 blocked_function、slice 或 block IO 证据命中 io_schedule/fsync/blk/ext4/f2fs/filemap_fault 等路径时，才升级为 IO 根因"
 
       # Futex/Mutex 锁竞争
-      - condition: "(detection.data[0]?.total_anr_count || 0) === 1 && (lock_waits?.data?.find(r => r.wait_type === 'futex')?.p95_wait_ms || 0) > (lock_contention_futex_p95_critical_ms || 20)"
+      - id: anr.lock.futex_p95_wait
+        condition: "(detection.data[0]?.total_anr_count || 0) === 1 && (lock_waits?.data?.find(r => r.wait_type === 'futex')?.p95_wait_ms || 0) > (lock_contention_futex_p95_critical_ms || 20)"
         severity: warning
         diagnosis: "ANR 窗口 Futex P95 等待 ${lock_waits.data.find(r => r.wait_type === 'futex').p95_wait_ms}ms，存在锁等待候选信号"
         confidence: medium
@@ -1196,7 +1224,8 @@ steps:
           - "必须结合逐 ANR direct_blocker_classification 和当前进程 MainThread lock_contention 再判断"
           - "若确认主线程锁等待，再排查持锁线程、锁顺序和锁内 Binder/IO/数据库操作"
 
-      - condition: "(detection.data[0]?.total_anr_count || 0) === 1 && (lock_waits?.data?.find(r => r.wait_type === 'mutex')?.p95_wait_ms || 0) > (lock_contention_mutex_p95_warning_ms || 10)"
+      - id: anr.lock.mutex_p95_wait
+        condition: "(detection.data[0]?.total_anr_count || 0) === 1 && (lock_waits?.data?.find(r => r.wait_type === 'mutex')?.p95_wait_ms || 0) > (lock_contention_mutex_p95_warning_ms || 10)"
         severity: warning
         diagnosis: "ANR 窗口 Mutex P95 等待 ${lock_waits.data.find(r => r.wait_type === 'mutex').p95_wait_ms}ms，锁等待偏高"
         confidence: medium
@@ -1207,7 +1236,8 @@ steps:
       # === 应用级问题判定 ===
 
       # 无焦点窗口输入超时：触发链不同于普通主线程 busy，不能只看 nativePoll/idle
-      - condition: "(detection.data[0]?.total_anr_count || 0) === 1 && trigger_classification.data?.find(r => r.trigger_type === 'no_focus_window')"
+      - id: anr.trigger.no_focus_window
+        condition: "(detection.data[0]?.total_anr_count || 0) === 1 && trigger_classification.data?.find(r => r.trigger_type === 'no_focus_window')"
         severity: warning
         diagnosis: "触发类型分流：无焦点窗口输入超时，需要窗口焦点链证据闭环"
         confidence: medium
@@ -1217,7 +1247,8 @@ steps:
           - "结合 WindowManager/InputDispatcher/AnrManager 日志确认焦点丢失阶段"
 
       # JobScheduler 超时：Android 14+ 常见细分触发类型
-      - condition: "(detection.data[0]?.total_anr_count || 0) === 1 && trigger_classification.data?.find(r => r.trigger_type === 'job_scheduler_timeout')"
+      - id: anr.trigger.job_scheduler_timeout
+        condition: "(detection.data[0]?.total_anr_count || 0) === 1 && trigger_classification.data?.find(r => r.trigger_type === 'job_scheduler_timeout')"
         severity: warning
         diagnosis: "触发类型分流：JobScheduler 相关 ANR，需要 JobService 回调或绑定链路证据"
         confidence: medium
@@ -1227,7 +1258,8 @@ steps:
           - "不要只按普通 Service 超时处理，需保留 JobService 回调语义"
 
       # system_server Watchdog/SWT：系统级触发，不默认归因到 App
-      - condition: "(detection.data[0]?.total_anr_count || 0) === 1 && trigger_classification.data?.find(r => r.trigger_type === 'system_watchdog_swt')"
+      - id: anr.trigger.system_watchdog_swt
+        condition: "(detection.data[0]?.total_anr_count || 0) === 1 && trigger_classification.data?.find(r => r.trigger_type === 'system_watchdog_swt')"
         severity: warning
         diagnosis: "触发类型分流：system_server Watchdog/SWT，需要系统服务线程证据闭环"
         confidence: medium
@@ -1237,7 +1269,8 @@ steps:
           - "结合 system_server 线程状态、monitor contention 与系统日志闭环"
 
       # 目标进程 CPU 占用高：候选 high-load 证据，不等同最终根因
-      - condition: "(detection.data[0]?.total_anr_count || 0) === 1 && top_processes.data?.find(p => p.process_name === anr_events.data?.[0]?.process_name && p.cpu_pct > 85)"
+      - id: anr.target_process_cpu_high
+        condition: "(detection.data[0]?.total_anr_count || 0) === 1 && top_processes.data?.find(p => p.process_name === anr_events.data?.[0]?.process_name && p.cpu_pct > 85)"
         severity: warning
         diagnosis: "目标进程在 ANR 窗口 CPU 占比 ${top_processes.data.find(p => p.process_name === anr_events.data?.[0]?.process_name && p.cpu_pct > 85).cpu_pct}%"
         confidence: medium
@@ -1247,7 +1280,8 @@ steps:
           - "不要仅凭 CPU 占比高给出最终根因"
 
       # 输入超时触发类型（非最终根因）
-      - condition: "(detection.data[0]?.total_anr_count || 0) === 1 && trigger_classification.data?.find(r => r.trigger_type === 'input_dispatching_timeout')"
+      - id: anr.trigger.input_dispatching_timeout
+        condition: "(detection.data[0]?.total_anr_count || 0) === 1 && trigger_classification.data?.find(r => r.trigger_type === 'input_dispatching_timeout')"
         severity: warning
         diagnosis: "触发类型分流：输入事件超时，需要 direct_blocker/线程状态/日志证据闭环"
         confidence: medium
@@ -1257,7 +1291,8 @@ steps:
           - "只有线程状态、对端或日志证据闭环后才能升级为根因"
 
       # 广播超时触发类型（非最终根因）
-      - condition: "(detection.data[0]?.total_anr_count || 0) === 1 && trigger_classification.data?.find(r => r.trigger_type === 'broadcast_timeout')"
+      - id: anr.trigger.broadcast_timeout
+        condition: "(detection.data[0]?.total_anr_count || 0) === 1 && trigger_classification.data?.find(r => r.trigger_type === 'broadcast_timeout')"
         severity: warning
         diagnosis: "触发类型分流：广播处理超时，需要 onReceive/goAsync/finish 链路证据"
         confidence: medium
@@ -1267,7 +1302,8 @@ steps:
           - "需要当前 ANR 的线程状态、日志或组件证据闭环"
 
       # 服务超时触发类型（非最终根因）
-      - condition: "(detection.data[0]?.total_anr_count || 0) === 1 && trigger_classification.data?.find(r => r.trigger_type === 'service_timeout')"
+      - id: anr.trigger.service_timeout
+        condition: "(detection.data[0]?.total_anr_count || 0) === 1 && trigger_classification.data?.find(r => r.trigger_type === 'service_timeout')"
         severity: warning
         diagnosis: "触发类型分流：服务生命周期超时，需要 Service/FGS 链路证据"
         confidence: medium
@@ -1277,7 +1313,8 @@ steps:
           - "结合 direct_blocker 与日志证据确认是主线程、对端还是系统资源问题"
 
       # ContentProvider 超时触发类型（非最终根因）
-      - condition: "(detection.data[0]?.total_anr_count || 0) === 1 && trigger_classification.data?.find(r => r.trigger_type === 'content_provider_timeout')"
+      - id: anr.trigger.content_provider_timeout
+        condition: "(detection.data[0]?.total_anr_count || 0) === 1 && trigger_classification.data?.find(r => r.trigger_type === 'content_provider_timeout')"
         severity: warning
         diagnosis: "触发类型分流：ContentProvider 超时，需要 provider 发布/查询链路证据"
         confidence: medium
@@ -1285,6 +1322,23 @@ steps:
           - "ContentProvider not responding 只说明触发入口"
           - "检查 provider 主线程、Binder 线程、数据库/文件 IO 和调用方等待"
           - "没有逐事件阻塞证据时不要写成最终根因"
+
+      # 首个 ANR 窗口内观测到某个目标线程池全部忙碌（不含只有一个观测线程的池）。
+      # 这是线程池观测：不能单独证明主线程同步调用因排队而变慢。
+      - id: anr.binder_pool_saturated
+        condition: "first_anr_binder_pool.data?.find(r => r.saturation_evidence === 'saturated_observed')"
+        severity: warning
+        diagnosis: "首个 ANR 窗口内 ${first_anr_binder_pool.data.find(r => r.saturation_evidence === 'saturated_observed').process_name} 的 Binder 线程池（观测到 ${first_anr_binder_pool.data.find(r => r.saturation_evidence === 'saturated_observed').pool_size} 个活跃线程）全部忙碌共 ${first_anr_binder_pool.data.find(r => r.saturation_evidence === 'saturated_observed').saturated_ns} ns，并发忙碌峰值 ${first_anr_binder_pool.data.find(r => r.saturation_evidence === 'saturated_observed').peak_busy_threads}"
+        confidence: medium
+        suggestions:
+          - "线程池大小是 trace 中观测到的活跃线程数，不是配置上限"
+          - "结合主线程同步 Binder 等待与对端 reply 时间判断是否排队，饱和本身不证明等待由排队造成"
+        binds:
+          - {name: process_name, field: "first_anr_binder_pool.data.find(r => r.saturation_evidence === 'saturated_observed').process_name"}
+          - {name: target_role, field: "first_anr_binder_pool.data.find(r => r.saturation_evidence === 'saturated_observed').target_role"}
+          - {name: pool_size, field: "first_anr_binder_pool.data.find(r => r.saturation_evidence === 'saturated_observed').pool_size"}
+          - {name: peak_busy_threads, field: "first_anr_binder_pool.data.find(r => r.saturation_evidence === 'saturated_observed').peak_busy_threads"}
+          - {name: saturated_ns, field: "first_anr_binder_pool.data.find(r => r.saturation_evidence === 'saturated_observed').saturated_ns"}
 
 output:
   format: structured

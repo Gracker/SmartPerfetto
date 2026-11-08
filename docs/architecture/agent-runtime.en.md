@@ -289,6 +289,28 @@ view reads only typed intent, the pinned contract, the producer ledger and the
 run budget; it is created per run and released at finalization, and the adapter
 returns no request update.
 
+Contract progress is controlled by `SMARTPERFETTO_INVESTIGATION_PROGRESS` and is
+off by default; when off, the Agent options, prompt and requests are exactly as
+without the feature. When on, the first request's existing
+`investigation_requirements` segment gives each requirement its run-start ledger
+`acquisition` status (a status, not a nudge). Later decisions are made only at
+turn boundaries (`prepareNextTurn`) and cached under the next request index;
+`prepareRequest` only records. One progress message rides the request already
+scheduled, never adding a provider request or extending the run, only when all
+of these hold: an `answer_turn` request after the first; `allowNewEvidence`
+(never under `existing_only`, a correction or closeout); a readable ledger; a
+`not_observed` requirement with at least one registered producer that
+`invoke_skill` can reach in the request scope; at least half the acquisition
+turns used and one still left afterwards. Each requirement is named at most
+once, with at most 3 per message and 2 messages per run. The message is a
+custom Agent role that `convertToLlm` renders as a `user` message
+(`prompt-investigation-progress.template.md` plus bounded JSON: requirement id,
+domain, description, condition as written, metrics and producer Skill ids),
+never a mid-conversation `system` message. It states contract status only, no
+obligation or conclusion, and never reaches narration, drafts, SSE, results,
+reports, snapshots or conversation history. Its receipt records `decision:
+progress` with only `progress.messages` and `requirementIds`.
+
 The shared tool handoff also records bounded `activity`: attempts, dispatch into
 the guarded pipeline, returns, refusals, exceptions, cancellations, and repeated
 calls with exactly equal complete arguments. Arguments only participate in
@@ -478,6 +500,20 @@ summary cells go before key cells), and `RuntimePerformance` records a
 `allowMemoryPrefetch` gates only the memory tier and has nothing to do with it.
 String cells shortened upstream are not offered to the model as exact values;
 artifact locators remain available for reading the original evidence.
+
+Pi alone creates a per-run Skill result note memory and turns on the executor's
+rule facts (`agentv3/skillResultSemanticNotes.ts`; an off value of
+`SMARTPERFETTO_SKILL_RESULT_FACTS` disables both); the hidden fallback runtimes
+have neither. Both `invoke_skill` return paths, `fetch_artifact` and the
+`scene_evidence` segment carry producer `resultNotes` (column meaning,
+`row_semantics`, an investigation metric's aggregation/coverage/denominator
+declarations; each `skillId.stepId.column` once per run, at most 24 columns per
+result) and the `facts` of fired diagnostic rules (`ruleId`, bound values with
+the source column's unit, result locators, at most 2 KiB; never severity,
+diagnosis or suggestion text). Over its bound `scene_evidence` drops summary
+cells, then `resultNotes`, key cells and `facts`; an undelivered note stays owed
+to a later result. `facts` are projected only from the diagnostics the run
+already recorded, and a fact grants no evidence authority.
 
 **Minimum evidence for the current selection.** A resolved `bounded_question`
 `read_new` investigation also needs explicit `targetUse=current_selection`

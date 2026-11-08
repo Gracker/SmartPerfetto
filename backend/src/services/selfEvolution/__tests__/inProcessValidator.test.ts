@@ -174,6 +174,82 @@ describe('in-process effective Skill validator', () => {
     ]);
   });
 
+  it('requires stable rule ids and binds that resolve to a typed, unit-bearing producer column', () => {
+    const child = {...skill('pool_child'), type: 'atomic', steps: [
+      {id: 'pools', type: 'atomic', sql: 'SELECT 1', display: {row_semantics: 'per_entity', columns: [
+        {name: 'saturated_ns', type: 'duration', unit: 'ns'}, {name: 'process_name', type: 'string'}]}},
+    ]} as unknown as SkillDefinition;
+    const factIssues = (rules: Array<Record<string, unknown>>, options: {
+      rowSemantics?: string; columns?: unknown[]; saveFrom?: boolean; severity?: 'error' | 'warning';
+    } = {}) => {
+      const definition = skill('facts');
+      definition.steps = [
+        {id: 'events', type: 'atomic', sql: 'SELECT 1', save_as: 'events', display: {
+          ...(options.rowSemantics ? {row_semantics: options.rowSemantics} : {}),
+          columns: options.columns ?? [{name: 'dur_ns', type: 'duration', unit: 'ns'}, {name: 'count', type: 'number'},
+            {name: 'name', type: 'string'}, 'bare']}},
+        {id: 'child_call', skill: 'pool_child', save_as: 'pool', ...(options.saveFrom === false ? {} : {save_from: 'pools'})},
+        {id: 'check', type: 'diagnostic', inputs: ['events', 'pool'],
+          rules: rules.map(rule => ({condition: 'true', diagnosis: 'hit', confidence: 'high', ...rule}))} as any,
+      ] as any;
+      return validateSkillDefinitionsInProcess({definitions: [definition, child], affectedSkillIds: ['facts'],
+        ...(options.severity ? {predatingRuleSeverity: options.severity} : {})}).issues
+        .filter(entry => entry.code.startsWith('diagnostic_rule_id') || entry.code.startsWith('diagnostic_bind'))
+        .map(entry => `${entry.severity} ${entry.code} ${entry.path}`);
+    };
+    const field = (path: string) => [{id: 'fixture.rule', binds: [{name: 'value', field: path}]}];
+    expect(factIssues([
+      {id: 'fixture.a', binds: [{name: 'dur', field: 'events.data[0].dur_ns'}, {name: 'label', field: 'events.data[0]?.name'}]},
+      {id: 'fixture.b', binds: [{name: 'saturated', field: "pool.data.find(r => r.process_name === 'x').saturated_ns"}]},
+    ])).toEqual([]);
+    // An id is required (a predating rule for published overlays) and unique in the Skill.
+    expect(factIssues([{}, {id: 'fixture.a'}, {id: 'fixture.a'}])).toEqual([
+      'error diagnostic_rule_id_missing steps[2].rules[0].id',
+      'error diagnostic_rule_id_duplicate steps[2].rules[2].id']);
+    expect(factIssues([{}], {severity: 'warning'})).toEqual(['warning diagnostic_rule_id_missing steps[2].rules[0].id']);
+    const bindIssue = (code: string) => [`error ${code} steps[2].rules[0].binds[0]`];
+    // A number without a unit, a string shorthand without a type, an undeclared column.
+    expect(factIssues(field('events.data[0].count'))).toEqual(bindIssue('diagnostic_bind_unit_missing'));
+    expect(factIssues(field('events.data[0].bare'))).toEqual(bindIssue('diagnostic_bind_column_undeclared'));
+    expect(factIssues(field('events.data[0].missing'))).toEqual(bindIssue('diagnostic_bind_column_undeclared'));
+    // One row's column, read only; the root is an input of this step.
+    expect(factIssues(field('events.data.length'))).toEqual(bindIssue('diagnostic_bind_field_shape'));
+    expect(factIssues(field("events.data.filter(r => r.name === 'x')[0].dur_ns"))).toEqual(bindIssue('diagnostic_bind_field_shape'));
+    expect(factIssues(field('events.data[0].dur_ns()'))).toEqual(bindIssue('diagnostic_bind_field_shape'));
+    expect(factIssues(field('other.data[0].dur_ns'))).toEqual(bindIssue('diagnostic_bind_source_ambiguous'));
+    // find() picks a row: only a producer whose rows are aggregates may be read that way.
+    expect(factIssues(field("events.data.find(r => r.name === 'x').dur_ns"))).toEqual(bindIssue('diagnostic_bind_row_pick'));
+    expect(factIssues(field("events.data.find(r => r.name === 'x').dur_ns"), {rowSemantics: 'per_event'}))
+      .toEqual(bindIssue('diagnostic_bind_row_pick'));
+    expect(factIssues(field("events.data.find(r => r.name === 'x').dur_ns"), {rowSemantics: 'window_total'})).toEqual([]);
+    // A Skill reference binds its child step through save_from only.
+    expect(factIssues(field('pool.data[0].saturated_ns'), {saveFrom: false}))
+      .toEqual(bindIssue('diagnostic_bind_source_unsupported'));
+    expect(factIssues([{id: 'fixture.rule', binds: [{name: 'x', field: 'events.data[0].dur_ns'},
+      {name: 'x', field: 'events.data[0].name'}]}])).toEqual(['error diagnostic_bind_invalid steps[2].rules[0].binds[1]']);
+  });
+
+  it('checks semantics_ref against the stdlib overlay and the column unit, and the closed note shapes', () => {
+    const noteIssues = (column: Record<string, unknown>, display: Record<string, unknown> = {}) => {
+      const definition = skill('notes');
+      definition.steps = [{id: 'root', type: 'atomic', sql: 'SELECT 1', display: {...display, columns: [column]}} as any];
+      return validateSkillDefinitionsInProcess({definitions: [definition]}).issues
+        .filter(entry => entry.severity === 'error').map(entry => `${entry.code} ${entry.path}`);
+    };
+    expect(noteIssues({name: 'timer_delay', type: 'duration', unit: 'ns', semantics_ref: 'android_anrs.timer_delay'},
+      {row_semantics: 'per_event'})).toEqual([]);
+    expect(noteIssues({name: 'timer_delay', type: 'duration', unit: 'ms', semantics_ref: 'android_anrs.timer_delay'}))
+      .toEqual(['display_column_semantics_ref_invalid steps[0].display.columns[0].semantics_ref']);
+    expect(noteIssues({name: 'x', type: 'duration', unit: 'ns', semantics_ref: 'android_anrs.no_such_column'}))
+      .toEqual(['display_column_semantics_ref_invalid steps[0].display.columns[0].semantics_ref']);
+    expect(noteIssues({name: 'x', type: 'number', semantics: 'y'.repeat(241)}))
+      .toEqual(expect.arrayContaining(['step_display_column_semantics_invalid steps[0].display.columns[0].semantics']));
+    expect(noteIssues({name: 'x', type: 'number', semantics: 'Meaning.', semantics_ref: 'android_anrs.timer_delay'}))
+      .toEqual(expect.arrayContaining(['step_display_column_semantics_invalid steps[0].display.columns[0]']));
+    expect(noteIssues({name: 'x', type: 'number'}, {row_semantics: 'per_row'}))
+      .toEqual(expect.arrayContaining(['step_display_invalid steps[0].display.row_semantics']));
+  });
+
   it('requires a diagnostic rule to read step data only through its declared inputs', () => {
     const diagnosticIssues = (inputs: string[] | undefined, rule: Record<string, unknown>) => {
       const definition = skill('diagnose');
@@ -182,7 +258,7 @@ describe('in-process effective Skill validator', () => {
         {id: 'load_rows', type: 'atomic', sql: 'SELECT 1', save_as: 'rows'},
         {id: 'other', type: 'atomic', sql: 'SELECT 2'},
         {id: 'check', type: 'diagnostic', ...(inputs ? {inputs} : {}),
-          rules: [{condition: 'true', diagnosis: 'hit', confidence: 'high', ...rule}]} as any,
+          rules: [{id: 'fixture.hit', condition: 'true', diagnosis: 'hit', confidence: 'high', ...rule}]} as any,
       ];
       // Structural shape issues and the confidence check have their own tests.
       return validateSkillDefinitionsInProcess({definitions: [definition]}).issues
@@ -286,7 +362,7 @@ describe('in-process effective Skill validator', () => {
       definition.steps = [
         {id: 'rows', type: 'atomic', sql: 'SELECT 1'},
         {id: 'check', type: 'diagnostic', inputs: ['rows'],
-          rules: [{condition: 'true', diagnosis: 'hit', confidence: 'high', ...rule}]} as any,
+          rules: [{id: 'fixture.hit', condition: 'true', diagnosis: 'hit', confidence: 'high', ...rule}]} as any,
       ];
       return validateSkillDefinitionsInProcess({definitions: [definition]}).issues
         .filter(entry => entry.code.startsWith('diagnostic_')).map(entry => `${entry.code} ${entry.path}`);
@@ -394,7 +470,7 @@ describe('in-process effective Skill validator', () => {
     existing.steps = [
       {id: 'rows', type: 'atomic', sql: 'SELECT 1'},
       {id: 'check', type: 'diagnostic', inputs: ['rows'],
-        rules: [{condition: 'rows.data.length > (inputs?.limit ?? 1)', diagnosis: 'hit', confidence: 'high'}]} as any,
+        rules: [{id: 'fixture.hit', condition: 'rows.data.length > (inputs?.limit ?? 1)', diagnosis: 'hit', confidence: 'high'}]} as any,
     ];
     const codes = validateSkillDefinitionsInProcess({definitions: [existing, skill('candidate')]}).issues.map(entry => entry.code);
     expect(codes).toContain('diagnostic_root_unknown');
@@ -532,7 +608,7 @@ describe('in-process effective Skill validator', () => {
       undeclaredSkillParamSeverity: 'warning',
     });
 
-    expect(gate.validatorVersion).toBe('10');
+    expect(gate.validatorVersion).toBe('11');
     expect(gate.valid).toBe(false);
     expect(gate.issues).toEqual([
       expect.objectContaining({
@@ -587,7 +663,7 @@ describe('in-process effective Skill validator', () => {
       ]},
       {id: 'each', type: 'iterator', source: 'rows', item_skill: 'booleans', filter: "n > 1 OR n < 0"},
       {id: 'check', type: 'diagnostic', inputs: ['rows'], rules: [
-        {condition: 'rows.data.length > 0 AND true', diagnosis: 'hit', confidence: 'high'},
+        {id: 'fixture.hit', condition: 'rows.data.length > 0 AND true', diagnosis: 'hit', confidence: 'high'},
       ]},
     ] as any;
     const issues = (severity?: 'warning') =>
@@ -653,7 +729,7 @@ describe('in-process effective Skill validator', () => {
     const definition = skill('diagnosing');
     definition.steps = [
       {id: 'rows', type: 'atomic', sql: 'SELECT 1'},
-      {id: 'verdict', type: 'diagnostic', inputs: ['rows'], rules: [{condition: 'true', diagnosis: 'seen'}]} as any,
+      {id: 'verdict', type: 'diagnostic', inputs: ['rows'], rules: [{id: 'fixture.seen', condition: 'true', diagnosis: 'seen'}]} as any,
     ];
     expect(validateSkillDefinitionsInProcess({definitions: [definition]}).issues.map(entry => `${entry.code}@${entry.path}`))
       .toEqual(['diagnostic_confidence_invalid@steps[1].rules[0].confidence', 'diagnostic_step_invalid@steps[1]']);

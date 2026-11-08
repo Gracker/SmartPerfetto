@@ -153,7 +153,8 @@ steps:
     name: "应用诊断"
     inputs: [thread_overview, main_thread_state, long_slices, render_thread_state]
     rules:
-      - condition: "main_thread_state.data.find(s => s.state === 'Running')?.pct > 80"
+      - id: third_party.main_thread_running_high
+        condition: "main_thread_state.data.find(s => s.state === 'Running')?.pct > 80"
         diagnosis: "主线程 CPU 占用过高 (${main_thread_state.data.find(s => s.state === 'Running')?.pct}%)，可能导致 UI 响应慢"
         confidence: high
         suggestions:
@@ -163,7 +164,8 @@ steps:
           - main_thread_state.data[0].pct
           - main_thread_state.data[0].dur_ms
 
-      - condition: "main_thread_state.data.find(s => s.state === 'R')?.pct > 10"
+      - id: third_party.main_thread_runnable_high
+        condition: "main_thread_state.data.find(s => s.state === 'R')?.pct > 10"
         diagnosis: "主线程 Runnable 等待过长 (${main_thread_state.data.find(s => s.state === 'R')?.pct}%)，存在 CPU 竞争"
         confidence: high
         suggestions:
@@ -172,7 +174,8 @@ steps:
         evidence_fields:
           - main_thread_state.data.find(s => s.state === 'R')?.pct
 
-      - condition: "long_slices.data[0]?.dur_ms > 16"
+      - id: third_party.main_thread_long_task
+        condition: "long_slices.data[0]?.dur_ms > 16"
         diagnosis: "发现耗时主线程任务: ${long_slices.data[0]?.task_name} (${long_slices.data[0]?.dur_ms}ms)"
         confidence: high
         suggestions:
@@ -182,7 +185,8 @@ steps:
           - long_slices.data[0].task_name
           - long_slices.data[0].dur_ms
 
-      - condition: "thread_overview.data.length > 30"
+      - id: third_party.thread_count_high
+        condition: "thread_overview.data.length > 30"
         diagnosis: "应用线程数过多 (${thread_overview.data.length} 个活跃线程)"
         confidence: medium
         suggestions:

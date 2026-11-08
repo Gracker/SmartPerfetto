@@ -91,6 +91,7 @@ display:
         en: "ANR timer expiry → ANR record delay (not the ANR timeout)"
       type: duration
       unit: ns
+      semantics_ref: android_anrs.timer_delay
     - name: process_name
       label: "进程名"
       type: string
@@ -100,6 +101,19 @@ display:
     - name: anr_type
       label: "ANR 类型"
       type: string
+    - {name: timer_delay_status, label: "timer_delay_status", type: string, hidden: true}
+
+# The recorded timer delay of the ANR, for the investigation ledger, over the
+# ANR's analysis window. A trace without a matched expired timer has none.
+investigation_evidence:
+  window: {start: window_start_ts, end: anr_ts}
+  identity: {upid: upid}
+  metrics:
+    - domain: critical_path
+      metric_id: android.anr.timer_delay
+      value: timer_delay
+      unit: ns
+      status: timer_delay_status
 
 sql_fragments:
   - fragments/anr_matched.sql
@@ -117,7 +131,8 @@ sql: |
     pid,
     upid,
     anr_type,
-    error_id
+    error_id,
+    CASE WHEN timer_delay IS NULL THEN 'not_recorded' ELSE 'observed' END as timer_delay_status
   FROM anr_matched
   ORDER BY ts ASC
   LIMIT 1

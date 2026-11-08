@@ -963,7 +963,8 @@ steps:
     condition: startups.data.length > 0 && '${analysis_mode|full}' !== 'overview'
     rules:
       # 数据质量门禁阻断
-      - condition: "((startup_quality?.data?.[0]?.blocker_count) || 0) > 0"
+      - id: startup.data_quality_blocker
+        condition: "((startup_quality?.data?.[0]?.blocker_count) || 0) > 0"
         severity: critical
         diagnosis: "启动数据质量存在阻断问题（${startup_quality?.data?.[0]?.issue_codes || 'unknown'}），深度分析已跳过"
         confidence: high
@@ -973,7 +974,8 @@ steps:
           - "修复数据口径后重新执行启动分析"
 
       # TTID > dur 异常 — 首帧渲染延迟（独立发现，不只是数据质量注释）
-      - condition: "(startups?.data?.[0]?.ttid_ms || 0) > (startups?.data?.[0]?.dur_ms || 0) + 50"
+      - id: startup.ttid_exceeds_duration
+        condition: "(startups?.data?.[0]?.ttid_ms || 0) > (startups?.data?.[0]?.dur_ms || 0) + 50"
         severity: warning
         diagnosis: "TTID (${startups?.data?.[0]?.ttid_ms}ms) 超出启动总时长 (${startups?.data?.[0]?.dur_ms}ms)，首帧渲染可能在 Perfetto 认定的启动结束后才完成"
         confidence: medium
@@ -984,7 +986,8 @@ steps:
           - "建议在 Perfetto UI 中检查 startup 结束时间戳附近的帧渲染情况"
 
       # 数据质量告警（通用，排除已由上条单独处理的 TTID_GT_DUR）
-      - condition: "((startup_quality?.data?.[0]?.warning_count) || 0) > 0 && !((startup_quality?.data?.[0]?.issue_codes || '').includes('R008_TTID_GT_DUR') && (startup_quality?.data?.[0]?.warning_count || 0) === 1)"
+      - id: startup.data_quality_warning
+        condition: "((startup_quality?.data?.[0]?.warning_count) || 0) > 0 && !((startup_quality?.data?.[0]?.issue_codes || '').includes('R008_TTID_GT_DUR') && (startup_quality?.data?.[0]?.warning_count || 0) === 1)"
         severity: info
         diagnosis: "启动数据存在告警项（${startup_quality?.data?.[0]?.issue_codes || 'none'}），结论需结合原始 Trace 复核"
         confidence: medium
@@ -993,7 +996,8 @@ steps:
           - "保留本次结论作为线索，不直接作为最终定论"
 
       # 启动类型重分类提示
-      - condition: "(startups?.data?.[0]?.type_reclassified || 0) === 1"
+      - id: startup.type_reclassified
+        condition: "(startups?.data?.[0]?.type_reclassified || 0) === 1"
         severity: info
         diagnosis: "启动类型已从 ${startups?.data?.[0]?.original_type} 修正为 ${startups?.data?.[0]?.startup_type}。判定依据：bindApplication 存在→cold，仅 performCreate 存在→warm，均不存在→保持原始分类。评级已按修正后类型重新计算。"
         confidence: high
@@ -1002,7 +1006,8 @@ steps:
           - "bindApplication 是进程新建（冷启动）的可靠信号，performCreate 是 Activity 重建（温启动）的可靠信号"
 
       # 冷启动时间过长（>2s）
-      - condition: "((startups?.data?.[0]?.dur_ms) || 0) > 2000 && startups?.data?.[0]?.startup_type === 'cold'"
+      - id: startup.cold.over_2s
+        condition: "((startups?.data?.[0]?.dur_ms) || 0) > 2000 && startups?.data?.[0]?.startup_type === 'cold'"
         severity: critical
         diagnosis: "冷启动时间过长 (${startups?.data?.[0]?.dur_ms}ms)"
         confidence: high
@@ -1012,7 +1017,8 @@ steps:
           - "将耗时操作移到后台线程"
 
       # 冷启动时间偏长（1-2s）
-      - condition: "((startups?.data?.[0]?.dur_ms) || 0) > 1000 && ((startups?.data?.[0]?.dur_ms) || 0) <= 2000 && startups?.data?.[0]?.startup_type === 'cold'"
+      - id: startup.cold.over_1s
+        condition: "((startups?.data?.[0]?.dur_ms) || 0) > 1000 && ((startups?.data?.[0]?.dur_ms) || 0) <= 2000 && startups?.data?.[0]?.startup_type === 'cold'"
         severity: warning
         diagnosis: "冷启动时间偏长 (${startups?.data?.[0]?.dur_ms}ms)，建议优化"
         confidence: high
@@ -1022,7 +1028,8 @@ steps:
           - "使用 Baseline Profile 加速类加载和 JIT"
 
       # 温启动时间严重（>1s）
-      - condition: "((startups?.data?.[0]?.dur_ms) || 0) > 1000 && startups?.data?.[0]?.startup_type === 'warm'"
+      - id: startup.warm.over_1s
+        condition: "((startups?.data?.[0]?.dur_ms) || 0) > 1000 && startups?.data?.[0]?.startup_type === 'warm'"
         severity: critical
         diagnosis: "温启动时间严重偏长 (${startups?.data?.[0]?.dur_ms}ms)，接近甚至超过正常冷启动水平"
         confidence: high
@@ -1032,7 +1039,8 @@ steps:
           - "将 View 绑定、数据加载等操作移到后台线程"
 
       # 温启动时间偏长（500ms-1s）
-      - condition: "((startups?.data?.[0]?.dur_ms) || 0) > 500 && ((startups?.data?.[0]?.dur_ms) || 0) <= 1000 && startups?.data?.[0]?.startup_type === 'warm'"
+      - id: startup.warm.over_500ms
+        condition: "((startups?.data?.[0]?.dur_ms) || 0) > 500 && ((startups?.data?.[0]?.dur_ms) || 0) <= 1000 && startups?.data?.[0]?.startup_type === 'warm'"
         severity: warning
         diagnosis: "温启动时间偏长 (${startups?.data?.[0]?.dur_ms}ms)，建议优化"
         confidence: high
@@ -1042,7 +1050,8 @@ steps:
           - "减少 Activity 重建时的数据库/网络查询"
 
       # 热启动时间严重（>500ms）
-      - condition: "((startups?.data?.[0]?.dur_ms) || 0) > 500 && startups?.data?.[0]?.startup_type === 'hot'"
+      - id: startup.hot.over_500ms
+        condition: "((startups?.data?.[0]?.dur_ms) || 0) > 500 && startups?.data?.[0]?.startup_type === 'hot'"
         severity: critical
         diagnosis: "热启动时间严重偏长 (${startups?.data?.[0]?.dur_ms}ms)，热启动应在 200ms 内完成"
         confidence: high
@@ -1051,7 +1060,8 @@ steps:
           - "排查 onResume() 中的同步 Binder 或 IO 阻塞"
 
       # 热启动时间偏长（200-500ms）
-      - condition: "((startups?.data?.[0]?.dur_ms) || 0) > 200 && ((startups?.data?.[0]?.dur_ms) || 0) <= 500 && startups?.data?.[0]?.startup_type === 'hot'"
+      - id: startup.hot.over_200ms
+        condition: "((startups?.data?.[0]?.dur_ms) || 0) > 200 && ((startups?.data?.[0]?.dur_ms) || 0) <= 500 && startups?.data?.[0]?.startup_type === 'hot'"
         severity: warning
         diagnosis: "热启动时间偏长 (${startups?.data?.[0]?.dur_ms}ms)，建议优化"
         confidence: high
@@ -1060,7 +1070,8 @@ steps:
           - "减少热启动路径上的同步调用"
 
       # Binder 调用占比过高（需有主线程证据佐证）
-      - condition: "(startup_binder?.data?.length || 0) > 0 && ((startup_binder.data[0]?.all_percent_of_startup) || 0) > 20 && startup_binder.data.find(r => r.main_thread_calls > 0) && ((((main_sync_binder?.data?.[0]?.all_percent_of_startup) || 0) > 5) || (((main_binder_blocking?.data?.[0]?.dur_ms) || 0) > 8) || (((main_thread_states?.data?.find(s => s.state === 'D')?.percent) || 0) > 5) || (((main_thread_states?.data?.find(s => s.state === 'S')?.percent) || 0) > 20))"
+      - id: startup.binder_share_high
+        condition: "(startup_binder?.data?.length || 0) > 0 && ((startup_binder.data[0]?.all_percent_of_startup) || 0) > 20 && startup_binder.data.find(r => r.main_thread_calls > 0) && ((((main_sync_binder?.data?.[0]?.all_percent_of_startup) || 0) > 5) || (((main_binder_blocking?.data?.[0]?.dur_ms) || 0) > 8) || (((main_thread_states?.data?.find(s => s.state === 'D')?.percent) || 0) > 5) || (((main_thread_states?.data?.find(s => s.state === 'S')?.percent) || 0) > 20))"
         severity: warning
         diagnosis: "Binder 调用合计占启动时间 ${startup_binder?.data?.[0]?.all_percent_of_startup}%（含主线程调用）"
         confidence: high
@@ -1070,7 +1081,8 @@ steps:
           - "使用异步 Binder 调用"
 
       # 主线程同步 Binder 占比过高（需与主线程阻塞状态一致）
-      - condition: "(main_sync_binder?.data?.length || 0) > 0 && ((main_sync_binder.data[0]?.all_percent_of_startup) || 0) > 8 && ((((main_binder_blocking?.data?.[0]?.dur_ms) || 0) > 16) || (((main_thread_states?.data?.find(s => s.state === 'D')?.percent) || 0) > 5) || (((main_thread_states?.data?.find(s => s.state === 'S')?.percent) || 0) > 20))"
+      - id: startup.main_sync_binder_share_high
+        condition: "(main_sync_binder?.data?.length || 0) > 0 && ((main_sync_binder.data[0]?.all_percent_of_startup) || 0) > 8 && ((((main_binder_blocking?.data?.[0]?.dur_ms) || 0) > 16) || (((main_thread_states?.data?.find(s => s.state === 'D')?.percent) || 0) > 5) || (((main_thread_states?.data?.find(s => s.state === 'S')?.percent) || 0) > 20))"
         severity: warning
         diagnosis: "主线程同步 Binder 合计占启动时间 ${main_sync_binder?.data?.[0]?.all_percent_of_startup}% 且主线程存在阻塞态证据"
         confidence: high
@@ -1079,7 +1091,8 @@ steps:
           - "首屏前只保留必要 IPC，其余延后到首帧后"
 
       # 主线程文件 IO 占比过高（需有 D/S 阻塞态佐证）
-      - condition: "(main_thread_file_io?.data?.length || 0) > 0 && (((main_thread_file_io.data[0]?.all_percent_of_startup) || 0) > 5 || ((main_thread_file_io.data[0]?.all_total_dur_ms) || 0) > 50) && ((((main_thread_states?.data?.find(s => s.state === 'D')?.percent) || 0) > 5) || (((main_thread_states?.data?.find(s => s.state === 'S')?.percent) || 0) > 20))"
+      - id: startup.main_thread_file_io_share_high
+        condition: "(main_thread_file_io?.data?.length || 0) > 0 && (((main_thread_file_io.data[0]?.all_percent_of_startup) || 0) > 5 || ((main_thread_file_io.data[0]?.all_total_dur_ms) || 0) > 50) && ((((main_thread_states?.data?.find(s => s.state === 'D')?.percent) || 0) > 5) || (((main_thread_states?.data?.find(s => s.state === 'S')?.percent) || 0) > 20))"
         severity: warning
         diagnosis: "主线程文件 IO 合计占比较高（${main_thread_file_io?.data?.[0]?.all_percent_of_startup}%）且主线程阻塞态占比偏高"
         confidence: high
@@ -1088,7 +1101,8 @@ steps:
           - "减少启动阶段小文件随机 IO，合并为批量顺序读取"
 
       # 主线程 Running 比例低
-      - condition: "(main_thread_states?.data?.length || 0) > 0 && ((main_thread_states.data.find(s => s.state === 'Running')?.percent) || 0) < 50 && ((((main_thread_states.data.find(s => s.state === 'R')?.percent) || 0) + ((main_thread_states.data.find(s => s.state === 'R+')?.percent) || 0)) > 20 || ((((main_thread_states.data.find(s => s.state === 'D')?.percent) || 0) + ((main_thread_states.data.find(s => s.state === 'S')?.percent) || 0)) > 30) || ((((sched_latency?.data?.find(s => s.state === 'R')?.severe_delays) || 0) + ((sched_latency?.data?.find(s => s.state === 'R+')?.severe_delays) || 0)) > 3))"
+      - id: startup.main_thread_running_low
+        condition: "(main_thread_states?.data?.length || 0) > 0 && ((main_thread_states.data.find(s => s.state === 'Running')?.percent) || 0) < 50 && ((((main_thread_states.data.find(s => s.state === 'R')?.percent) || 0) + ((main_thread_states.data.find(s => s.state === 'R+')?.percent) || 0)) > 20 || ((((main_thread_states.data.find(s => s.state === 'D')?.percent) || 0) + ((main_thread_states.data.find(s => s.state === 'S')?.percent) || 0)) > 30) || ((((sched_latency?.data?.find(s => s.state === 'R')?.severe_delays) || 0) + ((sched_latency?.data?.find(s => s.state === 'R+')?.severe_delays) || 0)) > 3))"
         severity: warning
         diagnosis: "主线程 Running 比例偏低"
         confidence: medium
@@ -1097,7 +1111,8 @@ steps:
           - "将阻塞操作移到后台线程"
 
       # GC 影响（优先关注主线程 GC）
-      - condition: "(gc_during_startup?.data?.length || 0) > 0 && ((gc_during_startup.data.find(g => g.is_main_thread === 1)?.percent_of_startup) || 0) > 3"
+      - id: startup.main_thread_gc_share
+        condition: "(gc_during_startup?.data?.length || 0) > 0 && ((gc_during_startup.data.find(g => g.is_main_thread === 1)?.percent_of_startup) || 0) > 3"
         severity: warning
         diagnosis: "主线程 GC 占启动时间 ${gc_during_startup?.data?.find(g => g.is_main_thread === 1)?.percent_of_startup}%"
         confidence: medium
@@ -1106,7 +1121,8 @@ steps:
           - "避免在启动时创建大量临时对象"
 
       # 调度延迟偏高（需严重延迟+峰值同时出现）
-      - condition: "(sched_latency?.data?.length || 0) > 0 && ((((sched_latency.data.find(s => s.state === 'R')?.severe_delays) || 0) + ((sched_latency.data.find(s => s.state === 'R+')?.severe_delays) || 0)) > 3) && (((sched_latency.data.find(s => s.state === 'R')?.max_wait_ms) || 0) > 8 || ((sched_latency.data.find(s => s.state === 'R+')?.max_wait_ms) || 0) > 8)"
+      - id: startup.main_thread_sched_latency
+        condition: "(sched_latency?.data?.length || 0) > 0 && ((((sched_latency.data.find(s => s.state === 'R')?.severe_delays) || 0) + ((sched_latency.data.find(s => s.state === 'R+')?.severe_delays) || 0)) > 3) && (((sched_latency.data.find(s => s.state === 'R')?.max_wait_ms) || 0) > 8 || ((sched_latency.data.find(s => s.state === 'R+')?.max_wait_ms) || 0) > 8)"
         severity: warning
         diagnosis: "主线程调度延迟偏高（>8ms 严重等待次数 ${(sched_latency?.data?.find(s => s.state === 'R')?.severe_delays || 0) + (sched_latency?.data?.find(s => s.state === 'R+')?.severe_delays || 0)}）"
         confidence: medium
@@ -1115,7 +1131,8 @@ steps:
           - "检查系统级负载和高优先级抢占线程"
 
       # 类加载耗时（需 breakdown 与类加载明细双证据）
-      - condition: "(breakdown?.data?.length || 0) > 0 && ((breakdown.data.find(b => b.category === 'ClassLoading')?.category_percent) || 0) > 15 && (class_loading?.data?.length || 0) > 0 && ((class_loading.data[0]?.percent_of_startup) || 0) > 5"
+      - id: startup.class_loading_share_high
+        condition: "(breakdown?.data?.length || 0) > 0 && ((breakdown.data.find(b => b.category === 'ClassLoading')?.category_percent) || 0) > 15 && (class_loading?.data?.length || 0) > 0 && ((class_loading.data[0]?.percent_of_startup) || 0) > 5"
         severity: info
         diagnosis: "类加载占比较高（breakdown ${breakdown?.data?.find(b => b.category === 'ClassLoading')?.category_percent}%）"
         confidence: medium

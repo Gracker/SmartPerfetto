@@ -363,7 +363,9 @@ steps:
     type: diagnostic
     inputs: [startups]
     rules:
-      - condition: "startups.data[0]?.dur_ms > (slow_startup_ms ?? 2000)"
+      # 稳定 id（Skill 内唯一），命中时随结构化事实一起报告
+      - id: startup.first_slow
+        condition: "startups.data[0]?.dur_ms > (slow_startup_ms ?? 2000)"
         severity: critical
         confidence: high
         diagnosis: "首个启动耗时 ${startups.data[0].dur_ms}ms，超过阈值"

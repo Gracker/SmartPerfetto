@@ -153,7 +153,7 @@ export class SkillEvaluator {
     this.skillId = skillId;
     this.skill = null;
     this.availablePrerequisiteModules = null;
-    this.executor = createSkillExecutor(this.traceProcessor);
+    this.executor = createSkillExecutor(this.traceProcessor, undefined, {diagnosticFacts: true});
     this.executor.setFragmentRegistry(SkillEvaluator.loadFragmentRegistry(path.join(process.cwd(), 'skills')));
     await this.loadSkill();
     if (!this.skill) throw new Error(`Skill not found: ${skillId}`);

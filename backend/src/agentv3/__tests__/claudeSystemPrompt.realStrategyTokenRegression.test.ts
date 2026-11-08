@@ -100,6 +100,36 @@ describe('typed prompt with real strategy assets', () => {
     }
   });
 
+  it.each((['startup', 'scrolling'] as const).flatMap(sceneType =>
+    (['zh-CN', 'en'] as const).map(outputLanguage => ({sceneType, outputLanguage}))))
+  ('adds first-turn acquisition status to $sceneType $outputLanguage requirements without evicting context', ({sceneType, outputLanguage}) => {
+    const context = {...makeWorstCaseContext(sceneType), outputLanguage};
+    const plain = buildSystemPromptParts(context);
+    const requirements = resolveAnalysisInvestigationRequirements({intent: context.turnIntent, strategyRegistry: context.strategyRegistry});
+    const statuses = ['observed', 'not_observed', 'unknown_no_producer', 'not_applicable'] as const;
+    const acquisition = new Map(requirements.requirements.map((requirement, index) =>
+      [requirement.id, statuses[index % statuses.length]]));
+    const parts = buildSystemPromptParts({...context, investigationAcquisition: acquisition});
+    const segment = parts.segments.find(candidate => candidate.label === 'investigation_requirements')!;
+    expect(segment).toMatchObject({tier: 3, droppable: false, truncatable: false});
+    expect(segment.content).toContain('## Requirement acquisition status');
+    expect(segment.content).not.toMatch(/<!--|\{\{/);
+    const projected = JSON.parse(segment.content.slice(segment.content.indexOf('{"context":"investigation_requirements"'))).data;
+    expect(projected.requirements.map((requirement: {id: string; acquisition: string}) => [requirement.id, requirement.acquisition]))
+      .toEqual([...acquisition]);
+    expect(projected.requirements.every((requirement: Record<string, unknown>) => !('entryAcquisition' in requirement))).toBe(true);
+    // Only that segment differs; the rest of the prompt is the same bytes.
+    expect(parts.segments.filter(candidate => candidate.label !== 'investigation_requirements'))
+      .toEqual(plain.segments.filter(candidate => candidate.label !== 'investigation_requirements'));
+    expect(estimatePromptTokens(parts.fullPrompt)).toBeLessThanOrEqual(MAX_PROMPT_TOKENS);
+    expect(parts.droppedLabels).toEqual(plain.droppedLabels);
+    expect(parts.truncatedLabels).toEqual([]);
+    console.info('[TypedPromptTokenGate:acquisition]', JSON.stringify({sceneType, outputLanguage, budget: MAX_PROMPT_TOKENS,
+      tokens: estimatePromptTokens(parts.fullPrompt), plainTokens: estimatePromptTokens(plain.fullPrompt),
+      segmentTokens: [plain.segments.find(candidate => candidate.label === 'investigation_requirements')!.estimatedTokens,
+        segment.estimatedTokens], droppedLabels: parts.droppedLabels}));
+  });
+
   it.each(['startup', 'scrolling'] as const)('fits real typed %s comparison reports without trimming evidence obligations', sceneType => {
     const parts = buildSystemPromptParts(makeWorstCaseContext(sceneType));
     expect(MAX_PROMPT_TOKENS).toBe(16_000);

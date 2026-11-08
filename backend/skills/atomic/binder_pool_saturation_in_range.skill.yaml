@@ -65,6 +65,8 @@ steps:
       title: "Binder 线程池饱和"
       title_i18n:
         en: "Binder thread pool saturation"
+      # One row per target process (the requested one and its sync binder servers).
+      row_semantics: per_entity
       columns:
         - {name: window_start_ts, label: "window_start_ts", type: timestamp, unit: ns, hidden: true}
         - {name: window_end_ts, label: "window_end_ts", type: timestamp, unit: ns, hidden: true}
@@ -79,8 +81,22 @@ steps:
         - {name: inactive_binder_threads, label: "inactive_binder_threads", type: number, unit: count}
         - {name: reply_serving_threads, label: "reply_serving_threads", type: number, unit: count}
         - {name: busy_basis, label: "busy_basis", type: string}
-        - {name: peak_busy_threads, label: "peak_busy_threads", type: number, unit: count}
-        - {name: saturated_ns, label: "saturated_ns", type: duration, unit: ns}
+        - name: peak_busy_threads
+          label: "peak_busy_threads"
+          type: number
+          unit: count
+          semantics: >-
+            Most observed pool threads busy at the same time in the window. The
+            pool is the active binder threads the trace shows, not the configured
+            maximum.
+        - name: saturated_ns
+          label: "saturated_ns"
+          type: duration
+          unit: ns
+          semantics: >-
+            Time in the window while every observed pool thread was busy at once.
+            An observation about the pool; it does not by itself prove a waiting
+            client was delayed by queueing.
         - {name: busy_thread_ns, label: "busy_thread_ns", type: duration, unit: ns}
         - {name: busy_slices, label: "busy_slices", type: number, unit: count}
         - {name: unfinished_busy_slices, label: "unfinished_busy_slices", type: number, unit: count}
@@ -92,6 +108,19 @@ steps:
         - {name: max_sync_wait_ns, label: "max_sync_wait_ns", type: duration, unit: ns}
         - {name: saturation_evidence, label: "saturation_evidence", type: string}
         - {name: evidence_scope, label: "evidence_scope", type: string}
+        - {name: pool_evidence_status, label: "pool_evidence_status", type: string, hidden: true}
+    # All-busy time per target pool, for the investigation ledger. A target
+    # with no observed pool thread has no pool to saturate: not_recorded.
+    investigation_evidence:
+      window: {start: window_start_ts, end: window_end_ts}
+      identity: {upid: upid}
+      context: {role: target_role}
+      metrics:
+        - domain: dependency_chain
+          metric_id: system.binder.pool.saturated_duration
+          value: saturated_ns
+          unit: ns
+          status: pool_evidence_status
     process_scope:
       role: target
       binding: effective_target_processes
@@ -184,7 +213,8 @@ steps:
           WHEN COALESCE(o.saturated_ns, 0) > 0 AND pl.pool_size = 1 THEN 'single_observed_thread_busy'
           WHEN COALESCE(o.saturated_ns, 0) > 0 THEN 'saturated_observed'
           ELSE 'not_saturated_observed' END AS saturation_evidence,
-        'observed_pool_not_configured_max' AS evidence_scope
+        'observed_pool_not_configured_max' AS evidence_scope,
+        CASE WHEN COALESCE(pl.pool_size, 0) = 0 THEN 'not_recorded' ELSE 'observed' END AS pool_evidence_status
       FROM binder_pool_target_processes tp
       JOIN system_windows w ON w.window_id = tp.window_id
       JOIN process p ON p.upid = tp.upid

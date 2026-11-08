@@ -448,6 +448,23 @@ steps:
         - name: server_thread
           label: "服务端线程"
           type: string
+        - {name: end_ts, label: "end_ts", type: timestamp, unit: ns, hidden: true}
+        - {name: dur_ns, label: "dur_ns", type: duration, unit: ns, hidden: true}
+        - {name: upid, label: "upid", type: number, hidden: true}
+        - {name: wait_evidence, label: "wait_evidence", type: string, hidden: true}
+      # One row per synchronous binder transaction of the main thread.
+      row_semantics: per_event
+    # Each main-thread sync transaction's client wait, for the investigation
+    # ledger: the client-side duration, not proof of what the server did.
+    investigation_evidence:
+      window: {start: ts, end: end_ts}
+      identity: {upid: upid}
+      metrics:
+        - domain: dependency_chain
+          metric_id: android.main_thread.binder_wait.duration
+          value: dur_ns
+          unit: ns
+          status: wait_evidence
     sql: |
       -- 使用 stdlib android_binder_txns 替代手动 binder slice 解析
       SELECT
@@ -455,7 +472,11 @@ steps:
         COALESCE(bt.aidl_name, 'binder transaction') as slice_name,
         ROUND(bt.client_dur / 1e6, 2) as dur_ms,
         bt.server_process,
-        bt.server_thread
+        bt.server_thread,
+        printf('%d', bt.client_ts + bt.client_dur) as end_ts,
+        bt.client_dur as dur_ns,
+        bt.client_upid as upid,
+        CASE WHEN bt.client_dur > 0 THEN 'observed' ELSE 'unavailable' END as wait_evidence
       FROM android_binder_txns bt
       WHERE bt.is_main_thread = 1
         AND bt.is_sync = 1

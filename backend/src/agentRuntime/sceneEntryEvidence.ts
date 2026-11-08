@@ -35,7 +35,10 @@ import {
   type SkillRunOutcome,
   type SkillRunRefusal,
 } from '../agentv3/skillRunCore';
+import {skillResultNoteTargets, type SkillResultNoteDraft, type SkillResultNoteMemory,
+  type SkillResultNotes} from '../agentv3/skillResultSemanticNotes';
 import {summarizeToolCallInput} from '../agentv3/toolCallSummary';
+import {withFactRules, type SkillResultFacts} from '../services/evidence/investigationFacts';
 import type {SelectionContext, TracePairContext} from '../agentv3/types';
 import type {ReadonlyStrategyRegistrySnapshot} from '../services/selfEvolution/effectiveRuntimeRegistryContext';
 import {AnalysisContextAuthorizationChangedError} from '../services/resolvedAnalysisContext';
@@ -106,6 +109,8 @@ export interface SceneEntryEvidenceInput {
   /** Absolute run deadline (epoch ms), when the runtime has one. */
   deadlineMs?: number;
   timeoutMs?: number;
+  /** Pi's memory of producer notes; absent, the segment carries none. */
+  skillResultNotes?: SkillResultNoteMemory;
 }
 
 export interface SceneEvidenceCandidate {
@@ -143,6 +148,10 @@ export interface SceneEntryEvidenceOutcome {
   artifactIdRange?: {first: string; last: string};
   keyCells: SceneEvidenceCell[];
   summaryCells: SceneEvidenceCell[];
+  /** Fired rules with a stable id; only an executor that emits them produces any. */
+  facts?: SkillResultFacts;
+  /** Producer notes for the overview artifacts, emitted only once the segment carries them. */
+  resultNotes?: SkillResultNoteDraft;
   artifactCount: number;
   captureCount: number;
   durationMs: number;
@@ -161,6 +170,10 @@ export interface SceneWideEvidencePromptData {
   /** Cells as tuples in `fields` order; `key` cells before `summary` cells. */
   cells?: {fields: typeof SCENE_EVIDENCE_CELL_FIELDS; key: SceneEvidenceCellTuple[]; summary: SceneEvidenceCellTuple[]};
   omittedCellCount?: number;
+  /** Producer notes for the overview artifacts (skillResultSemanticNotes). */
+  resultNotes?: SkillResultNotes;
+  /** Fired rules and their bound producer values; never their conclusion text. */
+  facts?: SkillResultFacts;
 }
 
 export interface SelectedEvidencePromptData {
@@ -466,9 +479,16 @@ export async function acquireSceneEntryEvidence(input: SceneEntryEvidenceInput):
     }
     const target = result.identity?.target;
     const process = result.identity?.processes?.[0];
+    const overview = collectOverview(outcome);
+    const overviewIds = new Set(overview.artifacts.map(artifact => artifact.artifactId));
+    const resultNotes = input.skillResultNotes?.draft(skillResultNoteTargets(outcome.result.displayResults,
+      outcome.artifactIdsByDisplayIndex.map(id => id && overviewIds.has(id) ? id : undefined),
+      outcome.modelDisplayProjections, id => input.skillRegistry.getSkill(id)).filter(target => target.artifactId));
     return finish({
       ...emptyOutcome('ran'),
-      ...collectOverview(outcome),
+      ...overview,
+      ...(outcome.facts ? {facts: outcome.facts} : {}),
+      ...(resultNotes?.notes ? {resultNotes} : {}),
       ...counts,
       ...(result.identity ? {identity: {
         ...(target?.packageName ? {packageName: target.packageName} : {}),
@@ -504,6 +524,8 @@ export function buildSceneEvidencePromptData(outcome: SceneEntryEvidenceOutcome 
   let key = outcome.keyCells.slice(0, SCENE_EVIDENCE_MAX_CELLS).map(tuple);
   let summary = outcome.summaryCells.slice(0, SCENE_EVIDENCE_MAX_CELLS - key.length).map(tuple);
   let artifacts = [...outcome.artifacts];
+  let resultNotes = outcome.resultNotes?.notes;
+  let factRules = outcome.facts?.rules ?? [];
   const build = (): SceneWideEvidencePromptData => ({
     status: 'ran', skillId: outcome.skillId!,
     ...(outcome.identity ? {identity: outcome.identity} : {}),
@@ -512,10 +534,15 @@ export function buildSceneEvidencePromptData(outcome: SceneEntryEvidenceOutcome 
     ...(outcome.artifacts.length > artifacts.length ? {omittedArtifactCount: outcome.artifacts.length - artifacts.length} : {}),
     ...(key.length + summary.length ? {cells: {fields: SCENE_EVIDENCE_CELL_FIELDS, key, summary}} : {}),
     ...(total > key.length + summary.length ? {omittedCellCount: total - key.length - summary.length} : {}),
+    ...(resultNotes ? {resultNotes} : {}),
+    ...(outcome.facts ? {facts: withFactRules(outcome.facts, factRules)} : {}),
   });
-  while (summary.length && byteLength(build()) > SCENE_EVIDENCE_MAX_BYTES) summary = summary.slice(0, -1);
-  while (key.length && byteLength(build()) > SCENE_EVIDENCE_MAX_BYTES) key = key.slice(0, -1);
-  while (artifacts.length && byteLength(build()) > SCENE_EVIDENCE_MAX_BYTES) artifacts = artifacts.slice(0, -1);
+  const over = () => byteLength(build()) > SCENE_EVIDENCE_MAX_BYTES;
+  while (summary.length && over()) summary = summary.slice(0, -1);
+  if (resultNotes && over()) resultNotes = undefined;
+  while (key.length && over()) key = key.slice(0, -1);
+  while (factRules.length && over()) factRules = factRules.slice(0, -1);
+  while (artifacts.length && over()) artifacts = artifacts.slice(0, -1);
   return build();
 }
 
@@ -523,7 +550,11 @@ export function buildSceneEvidencePromptData(outcome: SceneEntryEvidenceOutcome 
 export async function collectSceneEvidenceForPrompt(
   input: SceneEntryEvidenceInput,
 ): Promise<SceneEvidencePromptData | undefined> {
-  return buildSceneEvidencePromptData(await acquireSceneEntryEvidence(input));
+  const outcome = await acquireSceneEntryEvidence(input);
+  const data = buildSceneEvidencePromptData(outcome);
+  // Notes the bound dropped stay owed to the model's own later call.
+  if (data?.resultNotes) outcome.resultNotes?.commit();
+  return data;
 }
 
 /** A handled failure is still handled: never reacquire after stateful prefetch. */

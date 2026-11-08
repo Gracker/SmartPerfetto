@@ -55,8 +55,8 @@ export interface InvestigationViewV1 {
 
 const acquired = (row: InvestigationLedgerAcquisitionRow) => row.status === 'observed' || row.status === 'partial';
 
-/** The finalizer's own acquisition owner decides; this view only names its outcomes. */
-function requirementStatuses(requirements: readonly AnalysisInvestigationRequirement[],
+/** The finalizer's own acquisition owner decides; this view only names its outcomes. Pure. */
+export function investigationRequirementStatuses(requirements: readonly AnalysisInvestigationRequirement[],
   ledger: InvestigationEvidenceSnapshot | undefined): InvestigationRequirementStatus[] {
   const rows = assessLedgerAcquisition(requirements, ledger);
   // Unknown applicability (a semantic condition, or an evidence gate not yet observed)
@@ -78,6 +78,12 @@ function requirementStatuses(requirements: readonly AnalysisInvestigationRequire
   });
 }
 
+function budgetView(budget: InvestigationBudgetReading, nowMs: number): InvestigationViewV1['budget'] {
+  return {providerTurnsUsed: budget.providerTurnsUsed, providerTurnLimit: budget.providerTurnLimit,
+    totalTurnLimit: budget.totalTurnLimit, elapsedMs: Math.max(0, nowMs - budget.startedAtMs),
+    remainingMs: Math.max(0, budget.deadlineMs - nowMs)};
+}
+
 /** Pure: identical inputs give an identical view. */
 function deriveInvestigationView(input: {
   runId: string;
@@ -96,7 +102,7 @@ function deriveInvestigationView(input: {
   // Only a resolved contract carries requirements; a not_applicable one says so as a whole.
   const resolved = requirements.status === 'resolved' ? requirements.requirements : [];
   const items: Array<InvestigationViewV1['requirements']['items'][number]> = [];
-  requirementStatuses(resolved, ledger).forEach((status, index) => {
+  investigationRequirementStatuses(resolved, ledger).forEach((status, index) => {
     counts[key[status]]++;
     if (items.length < MAX_VIEW_REQUIREMENTS) items.push({id: resolved[index].id, required: resolved[index].required, status});
   });
@@ -107,15 +113,15 @@ function deriveInvestigationView(input: {
     requirements: {contract: requirements.status, ...(requirements.reason ? {reason: requirements.reason} : {}),
       items, omittedCount: resolved.length - items.length, counts},
     evidence: {status: input.evidence.status, recordCount: ledger?.records.length ?? 0, complete: ledger?.complete ?? false},
-    budget: {providerTurnsUsed: budget.providerTurnsUsed, providerTurnLimit: budget.providerTurnLimit,
-      totalTurnLimit: budget.totalTurnLimit, elapsedMs: Math.max(0, input.nowMs - budget.startedAtMs),
-      remainingMs: Math.max(0, budget.deadlineMs - input.nowMs)},
+    budget: budgetView(budget, input.nowMs),
   };
 }
 
 export interface InvestigationViewSource {
   /** The current view; throws when an owner read throws. Its owner (the run's adapter) ends its use. */
   derive(attempt: number): InvestigationViewV1;
+  /** `view` with a fresh budget, for a request whose ledger has not moved since `view` was derived. */
+  refreshBudget(view: InvestigationViewV1): InvestigationViewV1;
 }
 
 /**
@@ -144,5 +150,6 @@ export function createInvestigationViewSource(input: {
       return deriveInvestigationView({runId: input.runId, attempt, intent: input.intent, requirements, evidence,
         budget: input.readBudget(), nowMs: now()});
     },
+    refreshBudget: view => ({...view, budget: budgetView(input.readBudget(), now())}),
   };
 }

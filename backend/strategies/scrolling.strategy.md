@@ -35,6 +35,14 @@ investigation_contract:
       condition:
         kind: semantic
         description: "Applies when citing input-frame association, input backlog or input-to-present latency."
+    - id: runnable_cpu_occupancy
+      domain: cpu_capacity
+      description: "When a frame-critical thread (main, render or raster) waits Runnable in a problematic interval, read which tasks occupied the CPU it later ran on during those waits (runnable_cpu_occupancy_in_range). Occupants, idle and unattributed time conserve the wait; an occupant is an observation of who ran there, not a preemption motive or the whole cause."
+      condition:
+        kind: semantic
+        description: "Applies when a frame-critical thread spends material time Runnable (R/R+) in a problematic interval."
+      evidence_metrics:
+        - system.thread.runnable.cpu_occupancy
 # Run by the product for a scene-wide investigation before the model's first turn.
 entry_skill:
   id: scrolling_analysis

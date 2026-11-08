@@ -230,7 +230,8 @@ steps:
     name: "帧诊断"
     inputs: [frame_stats, jank_types, thread_stats]
     rules:
-      - condition: "frame_stats.data[0]?.jank_rate > 10"
+      - id: surfaceflinger.jank_rate_high
+        condition: "frame_stats.data[0]?.jank_rate > 10"
         diagnosis: "卡顿率过高 (${frame_stats.data[0]?.jank_rate}%)，用户体验受影响"
         confidence: high
         suggestions:
@@ -240,7 +241,8 @@ steps:
           - frame_stats.data[0].jank_rate
           - frame_stats.data[0].jank_count
 
-      - condition: "thread_stats.data.find(t => t.thread === 'MainThread')?.overrun_count > 5"
+      - id: surfaceflinger.main_thread_overrun
+        condition: "thread_stats.data.find(t => t.thread === 'MainThread')?.overrun_count > 5"
         diagnosis: "主线程频繁超时 (${thread_stats.data.find(t => t.thread === 'MainThread')?.overrun_count} 次)，应用逻辑耗时"
         confidence: high
         suggestions:
@@ -250,7 +252,8 @@ steps:
           - thread_stats.data[0].avg_ms
           - thread_stats.data[0].overrun_count
 
-      - condition: "thread_stats.data.find(t => t.thread === 'RenderThread')?.overrun_count > 5"
+      - id: surfaceflinger.render_thread_overrun
+        condition: "thread_stats.data.find(t => t.thread === 'RenderThread')?.overrun_count > 5"
         diagnosis: "渲染线程频繁超时 (${thread_stats.data.find(t => t.thread === 'RenderThread')?.overrun_count} 次)，GPU 负载高"
         confidence: high
         suggestions:
@@ -260,7 +263,8 @@ steps:
           - thread_stats.data[1].avg_ms
           - thread_stats.data[1].overrun_count
 
-      - condition: "jank_types.data[0]?.jank_cause?.includes('Binder')"
+      - id: surfaceflinger.binder_jank
+        condition: "jank_types.data[0]?.jank_cause?.includes('Binder')"
         diagnosis: "Binder 调用导致卡顿 (${jank_types.data[0]?.count} 次)"
         confidence: medium
         suggestions:

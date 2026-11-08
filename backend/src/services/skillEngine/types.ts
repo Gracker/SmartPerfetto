@@ -139,7 +139,21 @@ export interface ValidatedParams {
  * stable name while each language reads an accurate label; like title_i18n it
  * never reaches a runtime result.
  */
-export type SkillDisplayColumn = Partial<ColumnDefinition> & {label_i18n?: AuthoredTranslations};
+export type SkillDisplayColumn = Partial<ColumnDefinition> & {
+  label_i18n?: AuthoredTranslations;
+  /**
+   * Producer meaning of the column for the model (English, at most
+   * SKILL_COLUMN_SEMANTICS_MAX_CHARS). Model-only: never in a DataEnvelope.
+   */
+  semantics?: string;
+  /** `relation.column` of strategies/stdlib-column-semantics.yaml, instead of `semantics`. */
+  semantics_ref?: string;
+};
+
+/** What one result row of a step stands for; a closed producer note, model-only. */
+export const ROW_SEMANTICS = ['window_total', 'per_entity', 'per_event'] as const;
+export type RowSemantics = typeof ROW_SEMANTICS[number];
+export const SKILL_COLUMN_SEMANTICS_MAX_CHARS = 240;
 
 export interface DisplayConfig {
   show?: boolean;
@@ -158,6 +172,8 @@ export interface DisplayConfig {
   hidden_columns?: string[];    // 隐藏的列（保留数据但不显示）
   collapsible?: boolean;        // 是否可折叠（点击展开/收起整个表格）
   defaultCollapsed?: boolean;   // 是否默认折叠
+  /** Row scope of this step's rows for the model; never in a DataEnvelope. */
+  row_semantics?: RowSemantics;
 }
 
 export interface HighlightRule {
@@ -170,7 +186,17 @@ export interface HighlightRule {
 // 诊断规则
 // =============================================================================
 
+/** A producer value a fired rule reports: a read-only evidence field naming one row's column. */
+export interface DiagnosticRuleBind {
+  name: string;
+  field: string;
+}
+
 export interface DiagnosticRule {
+  /** Stable rule identifier, unique within the Skill (`^[a-z][a-z0-9_.]*$`). */
+  id?: string;
+  /** Producer values the rule reports when it fires; units come from the source column. */
+  binds?: DiagnosticRuleBind[];
   condition: string;          // 条件表达式
   diagnosis: string;          // 诊断结论
   confidence: number | ConfidenceLevel;  // 置信度
@@ -614,8 +640,26 @@ export interface DisplayResult extends EvidenceScopeMetadata {
   }>;
 }
 
+/** One bound producer value of a fired rule: the source column's value and declared unit. */
+export interface DiagnosticBinding {
+  name: string;
+  value: unknown;
+  unit?: string;
+  /** The step of this Skill whose result the value was read from. */
+  sourceStepId: string;
+  /** Where that step's result is stored, once the run recorded it; `evidence: unavailable` when it was not displayed. */
+  artifactId?: string;
+  evidenceRefId?: string;
+  evidence?: 'unavailable';
+}
+
 export interface DiagnosticResult extends EvidenceScopeMetadata {
+  /** Position of the fired rule in its step; reports and history key on it. */
   id: string;
+  /** The fired rule's stable id, when the rule declares one. */
+  ruleId?: string;
+  /** The rule's bound producer values, in declared order. */
+  bindings?: DiagnosticBinding[];
   diagnosis: string;
   confidence: number;
   severity: 'info' | 'warning' | 'critical';

@@ -156,7 +156,8 @@ steps:
     name: "调度诊断"
     inputs: [runnable_data, freq_data, core_data]
     rules:
-      - condition: "runnable_data.data[0]?.runnable_ms > 50"
+      - id: scheduler.runnable_wait_long
+        condition: "runnable_data.data[0]?.runnable_ms > 50"
         diagnosis: "线程 ${runnable_data.data[0]?.thread_name} Runnable 等待时间过长 (${runnable_data.data[0]?.runnable_ms}ms)；需结合交接任务与唤醒证据确定原因"
         confidence: high
         suggestions:
@@ -166,7 +167,8 @@ steps:
           - runnable_data.data[0].thread_name
           - runnable_data.data[0].runnable_ms
 
-      - condition: "freq_data.data.find(f => f.core_type === 'big')?.avg_freq_mhz < 1500"
+      - id: scheduler.big_core_freq_low
+        condition: "freq_data.data.find(f => f.core_type === 'big')?.avg_freq_mhz < 1500"
         diagnosis: "观测大核窗口均频 ${freq_data.data.find(f => f.core_type === 'big')?.avg_freq_mhz}MHz；需结合覆盖、容量和直接限频/策略证据解释"
         confidence: medium
         suggestions:
@@ -176,7 +178,8 @@ steps:
           - freq_data.data[0].avg_freq_mhz
           - freq_data.data[0].max_freq_mhz
 
-      - condition: "core_data.data[0]?.small_core_pct > 50"
+      - id: scheduler.little_core_residency
+        condition: "core_data.data[0]?.small_core_pct > 50"
         diagnosis: "目标线程大部分时间运行在小核 (${core_data.data[0]?.small_core_pct}%)；单凭驻留比例不能确定性能损失"
         confidence: medium
         suggestions:

@@ -896,6 +896,9 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       expect(wired.registerSkills).toHaveBeenCalledTimes(1); expect(wired.registerFragments).toHaveBeenCalledTimes(1);
       const store = selected.mock.calls[0][0].artifactStore;
       expect(mcp.mock.calls[0][0]).toMatchObject({artifactStore: store, skillExecutor: fixture.executor});
+      // Notes and rule facts are Pi's alone.
+      expect(mcp.mock.calls[0][0].skillResultNotes).toBeUndefined();
+      expect(wired.createExecutor.mock.calls.every(call => call[2] === undefined)).toBe(true);
       expect(prompt.mock.calls.some(([context]) => (context as any).sceneEvidence?.kind === 'selected_foundation')).toBe(true);
       expect(store.createEvidenceReadView({ownerKey: 'owner', currentRunId: 'selected-claude', allowedTraces: [{traceId: 'trace', traceSide: 'current'}]})
         .investigationEvidence!().records).toEqual([expect.objectContaining({upid: 42, utid: 43, value: 80})]);

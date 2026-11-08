@@ -728,7 +728,8 @@ steps:
     inputs: [network_overview, app_traffic_ranking, transport_distribution, large_transfers, network_power_cost, port_analysis]
     rules:
       # 大流量应用
-      - condition: "network_overview.data[0]?.total_mb > ${heavy_traffic_critical_mb|100}"
+      - id: network.traffic_heavy_critical
+        condition: "network_overview.data[0]?.total_mb > ${heavy_traffic_critical_mb|100}"
         severity: critical
         diagnosis: "NETWORK_HEAVY - 网络流量过大 (${network_overview.data[0].total_mb} MB)"
         confidence: high
@@ -737,7 +738,8 @@ steps:
           - "考虑使用压缩传输和增量更新"
           - "检查图片/视频资源是否过大"
 
-      - condition: "network_overview.data[0]?.total_mb > ${heavy_traffic_warning_mb|10}"
+      - id: network.traffic_heavy_warning
+        condition: "network_overview.data[0]?.total_mb > ${heavy_traffic_warning_mb|10}"
         severity: warning
         diagnosis: "NETWORK_HEAVY - 网络流量较大 (${network_overview.data[0].total_mb} MB)"
         confidence: medium
@@ -746,7 +748,8 @@ steps:
           - "考虑优化资源加载策略"
 
       # 频繁小量传输（功耗问题）
-      - condition: "network_power_cost.data[0]?.active_periods > network_overview.data[0]?.total_mb * 10 && network_power_cost.data[0]?.active_periods > ${frequent_active_periods|20}"
+      - id: network.frequent_small_transfers
+        condition: "network_power_cost.data[0]?.active_periods > network_overview.data[0]?.total_mb * 10 && network_power_cost.data[0]?.active_periods > ${frequent_active_periods|20}"
         severity: warning
         diagnosis: "NETWORK_LATENCY - 频繁小量网络传输，功耗影响大（${network_power_cost.data[0].active_periods} 个活跃周期）"
         confidence: medium
@@ -756,7 +759,8 @@ steps:
           - "检查后台定时同步频率"
 
       # 大量 DNS 查询
-      - condition: "port_analysis.data.find(p => p.service === 'DNS')?.event_count > 100"
+      - id: network.dns_packet_activity
+        condition: "port_analysis.data.find(p => p.service === 'DNS')?.event_count > 100"
         severity: warning
         diagnosis: "NETWORK_DNS_PACKET_ACTIVITY - 远程端口 53 包活动频繁；当前 packet trace 不能直接证明 DNS 阶段耗时或请求延迟"
         confidence: low
@@ -765,7 +769,8 @@ steps:
           - "若确认重复解析，再检查 DNS 缓存、预解析和连接复用策略"
 
       # 正常
-      - condition: "network_overview.data[0]?.total_mb <= ${heavy_traffic_warning_mb|10}"
+      - id: network.normal
+        condition: "network_overview.data[0]?.total_mb <= ${heavy_traffic_warning_mb|10}"
         severity: info
         diagnosis: "NETWORK_NORMAL - 网络流量正常"
         confidence: high
@@ -791,7 +796,8 @@ steps:
       title: "数据可用性诊断"
     inputs: [network_check, network_slice_check]
     rules:
-      - condition: "network_check.data[0]?.status === 'unavailable' && (!network_slice_check.data || network_slice_check.data[0]?.status === 'unavailable')"
+      - id: network.data_unavailable
+        condition: "network_check.data[0]?.status === 'unavailable' && (!network_slice_check.data || network_slice_check.data[0]?.status === 'unavailable')"
         severity: info
         diagnosis: "未检测到网络数据。Trace 中未包含 android.network_packets 模块数据，也未发现网络相关 Slice。如需分析网络问题，请在录制 Trace 时启用 net 数据源。"
         confidence: high

@@ -27,10 +27,13 @@ import {
   StepResult,
   DisplayResult,
   DiagnosticResult,
+  DiagnosticBinding,
+  DiagnosticRule,
   DisplayConfig,
   SkillEvent,
   SynthesizeConfig,
 } from './types';
+import { resolveDiagnosticBind } from './skillProducerSteps';
 import { validateSkillInputs } from './skillValidator';
 import {
   EXPRESSION_GLOBALS, SKILL_PLACEHOLDER, decodeIdentifier, extractRootVariables, identifierMatches, isBindableName,
@@ -46,7 +49,7 @@ import { assertEffectiveProcessScope, type EffectiveProcessScope } from '../proc
 import { sqlScopeEvidence, resultScopeProvenance, resultScopeLimitations } from './scopeEvidence';
 import { SYNTHESIZE_SUMMARY_STEP_ID, exposedStepResult, hasMeaningfulData, selectReferencedSkillStep, selectedStepResult } from './referencedSkillStep';
 import {attachInvestigationEvidence, investigationCaptureFields, validateInvestigationEvidenceDeclarations} from '../evidence/investigationEvidenceLedger';
-import {attachEvidenceTable, captureEvidenceTable, capturedEvidenceTable, evidenceTableFor, evidenceCaptureHash,
+import {attachEvidenceTable, captureEvidenceTable, capturedEvidenceTable, evidenceTableFor, evidenceCaptureHash, recordCaptureProducer,
   type CapturedFieldSemantics} from '../evidence/evidenceCapture';
 import { scopeMetadata, mergeScopeProvenance, identityForScopeEvidence, scopeProvenanceForFields, type EvidenceScopeMetadata, type EvidenceScopeProvenanceV1 } from '../../types/identityContract';
 import logger from '../../utils/logger';
@@ -80,6 +83,7 @@ import {
 import {
   formatDisplayContractIssue,
   sanitizeDisplayConfigForRuntime,
+  withoutModelOnlyDisplayFields,
 } from './displayContractValidator';
 import { IdentityGate, type IdentityGateResult } from '../processIdentity/identityGate';
 import { buildIdentityResolutionFromProcessGate } from '../processIdentity/identityContractMapper';
@@ -644,13 +648,14 @@ function substituteDisplayText(text: string, context: SkillExecutionContext): st
 
 /**
  * 处理 display 配置，对字符串值进行模板变量替换
- * 支持 ${variable} 格式的变量替换
+ * 支持 ${variable} 格式的变量替换。Model-only producer notes (`row_semantics`,
+ * column `semantics` / `semantics_ref`) never reach a runtime display.
  */
 function processDisplayConfig(
   display: any,
   context: SkillExecutionContext
 ): DisplayConfig {
-  const processed: DisplayConfig = { ...display };
+  const processed: DisplayConfig = withoutModelOnlyDisplayFields(display ?? {});
 
   // 处理 title 字段（字符串类型）
   if (processed.title && typeof processed.title === 'string') {
@@ -1049,6 +1054,11 @@ function runtimeSynthesizeConfig(config: SynthesizeConfig | undefined): Synthesi
   return {...config, fields: config.fields.map(({label_i18n: _translations, ...field}) => field)};
 }
 
+export interface SkillExecutorOptions {
+  /** Emit a fired rule's `ruleId` and `bindings`. Opt-in: only Pi and the evals read them. */
+  diagnosticFacts?: boolean;
+}
+
 export class SkillExecutor {
   private traceProcessor: any;
   private skillRegistry: Map<string, SkillDefinition>;
@@ -1057,16 +1067,19 @@ export class SkillExecutor {
   private identityGate = new IdentityGate();
   private processIdentityCache: Map<string, ProcessIdentityResolution> = new Map();
   private runManifestAttributionSink?: RunManifestAttributionSink;
+  private readonly diagnosticFacts: boolean;
 
   constructor(
     traceProcessor: any,
     eventEmitter?: (event: SkillEvent) => void,
     runManifestAttributionSink?: RunManifestAttributionSink,
+    options: SkillExecutorOptions = {},
   ) {
     this.traceProcessor = traceProcessor;
     this.eventEmitter = eventEmitter;
     this.skillRegistry = new Map();
     this.runManifestAttributionSink = runManifestAttributionSink;
+    this.diagnosticFacts = options.diagnosticFacts === true;
   }
 
   setRunManifestAttributionSink(
@@ -2843,6 +2856,7 @@ export class SkillExecutor {
         declaration: skill.investigation_evidence, skillId: skill.name, stepId: 'root', traceId: context.traceId,
         definitionFingerprint, selectedSqlHash,
       });
+      recordCaptureProducer(witness, {skillId: skill.name, stepId: 'root'});
       attachEvidenceTable(stepResult, witness);
       return stepResult;
 
@@ -2918,7 +2932,7 @@ export class SkillExecutor {
           break;
 
         case 'diagnostic':
-          result = await this.executeDiagnosticStep(step, context);
+          result = await this.executeDiagnosticStep(step, context, parentSkillId);
           break;
 
         case 'conditional':
@@ -3044,6 +3058,7 @@ export class SkillExecutor {
         declaration: step.investigation_evidence, skillId: parentSkill.name, stepId: step.id, traceId: context.traceId,
         definitionFingerprint, selectedSqlHash,
       });
+      if (parentSkillId) recordCaptureProducer(witness, {skillId: parentSkillId, stepId: step.id});
       attachEvidenceTable(stepResult, witness);
       return stepResult;
 
@@ -3340,7 +3355,8 @@ export class SkillExecutor {
    */
   private async executeDiagnosticStep(
     step: DiagnosticStep,
-    context: SkillExecutionContext
+    context: SkillExecutionContext,
+    parentSkillId: string,
   ): Promise<StepResult> {
     const startTime = Date.now();
     const diagnostics: DiagnosticResult[] = [];
@@ -3375,8 +3391,12 @@ export class SkillExecutor {
           typeof s === 'string' ? ExpressionEvaluator.evaluate(s, context) : s
         );
 
+        const ruleId = this.diagnosticFacts && typeof rule.id === 'string' && rule.id ? rule.id : undefined;
+        const bindings = ruleId ? this.diagnosticBindings(rule, inputNames, context, parentSkillId) : undefined;
         diagnostics.push({
           id: `${step.id}_${diagnostics.length}`,
+          ...(ruleId ? {ruleId} : {}),
+          ...(bindings ? {bindings} : {}),
           diagnosis,
           confidence,
           severity: severityFromRule ?? (confidence >= 0.8 ? 'critical' : confidence >= 0.6 ? 'warning' : 'info'),
@@ -3394,6 +3414,34 @@ export class SkillExecutor {
       data: { diagnostics, inputs },
       executionTimeMs: Date.now() - startTime,
     };
+  }
+
+  /**
+   * The producer values a fired rule binds, in declared order, each with the
+   * unit its source column declares (resolveDiagnosticBind). A bind the
+   * definition does not resolve is left out; a value the row lacks is null.
+   */
+  private diagnosticBindings(
+    rule: DiagnosticRule,
+    inputNames: ReadonlySet<string>,
+    context: SkillExecutionContext,
+    parentSkillId: string,
+  ): DiagnosticBinding[] | undefined {
+    if (!Array.isArray(rule.binds) || rule.binds.length === 0) return undefined;
+    const skill = this.skillRegistry.get(parentSkillId);
+    if (!skill) return undefined;
+    const bindings: DiagnosticBinding[] = [];
+    for (const bind of rule.binds) {
+      const resolved = resolveDiagnosticBind(skill, bind, name => this.skillRegistry.get(name));
+      if (!resolved.ok || !inputNames.has(resolved.path.root)) continue;
+      const value = this.boundEvidenceRead(bind.name, () => {
+        const read = readEvidenceField(resolved.path, ExpressionEvaluator.readDataView(resolved.path.root, context));
+        return typeof read === 'bigint' ? String(read) : read;
+      });
+      bindings.push({name: bind.name, value: value ?? null,
+        ...(resolved.unit ? {unit: resolved.unit} : {}), sourceStepId: resolved.sourceStepId});
+    }
+    return bindings.length ? bindings : undefined;
   }
 
   /**
@@ -3453,11 +3501,18 @@ export class SkillExecutor {
    * 记录一条 evidence 的有界投影；读取或投影失败只丢这一条，不影响诊断本身。
    */
   private recordEvidence(evidence: Record<string, any>, key: string, read: () => unknown): void {
+    const bounded = this.boundEvidenceRead(key, read);
+    if (bounded !== undefined) evidence[key] = bounded;
+  }
+
+  /** A guarded, bounded read: a failed read loses only this value. */
+  private boundEvidenceRead(key: string, read: () => unknown): unknown {
     try {
       const value = read();
-      if (value !== undefined) evidence[key] = boundEvidenceValue(value);
+      return value === undefined ? undefined : boundEvidenceValue(value);
     } catch (error: any) {
       logger.debug('SkillExecutor', `Evidence ${key} failed: ${error?.message}`);
+      return undefined;
     }
   }
 
@@ -4774,7 +4829,8 @@ export class SkillExecutor {
 
 export function createSkillExecutor(
   traceProcessor: any,
-  eventEmitter?: (event: SkillEvent) => void
+  eventEmitter?: (event: SkillEvent) => void,
+  options: SkillExecutorOptions = {},
 ): SkillExecutor {
-  return new SkillExecutor(traceProcessor, eventEmitter);
+  return new SkillExecutor(traceProcessor, eventEmitter, undefined, options);
 }

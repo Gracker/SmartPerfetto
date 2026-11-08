@@ -1061,7 +1061,8 @@ steps:
     inputs: [core_stats, main_thread_states, runnable_delays, blocked_functions, affinity_probe, cache_miss_probe]
     rules:
       # 数据不足时显式声明，避免误判
-      - condition: |
+      - id: cpu.data_unavailable
+        condition: |
           (core_stats?.data?.length || 0) === 0 &&
           (main_thread_states?.data?.length || 0) === 0 &&
           (runnable_delays?.data?.length || 0) === 0 &&
@@ -1075,7 +1076,8 @@ steps:
         evidence_fields: [core_stats.data, main_thread_states.data, runnable_delays.data, blocked_functions.data]
 
       # 大核组使用率低：大核组 = 超大核 + 大核 + 中核；含未分类核时间时不判定
-      - condition: |
+      - id: cpu.big_group_usage_low
+        condition: |
           (core_stats?.data?.length || 0) > 0 &&
           core_stats.data[0].unknown_time_ns === 0 &&
           core_stats.data[0].big_group_percent < (big_core_threshold_pct || 30)
@@ -1089,7 +1091,8 @@ steps:
         evidence_fields: [core_stats.data]
 
       # 主线程 Running 比例低
-      - condition: |
+      - id: cpu.main_thread_running_low
+        condition: |
           (main_thread_states?.data?.length || 0) > 0 &&
           ((main_thread_states.data.find(s => s.state === 'Running')?.percent) || 0) < (running_threshold_pct || 50)
         severity: warning
@@ -1101,7 +1104,8 @@ steps:
         evidence_fields: [main_thread_states.data]
 
       # 严重调度延迟
-      - condition: "((runnable_delays?.data?.[0]?.wait_ms) || 0) > (sched_delay_critical_ms || 16)"
+      - id: cpu.sched_delay_severe
+        condition: "((runnable_delays?.data?.[0]?.wait_ms) || 0) > (sched_delay_critical_ms || 16)"
         severity: critical
         diagnosis: "存在严重调度延迟 (${runnable_delays?.data?.[0]?.wait_ms}ms)"
         confidence: high
@@ -1112,7 +1116,8 @@ steps:
         evidence_fields: [runnable_delays.data]
 
       # 频繁调度延迟
-      - condition: "(runnable_delays?.data?.length || 0) > 10"
+      - id: cpu.sched_delay_frequent
+        condition: "(runnable_delays?.data?.length || 0) > 10"
         severity: warning
         diagnosis: "调度延迟频繁发生 (${runnable_delays?.data?.length} 次 >1ms)"
         confidence: medium
@@ -1122,7 +1127,8 @@ steps:
         evidence_fields: [runnable_delays.data]
 
       # 阻塞函数问题
-      - condition: "((blocked_functions?.data?.[0]?.total_dur_ms) || 0) > (blocked_function_threshold_ms || 50)"
+      - id: cpu.blocked_function
+        condition: "((blocked_functions?.data?.[0]?.total_dur_ms) || 0) > (blocked_function_threshold_ms || 50)"
         severity: warning
         diagnosis: "主线程 kernel blocked_function/wchan 候选为 ${blocked_functions?.data?.[0]?.blocked_function}，累计 ${blocked_functions?.data?.[0]?.total_dur_ms}ms；它是单帧阻塞点，需结合 app slice、文件/DB、Binder 或锁链证据后再定业务根因"
         confidence: medium
@@ -1132,7 +1138,8 @@ steps:
         evidence_fields: [blocked_functions.data]
 
       # 线程迁核过于频繁
-      - condition: "((affinity_probe?.data?.[0]?.migration_ratio_pct) || 0) >= (affinity_violation_warning_threshold_pct || 35)"
+      - id: cpu.thread_migration_frequent
+        condition: "((affinity_probe?.data?.[0]?.migration_ratio_pct) || 0) >= (affinity_violation_warning_threshold_pct || 35)"
         severity: warning
         diagnosis: "线程 ${affinity_probe?.data?.[0]?.thread_name} 迁核占比 ${affinity_probe?.data?.[0]?.migration_ratio_pct}% ，存在亲和性抖动"
         confidence: medium
@@ -1142,7 +1149,8 @@ steps:
         evidence_fields: [affinity_probe.data]
 
       # Cache miss 压力
-      - condition: "(cache_miss_probe?.data?.find(r => r.impact_level === 'high')?.avg_miss_delta || 0) > 0"
+      - id: cpu.cache_miss_pressure
+        condition: "(cache_miss_probe?.data?.find(r => r.impact_level === 'high')?.avg_miss_delta || 0) > 0"
         severity: warning
         diagnosis: "检测到高缓存未命中压力 (${cache_miss_probe.data.find(r => r.impact_level === 'high').counter_name})"
         confidence: medium

@@ -135,6 +135,8 @@ import {projectModelEvidenceMetadata} from '../services/evidence/modelEvidenceMe
 import {scopeMetadata, identityForScopeEvidence} from '../types/identityContract';
 import { injectStdlibIncludes } from './sqlIncludeInjector';
 import { StdlibColumnDocMemory } from './sqlStdlibColumnDocs';
+import { skillResultNoteTargets, tableColumns, type SkillResultNoteMemory } from './skillResultSemanticNotes';
+import { withFactRules, type SkillResultFacts } from '../services/evidence/investigationFacts';
 import {
   buildSqlSchemaDiagnostic,
   SqlFailureRepeatMemory,
@@ -145,10 +147,9 @@ import {
   getRegisteredScenes,
   getStrategyDetailByRef,
   getStrategyDetails,
-  loadPromptSegment,
   loadPromptTemplate,
   renderTemplate,
-  stripPromptComments,
+  requirePromptSegment,
 } from './strategyLoader';
 import { buildActivePhaseReminder } from './activePhaseReminder';
 import { summarizeToolCallInput } from './toolCallSummary';
@@ -166,6 +167,7 @@ import {
   evidencePart,
   evidenceTracePart,
   executePreparedSkillRun,
+  isInvocableSkill,
   normalizeSkillRunParams,
   prepareSkillRun,
   stableSkillEvidenceRefId,
@@ -392,12 +394,6 @@ function sourceToolError(error: unknown): Error {
   return new Error(isClosedCode(code) ? code : 'source_tool_failed');
 }
 
-
-export function requireToolDescription(templateName: string, loaded?: string): string {
-  const content = loaded === undefined ? loadPromptSegment(templateName) : stripPromptComments(loaded);
-  if (!content) throw new Error(`Required tool description template is missing or empty: ${templateName}`);
-  return content;
-}
 
 /**
  * Process-wide RagStore singleton, lazily initialized on first MCP tool
@@ -1337,6 +1333,11 @@ export interface ClaudeMcpServerOptions {
    *  passes the same instance for every tool call so the running totals are
    *  shared across the analysis. See skillNotesInjector.ts. */
   skillNotesBudget?: import('./selfImprove/skillNotesInjector').SkillNotesBudget;
+  /**
+   * Pi's run-scoped memory of producer `resultNotes` on Skill results
+   * (skillResultSemanticNotes.ts); absent, Skill results carry none.
+   */
+  skillResultNotes?: SkillResultNoteMemory;
   /** User-facing output language for backend-emitted progress and hints. */
   outputLanguage?: OutputLanguage;
   /** Enterprise tenant/workspace scope for knowledge, memory, case, and baseline tools. */
@@ -1404,6 +1405,26 @@ export interface SourceUseDecisionAccessor {
 
 const LIGHTWEIGHT_ARTIFACT_PREVIEW_LIMIT = 10;
 
+/** The columns a fetched artifact response shows: its table, else its preview row. */
+function fetchedArtifactColumns(result: unknown): string[] {
+  const record = (result ?? {}) as {columns?: unknown; data?: unknown; preview?: unknown};
+  if (Array.isArray(record.columns)) return tableColumns(record);
+  const dataColumns = tableColumns(record.data);
+  if (dataColumns.length) return dataColumns;
+  return record.preview && typeof record.preview === 'object' ? Object.keys(record.preview) : [];
+}
+
+/**
+ * Rule facts as `invoke_skill` returns them. A request that forbids raw rows
+ * keeps which rule fired and where, without the bound cell values.
+ */
+function modelSkillResultFacts(facts: SkillResultFacts, forbidRows: boolean): SkillResultFacts {
+  return forbidRows && facts.rules
+    ? withFactRules(facts, facts.rules.map(rule => ({...rule,
+      ...(rule.bindings ? {bindings: rule.bindings.map(({value: _value, ...binding}) => binding)} : {})})))
+    : facts;
+}
+
 /**
  * Which artifacts keep an inline preview in lightweight mode: overview steps
  * first, then the rest in order. Overview steps carry a Skill's verdicts;
@@ -1433,7 +1454,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   // never carries over from another run or session.
   const sqlFailureMemory = new SqlFailureRepeatMemory();
   // Each stdlib relation.column note reaches the model once per run.
-  const stdlibColumnDocMemory = new StdlibColumnDocMemory();
+  const stdlibColumnDocMemory = new StdlibColumnDocMemory(options.skillResultNotes?.emittedKeys);
   /** The model-facing notes of a raw SQL result: evidence availability, then stdlib column documentation. */
   function rawSqlResultNotes(
     result: {columns: string[]; rows: unknown[][]},
@@ -1487,7 +1508,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   const codeAwareMode = normalizeCodeAwareMode(analysisSelection.codeAwareMode);
   const codebaseIds = codeAwareMode === 'off' ? [] : analysisSelection.codebaseIds ?? [];
   const knowledgeSourceIds = analysisSelection.knowledgeSourceIds ?? [];
-  const retrievedContextToolBoundary = requireToolDescription('retrieved-context-tool-safety').replace(/\s+/g, ' ');
+  const retrievedContextToolBoundary = requirePromptSegment('retrieved-context-tool-safety').replace(/\s+/g, ' ');
   const retrievedData = <T extends Record<string, unknown>>(payload: T): T & {
     dataTrust: 'untrusted_retrieved_data';
   } => ({...payload, dataTrust: 'untrusted_retrieved_data'});
@@ -2114,7 +2135,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         const skill = registry.getSkill(call.skillId);
         if (!skill) {
           errors.push(`${phase.id}.expectedCalls[${index}] references unavailable analysis skill "${call.skillId}"`);
-        } else if (skill.type === 'pipeline_definition' || skill.type === 'comparison') {
+        } else if (!isInvocableSkill(skill)) {
           errors.push(`${phase.id}.expectedCalls[${index}] references non-executable metadata skill "${call.skillId}"`);
         }
       }
@@ -2142,7 +2163,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     if (requestTokens.size === 0) return [];
 
     return registry.getAllSkills()
-      .filter(skill => skill.type !== 'pipeline_definition' && skill.type !== 'comparison')
+      .filter(isInvocableSkill)
       .map(skill => {
         const normalizedName = skill.name.toLowerCase();
         const score = [...requestTokens].reduce(
@@ -2256,7 +2277,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         {reference: artifact.reference}),
       action_required: 'fetch_artifact',
       ...(artifact.artifactId ? {artifactId: artifact.artifactId} : {}),
-      hint: renderTemplate(requireToolDescription('prompt-artifact-sql-misuse-hint'),
+      hint: renderTemplate(requirePromptSegment('prompt-artifact-sql-misuse-hint'),
         {artifact_id: artifact.artifactId ?? 'art-N'}),
       sql,
     };
@@ -2551,8 +2572,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
   const executeSql = tool(
     'execute_sql',
-    requireToolDescription('prompt-execute-sql-tool-description') + '\n\n' +
-    requireToolDescription('prompt-sql-evidence-guidance'),
+    requirePromptSegment('prompt-execute-sql-tool-description') + '\n\n' +
+    requirePromptSegment('prompt-sql-evidence-guidance'),
     {
       planPhaseId: z.string().optional().describe('Optional explicit plan phase ID for this invocation.'),
       executionContext: z.enum(SQL_EXECUTION_CONTEXTS).optional().describe('SQL execution namespace.'),
@@ -2847,7 +2868,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
   const invokeSkill = tool(
     'invoke_skill',
-    requireToolDescription('prompt-invoke-skill-tool-description'),
+    requirePromptSegment('prompt-invoke-skill-tool-description'),
     {
       planPhaseId: z.string().optional().describe('Optional explicit plan phase ID for this invocation.'),
       skillId: z.string().describe('Skill identifier (e.g. "scrolling_analysis", "jank_frame_detail", "cpu_analysis")'),
@@ -3041,6 +3062,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         const {result, modelDisplayProjections, artifactIdsByDisplayIndex, queryReviewsByDisplayIndex,
           diagnosticsArtifactId, synthesizeArtifacts} = outcome;
         const skillTraceProvenance = outcome.traceProvenance;
+        // Producer notes and rule facts, on both return paths; only Pi's run produces either.
+        const resultNotes = options.skillResultNotes?.notesFor(skillResultNoteTargets(result.displayResults,
+          artifactIdsByDisplayIndex, modelDisplayProjections, id => effectiveSkillRegistry.getSkill(id)));
+        const facts = outcome.facts && modelSkillResultFacts(outcome.facts, artifactAccessPolicy.forbidRows);
+        const resultFactFields = {...(resultNotes ? {resultNotes} : {}), ...(facts ? {facts} : {})};
 
         // Capture skill SQL errors in this turn's learning window — skill SQL is
         // the most complex and most likely to break across Perfetto versions.
@@ -3184,8 +3210,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             ...(synthesizeArtifacts && synthesizeArtifacts.length > 0
               ? { synthesizeArtifacts }
               : {}),
+            ...resultFactFields,
             ...(vendorOverrideHint ? { vendorOverride: vendorOverrideHint } : {}),
-            hint: renderTemplate(requireToolDescription('prompt-artifact-result-guidance'), {
+            hint: renderTemplate(requirePromptSegment('prompt-artifact-result-guidance'), {
               forbidRows: String(artifactAccessPolicy.forbidRows),
               requireSummaryBeforeRows: String(artifactAccessPolicy.requireSummaryBeforeRows),
             }),
@@ -3223,6 +3250,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           })),
           diagnostics: localizedDiagnostics,
           synthesizeData: result.synthesizeData,
+          ...resultFactFields,
         }, {
           facts: {success: result.success, planPhaseId: producer.planPhaseId},
           decorate: text => skillNotesPrefix + consumeWatchdogWarning(text) + (result.success ? getReasoningNudge() : ''),
@@ -3462,7 +3490,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   // shares the engine, never its AI summary.
   const analyzeWaitChain = tool(
     'analyze_wait_chain',
-    requireToolDescription('prompt-analyze-wait-chain-tool-description'),
+    requirePromptSegment('prompt-analyze-wait-chain-tool-description'),
     {
       planPhaseId: z.string().optional().describe('Optional explicit plan phase ID for this invocation.'),
       thread_state_id: waitChainIntLike.optional().describe(
@@ -3753,7 +3781,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
   const lookupSqlSchema = tool(
     'lookup_sql_schema',
-    requireToolDescription('prompt-lookup-sql-schema-tool-description'),
+    requirePromptSegment('prompt-lookup-sql-schema-tool-description'),
     {
       keyword: z.string().optional().describe(
         'Search keyword or exact SQL entity name. Required for auto search.'
@@ -4064,10 +4092,12 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const responseResult = result && effectiveDetail === 'summary' && artifactAccessPolicy.forbidRows
         ? (({sampleRow: _sampleRow, preview: _preview, ...rowFreeResult}) => rowFreeResult)(result)
         : result;
+      const resultNotes = options.skillResultNotes?.notesForArtifact(artifactId, fetchedArtifactColumns(result));
       const payload = {
         success: true,
         detail: effectiveDetail,
         ...responseResult,
+        ...(resultNotes ? {resultNotes} : {}),
         sourceToolCallId: result?.sourceToolCallId || producer.sourceToolCallId,
         fetchedByToolCallId: producer.sourceToolCallId,
         artifactPlanPhaseId: result?.planPhaseId,
@@ -4251,7 +4281,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
   const searchKnowledge = tool(
     'search_knowledge',
-    `${requireToolDescription('prompt-search-knowledge-tool-description')} ${retrievedContextToolBoundary}`,
+    `${requirePromptSegment('prompt-search-knowledge-tool-description')} ${retrievedContextToolBoundary}`,
     {
       query: z.string().min(1).max(512).describe('Names, terms or a natural-language question; identifiers match exactly.'),
       knowledge_base_id: z.string().optional().describe('One selected knowledge base id; omit to search every selected one.'),
@@ -4338,7 +4368,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
   const readKnowledgeSection = tool(
     'read_knowledge_section',
-    `${requireToolDescription('prompt-read-knowledge-section-tool-description')} ${retrievedContextToolBoundary}`,
+    `${requirePromptSegment('prompt-read-knowledge-section-tool-description')} ${retrievedContextToolBoundary}`,
     {
       reference_id: z.string().min(1).max(64).describe('A `kref-` id returned by search_knowledge in this run.'),
       part: z.number().int().min(1).max(1000).optional().describe('1-based part of a long section (default 1).'),
@@ -4910,7 +4940,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
   const searchCodebase = tool(
     'search_codebase',
-    requireToolDescription('prompt-search-codebase-tool-description'),
+    requirePromptSegment('prompt-search-codebase-tool-description'),
     {
       query: z.string().min(1).max(512).describe('Literal source text, symbol, method, or class name.'),
       codebase_id: z.string().optional().describe('Whitelisted codebase id. Optional only when exactly one codebase is selected.'),
@@ -5023,7 +5053,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   const LOCATE_DEADLINE_MS = 15_000;
   const locateTraceAnchorTool = tool(
     'locate_trace_anchor',
-    requireToolDescription('prompt-locate-trace-anchor-tool-description'),
+    requirePromptSegment('prompt-locate-trace-anchor-tool-description'),
     {
       anchor: z.string().min(1).max(512).describe('The name exactly as the trace shows it.'),
       anchor_kind: z.enum(TRACE_ANCHOR_KINDS).describe('What the anchor is in the trace: slice, marker, thread or native_frame.'),
@@ -5103,7 +5133,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
   const readCodebaseFile = tool(
     'read_codebase_file',
-    requireToolDescription('prompt-read-codebase-file-tool-description'),
+    requirePromptSegment('prompt-read-codebase-file-tool-description'),
     {
       codebase_id: z.string().optional().describe('Whitelisted codebase id. Optional only when exactly one codebase is selected.'),
       file_path: z.string().describe('Source file path relative to the registered root.'),
@@ -5202,7 +5232,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
   const findCodebaseFiles = tool(
     'find_codebase_files',
-    requireToolDescription('prompt-find-codebase-files-tool-description'),
+    requirePromptSegment('prompt-find-codebase-files-tool-description'),
     {
       pattern: z.string().min(1).max(256).describe('File name substring, path substring (with /), or glob (*, ?, whole-segment **).'),
       codebase_id: z.string().optional().describe('Whitelisted codebase id. Optional only when exactly one codebase is selected.'),
@@ -5624,7 +5654,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
   const proposePatch = tool(
     'propose_patch',
-    requireToolDescription('prompt-propose-patch-tool-description'),
+    requirePromptSegment('prompt-propose-patch-tool-description'),
     {
       context_chunk_ids: z.array(z.string()).min(1).describe('Chunk ids previously returned by a successful source lookup in this session.'),
       problem: z.string().describe('Performance problem the patch should address.'),
@@ -6019,7 +6049,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   // analysisPlanRef is declared above (P0-G10) and shared with planning tools
   const submitPlan = analysisPlanRef ? tool(
     'submit_plan',
-    requireToolDescription('prompt-submit-plan-tool-description'),
+    requirePromptSegment('prompt-submit-plan-tool-description'),
     {
       phases: PLAN_PHASES_ARG_SCHEMA.describe('Ordered list of analysis phases.'),
       successCriteria: z.string().describe('What constitutes a successful analysis (e.g. "Identify root cause of jank frames with evidence")'),
@@ -6964,8 +6994,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
   const executeSqlOn = referenceTraceId ? tool(
     'execute_sql_on',
-    requireToolDescription('prompt-execute-sql-on-tool-description') + '\n\n' +
-    requireToolDescription('prompt-sql-evidence-guidance'),
+    requirePromptSegment('prompt-execute-sql-on-tool-description') + '\n\n' +
+    requirePromptSegment('prompt-sql-evidence-guidance'),
     {
       planPhaseId: z.string().optional().describe('Optional explicit plan phase ID for this invocation.'),
       executionContext: z.enum(SQL_EXECUTION_CONTEXTS).optional().describe('SQL execution namespace.'),
@@ -7715,7 +7745,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   });
   if (sceneContext) {
     const context = sceneContext;
-    const description = requireToolDescription('scene-tool-guidance');
+    const description = requirePromptSegment('scene-tool-guidance');
     registry.registerShared({
       name: 'propose_scene_timeline', description, exposure: 'internal',
       inputSchema: sceneTimelineProposalToolShape, evidenceEffect: 'read_existing',

@@ -16,6 +16,7 @@ import type {
   SynthesizeConfig,
 } from './skillEngine/types';
 import {humanizeSkillIdentifier} from './skillLocalizationLabels';
+import {skillRootDisplay} from './skillEngine/displayContractValidator';
 import {stepNodesOf} from './skillEngine/skillSteps';
 
 export interface LocalizedText {
@@ -205,7 +206,7 @@ function collectSteps(skill: SkillDefinition): Record<string, CatalogStep> {
   }
   // The loader moves a legacy top-level display to output.display; read either.
   collectColumns(result[CATALOG_ROOT_STEP],
-    skill.output?.display ?? (skill as SkillDefinition & {display?: DisplayConfig}).display);
+    skillRootDisplay(skill));
   for (const field of Array.isArray(skill.output?.fields) ? skill.output.fields : []) {
     if (!field?.name) continue;
     result[CATALOG_ROOT_STEP].columns[field.name] = {

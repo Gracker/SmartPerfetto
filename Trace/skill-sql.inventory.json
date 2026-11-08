@@ -21,7 +21,7 @@
   "skills": {
     "ams_module": {
       "source_file": "backend/skills/modules/framework/ams_module.skill.yaml",
-      "source_sha256": "bfd2cd1f208acc814f9da8ed0ec0b02c0d5fd7226da25bec898e8de516e315cd",
+      "source_sha256": "3793610c048eb2cd2f719edc363d9f5cf72702f7b6b45fd0845449fba3423cd1",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -1233,7 +1233,7 @@
     },
     "anr_analysis": {
       "source_file": "backend/skills/composite/anr_analysis.skill.yaml",
-      "source_sha256": "66a6107ad0eba64ff35f415400d42955bbc9c9d40b774ca59cd40724a3f51fa9",
+      "source_sha256": "551c89dca98652359bafda4505bf57f65fdfb4c46352523ccda78982ca2968a2",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -1437,7 +1437,7 @@
           "id": "get_anr_events",
           "at": "steps[11].sql",
           "top_level_index": 11,
-          "sha256": "d047e82f7a2b7a8e37d01aec43b22ed9565beeaf3f46de84c0262d867f7c9dce",
+          "sha256": "5ccb292c5646013c40a8bff97e560ee8fbe8c867a4e67c34a37afe23d169215f",
           "required_columns": [
             "error_id",
             "process_name",
@@ -1452,7 +1452,10 @@
             "timeout_source",
             "analysis_focus",
             "subject_preview",
-            "root_cause_pattern_hints"
+            "root_cause_pattern_hints",
+            "upid",
+            "perfetto_end",
+            "timer_delay_status"
           ],
           "has_condition": true,
           "read_only": true,
@@ -1483,7 +1486,7 @@
     },
     "anr_context_in_range": {
       "source_file": "backend/skills/atomic/anr_context_in_range.skill.yaml",
-      "source_sha256": "12268384a412579c3608b7264236daa60aebfd8910ef3afdf4d25c7e3775e591",
+      "source_sha256": "2638bf278c4e442b3598989e310d9d4e540c575851799a40ddf09111ca78f376",
       "type": "atomic",
       "execution": "root",
       "declared_modules": [
@@ -1496,7 +1499,7 @@
           "id": "root",
           "at": "sql",
           "top_level_index": null,
-          "sha256": "1060e1eb981c0e1def412496edbd331af9e5bd4cf3cb5e378a5c01fbb6583e0e",
+          "sha256": "a4c97377c4a51cd37e92377e21d2c619da22cd04dc375fd93cab4542b974a691",
           "required_columns": [
             "anr_ts",
             "window_start_ts",
@@ -1506,7 +1509,8 @@
             "timer_delay",
             "process_name",
             "upid",
-            "anr_type"
+            "anr_type",
+            "timer_delay_status"
           ],
           "has_condition": false,
           "read_only": true,
@@ -1518,7 +1522,7 @@
     },
     "anr_detail": {
       "source_file": "backend/skills/composite/anr_detail.skill.yaml",
-      "source_sha256": "2b162c546b2c3deaf2ed036f091794cad816297ae62ace13146d474b0350007a",
+      "source_sha256": "163b0bfbab7564b735a5ceffe7d26e5eb48238a44ba9247b121603efb1463762",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -1935,7 +1939,7 @@
     },
     "anr_main_thread_blocking": {
       "source_file": "backend/skills/atomic/anr_main_thread_blocking.skill.yaml",
-      "source_sha256": "8473d950b147d634a504428d70f928a4517c0e17426449ab2c3025f9db8f6e7a",
+      "source_sha256": "125f6c0f585e4fb4e02d376ddf8c103f5229e42fbdff3be9b176133960f18834",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -2073,13 +2077,17 @@
           "id": "binder_blocking",
           "at": "steps[4].sql",
           "top_level_index": 4,
-          "sha256": "e3cc0b861e8a3b077f9b1792014fce2beb0bdd032bd96e534524d73bea89d303",
+          "sha256": "96e0b39033663ed3e3cc44df06c33dc17136b1a9753bcf85ffe238d32b3b7def",
           "required_columns": [
             "ts",
             "slice_name",
             "dur_ms",
             "server_process",
-            "server_thread"
+            "server_thread",
+            "end_ts",
+            "dur_ns",
+            "upid",
+            "wait_evidence"
           ],
           "has_condition": false,
           "read_only": true,
@@ -2231,7 +2239,7 @@
     },
     "art_module": {
       "source_file": "backend/skills/modules/framework/art_module.skill.yaml",
-      "source_sha256": "420e56403b3df38fd4f2d2f938b611c484252d3bc7f733ba7b956813c7a02fcf",
+      "source_sha256": "ccf7ffb32cfd7c7aec9b11b5f2ea46b43afcc7223ca47f28d55eff74b710bb95",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [],
@@ -2500,7 +2508,7 @@
     },
     "binder_analysis": {
       "source_file": "backend/skills/composite/binder_analysis.skill.yaml",
-      "source_sha256": "fc34e062a7ce8185abceac60b9171ac039d0e631ee0ef1646f3d6ef0369cbeee",
+      "source_sha256": "afbc66c5633332309054bf23e4dc7bbebfec5f12bd9b6b494e68f270b19f8755",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -2777,7 +2785,7 @@
     },
     "binder_detail": {
       "source_file": "backend/skills/composite/binder_detail.skill.yaml",
-      "source_sha256": "eeadbc879f3b3e4118c66913d5a022ebec45f310e3ea34a03306d58cb80b9141",
+      "source_sha256": "a769c1e7ae5e961d54f665ec8b4d7c8b6d56c5b0e20f816f67150ffcf6413197",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [],
@@ -2933,7 +2941,7 @@
     },
     "binder_module": {
       "source_file": "backend/skills/modules/kernel/binder_module.skill.yaml",
-      "source_sha256": "e374d828a42b45b2f0c2de0b02ca10fd40049073b3e8b52aedb4724592469f73",
+      "source_sha256": "a0d3130ef46dca29cdc90ca4ef4288c06f405f36121cc8c58ee997b455134811",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -3016,7 +3024,7 @@
     },
     "binder_pool_saturation_in_range": {
       "source_file": "backend/skills/atomic/binder_pool_saturation_in_range.skill.yaml",
-      "source_sha256": "b79a73c10aaa34279356b775346a96b62cc40c907c670d6903399f9b34a249c4",
+      "source_sha256": "d97947f0d5741f3e833349e9213a342b2eeb780815b6c1a53cba62ccf235a939",
       "type": "atomic",
       "execution": "steps",
       "declared_modules": [],
@@ -3031,7 +3039,7 @@
           "id": "pool_saturation",
           "at": "steps[0].sql",
           "top_level_index": 0,
-          "sha256": "27575bfcc9703830750f7c5f5234459a7b170ad2c2955c9720606813cd2aedd5",
+          "sha256": "8759bad4561c3ac300d0155a2b9a7694fb0cac2e687b8f75ee01b5a31f2a973a",
           "required_columns": [
             "window_start_ts",
             "window_end_ts",
@@ -3058,7 +3066,8 @@
             "unreceived_sync_calls",
             "max_sync_wait_ns",
             "saturation_evidence",
-            "evidence_scope"
+            "evidence_scope",
+            "pool_evidence_status"
           ],
           "has_condition": false,
           "read_only": true,
@@ -4049,7 +4058,7 @@
     },
     "choreographer_module": {
       "source_file": "backend/skills/modules/framework/choreographer_module.skill.yaml",
-      "source_sha256": "50ab26350db4695faed48050143b69a472c511af5a36fcc610e6e6b192860e66",
+      "source_sha256": "8311748b218989a899350adda0f5f535baf90c25d78f68faff7ac6657d241226",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [],
@@ -4309,7 +4318,7 @@
     },
     "click_response_analysis": {
       "source_file": "backend/skills/composite/click_response_analysis.skill.yaml",
-      "source_sha256": "03b5d4aa8b1a9a35544b024cba0e9f19905aed03fa034951999ef8dd10a8d371",
+      "source_sha256": "96cdbe5a4f10221d92c7760411a1985dcbb03f48d8f5250f002bb12d2aecf818",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -4588,7 +4597,7 @@
     },
     "click_response_detail": {
       "source_file": "backend/skills/composite/click_response_detail.skill.yaml",
-      "source_sha256": "739620401ba5e6216fd3b859ac13dc3c768242f05ca6c155d0d9ae7e95a307cf",
+      "source_sha256": "adfdbf3a5aa0331ce9b3f554c31808a1998d10e09d2ad8c9c50bf55086b473c6",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -5173,7 +5182,7 @@
     },
     "cpu_analysis": {
       "source_file": "backend/skills/composite/cpu_analysis.skill.yaml",
-      "source_sha256": "d9d9bcda96cb9471278f153d74bd7bf5116d197b1f29e700e4ac9681d930e619",
+      "source_sha256": "a92fcecfaa391bf3e79d99fde999b7dcf21a49dfcd0fb35c65bbcd41af2d04b9",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -5875,7 +5884,7 @@
     },
     "cpu_frequency_limit_attribution": {
       "source_file": "backend/skills/composite/cpu_frequency_limit_attribution.skill.yaml",
-      "source_sha256": "758e7664b2091d3e128ef1d06d88c4a311526ec85bac8f6db15d7dc1510901e3",
+      "source_sha256": "3a02b4ff9a5f35d376b33c2f64a5945563e89ad8cafb7cb6c62a22cc96d477fc",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -6546,7 +6555,7 @@
     },
     "cpu_module": {
       "source_file": "backend/skills/modules/hardware/cpu_module.skill.yaml",
-      "source_sha256": "4a9d6de50b0314b731792232ca2a3ac602c68e7c870a4e4a3d95f97d9f84a688",
+      "source_sha256": "71a1d8cdf84e0180782c8c25b1f85eb615aea52e66ee0a8ed675fb1a0634b309",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -7834,7 +7843,7 @@
     },
     "filesystem_module": {
       "source_file": "backend/skills/modules/kernel/filesystem_module.skill.yaml",
-      "source_sha256": "18dec147f2bfaecf6ae89f2942cc87828fb95e48502a1ff7633dd43fe54fa3d3",
+      "source_sha256": "435ec320f775e53fe918bea24a31a4c5584c3de7cb0e64c367fca92695457fa4",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [],
@@ -9576,7 +9585,7 @@
     },
     "gpu_module": {
       "source_file": "backend/skills/modules/hardware/gpu_module.skill.yaml",
-      "source_sha256": "579fe2d70ef30c53d7a5e32a06732ef2872ce8b45c31aea88cb079bf2a45c9e0",
+      "source_sha256": "b886833bb0a8ce73f11e481eb087092418db60082fdec57dda4d24dd6c000658",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [],
@@ -9977,7 +9986,7 @@
     },
     "input_module": {
       "source_file": "backend/skills/modules/framework/input_module.skill.yaml",
-      "source_sha256": "e514d3ba027d776732f4f451e54e709f259d7b79e371ab403971fb4925dfa977",
+      "source_sha256": "44cab906fb8f37dddce79e2c7407f2cef7d4c52307cb65f9890df0a5aaad681d",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -10165,7 +10174,7 @@
     },
     "io_pressure": {
       "source_file": "backend/skills/composite/io_pressure.skill.yaml",
-      "source_sha256": "abd029a09336e7e2a849db7fba8b0e13357e976e20c5bd6fd7290e1997a29298",
+      "source_sha256": "43c67fe077b6a53000da236d4dfc90929b32b925511df0c99eb62ea61a241c0e",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -10356,7 +10365,7 @@
     },
     "irq_analysis": {
       "source_file": "backend/skills/composite/irq_analysis.skill.yaml",
-      "source_sha256": "fea29723032ba827d7c7b294e22ea8ff4633c9c6e8abb832895f9a9642a6e595",
+      "source_sha256": "c70a064eb46aa65eea1e0e328d49c99c3713553733e4f2f3d1731bce766da30b",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -10570,7 +10579,7 @@
     },
     "jank_frame_detail": {
       "source_file": "backend/skills/composite/jank_frame_detail.skill.yaml",
-      "source_sha256": "a0211e3d982714457a51437e411533797d8d6b214b85d9f67ce0d80ba4ad4c61",
+      "source_sha256": "d6ebc3c422f3b26600c2d705b90bc6dcfc6723fb3f9e259a094e207326d3915f",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -10985,7 +10994,7 @@
     },
     "launcher_module": {
       "source_file": "backend/skills/modules/app/launcher_module.skill.yaml",
-      "source_sha256": "4c0d82a72e79c8ac5f42f5c57ff618e5bc0211d2d8f4c88c79642fbddd4ac263",
+      "source_sha256": "a90057ce86d59a8bc077f03215ec72166ba59b83b7bdc56297cdec0a28e38622",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [],
@@ -12112,7 +12121,7 @@
     },
     "lock_contention_module": {
       "source_file": "backend/skills/modules/kernel/lock_contention_module.skill.yaml",
-      "source_sha256": "106819ab92ac89738c756cd296dd1da8aac142910477fdb313a8dc616a50bd08",
+      "source_sha256": "d07a8840cdaf1f8b7ef019cfc13abd3529dc7873f677593f06d5892a1ddf859a",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [],
@@ -12856,7 +12865,7 @@
     },
     "memory_analysis": {
       "source_file": "backend/skills/composite/memory_analysis.skill.yaml",
-      "source_sha256": "1fb350c1d3eb4af09e605373da275721d9521ff7f20b34a245513f545b5b6dd1",
+      "source_sha256": "84ac77ef776250708d0bca27901eb5ceace572351055c4b6bf86dcd84986a1d0",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [],
@@ -13108,7 +13117,7 @@
     },
     "memory_module": {
       "source_file": "backend/skills/modules/hardware/memory_module.skill.yaml",
-      "source_sha256": "b987a26840357de829425e1b7deba3e412dee91d2541ade4ad72e4866c5c38ff",
+      "source_sha256": "f00717aba46f44cda52a71b3aac619d9a3dabf1eea6b54e5757a38a480c000bc",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [],
@@ -13473,7 +13482,7 @@
     },
     "navigation_analysis": {
       "source_file": "backend/skills/composite/navigation_analysis.skill.yaml",
-      "source_sha256": "c8bbe81d2a904151402e873ca39bfb964e77a0287f268961fbb540b88648da48",
+      "source_sha256": "5fe3a593785fdcd214084bbc644f0d6572cb21d9c8347976dd48bff48b31080e",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -13761,7 +13770,7 @@
     },
     "network_analysis": {
       "source_file": "backend/skills/composite/network_analysis.skill.yaml",
-      "source_sha256": "b0d6f1c51fe5e8687db9cc5ec9b1df231029151ee389c92bfb42f096e1ac13e0",
+      "source_sha256": "390c291f6c2a0149d466965148a169836930c1d3393129ea790511f28db54319",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -14595,7 +14604,7 @@
     },
     "power_module": {
       "source_file": "backend/skills/modules/hardware/power_module.skill.yaml",
-      "source_sha256": "b1684cac1874ae453391ccfe88614289405b052dad8ab7ec594255347bb37acb",
+      "source_sha256": "cd2beb4f76696242a572e25220b5f4bfb755d932498796fb7b3098dd5759ec18",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [],
@@ -15459,7 +15468,7 @@
     },
     "runnable_cpu_occupancy_in_range": {
       "source_file": "backend/skills/atomic/runnable_cpu_occupancy_in_range.skill.yaml",
-      "source_sha256": "60bf002df6f8be6664e7d227ecd9850d9ed9ca9ba3b2b6a5793127c6e0bac7fd",
+      "source_sha256": "a49f4b9043c7f6d13ecf147f6202d2d1ffa887e62e7a71c78d89663a5717587f",
       "type": "atomic",
       "execution": "root",
       "declared_modules": [
@@ -16267,7 +16276,7 @@
     },
     "scheduler_module": {
       "source_file": "backend/skills/modules/kernel/scheduler_module.skill.yaml",
-      "source_sha256": "67ddcf3a040cfc8fb5ace854ca824d699330c03bfd3894272d6df7d804f91677",
+      "source_sha256": "0ed2dae7a8e3c77d9cae3d3a2266333ae7ca980b3f7bc1efdb94ae5a00ca5b37",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -16497,7 +16506,7 @@
     },
     "scroll_session_analysis": {
       "source_file": "backend/skills/composite/scroll_session_analysis.skill.yaml",
-      "source_sha256": "53f8665c4c8edfe4e612f950a053df17c5d3b5da27464e59fbcba96753f5f490",
+      "source_sha256": "1e937837e79fae2d38ba4a154c578122e18b6005033d677ef55b78cf8d0c9a57",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [],
@@ -17909,7 +17918,7 @@
     },
     "startup_analysis": {
       "source_file": "backend/skills/composite/startup_analysis.skill.yaml",
-      "source_sha256": "14530d7c621f830e66c59b8e2fa47be7e7c4d9a3035b10ab724d1b3cd541d5e1",
+      "source_sha256": "c04d04c381b7112ebe215f07da517fabf6e7d25f71f0e18e3173af2eece326c2",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -18264,7 +18273,7 @@
     },
     "startup_detail": {
       "source_file": "backend/skills/composite/startup_detail.skill.yaml",
-      "source_sha256": "4892e80cff5fa2a747e968f6a61d5298f2e68f5e1f20aba97e9eba7b399f5e8b",
+      "source_sha256": "ed969e56ba05e84ded2d40cbd89f78596235f1970bd7ccb87bc1da30923a3ac3",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -19637,7 +19646,7 @@
     },
     "surfaceflinger_module": {
       "source_file": "backend/skills/modules/framework/surfaceflinger_module.skill.yaml",
-      "source_sha256": "e3f857a0ef0e7ea322a5a6f0f6e2f13149fe4684ded79833c5a1421a53b93124",
+      "source_sha256": "1ab8ca32abdfd4935e0a65eb1c83e73cb7d16dfac3a75a9ff0e24508f75769ba",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -19737,7 +19746,7 @@
     },
     "suspend_wakeup_analysis": {
       "source_file": "backend/skills/composite/suspend_wakeup_analysis.skill.yaml",
-      "source_sha256": "cf54dd26038da1a8e319353fce7eef8b92cc4962e217cb1873d6bc9f74fa70ee",
+      "source_sha256": "4a2128e808996386dac3b72b899746989b84cc0117844e75b30b84dc52c4a367",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -20023,7 +20032,7 @@
     },
     "systemui_module": {
       "source_file": "backend/skills/modules/app/systemui_module.skill.yaml",
-      "source_sha256": "878a322c6ecb8d008c5c1eb3a818f63e55dfb38cdd5a00236fef47da90c6bd0a",
+      "source_sha256": "7bad353475730c50d78e32f5389eef8a18f13d37f2838d318c9d9bfe0c0a577a",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [],
@@ -20460,7 +20469,7 @@
     },
     "thermal_module": {
       "source_file": "backend/skills/modules/hardware/thermal_module.skill.yaml",
-      "source_sha256": "704e180a6465afd151d94ae86efccee580680462a62262896290e7844e46f481",
+      "source_sha256": "fe7a3a653181e5bd0aa0efdbaae32faaec177c0cf2d8bd446618e66cde9eb944",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [],
@@ -20664,7 +20673,7 @@
     },
     "thermal_throttling": {
       "source_file": "backend/skills/composite/thermal_throttling.skill.yaml",
-      "source_sha256": "03d5214cde82b7f701aaf49433f9e9dd86053d0c50cd7845247da2506662c32e",
+      "source_sha256": "620dd9f223481611ba06792821dc77d4665abcd5d4727f571688f31742da6903",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [],
@@ -20950,7 +20959,7 @@
     },
     "third_party_module": {
       "source_file": "backend/skills/modules/app/third_party_module.skill.yaml",
-      "source_sha256": "187161c0bb28c5b2c3fc7793981fd519e399d3a17ee5a07d05ea9d64daf388b5",
+      "source_sha256": "39751b02d647c86152142d1d75ba69d8b950f6ea97c884c16908e3696104804b",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -22097,7 +22106,7 @@
     },
     "wms_module": {
       "source_file": "backend/skills/modules/framework/wms_module.skill.yaml",
-      "source_sha256": "4bd2c147a32250b3c3ae71af00fb8bbfb8b99256c68cc8fa44a0131ebe25d794",
+      "source_sha256": "c52bd0ea0df3f2c51b66d81b1951baa545c62d35b7e103541c2e25cf88051e39",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [],

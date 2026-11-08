@@ -289,7 +289,8 @@ steps:
     name: "锁竞争诊断"
     inputs: [lock_overview, monitor_contention, blocked_threads, main_thread_locks, thread_contention_pairs]
     rules:
-      - condition: "main_thread_locks.data.length > 0"
+      - id: lock_contention.main_thread_waits
+        condition: "main_thread_locks.data.length > 0"
         diagnosis: "主线程检测到 ${main_thread_locks.data.length} 次锁等待，最长 ${main_thread_locks.data[0]?.wait_ms}ms"
         # One >1ms lock-like wait is an observation, not proof of impact.
         severity: info
@@ -303,7 +304,8 @@ steps:
           - main_thread_locks.data[0]?.lock_event
           - main_thread_locks.data[0]?.wait_ms
 
-      - condition: "lock_overview.data[0]?.total_wait_ms > 100"
+      - id: lock_contention.total_wait_long
+        condition: "lock_overview.data[0]?.total_wait_ms > 100"
         diagnosis: "锁竞争总等待时间 ${lock_overview.data[0]?.total_wait_ms}ms"
         confidence: high
         suggestions:
@@ -314,7 +316,8 @@ steps:
           - lock_overview.data[0]?.lock_event
           - lock_overview.data[0]?.total_wait_ms
 
-      - condition: "monitor_contention.data[0]?.wait_ms > 10"
+      - id: lock_contention.monitor_contention
+        condition: "monitor_contention.data[0]?.wait_ms > 10"
         diagnosis: "Java Monitor 竞争: ${monitor_contention.data[0]?.monitor_event} 等待 ${monitor_contention.data[0]?.wait_ms}ms"
         confidence: high
         suggestions:
@@ -326,7 +329,8 @@ steps:
           - monitor_contention.data[0]?.wait_ms
           - monitor_contention.data[0]?.waiting_thread
 
-      - condition: "blocked_threads.data.filter(t => t.state === 'D').length > 3"
+      - id: lock_contention.uninterruptible_threads
+        condition: "blocked_threads.data.filter(t => t.state === 'D').length > 3"
         diagnosis: "多个线程处于不可中断阻塞状态，可能存在 I/O 或锁等待"
         confidence: medium
         suggestions:
@@ -335,7 +339,8 @@ steps:
         evidence_fields:
           - blocked_threads.data.filter(t => t.state === 'D').length
 
-      - condition: "thread_contention_pairs.data[0]?.blocked_pct > 30"
+      - id: lock_contention.thread_blocked_share_high
+        condition: "thread_contention_pairs.data[0]?.blocked_pct > 30"
         diagnosis: "线程 ${thread_contention_pairs.data[0]?.thread_name} 阻塞时间占比 ${thread_contention_pairs.data[0]?.blocked_pct}%"
         confidence: medium
         suggestions:

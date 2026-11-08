@@ -610,7 +610,8 @@ steps:
     inputs: [irq_overview, top_irq_sources, long_irq_events, root_cause]
     rules:
       # 中断延迟问题
-      - condition: "root_cause.data[0]?.classification === 'IRQ_LATENCY'"
+      - id: irq.latency
+        condition: "root_cause.data[0]?.classification === 'IRQ_LATENCY'"
         severity: critical
         diagnosis: "检测到异常长耗时中断 (硬中断 ${root_cause.data[0].long_hard_irq_count} 次 >1ms，软中断 ${root_cause.data[0].long_soft_irq_count} 次 >10ms)"
         confidence: high
@@ -620,7 +621,8 @@ steps:
           - "考虑将中断绑定到特定 CPU 核心避免影响关键任务"
 
       # 中断负载过重
-      - condition: "root_cause.data[0]?.classification === 'IRQ_HEAVY'"
+      - id: irq.heavy_load
+        condition: "root_cause.data[0]?.classification === 'IRQ_HEAVY'"
         severity: warning
         diagnosis: "中断负载较重 (总计 ${root_cause.data[0].total_irq_count} 次，耗时 ${root_cause.data[0].total_dur_ms}ms)"
         confidence: high
@@ -630,7 +632,8 @@ steps:
           - "检查网络和存储 IO 是否导致过多中断"
 
       # 正常
-      - condition: "root_cause.data[0]?.classification === 'IRQ_NORMAL'"
+      - id: irq.normal
+        condition: "root_cause.data[0]?.classification === 'IRQ_NORMAL'"
         severity: info
         diagnosis: "中断负载正常，无异常"
         confidence: high

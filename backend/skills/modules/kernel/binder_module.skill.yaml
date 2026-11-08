@@ -136,7 +136,8 @@ steps:
     name: "Binder 诊断"
     inputs: [binder_stats, long_calls, blocking_data]
     rules:
-      - condition: "long_calls.data[0]?.dur_ms > 16"
+      - id: binder.long_call
+        condition: "long_calls.data[0]?.dur_ms > 16"
         diagnosis: "发现长耗时 Binder 调用: ${long_calls.data[0]?.interface} (${long_calls.data[0]?.dur_ms}ms)，主线程被阻塞"
         confidence: high
         suggestions:
@@ -147,7 +148,8 @@ steps:
           - long_calls.data[0].dur_ms
           - long_calls.data[0].server_process
 
-      - condition: "binder_stats.data[0]?.sync_count > 20"
+      - id: binder.sync_call_count_high
+        condition: "binder_stats.data[0]?.sync_count > 20"
         diagnosis: "Binder 同步调用次数过多: ${binder_stats.data[0]?.interface} (${binder_stats.data[0]?.sync_count} 次)"
         confidence: medium
         suggestions:
@@ -158,7 +160,8 @@ steps:
           - binder_stats.data[0].sync_count
           - binder_stats.data[0].total_ms
 
-      - condition: "blocking_data.data[0]?.total_block_ms > 50"
+      - id: binder.blocking_total_long
+        condition: "blocking_data.data[0]?.total_block_ms > 50"
         diagnosis: "Binder 调用累计阻塞时间过长: ${blocking_data.data[0]?.server_process} (${blocking_data.data[0]?.total_block_ms}ms)"
         confidence: medium
         suggestions:

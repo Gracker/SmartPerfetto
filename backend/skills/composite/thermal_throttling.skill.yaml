@@ -943,38 +943,45 @@ steps:
       title: "问题诊断"
     inputs: [thermal_overview, cpu_freq_overview, thermal_prediction, gpu_power_probe, frequency_drops, high_temp_periods, direct_limit_evidence, root_cause]
     rules:
-      - condition: "root_cause.data[0]?.classification === 'THERMAL_LIMIT_CONFIRMED'"
+      - id: thermal_throttling.limit_confirmed
+        condition: "root_cause.data[0]?.classification === 'THERMAL_LIMIT_CONFIRMED'"
         severity: warning
         diagnosis: "已核验热限频：${direct_limit_evidence.data[0].cooling_confirmed_episodes} 段限频区段中有限频写入紧跟在与该 policy 时序关联的内核散热设备升档之后（最大深度 ${direct_limit_evidence.data[0].deepest_depth_pct}%；逐次写入分类 ${direct_limit_evidence.data[0].onset_trigger_mix}）"
         confidence: high
         suggestions:
           - "用 cpu_frequency_limit_attribution 查看谁触发了限频、限频前的负载归因与异常线程"
           - "散热设备与 policy 的对应关系来自档位变更与上限变更的时序配对，不来自设备名；核对触发它的热区阈值"
-      - condition: "root_cause.data[0]?.thermal_throttling_evidence === 'limit_observed_cause_unverified'"
+      - id: thermal_throttling.limit_observed_cause_unverified
+        condition: "root_cause.data[0]?.thermal_throttling_evidence === 'limit_observed_cause_unverified'"
         severity: info
         diagnosis: "观测到 ${direct_limit_evidence.data[0].episode_count} 段限频区段，但没有一次限频写入由关联散热设备施加（分类 ${direct_limit_evidence.data[0].freq_limit_classification}）；限频原因未核验"
         confidence: medium
         suggestions:
           - "用 cpu_frequency_limit_attribution 判断是用户态温控守护进程、非热策略限频，还是采集缺少 thermal/cdev_update"
-      - condition: "root_cause.data[0]?.classification === 'DATA_SUSPECT'"
+      - id: thermal_throttling.data_suspect
+        condition: "root_cause.data[0]?.classification === 'DATA_SUSPECT'"
         severity: warning
         diagnosis: "温度数据可疑或传感器不可直接比较；峰值仅来自通过质量筛选的轨道，不能确定热节流"
         confidence: low
         suggestions:
           - "检查各轨道 sample_quality、unit_basis 和传感器位置，勿将皮肤温度视为 CPU 结温"
-      - condition: "root_cause.data[0]?.classification === 'THERMAL_DATA_UNAVAILABLE'"
+      - id: thermal_throttling.data_unavailable
+        condition: "root_cause.data[0]?.classification === 'THERMAL_DATA_UNAVAILABLE'"
         severity: info
         diagnosis: "没有足够可靠的温度数据，热状态不可判定"
         confidence: low
-      - condition: "root_cause.data[0]?.classification === 'HIGH_TEMP_OBSERVED'"
+      - id: thermal_throttling.high_temp_observed
+        condition: "root_cause.data[0]?.classification === 'HIGH_TEMP_OBSERVED'"
         severity: warning
         diagnosis: "观测到高温 ${root_cause.data[0].peak_temp_c}C；需要持续时间和直接限频证据才能判断热节流"
         confidence: medium
-      - condition: "root_cause.data[0]?.classification === 'FREQ_INSTABILITY'"
+      - id: thermal_throttling.freq_instability
+        condition: "root_cause.data[0]?.classification === 'FREQ_INSTABILITY'"
         severity: info
         diagnosis: "观测到 ${root_cause.data[0].severe_drop_count} 次频率下降，负载或空闲 DVFS 均可解释，热原因未核验"
         confidence: medium
-      - condition: "root_cause.data[0]?.classification === 'THERMAL_NORMAL'"
+      - id: thermal_throttling.normal
+        condition: "root_cause.data[0]?.classification === 'THERMAL_NORMAL'"
         severity: info
         diagnosis: "有效传感器未见高温；不代表所有 CPU 结温均可观测"
         confidence: medium

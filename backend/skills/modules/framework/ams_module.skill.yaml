@@ -126,7 +126,8 @@ steps:
     name: "启动诊断"
     inputs: [startup_data, phases, broadcasts]
     rules:
-      - condition: "startup_data.data[0]?.total_ms > 1000 && startup_data.data[0]?.launch_type === 'cold'"
+      - id: ams.cold_start_long
+        condition: "startup_data.data[0]?.total_ms > 1000 && startup_data.data[0]?.launch_type === 'cold'"
         diagnosis: "冷启动耗时过长 (${startup_data.data[0]?.total_ms}ms)，超过 1 秒阈值"
         confidence: high
         suggestions:
@@ -136,7 +137,8 @@ steps:
           - startup_data.data[0].total_ms
           - startup_data.data[0].launch_type
 
-      - condition: "startup_data.data[0]?.total_ms > 500 && startup_data.data[0]?.launch_type === 'warm'"
+      - id: ams.warm_start_long
+        condition: "startup_data.data[0]?.total_ms > 500 && startup_data.data[0]?.launch_type === 'warm'"
         diagnosis: "温启动耗时过长 (${startup_data.data[0]?.total_ms}ms)，超过 500ms 阈值"
         confidence: medium
         suggestions:
@@ -145,7 +147,8 @@ steps:
         evidence_fields:
           - startup_data.data[0].total_ms
 
-      - condition: "broadcasts.data[0]?.dur_ms > 50"
+      - id: ams.broadcast_slow
+        condition: "broadcasts.data[0]?.dur_ms > 50"
         diagnosis: "广播接收器延迟启动 (${broadcasts.data[0]?.broadcast_action} 耗时 ${broadcasts.data[0]?.dur_ms}ms)"
         confidence: medium
         suggestions:

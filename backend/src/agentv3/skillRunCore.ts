@@ -43,6 +43,7 @@ import {
   type IdentityResolutionV1,
 } from '../types/identityContract';
 import type {QueryReviewV1} from '../types/queryReviewContract';
+import {locateDiagnosticBindings, skillResultFacts, type SkillResultFacts} from '../services/evidence/investigationFacts';
 import type {ArtifactStore} from './artifactStore';
 import {skillRequiresProcessSelector} from './entrySkillPolicy';
 import type {OutputLanguage} from './outputLanguage';
@@ -272,6 +273,11 @@ export function appliedDefaultProcessField(
   return {appliedDefaultProcess: {packageName, source, ...(confidence ? {confidence} : {})}};
 }
 
+/** Whether `invoke_skill` can run a Skill: the metadata-only types are refused before anything runs. */
+export function isInvocableSkill(skill: Pick<SkillDefinition, 'type'>): boolean {
+  return skill.type !== 'pipeline_definition' && skill.type !== 'comparison';
+}
+
 /** What one run's current trace supplies to a Skill run. */
 export interface SkillRunDeps {
   traceId: string;
@@ -322,8 +328,9 @@ export async function prepareSkillRun(
   const {skillId, params, signal} = input;
   const skillDef = input.registry.getSkill(skillId);
   if (!skillDef) return {status: 'refused', refusal: {kind: 'unavailable'}};
-  if (skillDef.type === 'pipeline_definition' || skillDef.type === 'comparison') {
-    return {status: 'refused', refusal: {kind: 'metadata_only', skillType: skillDef.type}};
+  if (!isInvocableSkill(skillDef)) {
+    return {status: 'refused', refusal: {kind: 'metadata_only',
+      skillType: skillDef.type as 'pipeline_definition' | 'comparison'}};
   }
   const normalizedParams = normalizeSkillRunParams(params, deps.packageName, skillDef);
   const explicitInvalidParams = undeclaredSkillRunParams(skillDef, params, true);
@@ -398,6 +405,8 @@ export type SkillRunOutcome =
     queryReviewsByDisplayIndex: Array<QueryReviewV1 | undefined>;
     diagnosticsArtifactId?: string;
     synthesizeArtifacts?: SkillRunSynthesizeArtifact[];
+    /** Fired rules with a stable id and their bound producer values; never their conclusion text. */
+    facts?: SkillResultFacts;
     /** Captures this run registered (display and synthesize witnesses). */
     captureCount: number;
   });
@@ -504,23 +513,33 @@ export async function executePreparedSkillRun(
     });
   }
 
+  // A bound value names where its source step's result was just stored.
+  const displayLocators = new Map<string, {artifactId: string; evidenceRefId: string}>();
+  (result.displayResults ?? []).forEach((dr, displayIndex) => {
+    const artifactId = artifactIdsByDisplayIndex[displayIndex];
+    const evidenceRefId = evidenceRefIdsByDisplayIndex[displayIndex];
+    if (artifactId && evidenceRefId && !displayLocators.has(dr.stepId)) displayLocators.set(dr.stepId, {artifactId, evidenceRefId});
+  });
+  const diagnostics = Array.isArray(result.diagnostics)
+    ? locateDiagnosticBindings(result.diagnostics, stepId => displayLocators.get(stepId)) : [];
+
   // Store diagnostics as a separate artifact if present, even for
   // diagnostics-only skill results that do not emit displayResults.
-  if (artifactStore && result.diagnostics && Array.isArray(result.diagnostics) && result.diagnostics.length > 0) {
+  if (artifactStore && diagnostics.length > 0) {
     diagnosticsArtifactId = artifactStore.store({
       skillId: result.skillId || skillId,
       stepId: '_diagnostics',
       layer: 'diagnosis',
       title: `${skillId} diagnostics`,
-      data: { columns: ['diagnostic'], rows: result.diagnostics.map((d: any) => [d]) },
-      diagnostics: result.diagnostics,
+      data: { columns: ['diagnostic'], rows: diagnostics.map(d => [d]) },
+      diagnostics,
       planPhaseId: producer.planPhaseId,
       planPhaseTitle: producer.planPhaseTitle,
       planPhaseGoal: producer.planPhaseGoal,
       sourceToolCallId: producer.sourceToolCallId,
       paramsHash: producer.paramsHash,
-      identityResolution: identityForScopeEvidence(mergeScopeProvenance(result.diagnostics.map(diagnostic => diagnostic.scopeProvenance)), result.identityResolution),
-      scopeProvenance: mergeScopeProvenance(result.diagnostics.map(diagnostic => diagnostic.scopeProvenance)),
+      identityResolution: identityForScopeEvidence(mergeScopeProvenance(diagnostics.map(diagnostic => diagnostic.scopeProvenance)), result.identityResolution),
+      scopeProvenance: mergeScopeProvenance(diagnostics.map(diagnostic => diagnostic.scopeProvenance)),
       traceProvenance: skillTraceProvenance,
     });
   }
@@ -573,6 +592,7 @@ export async function executePreparedSkillRun(
       });
   }
 
+  const facts = skillResultFacts(result.skillId || skillId, diagnostics, diagnosticsArtifactId);
   return {
     ...execution,
     status: 'committed',
@@ -581,6 +601,7 @@ export async function executePreparedSkillRun(
     queryReviewsByDisplayIndex,
     ...(diagnosticsArtifactId ? {diagnosticsArtifactId} : {}),
     ...(synthesizeArtifacts ? {synthesizeArtifacts} : {}),
+    ...(facts ? {facts} : {}),
     captureCount,
   };
 }

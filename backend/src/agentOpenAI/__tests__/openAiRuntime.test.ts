@@ -3289,6 +3289,9 @@ describe('OpenAI selected foundation preflight', () => {
     expect(registerSkills).toHaveBeenCalledTimes(1);
     expect(registerFragments).toHaveBeenCalledTimes(1);
     const store = selected.mock.calls[0][0].artifactStore;
+    // Notes and rule facts are Pi's alone.
+    expect(mcp.mock.calls.every(([options]) => options.skillResultNotes === undefined)).toBe(true);
+    expect(createExecutor.mock.calls.every(call => call[2] === undefined)).toBe(true);
     expect(runtime.artifactStores.get(sessionId)).toBe(store);
     const selectedResult = await selected.mock.results[0].value as
       Awaited<ReturnType<typeof sceneEntryEvidence.collectSelectedEvidenceForPrompt>>;

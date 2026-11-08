@@ -363,7 +363,8 @@ Chooses the execution path from runtime data.
   type: diagnostic
   inputs: [startups]
   rules:
-    - condition: "startups.data[0]?.dur_ms > 2000"
+    - id: startup.cold.over_2s
+      condition: "startups.data[0]?.dur_ms > 2000"
       severity: critical
       confidence: high
       diagnosis: "Startup took ${startups.data[0].dur_ms}ms, over 2 seconds"
@@ -394,6 +395,42 @@ cut.
 A fired rule also reports a bounded sample of every input its condition reads,
 whether written `name.data`, `name?.data` or `name?.["data"]`; a name that
 appears only inside a string or comment is not read.
+Every rule has a stable `id`, unique in its Skill, of the form
+`<skill stem>.<condition>`: the stem is the Skill `name` without a trailing
+`_analysis` or `_module` (`anr_analysis` → `anr`; `jank_frame_detail` stays),
+and the condition states what the rule tests in lower_snake_case. A family
+segment sits between them only for a set of conditions on one dimension (such
+as `anr.trigger.no_focus_window` or `startup.cold.over_2s`). Missing data or
+signal always ends in `_unavailable`. A fired rule's result carries it as
+`ruleId`, beside the positional `id`
+(`<step>_<n>`) reports and history key on. A rule may declare `binds`, the
+producer values it reports when it fires:
+
+```yaml
+      binds:
+        - {name: saturated_ns, field: "pool.data.find(r => r.saturation_evidence === 'saturated_observed').saturated_ns"}
+        - {name: process_name, field: "pool.data[0].process_name"}
+```
+
+A bind `field` is the evidence-field form that reads one row's column:
+`input.data[n].column` or `input.data.find(r => r.c OP literal).column`, rooted
+at one of the step's `inputs`. The root names an atomic step, or a Skill
+reference that binds a child's atomic step through `save_from` (or a child
+Skill's root SQL). A bound unit comes only from the source column's
+`display.columns` declaration; a rule never supplies or overrides it. A
+quantity column (number, timestamp, duration, percentage, bytes) without a
+valid `unit` fails validation; label columns such as strings carry none.
+`find()` picks a row by a predicate, so it may read only a source whose
+`display.row_semantics` is `window_total` or `per_entity` (every row is an
+aggregate over the window); `per_event` or none fails validation.
+`ruleId` and `bindings` exist only when the executor enables `diagnosticFacts`
+(the Pi runtime does; the hidden fallback runtimes do not). Pi hands fired rules
+to the model as one `facts` object, `{skillId, diagnosticsArtifactId, rules:
+[{ruleId, bindings}]}`: bound values carry their units and their source result's
+locator, the object serializes to at most 2048 bytes, and rules past that are
+counted in `omittedRuleCount`. `facts` never carry `severity`, `diagnosis` or
+`suggestions`: the model draws its own conclusion.
+
 `validate:skills` rejects an evidence field outside that grammar or rooted
 outside `inputs`, a rule that reads a step missing from `inputs`, a condition
 that reads step data other than through `.data` (a placeholder resolved as a
@@ -601,6 +638,18 @@ display:
     - name: jank_rate
       label: "Jank rate"
       type: percentage
+    - name: saturated_ns
+      label: "saturated_ns"
+      type: duration
+      unit: ns
+      semantics: >-              # model-only producer meaning (English, at most 240 characters)
+        Time in the window while every observed pool thread was busy at once.
+    - name: timer_delay
+      label: "ANR timer expiry → ANR record delay"
+      type: duration
+      unit: ns
+      semantics_ref: android_anrs.timer_delay  # or an entry of strategies/stdlib-column-semantics.yaml
+  row_semantics: per_entity    # window_total | per_entity | per_event: what one row stands for
   # optional advanced fields
   severity: warning            # critical | warning | info | normal — the frontend sorts by severity
   collapsible: true            # whether the table can collapse
@@ -618,6 +667,18 @@ display:
 **Special layer value:**
 - `diagnosis` — the diagnosis layer for structured findings from a diagnostic
   step.
+
+**Model-only producer notes:** a column's `semantics` (or the stdlib overlay
+entry its `semantics_ref` names; the column must declare that entry's `unit`)
+and a step's `row_semantics` never reach a DataEnvelope, report or snapshot.
+The Pi runtime hands them to the model as `resultNotes`, with an
+`investigation_evidence` metric's `metric_id` / `aggregation` / `coverage` /
+`denominator`: one entry per step, never per row; each `skillId.stepId.column`
+note once per run and at most 24 columns per result, the rest left for a later
+result or `fetch_artifact`. Units stay in `columnUnits`. One overlay entry is
+said once per run, from a Skill or a raw SQL column note. An off value of
+`SMARTPERFETTO_SKILL_RESULT_FACTS` (`0`, `false`, `no`, `off`) turns notes and
+`facts` off together.
 
 ### Expandable Data
 
@@ -1091,11 +1152,14 @@ Shared validator findings carry an issue code (proposal gates and
 | `process_scope_invalid` | An invalid `process_scope` declaration, which makes the exact scope unavailable; see [4.8](#48-exact-process-scope-and-investigation-evidence) |
 | `sql_not_executed` | SQL the executor never runs: the root SQL of a non-atomic Skill, steps beside an atomic root, steps of a metadata-only Skill |
 | `condition_uses_sql_boolean_words` | SQL `AND` / `OR` in the code of a step `condition`, a conditional branch `when`, or a diagnostic rule `condition` (not inside a string literal or a property name). These expressions are JavaScript, so `AND` / `OR` never compiles, evaluates to false, and the step is silently skipped (the branch never taken, the rule never fired). An iterator `filter` is the exception: its `AND` / `OR` is rewritten |
+| `diagnostic_rule_id_missing` | A diagnostic rule without a stable `id`. It still fires and reports its diagnosis; it only yields no structured fact |
+| `diagnostic_rule_id_duplicate`, `diagnostic_bind_*` | A rule `id` repeats in its Skill, or a bind does not resolve to a typed, unit-bearing source column (see [4.6](#46-diagnostic--rule-based-diagnosis)) |
+| `display_column_semantics_ref_invalid` | A `semantics_ref` that is no stdlib overlay entry, or a column whose `unit` differs from the entry's |
 | Other structural errors | Such as `step_id_duplicate`, `save_as_step_id_collision`, `save_from_target_missing`, `fragment_reference_missing`, `skill_reference_missing`, `display_contract`; errors everywhere |
 
 Of these, `result_path_read_undecided`, `cause_wording_without_evidence`,
-`process_scope_invalid`, `sql_not_executed`, and
-`condition_uses_sql_boolean_words` belong to `PREDATING_RULE_CODES`: they are
+`process_scope_invalid`, `sql_not_executed`, `condition_uses_sql_boolean_words`
+and `diagnostic_rule_id_missing` belong to `PREDATING_RULE_CODES`: they are
 errors in `validate:skills` and for the Skills a proposal defines or changes
 (including that Skill's earlier overlay steps, and a `skill_sql` candidate
 checked in the step it replaces), and only warnings for other already-published

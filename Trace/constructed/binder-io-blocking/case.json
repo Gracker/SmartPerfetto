@@ -195,7 +195,8 @@
           "timer_delay",
           "process_name",
           "upid",
-          "anr_type"
+          "anr_type",
+          "timer_delay_status"
         ],
         "required_marker": "SmartPerfetto::CASE::binder-io-blocking"
       },
