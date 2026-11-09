@@ -22,7 +22,7 @@ import {
   isRecordedProductionRuntimeKind,
   type RecordedProductionRuntimeKind,
 } from '../../agentRuntime/runtimeKinds';
-import {PI_CATALOG_ROUTES} from './providerTypes';
+import {PI_CATALOG_ROUTES, firstNonBlank} from './providerTypes';
 import type {ProviderConfig, ProviderType} from './types';
 
 type PiCatalogProviderType = keyof typeof PI_CATALOG_ROUTES;
@@ -30,6 +30,15 @@ type EnvLike = Record<string, string | undefined>;
 
 export function isPiCatalogProviderType(type: ProviderType): type is PiCatalogProviderType {
   return Object.prototype.hasOwnProperty.call(PI_CATALOG_ROUTES, type);
+}
+
+/** The endpoint a catalog-routed profile calls: its configured URL for the route's surface, or the catalog's own. */
+export function piCatalogRouteBaseUrl(provider: ProviderConfig): string | undefined {
+  if (!isPiCatalogProviderType(provider.type)) return undefined;
+  const {connection} = provider;
+  return PI_CATALOG_ROUTES[provider.type].surface === 'openai'
+    ? firstNonBlank(connection.openaiBaseUrl, connection.baseUrl)
+    : firstNonBlank(connection.claudeBaseUrl, connection.baseUrl);
 }
 
 /**
@@ -44,9 +53,7 @@ export function piCatalogProviderEnv(provider: ProviderConfig): Record<string, s
   if (!isPiCatalogProviderType(provider.type)) return undefined;
   const route = PI_CATALOG_ROUTES[provider.type];
   const {connection} = provider;
-  const baseUrl = route.surface === 'openai'
-    ? connection.openaiBaseUrl || connection.baseUrl
-    : connection.claudeBaseUrl || connection.baseUrl;
+  const baseUrl = piCatalogRouteBaseUrl(provider);
   const keyEnv = piProviderApiKeyEnvNames(route.catalogProviders[0])[0];
   const apiKey = connection.apiKey?.trim();
   return {

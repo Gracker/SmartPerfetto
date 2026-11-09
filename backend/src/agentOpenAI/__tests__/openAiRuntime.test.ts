@@ -14,6 +14,7 @@ import {MaxTurnsExceededError, OpenAIChatCompletionsModel, OpenAIResponsesModel,
 import {z} from 'zod';
 import {OpenAIRuntime, __testing} from '../openAiRuntime';
 import {createAnswerDraftStream, createProjectedAnswerDraft} from '../../agentRuntime/answerDraftStream';
+import {createAnswerReasoningFilterState} from '../../agentRuntime/answerReasoningFilter';
 import type {AnalysisPlanV3, PlanPhase} from '../../agentv3/types';
 import type {SessionStateSnapshot} from '../../agentv3/sessionStateSnapshot';
 import type {TraceProcessorService} from '../../services/traceProcessorService';
@@ -183,7 +184,7 @@ function plan(phases: PlanPhase[]): AnalysisPlanV3 {
   return {phases, successCriteria: 'Evidence is sufficient', submittedAt: Date.now(), toolCallLog: []};
 }
 function streamContext(sessionId: string, quickMode: boolean, runtime?: {emitUpdate(update: unknown): void}) {
-  return {sessionId, quickMode, answerStreamFilter: __testing.createOpenAiReasoningFilterState(),
+  return {sessionId, quickMode, answerStreamFilter: createAnswerReasoningFilterState(),
     answerDraft: createProjectedAnswerDraft(createAnswerDraftStream(`${sessionId}-run`, update => runtime?.emitUpdate(update)), undefined),
     toolInputsByTaskId: new Map<string, {toolName: string; args: Record<string, unknown>}>()};
 }

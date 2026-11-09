@@ -59,7 +59,11 @@ import * as focusAppDetectorModule from '../../agentv3/focusAppDetector';
 import * as architectureDetectorModule from '../../agent/detectors/architectureDetector';
 import * as traceCompletenessModule from '../../agentv3/traceCompletenessProber';
 import {resolveFocusPackageCell} from './focusEvidenceFixture';
-import {registerCodeAwareCanary, revokeCodeAwareOutputGuards, clearCodeAwareOutputGuards} from '../../services/security/codeAwareOutputRegistry';
+import {registerCodeAwareCanary, revokeCodeAwareOutputGuards, clearCodeAwareOutputGuards, createCodeAwareStreamingTextProjection} from '../../services/security/codeAwareOutputRegistry';
+import {createAnswerDraftStream, createProjectedAnswerDraft} from '../answerDraftStream';
+import {createPiAnswerDraftController} from '../engines/pi/piAnswerDraft';
+import {createAnswerReasoningFilterState, filterAnswerReasoningDelta} from '../answerReasoningFilter';
+import {runtimeSupportsDraftAnswerStreaming} from '../runtimeDescriptors';
 import * as sourceProjectionModule from '../../services/codebase/sourceClaimVerifier';
 import * as contextAuthorization from '../../services/resolvedAnalysisContext';
 import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
@@ -109,6 +113,25 @@ async function loadFakePiProviderRuntime(config: {model: Record<string, unknown>
       }};
     }) as any,
   };
+}
+
+/** Pi's real assistant delta shape: `contentIndex` addresses a block of `partial.content`. */
+function piMessageUpdate(assistantMessageEvent: Record<string, unknown>): PiAgentCoreEvent {
+  return {type: 'message_update', message: {role: 'assistant'}, assistantMessageEvent} as PiAgentCoreEvent;
+}
+
+function piTextDelta(delta: string, contentIndex = 0, blocks = ['text']): PiAgentCoreEvent {
+  return piMessageUpdate({type: 'text_delta', contentIndex, delta,
+    partial: {role: 'assistant', content: blocks.map(type => ({type}))}});
+}
+
+function piAssistantEvent(type: 'message_start' | 'message_end', message: Record<string, unknown> = {}): PiAgentCoreEvent {
+  return {type, message: {role: 'assistant', ...message}} as PiAgentCoreEvent;
+}
+
+function piDraftEvents(updates: StreamingUpdate[]): Array<[string, string | null, string, number]> {
+  return updates.filter(update => update.type === 'answer_token' || update.type === 'answer_segment_reset')
+    .map(update => [update.type, update.content.token ?? null, update.content.runId, update.content.attempt]);
 }
 
 class FakePiAgent {
@@ -1364,7 +1387,8 @@ describe('experimental Pi agent-core runtime contract', () => {
       sessionId,
     });
     const never = createDeferred<unknown[]>();
-    FakePiAgent.promptHandler = async () => never.promise;
+    const entered = createDeferred<void>();
+    FakePiAgent.promptHandler = async () => {entered.resolve(); return never.promise;};
     FakePiAgent.abortHandler = () => {
       never.resolve([{
         role: 'assistant',
@@ -1393,14 +1417,19 @@ describe('experimental Pi agent-core runtime contract', () => {
     });
     try {
       const {decision} = await fixture.executeProviderSourceLookup();
+      // The request timer starts at analyze entry; hold it until the prompt is
+      // running, when prepareAnalysis has already reported the source use.
+      jest.useFakeTimers({now: 1000, doNotFake: ['nextTick', 'setImmediate']});
 
-      const result = await runtime.analyze('source timeout run', sessionId, 'trace-pi', admitted({
+      const analysis = runtime.analyze('source timeout run', sessionId, 'trace-pi', admitted({
         analysisMode: 'full',
         codeAwareMode: 'provider_send',
         codebaseIds: [fixture.codebaseId],
       }));
+      await entered.promise;
+      await jest.advanceTimersByTimeAsync(25);
 
-      expect(result).toMatchObject({
+      await expect(analysis).resolves.toMatchObject({
         success: false,
         terminationReason: 'timeout',
         sourceUseDecision: decision,
@@ -4534,6 +4563,222 @@ describe('experimental Pi agent-core runtime contract', () => {
     });
   });
 
+  describe('answer drafts', () => {
+    function draftController(projection?: Parameters<typeof createProjectedAnswerDraft>[1]) {
+      const updates: StreamingUpdate[] = [];
+      const answerDraft = createAnswerDraftStream('draft-run', update => updates.push(update));
+      const controller = createPiAnswerDraftController({answerDraft, isActive: () => true});
+      controller.beginAttempt(createProjectedAnswerDraft(answerDraft, projection));
+      return {updates, controller};
+    }
+    const hold = () => jest.advanceTimersByTime(200);
+
+    it('filters inline reasoning across deltas without altering plain text', () => {
+      const run = (...deltas: string[]) => {
+        const state = createAnswerReasoningFilterState();
+        return {out: deltas.map(delta => filterAnswerReasoningDelta(delta, state)).join(''), state};
+      };
+      expect(run('plain text, no tags').out).toBe('plain text, no tags');
+      expect(run('<think>hidden</think>visible').out).toBe('visible');
+      expect(run('<THINK>hidden</Think>visible').out).toBe('visible');
+      expect(run('a<th', 'ink>b</thi', 'nk>c').out).toBe('ac');
+      expect(run('a < b and c > d').out).toBe('a < b and c > d');
+      expect(run('x<', 'y').out).toBe('x<y');
+      expect(run('<think>a < b <t').out).toBe('');
+      const open = run('text<th');
+      expect(open.out).toBe('text');
+      expect(open.state.pendingTagPrefix).toBe('<th');
+    });
+
+    it('is declared on the Pi runtime descriptor', () => {
+      expect(runtimeSupportsDraftAnswerStreaming('pi-agent-core')).toBe(true);
+    });
+
+    it('takes only text deltas: thinking, tool JSON, non-text blocks and inline reasoning never reach the draft', () => {
+      jest.useFakeTimers();
+      const {updates, controller} = draftController();
+      controller.onEvent(piAssistantEvent('message_start'));
+      controller.onEvent(piMessageUpdate({type: 'thinking_delta', contentIndex: 0, delta: 'private thought'}));
+      controller.onEvent(piMessageUpdate({type: 'toolcall_delta', contentIndex: 1, delta: '{"sql":"select 1"}'}));
+      controller.onEvent(piTextDelta('not a text block', 1, ['text', 'thinking']));
+      controller.onEvent(piMessageUpdate({type: 'text_delta', delta: 'no index'}));
+      controller.onEvent(piMessageUpdate({type: 'text_delta', text: 'legacy field', contentIndex: 0, partial: {content: [{type: 'text'}]}}));
+      controller.onEvent(piTextDelta('<thi'));
+      controller.onEvent(piTextDelta('nk>inline reasoning</think>Visible'));
+      hold();
+      expect(piDraftEvents(updates)).toEqual([['answer_token', 'Visible', 'draft-run', 0]]);
+      expect(JSON.stringify(updates)).not.toMatch(/private thought|select 1|inline reasoning|not a text block|legacy field/);
+    });
+
+    it('separates text blocks the way the final answer joins them', () => {
+      jest.useFakeTimers();
+      const {updates, controller} = draftController();
+      controller.onEvent(piAssistantEvent('message_start'));
+      controller.onEvent(piTextDelta('First', 0, ['text', 'thinking', 'text']));
+      controller.onEvent(piMessageUpdate({type: 'thinking_delta', contentIndex: 1, delta: 'hidden'}));
+      controller.onEvent(piTextDelta('Second', 2, ['text', 'thinking', 'text']));
+      hold();
+      expect(piDraftEvents(updates)).toEqual([['answer_token', 'First\nSecond', 'draft-run', 0]]);
+    });
+
+    it('does not flash text a tool call follows inside the hold window', () => {
+      jest.useFakeTimers();
+      const {updates, controller} = draftController();
+      controller.onEvent(piAssistantEvent('message_start'));
+      controller.onEvent(piTextDelta('Let me check the trace.'));
+      jest.advanceTimersByTime(100);
+      controller.onEvent(piMessageUpdate({type: 'toolcall_start', contentIndex: 1}));
+      hold();
+      expect(updates).toEqual([]);
+    });
+
+    it('releases a steady stream when the window ends instead of waiting for a pause', () => {
+      jest.useFakeTimers();
+      const {updates, controller} = draftController();
+      controller.onEvent(piAssistantEvent('message_start'));
+      for (const delta of ['a', 'b', 'c', 'd']) {
+        controller.onEvent(piTextDelta(delta));
+        jest.advanceTimersByTime(60);
+      }
+      expect(piDraftEvents(updates)).toEqual([['answer_token', 'abcd', 'draft-run', 0]]);
+      controller.onEvent(piTextDelta('e'));
+      expect(piDraftEvents(updates)).toEqual([
+        ['answer_token', 'abcd', 'draft-run', 0], ['answer_token', 'e', 'draft-run', 0]]);
+    });
+
+    it('revokes answer text that preceded a tool call in the same response', () => {
+      jest.useFakeTimers();
+      const {updates, controller} = draftController();
+      controller.onEvent(piAssistantEvent('message_start'));
+      controller.onEvent(piTextDelta('Let me check the trace.'));
+      hold();
+      controller.onEvent(piMessageUpdate({type: 'toolcall_start', contentIndex: 1}));
+      controller.onEvent(piTextDelta('text after the tool call', 2, ['text', 'toolCall', 'text']));
+      controller.onEvent(piAssistantEvent('message_end', {stopReason: 'toolUse', content: [{type: 'toolCall'}]}));
+      controller.onEvent({type: 'tool_execution_start', toolName: 'execute_sql', toolCallId: 'call-1'});
+      controller.onEvent(piAssistantEvent('message_start'));
+      controller.onEvent(piTextDelta('Final answer'));
+      controller.onEvent(piAssistantEvent('message_end', {stopReason: 'stop', content: [{type: 'text', text: 'Final answer'}]}));
+      expect(piDraftEvents(updates)).toEqual([
+        ['answer_token', 'Let me check the trace.', 'draft-run', 0],
+        ['answer_segment_reset', null, 'draft-run', 1],
+        ['answer_token', 'Final answer', 'draft-run', 1],
+      ]);
+    });
+
+    it('revokes the draft for a new response, a failed response and a new attempt', () => {
+      jest.useFakeTimers();
+      const {updates, controller} = draftController();
+      const answerEnd = piAssistantEvent('message_end', {stopReason: 'stop', content: [{type: 'text', text: 'x'}]});
+      controller.onEvent(piAssistantEvent('message_start'));
+      controller.onEvent(piTextDelta('first'));
+      controller.onEvent(answerEnd);
+      controller.onEvent(piAssistantEvent('message_start'));
+      controller.onEvent(piTextDelta('second'));
+      controller.onEvent(answerEnd);
+      controller.onEvent(piAssistantEvent('message_start'));
+      controller.onEvent(piTextDelta('failed'));
+      hold();
+      controller.onEvent(piAssistantEvent('message_end', {stopReason: 'error', content: [{type: 'text', text: 'failed'}]}));
+      controller.onEvent(piAssistantEvent('message_start'));
+      controller.onEvent(piTextDelta('retried'));
+      controller.onEvent(answerEnd);
+      controller.beginAttempt(createProjectedAnswerDraft(createAnswerDraftStream('other-run', () => undefined), undefined));
+      expect(piDraftEvents(updates)).toEqual([
+        ['answer_token', 'first', 'draft-run', 0],
+        ['answer_segment_reset', null, 'draft-run', 1],
+        ['answer_token', 'second', 'draft-run', 1],
+        ['answer_segment_reset', null, 'draft-run', 2],
+        ['answer_token', 'failed', 'draft-run', 2],
+        ['answer_segment_reset', null, 'draft-run', 3],
+        ['answer_token', 'retried', 'draft-run', 3],
+        ['answer_segment_reset', null, 'draft-run', 4],
+      ]);
+    });
+
+    it('withdraws a private draft when a credential completes across lines, and shows nothing more', () => {
+      jest.useFakeTimers();
+      const sessionId = 'pi-private-draft';
+      const {updates, controller} = draftController(
+        createCodeAwareStreamingTextProjection(sessionId, 'pi-answer-test', 'owner'));
+      try {
+        controller.onEvent(piAssistantEvent('message_start'));
+        controller.onEvent(piTextDelta('Intro line\n'));
+        hold();
+        for (const text of ['api_key=\n', '"synthetic-secret-123456"\n', 'Later line\n']) controller.onEvent(piTextDelta(text));
+        controller.onEvent(piMessageUpdate({type: 'toolcall_start', contentIndex: 1}));
+        controller.onEvent(piAssistantEvent('message_start'));
+        controller.onEvent(piTextDelta('Next response\n'));
+        hold();
+        expect(piDraftEvents(updates)).toEqual([
+          ['answer_token', 'Intro line\n', 'draft-run', 0],
+          ['answer_segment_reset', null, 'draft-run', 1],
+        ]);
+        expect(JSON.stringify(updates)).not.toContain('synthetic-secret-123456');
+      } finally { clearCodeAwareOutputGuards(sessionId); }
+    });
+
+    it('withdraws the draft when the timer path of a projection fails, without throwing', () => {
+      jest.useFakeTimers();
+      const {updates, controller} = draftController({
+        write: () => {throw new Error('projection failed');},
+        flush: () => '',
+        projectComplete: text => text,
+        projectCompleteWithReceipt: text => ({text, altered: false}) as any,
+        altered: false,
+      });
+      controller.onEvent(piAssistantEvent('message_start'));
+      controller.onEvent(piTextDelta('must not surface'));
+      expect(() => hold()).not.toThrow();
+      controller.onEvent(piTextDelta('nor this'));
+      hold();
+      expect(updates).toEqual([]);
+    });
+
+    it('does not release held text once the run is stopped or the controller is disposed', () => {
+      jest.useFakeTimers();
+      const updates: StreamingUpdate[] = [];
+      const answerDraft = createAnswerDraftStream('draft-run', update => updates.push(update));
+      let active = true;
+      const controller = createPiAnswerDraftController({answerDraft, isActive: () => active});
+      controller.beginAttempt(createProjectedAnswerDraft(answerDraft, undefined));
+      controller.onEvent(piAssistantEvent('message_start'));
+      controller.onEvent(piTextDelta('stale'));
+      active = false;
+      hold();
+      controller.dispose();
+      controller.finish();
+      controller.onEvent(piAssistantEvent('message_start'));
+      controller.onEvent(piTextDelta('after dispose'));
+      hold();
+      expect(updates).toEqual([]);
+    });
+
+    it('streams a run answer with its identity and keeps a correction out of the draft', async () => {
+      passVerification();
+      const runtime = typedRuntime();
+      const updates: StreamingUpdate[] = [];
+      runtime.on('update', update => updates.push(update));
+      FakePiAgent.promptHandler = async (agent, _input, index) => {
+        const text = index === 1 ? 'Partial report' : 'Corrected report';
+        const stopReason = index === 1 ? 'length' : 'stop';
+        const message = {role: 'assistant', stopReason, content: [{type: 'text', text}]};
+        agent.emitForTest(piAssistantEvent('message_start'));
+        agent.emitForTest(piTextDelta(text));
+        agent.emitForTest({type: 'message_end', message});
+        return [message];
+      };
+      const result = await runtime.analyze('query', 'pi-draft-correction', 'trace-pi', {runId: 'draft-run', analysisMode: 'fast'});
+      takeFinalizationContext(result)?.dispose();
+      expect(FakePiAgent.instances[0].promptCount).toBe(2);
+      expect(piDraftEvents(updates)).toEqual([
+        ['answer_token', 'Partial report', 'draft-run', 0],
+        ['answer_segment_reset', null, 'draft-run', 1],
+      ]);
+      expect(result.conclusion).toContain('Corrected report');
+    });
+  });
+
   describe('run supplements', () => {
     const supplementDecision = {goal: 'refine_current_goal', sceneId: 'general', scopeEffect: 'none',
       target: 'current_trace', evidenceNeed: 'none', requiredAccess: 'none', deliverable: 'answer', budget: 'unchanged'};
@@ -4626,6 +4871,33 @@ describe('experimental Pi agent-core runtime contract', () => {
       expect(channel.deliveredRecords({includeText: false})).toEqual([
         expect.objectContaining({deliveredRequestIndex: 2}),
       ]);
+    });
+
+    it('keeps the draft revoked when a supplement enters at a tool boundary', async () => {
+      passVerification();
+      piClassifierResponses.push(classifierReply(piClassifierDecision), classifierReply(supplementDecision));
+      const channel = new RunSupplementChannel({runId: 'run-draft-supplement'});
+      const runtime = typedRuntime();
+      const updates: StreamingUpdate[] = [];
+      runtime.on('update', update => updates.push(update));
+      FakePiAgent.promptHandler = async agent => {
+        await scriptedLoop(agent, [toolTurn(), answer('done')], async turn => {
+          agent.emitForTest(piAssistantEvent('message_start'));
+          if (turn === 0) {
+            agent.emitForTest(piTextDelta('Let me check the trace.'));
+            agent.emitForTest(piMessageUpdate({type: 'toolcall_start', contentIndex: 1}));
+            channel.submit({idempotencyKey: 'key-1', text: 'mid tool note'});
+            await flushAsync();
+          } else {
+            agent.emitForTest(piTextDelta('Final answer'));
+            agent.emitForTest(piAssistantEvent('message_end', {stopReason: 'stop', content: [{type: 'text', text: 'Final answer'}]}));
+          }
+        });
+        return [answer('done')];
+      };
+      takeFinalizationContext(await runWithChannel(channel, {runtime}))?.dispose();
+      expect(channel.receipts()[0]).toMatchObject({state: 'delivered'});
+      expect(piDraftEvents(updates)).toEqual([['answer_token', 'Final answer', 'run-draft-supplement', 0]]);
     });
 
     it('never steers onto a finished answer: not_applied with no extra provider request', async () => {

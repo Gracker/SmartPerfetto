@@ -23,7 +23,7 @@ import type {
   ProviderConnection,
   ProviderType,
 } from './types';
-import { DUAL_SURFACE_PROVIDER_TYPES, PI_CATALOG_ROUTES } from './providerTypes';
+import { DUAL_SURFACE_PROVIDER_TYPES, PI_CATALOG_ROUTES, firstNonBlank } from './providerTypes';
 import { invalidProviderRequest } from './providerRequestError';
 
 export { DUAL_SURFACE_PROVIDER_TYPES };
@@ -51,6 +51,28 @@ export function withSupportedRuntimes<T extends {type: ProviderType}>(value: T):
   return {...value, supportedRuntimes: supportedAgentRuntimesForType(value.type)};
 }
 
+function piCatalogRouteSurfaces(type: ProviderType): string[] {
+  return Object.prototype.hasOwnProperty.call(PI_CATALOG_ROUTES, type)
+    ? [PI_CATALOG_ROUTES[type as keyof typeof PI_CATALOG_ROUTES].surface]
+    : [];
+}
+
+/**
+ * A `/templates` entry with the API-surface facts of its type, read from the
+ * tables Pi resolves routes from so clients need no copy of them.
+ */
+export function withTemplateApiSurfaces<T extends {type: ProviderType}>(value: T): T & {
+  supportedRuntimes: SelectableAgentRuntimeKind[];
+  piCatalogRouteSurfaces: string[];
+  defaultApiSurface: string;
+} {
+  return {
+    ...withSupportedRuntimes(value),
+    piCatalogRouteSurfaces: piCatalogRouteSurfaces(value.type),
+    defaultApiSurface: defaultRuntimeForType(value.type) === OPENAI_AGENT_RUNTIME_KIND ? 'openai' : 'claude',
+  };
+}
+
 /**
  * A runtime value recorded for, or requested by, a provider of this type: Pi,
  * or a retired runtime the type supported (it maps to Pi). Anything else is
@@ -66,6 +88,19 @@ export function assertAgentRuntimeSupported(type: ProviderType, runtime?: unknow
   if (!supported) {
     throw invalidProviderRequest(`Provider type "${type}" does not support ${runtime}`);
   }
+}
+
+/** The endpoint family a type speaks when its record names none; Claude for all but the OpenAI-native types. */
+function defaultRuntimeForType(type: ProviderType): typeof CLAUDE_AGENT_RUNTIME_KIND | typeof OPENAI_AGENT_RUNTIME_KIND {
+  return type === 'openai' || type === 'ollama' ? OPENAI_AGENT_RUNTIME_KIND : CLAUDE_AGENT_RUNTIME_KIND;
+}
+
+/** A provider record with the facts clients need to edit it: its runtimes and the surface it really uses. */
+export function withProviderRecordFacts<T extends Pick<ProviderConfig, 'type' | 'connection'>>(value: T) {
+  const previous = previousProviderAgentRuntime(value);
+  const effectiveApiSurface = previous === CLAUDE_AGENT_RUNTIME_KIND ? 'claude' as const
+    : previous === OPENAI_AGENT_RUNTIME_KIND ? 'openai' as const : undefined;
+  return {...withSupportedRuntimes(value), ...(effectiveApiSurface ? {effectiveApiSurface} : {})};
 }
 
 function surfaceRuntime(surface: ProviderConnection['apiSurface']): AgentRuntimeKind | undefined {
@@ -97,22 +132,16 @@ export function previousProviderAgentRuntime(
     return PI_AGENT_CORE_RUNTIME_KIND;
   }
 
-  switch (type) {
-    case 'openai':
-    case 'ollama':
-      return OPENAI_AGENT_RUNTIME_KIND;
-    case 'custom':
-      // OpenCode/Qoder fields named the runtime only for a record that recorded none.
-      if (!storedRuntime && (connection.openCodeModelJson || connection.openCodeSdkModulePath)) return OPENCODE_RUNTIME_KIND;
-      if (!storedRuntime && (connection.qoderAccessToken || connection.qoderCliPath)) return QODER_AGENT_RUNTIME_KIND;
-      if (connection.openaiProtocol || connection.openaiBaseUrl || connection.openaiApiKey) {
-        const hasClaudeSurface = Boolean(connection.claudeBaseUrl || connection.claudeApiKey || connection.claudeAuthToken);
-        return hasClaudeSurface ? CLAUDE_AGENT_RUNTIME_KIND : OPENAI_AGENT_RUNTIME_KIND;
-      }
-      return CLAUDE_AGENT_RUNTIME_KIND;
-    default:
-      return CLAUDE_AGENT_RUNTIME_KIND;
+  if (type === 'custom') {
+    // OpenCode/Qoder fields named the runtime only for a record that recorded none.
+    if (!storedRuntime && (connection.openCodeModelJson || connection.openCodeSdkModulePath)) return OPENCODE_RUNTIME_KIND;
+    if (!storedRuntime && (connection.qoderAccessToken || connection.qoderCliPath)) return QODER_AGENT_RUNTIME_KIND;
+    if (connection.openaiProtocol || firstNonBlank(connection.openaiBaseUrl) || connection.openaiApiKey) {
+      const hasClaudeSurface = Boolean(firstNonBlank(connection.claudeBaseUrl) || connection.claudeApiKey || connection.claudeAuthToken);
+      return hasClaudeSurface ? CLAUDE_AGENT_RUNTIME_KIND : OPENAI_AGENT_RUNTIME_KIND;
+    }
   }
+  return defaultRuntimeForType(type);
 }
 
 /**

@@ -780,18 +780,6 @@ export const SSE_EVENT_TYPES = [
 export type SSEEventType = typeof SSE_EVENT_TYPES[number];
 
 /**
- * Legacy `conclusion` payload (`data` field) of the retired final semantic
- * review: the current backend never emits it. Kept because generated frontend
- * types still reference it and older recorded streams may carry it.
- */
-export interface ProvisionalConclusionEventData {
-  /** Owner-projected canonical body. */
-  conclusion: string;
-  provisional: true;
-  verification: 'pending';
-}
-
-/**
  * Unified Data Event - v2.0 SSE event format
  *
  * Carries one or more DataEnvelopes with their complete display metadata.

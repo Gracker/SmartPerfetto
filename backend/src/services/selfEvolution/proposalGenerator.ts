@@ -21,9 +21,7 @@ import {sanitizeProposalData} from './proposalDataSanitizer';
 import {parseM6DraftProposal} from './proposalContract';
 
 const TEMPLATE_NAME = 'selfevolve-proposal';
-const DEFAULT_MODEL = 'claude-haiku-4-5';
 const DEFAULT_TIMEOUT_MS = 90_000;
-const MAX_TURNS = 4;
 
 export type ProposalBodyExecutor = (
   prompt: string,
@@ -92,9 +90,7 @@ export async function generateCurationProposal(input: {
   const execute = input.execute ?? (value => executeStructuredReview({
     prompt: value,
     logPrefix: 'SelfEvolutionProposalGenerator',
-    defaultModel: DEFAULT_MODEL,
     timeoutMs: DEFAULT_TIMEOUT_MS,
-    maxTurns: MAX_TURNS,
   }));
   const reviewed = await execute(prompt);
   if (!reviewed.ok) {

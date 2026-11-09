@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {describe, expect, it, jest} from '@jest/globals';
+import {afterEach, describe, expect, it, jest} from '@jest/globals';
 
 import type {AnalysisReceiptV2} from '../../../types/dataContract';
 import type {RunManifestV1} from '../../../types/selfEvolution';
@@ -16,7 +16,8 @@ import {buildExternalIssueDraft} from '../draftBuilder';
 import {buildDeterministicExternalIssueReview} from '../deterministicFallback';
 import {resolveExternalIssueProviderPin} from '../providerPin';
 import {buildExternalIssueTriagePrompt} from '../triagePrompt';
-import {runExternalIssueTriage} from '../triageRunner';
+import {__testing, runExternalIssueTriage} from '../triageRunner';
+import * as oneShotModelCall from '../../oneShotModelCall';
 import {NO_PRIVATE_CONTEXT} from '../../security/analysisPrivateContext';
 
 function manifest(
@@ -696,6 +697,78 @@ describe('external issue reporting services', () => {
 
     expect(result.ok).toBe(true);
     expect(runtimes).toEqual(['pi-agent-core']);
+  });
+
+  describe('Pi review through the isolated one-shot call', () => {
+    function piRun() {
+      const exactHash = resolveProviderRuntimeSnapshot(getProviderService(), null, providerScope).snapshotHash;
+      const run = source({manifest: manifest({runtime: 'pi-agent-core', providerSnapshotHash: exactHash})});
+      const opportunity = detectExternalIssueOpportunity(run);
+      return {run, opportunity, signalId: opportunity.signals.find(item => item.kind === 'skill_error')!.signalId};
+    }
+    const piProvider = {kind: 'resolved', runtime: 'pi-agent-core', pi: {env: {}}} as const;
+
+    afterEach(() => {jest.restoreAllMocks();});
+
+    it('answers on any Pi surface through the pinned provider, without a JSON mode or a light tier', async () => {
+      const {run, opportunity, signalId} = piRun();
+      const resolve = jest.spyOn(oneShotModelCall, 'resolveOneShotProvider').mockReturnValue(piProvider);
+      const oneShot = jest.spyOn(oneShotModelCall, 'runIsolatedPiOneShot').mockResolvedValue({
+        ok: true, text: `Review:\n${JSON.stringify(validAgentRaw(signalId))}`, model: 'claude-sonnet-on-bedrock',
+      });
+
+      const result = await runExternalIssueTriage({opportunity, manifest: run.manifest, providerScope});
+
+      expect(result).toEqual(expect.objectContaining({ok: true, model: 'claude-sonnet-on-bedrock'}));
+      expect(resolve).toHaveBeenCalledWith(expect.objectContaining({providerId: null, providerScope}));
+      expect(oneShot).toHaveBeenCalledTimes(1);
+      expect(oneShot.mock.calls[0][0]).toEqual(expect.objectContaining({pi: piProvider.pi, timeoutMs: __testing.DEFAULT_TIMEOUT_MS}));
+      expect(oneShot.mock.calls[0][0]).not.toHaveProperty('tier');
+    });
+
+    it('retries an unparseable Pi reply through the validation retry', async () => {
+      const {run, opportunity, signalId} = piRun();
+      jest.spyOn(oneShotModelCall, 'resolveOneShotProvider').mockReturnValue(piProvider);
+      const oneShot = jest.spyOn(oneShotModelCall, 'runIsolatedPiOneShot')
+        .mockResolvedValueOnce({ok: true, text: 'no json here', model: 'm'})
+        .mockResolvedValueOnce({ok: true, text: JSON.stringify(validAgentRaw(signalId)), model: 'm'});
+
+      await expect(runExternalIssueTriage({opportunity, manifest: run.manifest, providerScope}))
+        .resolves.toEqual(expect.objectContaining({ok: true}));
+      expect(oneShot).toHaveBeenCalledTimes(2);
+      expect(oneShot.mock.calls[1][0].prompt).toContain('review must contain one valid JSON object');
+    });
+
+    it('reports missing Pi credentials as unavailable, not as an invalid review', async () => {
+      const {run, opportunity} = piRun();
+      jest.spyOn(oneShotModelCall, 'resolveOneShotProvider').mockReturnValue(piProvider);
+      jest.spyOn(oneShotModelCall, 'runIsolatedPiOneShot').mockResolvedValue({ok: false, reason: 'credentials_missing'});
+
+      await expect(runExternalIssueTriage({opportunity, manifest: run.manifest, providerScope}))
+        .resolves.toEqual({ok: false, reason: 'provider_credentials_unavailable'});
+    });
+
+    it('keeps other Pi call failures as an invalid review', async () => {
+      const {run, opportunity} = piRun();
+      jest.spyOn(oneShotModelCall, 'resolveOneShotProvider').mockReturnValue(piProvider);
+      jest.spyOn(oneShotModelCall, 'runIsolatedPiOneShot').mockResolvedValue({ok: false, reason: 'timed_out', model: 'm'});
+
+      await expect(runExternalIssueTriage({opportunity, manifest: run.manifest, providerScope}))
+        .resolves.toEqual({ok: false, reason: 'agent_invalid'});
+    });
+
+    it.each([
+      ['moved off Pi', {kind: 'resolved', runtime: 'openai-agents-sdk'}],
+      ['no longer resolvable', {kind: 'unavailable'}],
+    ] as const)('reports a provider %s as a changed snapshot and makes no call', async (_name, provider) => {
+      const {run, opportunity} = piRun();
+      jest.spyOn(oneShotModelCall, 'resolveOneShotProvider').mockReturnValue(provider as any);
+      const oneShot = jest.spyOn(oneShotModelCall, 'runIsolatedPiOneShot');
+
+      await expect(runExternalIssueTriage({opportunity, manifest: run.manifest, providerScope}))
+        .resolves.toEqual({ok: false, reason: 'provider_snapshot_changed'});
+      expect(oneShot).not.toHaveBeenCalled();
+    });
   });
 
   it('sanitizes Agent prose without mutating structural identifiers', () => {

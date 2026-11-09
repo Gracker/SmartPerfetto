@@ -105,7 +105,7 @@ export const PRODUCTION_RUNTIME_DESCRIPTORS = [
     production: true,
     publicRuntime: true,
     providerTypes: PI_PROVIDER_TYPES,
-    capabilities: createCapabilities(PI_AGENT_CORE_RUNTIME_KIND, 'Pi Agent Core', {runSupplement: true}),
+    capabilities: createCapabilities(PI_AGENT_CORE_RUNTIME_KIND, 'Pi Agent Core', {draftAnswerStreaming: true, runSupplement: true}),
     createOrchestrator: input => {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const { createPiAgentCoreRuntime } = require('./engines/pi/piAgentCoreRuntime') as typeof import('./engines/pi/piAgentCoreRuntime');

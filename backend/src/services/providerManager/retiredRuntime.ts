@@ -12,6 +12,7 @@ import {
   QODER_AGENT_RUNTIME_KIND,
 } from '../../agentRuntime/runtimeKinds';
 import {isQoderByokEnvKey} from './envIsolation';
+import {firstNonBlank} from './providerTypes';
 import {previousProviderAgentRuntime, providerTypeHasApiSurfaceChoice} from './providerRuntimeMatrix';
 import type {ProviderApiSurface, ProviderConfig, ProviderConnection} from './types';
 
@@ -119,7 +120,7 @@ export function withMigratedAgentRuntime<T extends MigratableProvider>(
   // has nothing Pi can call: it keeps its label, and Pi reports it explicitly
   // until the profile is given an endpoint and saved on Pi.
   const untranslatable = !connection.piAgentCoreModelJson?.trim() && (previous === QODER_AGENT_RUNTIME_KIND
-    || (previous === OPENCODE_RUNTIME_KIND && !connection.openaiBaseUrl && !connection.baseUrl));
+    || (previous === OPENCODE_RUNTIME_KIND && !firstNonBlank(connection.openaiBaseUrl, connection.baseUrl)));
   if (untranslatable) {
     connection = provider.connection;
     models = provider.models;

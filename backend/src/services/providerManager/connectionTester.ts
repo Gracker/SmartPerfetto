@@ -11,6 +11,7 @@ import {
 import {createPiAgentCoreProviderRuntime} from '../../agentRuntime/engines/pi/piAgentCoreProvider';
 import {runPiIntentTransport} from '../../agentRuntime/engines/pi/piIntentTransport';
 import {mergeIsolatedProviderEnv} from './envIsolation';
+import {firstNonBlank} from './providerTypes';
 import {getProviderService} from './index';
 
 const PI_CONNECTION_TEST_TIMEOUT_MS = 30_000;
@@ -81,11 +82,11 @@ async function runTest(provider: ProviderConfig): Promise<Omit<TestResult, 'late
 }
 
 function getClaudeBaseUrl(provider: ProviderConfig, defaultBaseUrl: string): string {
-  return provider.connection.claudeBaseUrl || provider.connection.baseUrl || defaultBaseUrl;
+  return firstNonBlank(provider.connection.claudeBaseUrl, provider.connection.baseUrl) ?? defaultBaseUrl;
 }
 
 function getOpenAIBaseUrl(provider: ProviderConfig, defaultBaseUrl: string): string {
-  return provider.connection.openaiBaseUrl || provider.connection.baseUrl || defaultBaseUrl;
+  return firstNonBlank(provider.connection.openaiBaseUrl, provider.connection.baseUrl) ?? defaultBaseUrl;
 }
 
 function getOpenAIApiKey(provider: ProviderConfig): string | undefined {
@@ -181,7 +182,7 @@ async function testAnthropic(provider: ProviderConfig): Promise<Omit<TestResult,
 
 async function testBedrock(provider: ProviderConfig): Promise<Omit<TestResult, 'latencyMs'>> {
   const region = provider.connection.awsRegion || 'us-east-1';
-  const baseUrl = provider.connection.baseUrl ||
+  const baseUrl = firstNonBlank(provider.connection.baseUrl) ??
     `https://bedrock-runtime.${region}.amazonaws.com`;
 
   if (provider.connection.awsBearerToken) {

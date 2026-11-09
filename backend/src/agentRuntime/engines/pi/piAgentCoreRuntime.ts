@@ -31,6 +31,9 @@ import {runIntentTransport, type IntentTransportInput} from '../../intentTranspo
 import {runPiIntentTransport} from './piIntentTransport';
 import {createPiRunSupplementBinding} from './piRunSupplementBinding';
 import {createPiAgentModelCallTracker} from './piAgentModelCalls';
+import {createPiAnswerDraftController} from './piAnswerDraft';
+import {piAssistantMessageHasToolCall} from './piAssistantMessage';
+import {SILENT_ANSWER_DRAFT, createAnswerDraftStream, createProjectedAnswerDraft} from '../../answerDraftStream';
 import {createPiInvestigationAdapter} from './piInvestigationAdapter';
 import {prepareInvestigationAcquisition} from '../../investigation/investigationAcquisition';
 import {createInvestigationViewSource} from '../../investigation/investigationView';
@@ -162,6 +165,7 @@ import {
   type PiAgentCoreModelConfig,
 } from './piAgentCoreConfig';
 import {analysisHasPrivateContext} from '../../../services/security/analysisPrivateContext';
+import {createCodeAwareStreamingTextProjection} from '../../../services/security/codeAwareOutputRegistry';
 import {resolveDurableLearningPermission} from '../../../services/security/durableLearning';
 
 export {
@@ -253,6 +257,7 @@ export type PiAgentCoreEvent =
         type?: string;
         text?: string;
         delta?: string;
+        contentIndex?: number;
         partial?: unknown;
       };
       message?: unknown;
@@ -568,9 +573,7 @@ export function buildPiAnalysisCompletion(input: {
 }): AnalysisCompletion {
   const stop = typeof input.assistant?.stopReason === 'string' ? input.assistant.stopReason : undefined;
   const failed = stop === 'error' || Boolean(input.assistant?.errorMessage);
-  const toolCall = Array.isArray(input.assistant?.content) && input.assistant.content.some(
-    (part: unknown) => (part as {type?: unknown} | undefined)?.type === 'toolCall',
-  );
+  const toolCall = piAssistantMessageHasToolCall(input.assistant);
   return {
     ...input.candidate,
     schemaVersion: 1,
@@ -726,8 +729,8 @@ export function projectPiAgentCoreEventToStreamingUpdate(
     case 'message_update':
       // Pi agent-core providers can stream cumulative assistant partials,
       // tool-call JSON, SQL args, and reasoning deltas through message_update.
-      // SmartPerfetto keeps the final report route-owned, so Pi text deltas are
-      // read from agent state after completion instead of emitted live.
+      // The final report is read from agent state after completion; the live
+      // draft takes only text deltas, through `createPiAnswerDraftController`.
       return undefined;
     case 'message_end':
     case 'turn_end': {
@@ -1658,6 +1661,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     let closeoutAccepted = false;
     let checkpoint: (() => AnalysisResult) | undefined;
     const emitUpdate = (update: StreamingUpdate) => this.emit('update', update);
+    const answerDraft = createAnswerDraftStream(executionLease.key.runId!, emitUpdate);
     const agentModelCalls = createPiAgentModelCallTracker(input => runtimePerformance.startModelCall(input),
       {model: providerRuntime.model.id, providerOrigin: providerRuntime.model.baseUrl}, work.signal);
     const runId = executionLease.key.runId!;
@@ -1708,7 +1712,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       // Pi calls this after the real assistant/tool turn, before dispatching another.
       finishTurn: (({message}) => {
         if (!supplements && rounds < providerTurnLimit) return undefined;
-        const toolCall = Array.isArray(message.content) && message.content.some(part => part?.type === 'toolCall');
+        const toolCall = piAssistantMessageHasToolCall(message);
         // Never steer onto a finished answer: it would buy a provider request of its own.
         // Error and aborted turns are hard exits; the run's outcome settles those instead.
         const declinedSupplements = !toolCall && message.stopReason !== 'error' && message.stopReason !== 'aborted'
@@ -1750,6 +1754,9 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       const boundary = agent.state.messages?.length ?? 0;
       const attemptId = `${++attempt}`;
       const beforeRounds = rounds;
+      // A correction is delivered whole by the final conclusion, never as a draft.
+      draftController.beginAttempt(correctionInProgress ? SILENT_ANSWER_DRAFT : createProjectedAnswerDraft(answerDraft,
+        privateAnalysisContext ? createCodeAwareStreamingTextProjection(sessionId, `pi-answer-${attemptId}`, 'owner') : undefined));
       try {
         await runPiProviderPromptWithSupervision({agent, prompt, providerIdle, executionLease, workSignal: work.signal, abortJoinTimeoutMs});
       } finally {
@@ -1758,6 +1765,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       }
       executionLease.throwIfAborted();
       work.signal.throwIfAborted();
+      draftController.finish();
       const assistant = latestAssistantMessage((agent.state.messages ?? []).slice(boundary));
       return {assistant, attemptId, text: extractAssistantText(assistant).trim(), turnLimitReached};
     };
@@ -1769,10 +1777,13 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       buildPiAnalysisCompletion({assistant, candidate: candidateIdentity(text, attemptId), runtimeKind: this.selection.kind, turnLimitReached: limited})
     );
     let acceptingProviderEvents = true;
+    const draftController = createPiAnswerDraftController({answerDraft,
+      isActive: () => acceptingProviderEvents && !work.signal.aborted});
     const unsubscribe = agent.subscribe(event => {
       if (!acceptingProviderEvents || work.signal.aborted) return;
       providerIdle.onEvent(event);
       supplements?.onEvent(event);
+      draftController.onEvent(event);
       if (event.type === 'turn_end') rounds++;
       if (event.type === 'done') recordEvaluationTokenDeltaIfPresent(event.message);
       const visibleOutput = isPiAgentCoreVisibleOutputEvent(event);
@@ -1844,6 +1855,8 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         // The closeout transport sends only this prompt: delivered supplements must be carried explicitly.
         const closeoutPrompt = closeoutTapePrompt && `${closeoutTapePrompt}${supplements?.renderCloseoutSection() ?? ''}`;
         if (closeoutPrompt) {
+          // The closeout replaces the partial body that reached the turn limit.
+          draftController.boundary();
           try {
             executionLease.throwIfAborted();
             agent.state.tools = [];
@@ -1878,7 +1891,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       const recoverableIssues = draft.recoverableIssues;
       const outputLimitDelivery = acceptedCompletion.status === 'incomplete' && acceptedCompletion.reason === 'output_limit' &&
         acceptedAssistant?.deferred === undefined && !acceptedAssistant?.errorMessage &&
-        !(Array.isArray(acceptedAssistant?.content) && acceptedAssistant.content.some(part => part?.type === 'toolCall'));
+        !piAssistantMessageHasToolCall(acceptedAssistant);
       const correctionPrompt = recoverableIssues.length > 0 && buildNativeOutputCompletionPrompt({candidate: acceptedText,
         intent: turnIntent, issues: recoverableIssues, outputLanguage});
       if (correctionPrompt &&
@@ -1931,6 +1944,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     } finally {
       supplements?.closeWindow(work.signal.aborted ? 'run_stopped' : 'run_failed');
       acceptingProviderEvents = false;
+      draftController.dispose();
       toolAdmissionsOpen = false;
       investigation.dispose();
       providerIdle.clear();

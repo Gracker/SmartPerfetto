@@ -30,13 +30,7 @@ const agentFrame = (event: string, data: Record<string, unknown>, id?: number): 
 const agent = {
   token: (token: string, attempt = 0, runId = RUN) => agentFrame('answer_token', {token, runId, attempt}),
   reset: (attempt: number) => agentFrame('answer_segment_reset', {runId: RUN, attempt}),
-  provisional: (id: number, conclusion = BODY) =>
-    agentFrame('conclusion', {provisional: true, verification: 'pending', conclusion}, id),
   plain: (id: number) => agentFrame('conclusion', {conclusion: BODY}, id),
-  reviewStarted: (id: number, answerReadable = true) =>
-    agentFrame('progress', {phase: 'final_review', stage: 'started', deadlineAt: 1, ...(answerReadable ? {answerReadable} : {})}, id),
-  reviewFinished: (id: number, outcome: string, reason?: string) =>
-    agentFrame('progress', {phase: 'final_review', stage: 'finished', outcome, ...(reason ? {reason} : {})}, id),
   completed: (id: number, extra: Record<string, unknown> = {}) => agentFrame('analysis_completed', {conclusion: BODY,
     reportUrl: '/api/reports/r1', claimVerificationResult: {status: 'partial'}, ...extra}, id),
   cancelled: (id: number) => agentFrame('analysis_cancelled', {reason: 'Analysis cancelled by user'}, id),
@@ -51,9 +45,6 @@ const conv = {
     {liveOnly: true, update: {type: 'answer_token', content: {token, runId: RUN, attempt}}}),
   reset: (attempt: number) => convFrame('runtime_update',
     {liveOnly: true, update: {type: 'answer_segment_reset', content: {runId: RUN, attempt}}}),
-  reviewStarted: (id: number) => convFrame('runtime_update',
-    {update: {type: 'progress', content: {phase: 'final_review', stage: 'started', answerReadable: true}}}, id),
-  provisional: (id: number) => convFrame('provisional_answer', {message: BODY, verification: 'pending'}, id),
   completed: (id: number, finalResult: Record<string, unknown> = {}) =>
     convFrame('run_completed', {outcome: {kind: 'answered', message: BODY, finalResult}}, id),
   cancelled: (id: number) => convFrame('run_completed', {outcome: {kind: 'cancelled', message: ''}}, id),
@@ -74,7 +65,7 @@ function observe(over: Partial<StopScenarioObservation> & {events: StopObservedE
 }
 
 const stop = (over: Partial<StopAttempt>): StopAttempt =>
-  ({order: 1, trigger: 'provisional', sentAfterEventIndex: 0, httpStatus: 200, ...over});
+  ({trigger: 'first_draft', sentAfterEventIndex: 0, httpStatus: 200, ...over});
 
 function statusOf(results: StopCheckResult[], id: string): string | undefined {
   return results.find(result => result.id === id)?.status;
@@ -98,26 +89,23 @@ describe('stop semantics transport helpers', () => {
   });
 
   it('normalizes both surfaces into the same event kinds', () => {
-    expect(agentEvents([agent.token('a', 2), agent.provisional(3), agent.reviewStarted(4), agent.completed(5)])
+    expect(agentEvents([agent.token('a', 2), agent.plain(3), agent.completed(4)])
       .map(event => [event.kind, event.attempt, event.hasSseId])).toEqual([
-      ['draft_token', 2, false], ['provisional', undefined, true], ['review_started', undefined, true],
-      ['completed', undefined, true]]);
-    const [token, provisional, done] = convEvents([conv.token('a'), conv.provisional(1),
-      conv.completed(2, {partial: true, terminationReason: 'review_not_finished'})]);
+      ['draft_token', 2, false], ['plain_conclusion', undefined, true], ['completed', undefined, true]]);
+    const [token, done] = convEvents([conv.token('a'),
+      conv.completed(2, {partial: true, terminationReason: 'max_turns'})]);
     expect(token).toMatchObject({kind: 'draft_token', liveOnly: true, runId: RUN, attempt: 0});
-    expect(provisional).toMatchObject({kind: 'provisional', verificationPending: true});
-    expect(done.verdict).toEqual({partial: true, terminationReason: 'review_not_finished', outcomeKind: 'answered'});
+    expect(done.verdict).toEqual({partial: true, terminationReason: 'max_turns', outcomeKind: 'answered'});
   });
 
   it('classifies stop responses per surface', () => {
-    expect(classifyStopResponse('agent', stop({status: 'review_stop_requested'}))).toBe('review_only');
-    expect(classifyStopResponse('agent', stop({status: 'completed', outcome: 'committed'}))).toBe('force_committed');
-    expect(classifyStopResponse('agent', stop({status: 'completed', outcome: 'review_not_finished'}))).toBe('force_fallback');
     expect(classifyStopResponse('agent', stop({status: 'cancelled', outcome: 'cancelled'}))).toBe('full_cancel');
     expect(classifyStopResponse('agent', stop({status: 'cancelled', outcome: 'already_cancelled'}))).toBe('already_terminal');
     expect(classifyStopResponse('agent', stop({httpStatus: 409, code: 'RUN_NOT_CANCELLABLE'}))).toBe('already_terminal');
+    expect(classifyStopResponse('agent', stop({status: 'completed', outcome: 'committed'}))).toBe('error');
     expect(classifyStopResponse('conversation', stop({httpStatus: 409, code: 'CONVERSATION_RUN_NOT_ACTIVE'}))).toBe('already_terminal');
-    expect(classifyStopResponse('conversation', stop({status: 'answered'}))).toBe('force_committed');
+    expect(classifyStopResponse('conversation', stop({status: 'cancelled'}))).toBe('full_cancel');
+    expect(classifyStopResponse('conversation', stop({status: 'answered'}))).toBe('already_terminal');
     expect(classifyStopResponse('conversation', stop({httpStatus: 500}))).toBe('error');
     expect(classifyStopResponse('agent', stop({httpStatus: undefined, requestError: 'timeout'}))).toBe('error');
   });
@@ -133,25 +121,21 @@ describe('stop semantics transport helpers', () => {
 });
 
 describe('evaluateStopScenario', () => {
-  it('passes a no-stop agent run with drafts, a reset, a provisional answer and a normal commit', () => {
-    const live = agentEvents([agent.token(REVOKED, 0), agent.reset(1), agent.token(BODY, 1),
-      agent.provisional(4), agent.reviewStarted(5), agent.reviewFinished(6, 'checked'), agent.completed(7)]);
-    const results = evaluateStopScenario(observe({events: live, storage: agentStorage({}, [agent.provisional(4), agent.completed(7)])}));
-    expect(results.filter(result => result.status !== 'pass')).toEqual([
-      expect.objectContaining({id: 'S2.no_review_branch', status: 'not_exercised'}),
-      expect.objectContaining({id: 'R.watchdog_fallback', status: 'not_exercised'}),
-    ]);
+  it('passes a no-stop agent run with drafts, a reset and a normal commit', () => {
+    const live = agentEvents([agent.token(REVOKED, 0), agent.reset(1), agent.token(BODY, 1), agent.plain(4), agent.completed(5)]);
+    const results = evaluateStopScenario(observe({events: live, storage: agentStorage({}, [agent.plain(4), agent.completed(5)])}));
+    expect(results.filter(result => result.status !== 'pass')).toEqual([]);
     expect(summarizeStopChecks(results).passed).toBe(true);
   });
 
-  it('marks draft checks not_exercised without drafts and passes the no-review branch', () => {
+  it('marks draft checks not_exercised without drafts', () => {
     const results = evaluateStopScenario(observe({events: agentEvents([agent.plain(1), agent.completed(2)]),
       storage: agentStorage({}, [agent.plain(1), agent.completed(2)])}));
     for (const id of ['S1.draft_identity', 'S1.draft_attempt_order', 'S1.draft_reset_revokes', 'S1.draft_live_only',
-      'S1.draft_before_answer', 'S2.provisional_before_completion', 'R.no_draft_replayed', 'R.no_revoked_draft_persisted']) {
+      'S1.draft_before_answer', 'R.no_draft_replayed', 'R.no_revoked_draft_persisted']) {
       expect(statusOf(results, id)).toBe('not_exercised');
     }
-    expect(statusOf(results, 'S2.no_review_branch')).toBe('pass');
+    expect(statusOf(results, 'S2.answer_before_completion')).toBe('pass');
   });
 
   it('fails broken draft identity, order, liveness, revocation and late drafts', () => {
@@ -170,132 +154,49 @@ describe('evaluateStopScenario', () => {
     expect(statusOf(results, 'S1.draft_live_only')).toBe('fail');
   });
 
-  it('fails a readable review without a provisional answer and a provisional answer after completion', () => {
-    const noProvisional = evaluateStopScenario(observe({events: agentEvents([agent.reviewStarted(1), agent.completed(2)])}));
-    expect(statusOf(noProvisional, 'S2.provisional_before_completion')).toBe('fail');
-    const unreadable = evaluateStopScenario(observe({events: agentEvents([agent.reviewStarted(1, false), agent.completed(2)])}));
-    expect(statusOf(unreadable, 'S2.provisional_before_completion')).toBe('not_exercised');
-    const late = evaluateStopScenario(observe({events: agentEvents([agent.completed(1), agent.provisional(2)])}));
-    expect(statusOf(late, 'S2.provisional_before_completion')).toBe('fail');
+  it('fails an agent completion without exactly one plain conclusion before it', () => {
+    const none = evaluateStopScenario(observe({events: agentEvents([agent.completed(1)])}));
+    expect(statusOf(none, 'S2.answer_before_completion')).toBe('fail');
+    const late = evaluateStopScenario(observe({events: agentEvents([agent.completed(1), agent.plain(2)])}));
+    expect(statusOf(late, 'S2.answer_before_completion')).toBe('fail');
+    const unfinished = evaluateStopScenario(observe({events: agentEvents([agent.cancelled(1)])}));
+    expect(statusOf(unfinished, 'S2.answer_before_completion')).toBe('not_exercised');
   });
 
-  it('fails the no-review branch when review progress appears without a start', () => {
-    const results = evaluateStopScenario(observe({events: agentEvents([agent.plain(1), agent.reviewFinished(2, 'not_checked'),
-      agent.completed(3)]), storage: agentStorage({}, [agent.completed(3)])}));
-    expect(statusOf(results, 'S2.no_review_branch')).toBe('fail');
+  it('requires a conversation completion to carry the answer', () => {
+    const empty = convFrame('run_completed', {outcome: {kind: 'answered', message: ''}}, 1);
+    const results = evaluateStopScenario(observe({entry: 'conversation', events: convEvents([empty])}));
+    expect(statusOf(results, 'S2.answer_before_completion')).toBe('fail');
   });
 
-  describe('stop after the provisional answer', () => {
-    const scenario: StopScenario = 'stop_after_provisional';
-    const live = (finish = agent.reviewFinished(6, 'not_checked', 'cancelled_by_user')) =>
-      agentEvents([agent.provisional(4), agent.reviewStarted(5), finish, agent.completed(7)]);
-
-    it('passes a review-only stop that ends the review and still completes', () => {
-      const results = evaluateStopScenario(observe({scenario, events: live(),
-        stops: [stop({status: 'review_stop_requested', sentAfterEventIndex: 0})], storage: agentStorage({}, [agent.completed(7)])}));
-      expect(statusOf(results, 'S3.first_stop_review_only')).toBe('pass');
-      expect(statusOf(results, 'S3.review_stop_verdict')).toBe('pass');
-    });
-
-    it('records a legal race when the review finished first or the run already committed', () => {
-      const finishedFirst = evaluateStopScenario(observe({scenario, events: live(agent.reviewFinished(6, 'checked')),
-        stops: [stop({status: 'review_stop_requested'})]}));
-      expect(statusOf(finishedFirst, 'S3.review_stop_verdict')).toBe('legal_race');
-      const committed = evaluateStopScenario(observe({scenario, events: live(),
-        stops: [stop({httpStatus: 409, code: 'RUN_NOT_CANCELLABLE'})]}));
-      expect(statusOf(committed, 'S3.first_stop_review_only')).toBe('legal_race');
-      expect(statusOf(committed, 'S3.review_stop_verdict')).toBe('not_exercised');
-    });
-
-    it('fails a full cancel after delivery and a review-only stop that never completes', () => {
-      const cancelled = evaluateStopScenario(observe({scenario, events: agentEvents([agent.provisional(4), agent.cancelled(5)]),
-        stops: [stop({status: 'cancelled', outcome: 'cancelled'})]}));
-      expect(statusOf(cancelled, 'S3.first_stop_review_only')).toBe('fail');
-      const hung = evaluateStopScenario(observe({scenario, events: agentEvents([agent.provisional(4)]),
-        stops: [stop({status: 'review_stop_requested'})]}));
-      expect(statusOf(hung, 'S3.first_stop_review_only')).toBe('fail');
-      expect(statusOf(hung, 'S3.review_stop_verdict')).toBe('fail');
-      expect(statusOf(hung, 'R.single_terminal')).toBe('fail');
-    });
-
-    it('is not exercised when no provisional answer arrived', () => {
-      const results = evaluateStopScenario(observe({scenario, events: agentEvents([agent.plain(1), agent.completed(2)])}));
-      expect(statusOf(results, 'S3.first_stop_review_only')).toBe('not_exercised');
-    });
-  });
-
-  describe('force stop', () => {
-    const scenario: StopScenario = 'force_after_provisional';
-    const first = stop({status: 'review_stop_requested'});
-
-    it('passes the committed and fallback branches and checks the fallback turn', () => {
-      const committed = evaluateStopScenario(observe({scenario,
-        events: agentEvents([agent.provisional(1), agent.completed(2)]),
-        stops: [first, stop({order: 2, status: 'completed', outcome: 'committed'})]}));
-      expect(statusOf(committed, 'S5.force_stop')).toBe('pass');
-
-      const fallbackVerdict = {partial: true, terminationReason: 'review_not_finished',
-        claimVerificationResult: {status: 'not_checked', notCheckedReason: 'review_not_finished'}};
-      const fallback = evaluateStopScenario(observe({scenario,
-        events: agentEvents([agent.provisional(1), agent.completed(2, fallbackVerdict)]),
-        stops: [first, stop({order: 2, status: 'completed', outcome: 'review_not_finished'})],
-        storage: agentStorage({turns: [{body: BODY, partial: true, terminationReason: 'review_not_finished',
-          claimVerificationStatus: 'not_checked', completed: true}]}, [agent.completed(2, fallbackVerdict)])}));
-      expect(statusOf(fallback, 'S5.force_stop')).toBe('pass');
-      expect(statusOf(fallback, 'R.watchdog_fallback')).toBe('pass');
-
-      const badTurn = evaluateStopScenario(observe({scenario,
-        events: agentEvents([agent.provisional(1), agent.completed(2, fallbackVerdict)]),
-        stops: [first, stop({order: 2, status: 'completed', outcome: 'review_not_finished'})],
-        storage: agentStorage({}, [agent.completed(2)])}));
-      expect(statusOf(badTurn, 'R.watchdog_fallback')).toBe('fail');
-    });
-
-    it('passes the cancelled branch, records a race, and fails a repeated review-only answer', () => {
-      const cancelled = evaluateStopScenario(observe({scenario, events: agentEvents([agent.provisional(1), agent.cancelled(2)]),
-        stops: [first, stop({order: 2, status: 'cancelled', outcome: 'cancelled'})]}));
-      expect(statusOf(cancelled, 'S5.force_stop')).toBe('pass');
-      const race = evaluateStopScenario(observe({scenario, events: agentEvents([agent.provisional(1), agent.completed(2)]),
-        stops: [first, stop({order: 2, httpStatus: 409, code: 'RUN_NOT_ACTIVE'})]}));
-      expect(statusOf(race, 'S5.force_stop')).toBe('legal_race');
-      const repeated = evaluateStopScenario(observe({scenario, events: agentEvents([agent.provisional(1), agent.completed(2)]),
-        stops: [first, stop({order: 2, status: 'review_stop_requested'})]}));
-      expect(statusOf(repeated, 'S5.force_stop')).toBe('fail');
-      const unsent = evaluateStopScenario(observe({scenario, events: agentEvents([agent.provisional(1), agent.completed(2)]),
-        stops: [stop({httpStatus: 409, code: 'RUN_NOT_CANCELLABLE'})]}));
-      expect(statusOf(unsent, 'S5.force_stop')).toBe('not_exercised');
-    });
-  });
-
-  describe('stop before the provisional answer', () => {
-    const scenario: StopScenario = 'stop_before_provisional';
+  describe('stop before the answer', () => {
+    const scenario: StopScenario = 'stop_before_answer';
     const cancelStop = stop({trigger: 'first_draft', status: 'cancelled', outcome: 'cancelled', sentAfterEventIndex: 0});
 
     it('passes a full cancel that stores and replays only the cancel marker', () => {
       const results = evaluateStopScenario(observe({scenario, events: agentEvents([agent.token('a'), agent.cancelled(2)]),
         stops: [cancelStop], storage: agentStorage({sessionStatus: 'cancelled', turns: []}, [agent.cancelled(2)])}));
-      expect(statusOf(results, 'S4.full_cancel_before_provisional')).toBe('pass');
+      expect(statusOf(results, 'S4.full_cancel_before_answer')).toBe('pass');
       expect(statusOf(results, 'S4.cancel_marker_only')).toBe('pass');
-      expect(statusOf(results, 'S2.provisional_before_completion')).toBe('not_exercised');
     });
 
     it('fails when an answer body is stored or replayed after the cancel', () => {
       const results = evaluateStopScenario(observe({scenario, events: agentEvents([agent.token('a'), agent.cancelled(2)]),
         stops: [cancelStop], storage: agentStorage({sessionStatus: 'cancelled'}, [agent.plain(1), agent.cancelled(2)])}));
-      expect(statusOf(results, 'S4.full_cancel_before_provisional')).toBe('pass');
+      expect(statusOf(results, 'S4.full_cancel_before_answer')).toBe('pass');
       expect(statusOf(results, 'S4.cancel_marker_only')).toBe('fail');
       const answered = evaluateStopScenario(observe({scenario, events: agentEvents([agent.token('a'), agent.completed(2)]),
         stops: [cancelStop]}));
-      expect(statusOf(answered, 'S4.full_cancel_before_provisional')).toBe('fail');
+      expect(statusOf(answered, 'S4.full_cancel_before_answer')).toBe('fail');
     });
 
-    it('records a legal race when the answer was already delivered, and not_exercised without a trigger', () => {
-      const race = evaluateStopScenario(observe({scenario, events: agentEvents([agent.token('a'), agent.provisional(2), agent.completed(3)]),
-        stops: [stop({trigger: 'first_draft', status: 'review_stop_requested'})]}));
-      expect(statusOf(race, 'S4.full_cancel_before_provisional')).toBe('legal_race');
+    it('records a legal race when the run already committed, and not_exercised without a trigger', () => {
+      const race = evaluateStopScenario(observe({scenario, events: agentEvents([agent.token('a'), agent.plain(2), agent.completed(3)]),
+        stops: [stop({httpStatus: 409, code: 'RUN_NOT_CANCELLABLE'})]}));
+      expect(statusOf(race, 'S4.full_cancel_before_answer')).toBe('legal_race');
       expect(statusOf(race, 'S4.cancel_marker_only')).toBe('not_exercised');
       const none = evaluateStopScenario(observe({scenario, events: agentEvents([agent.plain(1), agent.completed(2)])}));
-      expect(statusOf(none, 'S4.full_cancel_before_provisional')).toBe('not_exercised');
+      expect(statusOf(none, 'S4.full_cancel_before_answer')).toBe('not_exercised');
     });
 
     it('checks the conversation cancel marker turn', () => {
@@ -324,10 +225,10 @@ describe('evaluateStopScenario', () => {
       expect(statusOf(results, 'R.report_metadata')).toBe('fail');
     });
 
-    it('judges the conversation store at the provisional answer', () => {
-      const live = convEvents([conv.provisional(1), conv.reviewStarted(2), conv.completed(3)]);
+    it('judges the conversation store at the first draft', () => {
+      const live = convEvents([conv.token(BODY), conv.completed(3)]);
       const base: StopStorageObservation = {read: 'ok', turns: [{completed: true}], assistantMessages: [BODY],
-        replay: {read: 'ok', events: convEvents([conv.provisional(1), conv.completed(3)])}};
+        replay: {read: 'ok', events: convEvents([conv.completed(3)])}};
       const verdict = (midRunHistory?: StopStorageObservation['midRunHistory']) => statusOf(evaluateStopScenario(
         observe({entry: 'conversation', events: live, storage: {...base, ...(midRunHistory ? {midRunHistory} : {})}})),
       'R.conversation_store_verdict_only');
@@ -336,7 +237,6 @@ describe('evaluateStopScenario', () => {
       expect(verdict({read: 'ok', activeRunMatches: true, assistantMessageForRun: true})).toBe('fail');
       expect(verdict()).toBe('not_exercised');
       const results = evaluateStopScenario(observe({entry: 'conversation', events: live, storage: base}));
-      expect(statusOf(results, 'S2.provisional_before_completion')).toBe('pass');
       expect(statusOf(results, 'R.persisted_body_is_verdict')).toBe('pass');
       expect(results.some(result => result.id === 'R.report_metadata')).toBe(false);
     });

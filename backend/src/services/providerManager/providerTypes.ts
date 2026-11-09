@@ -45,3 +45,8 @@ export const PI_CATALOG_ROUTES = {
   kimi: {catalogProviders: ['moonshotai-cn', 'moonshotai'], surface: 'openai'},
   minimax: {catalogProviders: ['minimax-cn', 'minimax'], surface: 'claude'},
 } as const satisfies Record<string, {catalogProviders: readonly string[]; surface: 'openai' | 'claude'}>;
+
+/** The first value with content: a whitespace-only endpoint counts as empty, as Pi's route derivation reads it. */
+export function firstNonBlank(...values: Array<string | undefined>): string | undefined {
+  return values.find(value => value?.trim());
+}

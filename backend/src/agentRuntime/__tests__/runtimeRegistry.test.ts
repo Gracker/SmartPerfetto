@@ -102,7 +102,7 @@ describe('runtime registry', () => {
       production: true,
       publicRuntime: true,
       promptCache: { systemPromptDynamicBoundary: false },
-      draftAnswerStreaming: false,
+      draftAnswerStreaming: true,
       runSupplement: true,
     });
     for (const capabilities of [claude, openai, pi]) {
@@ -112,9 +112,9 @@ describe('runtime registry', () => {
     }
   });
 
-  it('gates answer drafts on the reset contract: Claude and OpenAI only, never an unknown runtime', () => {
+  it('gates answer drafts on the reset contract: only runtimes that implement it, never an unknown runtime', () => {
     expect(PRODUCTION_RUNTIME_KINDS.filter(runtimeSupportsDraftAnswerStreaming))
-      .toEqual(['claude-agent-sdk', 'openai-agents-sdk']);
+      .toEqual(['claude-agent-sdk', 'openai-agents-sdk', 'pi-agent-core']);
     expect(runtimeSupportsDraftAnswerStreaming(undefined)).toBe(false);
     expect(runtimeSupportsDraftAnswerStreaming(EXPERIMENTAL_OPENCODE_RUNTIME_KIND)).toBe(false);
     expect(runtimeSupportsDraftAnswerStreaming(OPENCODE_RUNTIME_KIND)).toBe(false);

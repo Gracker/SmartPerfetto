@@ -7,6 +7,7 @@ import {PiModelExecutionConfigurationError, type PiAgentCoreProviderRuntime, typ
 import {intentTransportTextResult, runIntentTransport, type IntentTransportInput} from '../../intentTransport';
 import type {RuntimeModelDispatchPurpose} from '../../runtimePerformance';
 import {piReasoningFromPolicyReceipt, piUsageToModelCallUsage} from './piAgentModelCalls';
+import {piAssistantMessageHasToolCall} from './piAssistantMessage';
 
 export interface PiIntentTransportInput extends IntentTransportInput {
   providerRuntime: Pick<PiAgentCoreProviderRuntime, 'model' | 'streamFn' | 'streamFnForPurpose'>;
@@ -71,7 +72,7 @@ export function runPiIntentTransport(input: PiIntentTransportInput) {
     }
     try {input.observer?.usage?.(piUsageToModelCallUsage(result.usage));} catch { /* Observers never change a call. */ }
     scope.throwIfInactive();
-    if (result.content.some(part => part.type === 'toolCall') || result.stopReason === 'toolUse') {
+    if (piAssistantMessageHasToolCall(result) || result.stopReason === 'toolUse') {
       return {status: 'unavailable', reason: 'tool_use'};
     }
     if (result.stopReason !== 'stop' || result.deferred !== undefined || result.errorMessage) {

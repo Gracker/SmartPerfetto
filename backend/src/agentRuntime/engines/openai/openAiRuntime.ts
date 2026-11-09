@@ -55,6 +55,9 @@ import {estimateAnalysisConfidence} from '../../../agentv3/analysisTermination';
 import {
   SILENT_ANSWER_DRAFT, createAnswerDraftStream, createProjectedAnswerDraft, type ProjectedAnswerDraft,
 } from '../../answerDraftStream';
+import {
+  createAnswerReasoningFilterState, filterAnswerReasoningDelta, type AnswerReasoningFilterState,
+} from '../../answerReasoningFilter';
 import {isPlainObject} from '../../../utils/llmJson';
 import {planPhaseUpdatedContent} from '../../../agentv3/planPhaseEvents';
 import {loadOpenAIConfig, resolveOpenAiClassifierOutputLimit, type OpenAIAgentConfig} from './openAiConfig';
@@ -460,55 +463,6 @@ function compactProviderErrorMessage(error: unknown): string {
   return status ? `provider HTTP ${status}: ${text}` : `provider error: ${text}`;
 }
 
-interface OpenAiReasoningFilterState {
-  insideThink: boolean;
-  pendingTagPrefix: string;
-}
-
-function createOpenAiReasoningFilterState(): OpenAiReasoningFilterState {
-  return {
-    insideThink: false,
-    pendingTagPrefix: '',
-  };
-}
-
-function isReasoningTagPrefix(value: string): boolean {
-  const lower = value.toLowerCase();
-  return '<think>'.startsWith(lower) || '</think>'.startsWith(lower);
-}
-
-function filterOpenAiVisibleAnswerDelta(delta: string, state: OpenAiReasoningFilterState): string {
-  const input = `${state.pendingTagPrefix}${delta}`;
-  state.pendingTagPrefix = '';
-  let output = '';
-  let index = 0;
-
-  while (index < input.length) {
-    const remaining = input.slice(index);
-    const lower = remaining.toLowerCase();
-    if (lower.startsWith('<think>')) {
-      state.insideThink = true;
-      index += '<think>'.length;
-      continue;
-    }
-    if (lower.startsWith('</think>')) {
-      state.insideThink = false;
-      index += '</think>'.length;
-      continue;
-    }
-    if (remaining[0] === '<' && isReasoningTagPrefix(remaining)) {
-      state.pendingTagPrefix = remaining;
-      break;
-    }
-    if (!state.insideThink) {
-      output += remaining[0];
-    }
-    index += 1;
-  }
-
-  return output;
-}
-
 /** The installed Chat serializer writes reasoning_effort into providerData.
  * Give it request-local settings so that the next Runner turn cannot mistake
  * that write for inherited GPT-only defaults and strip the authored effort. */
@@ -675,8 +629,6 @@ async function commitAfterProviderClose<T>(
 /** @internal Test seam. */
 export const __testing = {
   RuntimeAnalysisAbortScope,
-  createOpenAiReasoningFilterState,
-  filterOpenAiVisibleAnswerDelta,
   compactProviderErrorMessage,
   commitAfterProviderClose,
   buildOpenAIModelSettings,
@@ -1048,7 +1000,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           });
         };
         const dispatchObservationScope: OpenAiDispatchObservationScope = Object.freeze({onAuthorizedDispatch: observeAttemptDispatch});
-        const answerStreamFilter = createOpenAiReasoningFilterState();
+        const answerStreamFilter = createAnswerReasoningFilterState();
         const answerTextProjection = analysisHasPrivateContext(options)
           ? createCodeAwareStreamingTextProjection(sessionId, `openai-answer-${attemptId}`, 'owner') : undefined;
         // A recovery candidate is delivered atomically by the final conclusion event.
@@ -1116,7 +1068,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
                   attemptDraft.boundary();
                   runAnswer = '';
                   lastResponse = undefined;
-                  Object.assign(answerStreamFilter, createOpenAiReasoningFilterState());
+                  Object.assign(answerStreamFilter, createAnswerReasoningFilterState());
                 } else if (data?.type === 'response_done') {
                   lastResponse = data.response;
                   // The next chat fetch resets chatTerminal before authorizedFetch. Keep this response's facts now.
@@ -1873,7 +1825,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     streamContext: {
       sessionId: string;
       quickMode: boolean;
-      answerStreamFilter: OpenAiReasoningFilterState;
+      answerStreamFilter: AnswerReasoningFilterState;
       answerTextProjection?: CodeAwareStreamingTextProjection;
       runtimePerformance?: RuntimePerformanceRun;
       /** The attempt's projected view of the run draft; tool calls revoke its segment. */
@@ -1891,7 +1843,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     if (event.type === 'raw_model_stream_event') {
       const data = event.data as any;
       if (data?.type === 'output_text_delta' && typeof data.delta === 'string') {
-        const delta = filterOpenAiVisibleAnswerDelta(data.delta, streamContext.answerStreamFilter);
+        const delta = filterAnswerReasoningDelta(data.delta, streamContext.answerStreamFilter);
         if (!delta) return '';
         if (streamContext.answerDraft.write(delta, now)) streamContext.runtimePerformance?.recordFirstOutput();
         return delta;

@@ -12,7 +12,7 @@ import type {RecordedProductionRuntimeKind} from '../../../agentRuntime/runtimeK
 import {resetRuntimeDeprecationWarningsForTests} from '../../../agentRuntime/legacyRuntimeFallback';
 import {piRequestOrigin, withEnvOnlyPiModel} from '../piProviderCatalog';
 import {reconcileRecordedProviderPin} from '../providerPinContinuity';
-import {supportedAgentRuntimesForType} from '../providerRuntimeMatrix';
+import {supportedAgentRuntimesForType, withProviderRecordFacts} from '../providerRuntimeMatrix';
 import {ProviderService} from '../providerService';
 import {legacyProviderRuntimeSnapshot, resolveProviderRuntimeSnapshot} from '../providerSnapshot';
 import {withMigratedAgentRuntime} from '../retiredRuntime';
@@ -712,5 +712,15 @@ describe('recorded runtime labels outside provider profiles', () => {
     const verified = {...note, fromRuntimeKind: 'claude-agent-sdk' as const};
     const session = service.restoreSession(descriptor, [], {...input, runtimeMigration: verified});
     expect(session).toMatchObject({runtimeKind: 'pi-agent-core', providerSnapshotHash: 'h-pi', runtimeMigration: verified});
+  });
+});
+
+describe('withProviderRecordFacts', () => {
+  it('reports the surface a record really uses, even with none recorded', () => {
+    expect(withProviderRecordFacts({type: 'custom', connection: {openaiBaseUrl: 'https://llm.example/v1'}}))
+      .toMatchObject({effectiveApiSurface: 'openai', supportedRuntimes: ['pi-agent-core']});
+    expect(withProviderRecordFacts({type: 'custom', connection: {claudeBaseUrl: 'https://llm.example'}}).effectiveApiSurface).toBe('claude');
+    expect(withProviderRecordFacts({type: 'custom', connection: {agentRuntime: 'pi-agent-core', piAgentCoreModelJson: '{}'}}))
+      .not.toHaveProperty('effectiveApiSurface');
   });
 });

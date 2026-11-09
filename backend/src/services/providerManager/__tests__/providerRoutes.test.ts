@@ -21,6 +21,9 @@ import {
   SECRET_STORE_DIR_ENV,
 } from '../localSecretStore';
 import { resetProviderService } from '../index';
+import { PI_CATALOG_ROUTES } from '../providerTypes';
+import { previousProviderAgentRuntime } from '../providerRuntimeMatrix';
+import type { ProviderType } from '../types';
 
 const originalEnv = {
   enterprise: process.env[ENTERPRISE_FEATURE_FLAG_ENV],
@@ -436,6 +439,53 @@ describe('Provider Routes', () => {
       expect(fetchSpy).not.toHaveBeenCalled();
     } finally {
       fetchSpy.mockRestore();
+    }
+  });
+
+  it('refuses a surface change over the API that would send the stored key to another origin', async () => {
+    const created = await request(appServer).post('/api/v1/providers').send({
+      name: 'Surface Custom',
+      category: 'custom',
+      type: 'custom',
+      models: { primary: 'model-a', light: 'model-b' },
+      connection: {
+        apiKey: 'sk-route-secret-key',
+        claudeBaseUrl: 'https://proxy.example/anthropic',
+        openaiBaseUrl: 'https://openai.example/v1',
+        apiSurface: 'claude',
+      },
+    });
+    expect(created.status).toBe(201);
+    const id = created.body.provider.id;
+
+    const refused = await request(appServer).patch(`/api/v1/providers/${id}`).send({connection: {apiSurface: 'openai'}});
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toContain("re-enter or clear credential field 'apiKey'");
+    expect(JSON.stringify(refused.body)).not.toContain('sk-route-secret-key');
+
+    const reentered = await request(appServer).patch(`/api/v1/providers/${id}`)
+      .send({connection: {apiSurface: 'openai', apiKey: 'sk-route-reentered-key'}});
+    expect(reentered.status).toBe(200);
+    expect(reentered.body.provider.connection.apiSurface).toBe('openai');
+  });
+
+  it('GET /templates publishes each type\'s API-surface facts from the route tables', async () => {
+    const res = await request(appServer).get('/api/v1/providers/templates');
+    expect(res.status).toBe(200);
+    const templates = res.body.templates as Array<{type: ProviderType; piCatalogRouteSurfaces: string[]; defaultApiSurface: string}>;
+    const byType = new Map(templates.map(template => [template.type, template]));
+    expect(byType.get('deepseek')!.piCatalogRouteSurfaces).toEqual(['openai']);
+    expect(byType.get('minimax')!.piCatalogRouteSurfaces).toEqual(['claude']);
+    expect(byType.get('anthropic')!.piCatalogRouteSurfaces).toEqual([]);
+    expect(byType.get('openai')!.defaultApiSurface).toBe('openai');
+    expect(byType.get('ollama')!.defaultApiSurface).toBe('openai');
+    expect(byType.get('custom')!.defaultApiSurface).toBe('claude');
+    expect(byType.get('glm')!.defaultApiSurface).toBe('claude');
+    for (const template of templates) {
+      const route = (PI_CATALOG_ROUTES as Record<string, {surface: string}>)[template.type];
+      expect(template.piCatalogRouteSurfaces).toEqual(route ? [route.surface] : []);
+      const previous = previousProviderAgentRuntime({type: template.type, connection: {}});
+      expect(template.defaultApiSurface).toBe(previous === 'openai-agents-sdk' ? 'openai' : 'claude');
     }
   });
 

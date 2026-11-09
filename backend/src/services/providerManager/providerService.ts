@@ -27,12 +27,15 @@ import {
   isDualSurfaceProviderType,
   normalizeBedrockModelId,
   previousProviderAgentRuntime,
+  providerTypeHasApiSurfaceChoice,
   resolveProviderAgentRuntime,
   sharedKeyShouldUseClaudeAuthToken,
   supportsAgentRuntimeType,
 } from './providerRuntimeMatrix';
-import {PROVIDER_TYPES} from './providerTypes';
+import {PROVIDER_TYPES, firstNonBlank} from './providerTypes';
 import type {RecordedProductionRuntimeKind} from '../../agentRuntime/runtimeKinds';
+import {CLAUDE_AGENT_RUNTIME_KIND, OPENAI_AGENT_RUNTIME_KIND, PI_AGENT_CORE_RUNTIME_KIND} from '../../agentRuntime/runtimeKinds';
+import {hasConcreteEnvValue, isEnabledEnvFlag} from '../../agentRuntime/envCredentialSources';
 import {officialTemplates} from './templates';
 import type {
   ProviderMutationGenerationVectorV1,
@@ -42,6 +45,7 @@ import type {
 } from './providerMutationGeneration';
 import {
   piCatalogProviderEnv,
+  piCatalogRouteBaseUrl,
   piEnvForLegacyRoute,
   providerModelJsonEnv,
   resolvePiRouteFromLegacyEnv,
@@ -197,11 +201,17 @@ function connectionEndpointOriginChanged(
   });
 }
 
+/**
+ * A write that moves where a stored credential goes must name that credential
+ * again: either a field-level endpoint origin changed, or the origin the
+ * credential is sent to changed after surface resolution.
+ */
 function assertCredentialsReconfirmedForEndpointChange(
   existing: ProviderConfig['connection'],
   input: Partial<ProviderConfig['connection']>,
+  effectiveOriginChanged: boolean,
 ): void {
-  if (!connectionEndpointOriginChanged(existing, input)) return;
+  if (!effectiveOriginChanged && !connectionEndpointOriginChanged(existing, input)) return;
   for (const field of NETWORK_CREDENTIAL_FIELDS) {
     if (!existing[field]) continue;
     const replacement = input[field];
@@ -279,6 +289,7 @@ export class ProviderService {
       ...(input.tuning ? { tuning: withoutRetiredTuning(input.tuning) } : {}),
       ...(requested.custom ? { custom: requested.custom } : {}),
     };
+    this.assertCustomEndpointPresent(provider);
 
     return this.runProviderMutation(
       () => this.store.beginMutationForNewProvider(scope, this.mutationOwner),
@@ -314,7 +325,6 @@ export class ProviderService {
         if (input.name !== undefined) updated.name = input.name.trim();
         if (input.models) updated.models = { ...existing.models, ...input.models };
         if (input.connection) {
-          assertCredentialsReconfirmedForEndpointChange(existing.connection, input.connection);
           const merged = { ...existing.connection };
           for (const [key, val] of Object.entries(input.connection)) {
             if (val !== undefined && !String(val).startsWith('****')) {
@@ -333,6 +343,9 @@ export class ProviderService {
         }
         const migrated = withRequestedAgentRuntime(updated, 'Provider update');
         assertSafeCustomEnvOverrides(migrated.custom);
+        if (input.connection || input.custom !== undefined) {
+          this.assertEndpointWriteAllowed(existing, migrated, input.connection ?? {});
+        }
 
         this.store.set(migrated, scope);
         return migrated;
@@ -493,6 +506,70 @@ export class ProviderService {
     return supportsAgentRuntimeType(provider.type, runtime);
   }
 
+  /**
+   * The origin this record's shared network credential reaches after surface
+   * resolution: the route Pi derives for it. Undefined when no such credential
+   * would be sent (a model JSON carries its own, or the surface has none).
+   */
+  private credentialOrigin(provider: ProviderConfig): string | undefined {
+    if (!providerTypeHasApiSurfaceChoice(provider.type) || provider.connection.piAgentCoreModelJson?.trim()) return undefined;
+    try {
+      const previous = previousProviderAgentRuntime(provider);
+      if (previous === PI_AGENT_CORE_RUNTIME_KIND) {
+        return endpointOrigin(piCatalogRouteBaseUrl(provider)) ?? `catalog:${provider.type}`;
+      }
+      const resolution = this.legacyPiRoute(provider, previous);
+      return resolution.status === 'resolved' ? endpointOrigin(resolution.route.baseUrl) : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * The surface a custom provider would reach only through a vendor default:
+   * its resolved Claude or OpenAI surface with no endpoint of its own, unless
+   * an env override routes it through Bedrock or Vertex. Undefined otherwise.
+   */
+  private customSurfaceMissingEndpoint(provider: ProviderConfig): 'claude' | 'openai' | undefined {
+    if (provider.type !== 'custom' || provider.connection.piAgentCoreModelJson?.trim()) return undefined;
+    try {
+      const previous = previousProviderAgentRuntime(provider);
+      if (previous !== CLAUDE_AGENT_RUNTIME_KIND && previous !== OPENAI_AGENT_RUNTIME_KIND) return undefined;
+      const env = this.toEnvVars(provider, previous);
+      if (hasConcreteEnvValue(env[previous === CLAUDE_AGENT_RUNTIME_KIND ? 'ANTHROPIC_BASE_URL' : 'OPENAI_BASE_URL'])) return undefined;
+      if (isEnabledEnvFlag(env.CLAUDE_CODE_USE_BEDROCK) || isEnabledEnvFlag(env.CLAUDE_CODE_USE_VERTEX)) return undefined;
+      return previous === CLAUDE_AGENT_RUNTIME_KIND ? 'claude' : 'openai';
+    } catch {
+      return undefined;
+    }
+  }
+
+  private assertCustomEndpointPresent(provider: ProviderConfig, allowed?: 'claude' | 'openai'): void {
+    const missing = this.customSurfaceMissingEndpoint(provider);
+    if (!missing || missing === allowed) return;
+    throw invalidProviderRequest(
+      `Custom provider has no ${missing === 'claude' ? 'Anthropic-compatible' : 'OpenAI-compatible'} endpoint; ` +
+      `set connection.${missing === 'claude' ? 'claudeBaseUrl' : 'openaiBaseUrl'} or connection.baseUrl`,
+    );
+  }
+
+  /**
+   * Checked on the record as it would be stored, so a surface change counts: a
+   * write may not send a stored credential to a new origin without naming it
+   * again, nor move a custom provider onto a surface with no endpoint. A record
+   * already stored without one keeps working until the write changes that.
+   */
+  private assertEndpointWriteAllowed(
+    existing: ProviderConfig,
+    next: ProviderConfig,
+    input: Partial<ProviderConfig['connection']>,
+  ): void {
+    this.assertCustomEndpointPresent(next, this.customSurfaceMissingEndpoint(existing));
+    const origin = this.credentialOrigin(next);
+    assertCredentialsReconfirmedForEndpointChange(existing.connection, input,
+      origin !== undefined && origin !== this.credentialOrigin(existing));
+  }
+
   private assertRuntimeSupported(type: ProviderType, runtime?: unknown): void {
     assertAgentRuntimeSupported(type, runtime);
   }
@@ -527,7 +604,7 @@ export class ProviderService {
   }
 
   private getClaudeBaseUrl(provider: ProviderConfig, defaultBaseUrl?: string): string | undefined {
-    return provider.connection.claudeBaseUrl || provider.connection.baseUrl || defaultBaseUrl;
+    return firstNonBlank(provider.connection.claudeBaseUrl, provider.connection.baseUrl, defaultBaseUrl);
   }
 
   /**
@@ -561,7 +638,7 @@ export class ProviderService {
   }
 
   private getOpenAIBaseUrl(provider: ProviderConfig, defaultBaseUrl?: string): string | undefined {
-    return provider.connection.openaiBaseUrl || provider.connection.baseUrl || defaultBaseUrl;
+    return firstNonBlank(provider.connection.openaiBaseUrl, provider.connection.baseUrl, defaultBaseUrl);
   }
 
   private getOpenAIApiKey(provider: ProviderConfig): string | undefined {
@@ -759,7 +836,10 @@ export class ProviderService {
           const baseUrl = this.getClaudeBaseUrl(provider);
           if (baseUrl) env.ANTHROPIC_BASE_URL = baseUrl;
         }
-        if (provider.custom?.envOverrides) Object.assign(env, provider.custom.envOverrides);
+        for (const [key, value] of Object.entries(provider.custom?.envOverrides ?? {})) {
+          // A blank endpoint override must not erase the configured one and open a vendor default.
+          if (!key.endsWith('_BASE_URL') || value.trim()) env[key] = value;
+        }
         break;
     }
 

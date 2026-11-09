@@ -16,9 +16,8 @@ import {
   resolveRuntimeConfig,
 } from '../../agentv3/claudeConfig';
 import {extractFirstJsonObject} from '../evolutionLifecycle/reviewExecution';
-import {getProviderService, type ProviderScope} from '../providerManager';
-import {readPiAgentCoreModelConfig} from '../../agentRuntime/engines/pi/piAgentCoreConfig';
-import {resolvePiModelRecord} from '../../agentRuntime/engines/pi/piAgentCoreProvider';
+import {resolveOneShotProvider, runIsolatedPiOneShot} from '../oneShotModelCall';
+import type {ProviderScope} from '../providerManager';
 import {buildOpenAIChatCompletionsTokenLimit} from '../providerManager/openAiChatCompletionsCompat';
 import type {
   ExternalIssueOpportunityV1,
@@ -26,11 +25,11 @@ import type {
 } from '../../types/externalIssueReporting';
 import type {RunManifestV1} from '../../types/selfEvolution';
 import {resolveExternalIssueProviderPin} from './providerPin';
-import {runtimeEnvFor} from '../providerManager/piProviderCatalog';
 import {buildExternalIssueTriagePrompt} from './triagePrompt';
 import {validateExternalIssueReview} from './reviewValidator';
 import type {AgentRuntimeKind} from '../../agentRuntime/runtimeKinds';
 
+const LOG_LABEL = 'ExternalIssueTriage';
 const DEFAULT_TIMEOUT_MS = 45_000;
 const MAX_OUTPUT_TOKENS = 8192;
 
@@ -42,6 +41,13 @@ interface OpenAICompatibleReviewConfig {
   apiKey?: string;
   baseURL: string;
   model: string;
+}
+
+/** A review that cannot run for a reason the product reports, unlike an invalid model answer. */
+class TriageUnavailableError extends Error {
+  constructor(readonly reason: ExternalIssueReviewUnavailableReason) {
+    super(reason);
+  }
 }
 
 export type ExternalIssueTriageExecutionResult =
@@ -119,8 +125,8 @@ export async function runExternalIssueTriage(input: {
   } catch (error) {
     return {
       ok: false,
-      reason: isCredentialError(error)
-        ? 'provider_credentials_unavailable'
+      reason: error instanceof TriageUnavailableError
+        ? error.reason
         : 'agent_invalid',
     };
   }
@@ -140,9 +146,7 @@ async function completeWithPinnedProvider(input: {
   if (input.runtime === 'openai-agents-sdk') {
     return completeWithOpenAI(input);
   }
-  return completeWithPi({
-    ...input,
-  });
+  return completeWithPi(input);
 }
 
 async function completeWithOpenAI(input: {
@@ -153,7 +157,7 @@ async function completeWithOpenAI(input: {
   timeoutMs: number;
 }): Promise<{text: string; model: string}> {
   if (!hasOpenAICredentials(input.providerId, input.providerScope)) {
-    throw new Error('provider_credentials_unavailable');
+    throw new TriageUnavailableError('provider_credentials_unavailable');
   }
   const config = loadOpenAIConfig(input.providerId, input.providerScope);
   return completeWithOpenAICompatible({
@@ -171,17 +175,28 @@ async function completeWithPi(input: {
   prompt: string;
   providerId: string | null;
   providerScope: ProviderScope;
-  model?: string;
   timeoutMs: number;
 }): Promise<{text: string; model: string}> {
-  const env = resolvePinnedPiEnv(input.providerId, input.providerScope);
-  const config = await resolvePiReviewConfig(env, input.model);
-  assertReviewCredentials(config);
-  return completeWithOpenAICompatible({
-    prompt: input.prompt,
-    timeoutMs: input.timeoutMs,
-    config,
+  const provider = resolveOneShotProvider({
+    providerId: input.providerId,
+    providerScope: input.providerScope,
+    logLabel: LOG_LABEL,
   });
+  if (provider.kind === 'unavailable' || provider.runtime !== 'pi-agent-core') {
+    throw new TriageUnavailableError('provider_snapshot_changed');
+  }
+  // Pi has one configured model, so the pin's light model does not apply here.
+  const result = await runIsolatedPiOneShot({
+    prompt: input.prompt,
+    pi: provider.pi,
+    timeoutMs: input.timeoutMs,
+    logLabel: LOG_LABEL,
+  });
+  if (result.ok) return {text: result.text, model: result.model};
+  if (result.reason === 'credentials_missing') {
+    throw new TriageUnavailableError('provider_credentials_unavailable');
+  }
+  throw new Error(`external_issue_triage_pi_${result.reason}`);
 }
 
 async function completeWithOpenAICompatible(input: {
@@ -244,92 +259,6 @@ async function completeWithOpenAICompatible(input: {
   }
 }
 
-function resolvePinnedPiEnv(
-  providerId: string | null,
-  providerScope: ProviderScope,
-): Record<string, string | undefined> {
-  const providerService = getProviderService();
-  const provider = typeof providerId === 'string'
-    ? providerService.getRawProvider(providerId, providerScope)
-    : undefined;
-  if (typeof providerId === 'string' && !provider) {
-    throw new Error(`Provider not found: ${providerId}`);
-  }
-  if (provider && providerService.resolveAgentRuntime(provider) !== 'pi-agent-core') {
-    throw new Error('provider_snapshot_changed');
-  }
-  const providerEnv = provider
-    ? providerService.getEnvForProvider(provider.id, providerScope)
-    : null;
-  // An env-only Pi pin reads the model its Claude/OpenAI env maps to, as the runtime does.
-  return runtimeEnvFor(process.env, providerEnv, 'pi-agent-core');
-}
-
-async function resolvePiReviewConfig(
-  env: Record<string, string | undefined>,
-  pinnedModel?: string,
-): Promise<OpenAICompatibleReviewConfig> {
-  const config = readPiAgentCoreModelConfig(env);
-  if (!config) throw new Error('external_issue_triage_pi_model_config_incomplete');
-  // One resolution path with the runtime; credential fields come from the parsed config.
-  const modelJson: Record<string, unknown> = {...await resolvePiModelRecord(config),
-    apiKey: config.apiKey, apiKeyEnv: config.apiKeyEnv};
-  const api = readConfigString(modelJson.api);
-  if (api !== 'openai-completions') {
-    throw new Error(
-      `external_issue_triage_runtime_not_supported:${api ?? 'unspecified'}`,
-    );
-  }
-  const model = pinnedModel
-    ?? readConfigString(modelJson.id)
-    ?? readConfigString(modelJson.model)
-    ?? readConfigString(modelJson.name);
-  const baseURL = readConfigString(modelJson.baseUrl)
-    ?? readConfigString(modelJson.baseURL)
-    ?? env.OPENAI_BASE_URL;
-  if (!model || !baseURL) {
-    throw new Error('external_issue_triage_pi_model_config_incomplete');
-  }
-  return {
-    model,
-    baseURL,
-    apiKey: resolveModelApiKey(modelJson, env),
-  };
-}
-
-function readConfigString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim()
-    ? value.trim()
-    : undefined;
-}
-
-function resolveModelApiKey(
-  modelJson: Record<string, unknown>,
-  env: Record<string, string | undefined>,
-): string | undefined {
-  const apiKeyEnv = readConfigString(modelJson.apiKeyEnv);
-  const provider = readConfigString(modelJson.provider)
-    ?.toUpperCase()
-    .replace(/[^A-Z0-9]+/g, '_');
-  return readConfigString(modelJson.apiKey)
-    ?? (apiKeyEnv ? env[apiKeyEnv]?.trim() : undefined)
-    ?? (provider ? env[`${provider}_API_KEY`]?.trim() : undefined)
-    ?? env.OPENAI_API_KEY?.trim();
-}
-
-function assertReviewCredentials(config: OpenAICompatibleReviewConfig): void {
-  if (config.apiKey) return;
-  try {
-    const host = new URL(config.baseURL).hostname;
-    if (host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || host === '::1') {
-      return;
-    }
-  } catch {
-    // Invalid endpoints fail through the same credentials-safe path.
-  }
-  throw new Error('provider_credentials_unavailable');
-}
-
 async function completeWithClaude(input: {
   prompt: string;
   providerId: string | null;
@@ -339,7 +268,7 @@ async function completeWithClaude(input: {
 }): Promise<{text: string; model: string}> {
   const env = createSdkEnv(input.providerId, input.providerScope);
   if (!hasClaudeCredentials(env)) {
-    throw new Error('provider_credentials_unavailable');
+    throw new TriageUnavailableError('provider_credentials_unavailable');
   }
   const config = resolveRuntimeConfig(
     loadClaudeConfig(),
@@ -356,11 +285,6 @@ async function completeWithClaude(input: {
   });
   if (timedOut) throw new Error('external_issue_triage_timeout');
   return {text, model};
-}
-
-function isCredentialError(error: unknown): boolean {
-  return error instanceof Error &&
-    error.message === 'provider_credentials_unavailable';
 }
 
 /** @internal Test seam. */

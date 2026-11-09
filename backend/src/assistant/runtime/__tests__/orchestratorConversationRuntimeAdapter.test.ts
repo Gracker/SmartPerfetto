@@ -38,6 +38,7 @@ import {renderConclusionContractSidecar, type ConclusionContract} from '../../..
 import {NO_PRIVATE_CONTEXT} from '../../../services/security/analysisPrivateContext';
 import {resolveDurableLearningPermission} from '../../../services/security/durableLearning';
 import type {prepareAnalysisRunTraceProcessorLeases, AnalysisRunTraceProcessorLeases} from '../../../services/analysisRunTraceProcessorLease';
+import {OPENCODE_RUNTIME_KIND} from '../../../agentRuntime/runtimeKinds';
 
 const mockFinalize = jest.fn<(input: FinalizeAnalysisResultInput) => Promise<FinalizedAnalysisResult>>();
 const mockPrepareLeases = jest.fn<typeof prepareAnalysisRunTraceProcessorLeases>();
@@ -281,7 +282,7 @@ describe('Conversation evidence and stream consumer boundaries', () => {
         return result('Answer');
       });
       const adapter = new OrchestratorConversationRuntimeAdapter(emitter,
-        {runtimeKind: draftAnswerStreaming ? 'openai-agents-sdk' : 'pi-agent-core'});
+        {runtimeKind: draftAnswerStreaming ? 'openai-agents-sdk' : OPENCODE_RUNTIME_KIND});
       const updates: unknown[] = [];
       const drafts: unknown[] = [];
       await adapter.run({sessionId: 'conversation', runId: 'r', query: 'question', history: [], traceContext: {kind: 'none'},

@@ -3,7 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 /**
- * Manual real-provider verifier for the draft / provisional-answer / stop
+ * Manual real-provider verifier for the draft / stop
  * contract (`.claude/rules/backend.md`, `frontend.md`). It starts nothing: it
  * targets an explicit, already-running loopback backend, uploads a Trace
  * through the public API, drives each scenario through the agent route
@@ -18,7 +18,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   STOP_SCENARIOS,
-  classifyStopResponse,
   evaluateStopScenario,
   normalizeAgentFrame,
   normalizeConversationFrame,
@@ -71,7 +70,7 @@ Targets an already-running, isolated backend with a real provider. Starts nothin
   --scenario <name>[,<name>...]|all          ${STOP_SCENARIOS.join(', ')} (default all)
   --mode fast|full|auto        Agent route analysisMode (conversation is always fast)
   --provider-id <id>|null      Pin a Provider Manager profile; null = env fallback
-  --before-trigger draft|progress   Trigger for stop_before_provisional (default draft)
+  --before-trigger draft|progress   Trigger for stop_before_answer (default draft)
   --timeout-ms <n>             Per-scenario live stream bound (default 900000)
   --request-timeout-ms <n>     Per-request bound (default 30000)
   --stop-timeout-ms <n>        Per-stop request bound (default 60000)
@@ -291,9 +290,9 @@ const isTerminalKind = (event: StopObservedEvent) =>
   event.kind === 'completed' || event.kind === 'cancelled' || event.kind === 'failed';
 
 async function sendStop(ctx: RunContext, entry: StopEntry, sessionId: string, runId: string,
-  order: 1 | 2, trigger: StopTrigger, events: readonly StopObservedEvent[]): Promise<StopAttempt> {
+  trigger: StopTrigger, events: readonly StopObservedEvent[]): Promise<StopAttempt> {
   const routes = entry === 'agent' ? agentRoutes : conversationRoutes;
-  const attempt: StopAttempt = {order, trigger, sentAfterEventIndex: events.length - 1};
+  const attempt: StopAttempt = {trigger, sentAfterEventIndex: events.length - 1};
   const response = await ctx.target.json('POST', routes.cancel(sessionId), ctx.options.stopTimeoutMs, {runId});
   attempt.respondedAfterEventIndex = events.length - 1;
   if (response.error) attempt.requestError = response.error;
@@ -422,15 +421,10 @@ async function runScenario(ctx: RunContext, entry: StopEntry, scenario: StopScen
   const pending: Promise<unknown>[] = [];
   let stopFired = false;
   let midRunRead = false;
-  const fireStops = (trigger: StopTrigger) => {
+  const fireStop = (trigger: StopTrigger) => {
     stopFired = true;
-    pending.push((async () => {
-      const first = await sendStop(ctx, entry, sessionId, runId, 1, trigger, observation.events);
-      observation.stops.push(first);
-      if (scenario === 'force_after_provisional' && classifyStopResponse(entry, first) === 'review_only') {
-        observation.stops.push(await sendStop(ctx, entry, sessionId, runId, 2, 'after_first_stop', observation.events));
-      }
-    })());
+    pending.push(sendStop(ctx, entry, sessionId, runId, trigger, observation.events)
+      .then(attempt => {observation.stops.push(attempt);}));
   };
   let midRunHistory: StopStorageObservation['midRunHistory'];
 
@@ -442,21 +436,18 @@ async function runScenario(ctx: RunContext, entry: StopEntry, scenario: StopScen
       onFrame: frame => {
         const event = normalize(frame, observation.events.length, Date.now() - scenarioStartedAt);
         observation.events.push(event);
-        const answered = observation.events.some(seen => seen.kind === 'provisional' ||
-          seen.kind === 'plain_conclusion' || isTerminalKind(seen));
-        if (event.kind === 'provisional' && !stopFired &&
-          (scenario === 'stop_after_provisional' || scenario === 'force_after_provisional')) fireStops('provisional');
-        if (event.kind === 'provisional' && entry === 'conversation' && scenario === 'no_stop' && !midRunRead) {
+        const answered = observation.events.some(seen => seen.kind === 'plain_conclusion' || isTerminalKind(seen));
+        if (event.kind === 'draft_token' && entry === 'conversation' && scenario === 'no_stop' && !midRunRead) {
           midRunRead = true;
           pending.push(readConversation(ctx, sessionId, runId).then(history => {
             midRunHistory = {read: history.read, activeRunMatches: history.activeRunId === runId,
               assistantMessageForRun: history.messages.some(message => message.role === 'assistant')};
           }));
         }
-        if (scenario === 'stop_before_provisional' && !stopFired && !answered) {
+        if (scenario === 'stop_before_answer' && !stopFired && !answered) {
           const progress = entry === 'agent' ? event.wireType === 'progress' : event.wireType.startsWith('runtime_update:');
           if (options.beforeTrigger === 'draft' ? event.kind === 'draft_token' : progress && event.kind === 'other') {
-            fireStops(options.beforeTrigger === 'draft' ? 'first_draft' : 'first_progress');
+            fireStop(options.beforeTrigger === 'draft' ? 'first_draft' : 'first_progress');
           }
         }
         return {terminal: isTerminalKind(event)};
@@ -483,7 +474,7 @@ async function runScenario(ctx: RunContext, entry: StopEntry, scenario: StopScen
     // Evidence first: the cancellation itself may hang or the process may be killed.
     ctx.persist(result);
     if (!observation.events.some(isTerminalKind)) {
-      const cancel = await sendStop(ctx, entry, sessionId, runId, 1, 'after_first_stop', observation.events);
+      const cancel = await sendStop(ctx, entry, sessionId, runId, 'failure_cleanup', observation.events);
       result.failureCancellation = {httpStatus: cancel.httpStatus, status: cancel.status, outcome: cancel.outcome,
         code: cancel.code, requestError: cancel.requestError};
       ctx.persist(result);

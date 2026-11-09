@@ -5,6 +5,7 @@ import {
   requestProviderEndpoint,
   type ProviderEndpointResponse,
 } from './providerEndpointRequest';
+import {firstNonBlank} from './providerTypes';
 import {isDualSurfaceProviderType} from './providerRuntimeMatrix';
 import type {
   ModelOption,
@@ -74,9 +75,7 @@ function openAIBaseUrl(
   template: ProviderTemplate,
 ): string | undefined {
   return (
-    provider.connection.openaiBaseUrl ||
-    provider.connection.baseUrl ||
-    template.defaultConnection?.openaiBaseUrl ||
+    firstNonBlank(provider.connection.openaiBaseUrl, provider.connection.baseUrl, template.defaultConnection?.openaiBaseUrl) ??
     (provider.type === 'openai' ? 'https://api.openai.com/v1' : undefined)
   );
 }
@@ -86,9 +85,7 @@ function anthropicBaseUrl(
   template: ProviderTemplate,
 ): string | undefined {
   return (
-    provider.connection.claudeBaseUrl ||
-    provider.connection.baseUrl ||
-    template.defaultConnection?.claudeBaseUrl ||
+    firstNonBlank(provider.connection.claudeBaseUrl, provider.connection.baseUrl, template.defaultConnection?.claudeBaseUrl) ??
     (provider.type === 'anthropic' ? 'https://api.anthropic.com' : undefined)
   );
 }
@@ -114,7 +111,7 @@ function resolveCatalogRequest(
     provider.type === 'openai' ||
     isDualSurfaceProviderType(provider.type) ||
     provider.connection.agentRuntime === 'openai-agents-sdk' ||
-    !!provider.connection.openaiBaseUrl;
+    !!firstNonBlank(provider.connection.openaiBaseUrl);
   if (shouldUseOpenAI) {
     const baseUrl = openAIBaseUrl(provider, template);
     const apiKey =

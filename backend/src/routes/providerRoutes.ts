@@ -10,9 +10,9 @@ import {
 } from '../services/providerManager';
 import type { ProviderCreateInput, ProviderScope, ProviderUpdateInput } from '../services/providerManager';
 import { isRecordedProductionRuntimeKind } from '../agentRuntime/runtimeKinds';
-import type { ProviderType } from '../services/providerManager/types';
+import type { ProviderConnection, ProviderType } from '../services/providerManager/types';
 import { testProviderConnection } from '../services/providerManager/connectionTester';
-import { withSupportedRuntimes } from '../services/providerManager/providerRuntimeMatrix';
+import { withProviderRecordFacts, withTemplateApiSurfaces } from '../services/providerManager/providerRuntimeMatrix';
 import { authenticate, requireRequestContext, type RequestContext } from '../middleware/auth';
 import { sendRouteError } from '../middleware/routeFailure';
 import { ProviderRequestError } from '../services/providerManager/providerRequestError';
@@ -83,15 +83,15 @@ router.get('/', (req, res) => {
   const svc = getProviderService();
   res.json({
     success: true,
-    providers: svc.list(providerScopeForRequest(req)).map(withSupportedRuntimes),
+    providers: svc.list(providerScopeForRequest(req)).map(withProviderRecordFacts),
     store: providerStoreState(),
   });
 });
 
-const withProviderRuntimes = <T extends {type: ProviderType}>(provider: T | undefined) =>
-  provider && withSupportedRuntimes(provider);
+const withProviderRuntimes = <T extends {type: ProviderType; connection: ProviderConnection}>(provider: T | undefined) =>
+  provider && withProviderRecordFacts(provider);
 
-const TEMPLATES_WITH_RUNTIMES = officialTemplates.map(withSupportedRuntimes);
+const TEMPLATES_WITH_RUNTIMES = officialTemplates.map(withTemplateApiSurfaces);
 
 router.get('/templates', (_req, res) => {
   res.json({ success: true, templates: TEMPLATES_WITH_RUNTIMES });
@@ -147,7 +147,7 @@ router.get('/effective', (req, res) => {
   const env = svc.getEffectiveEnv(scope);
   if (env) {
     const active = svc.list(scope).find(p => p.isActive);
-    res.json({ success: true, source: 'provider-manager', provider: active && withSupportedRuntimes(active), env: maskEnvKeys(env), store });
+    res.json({ success: true, source: 'provider-manager', provider: active && withProviderRecordFacts(active), env: maskEnvKeys(env), store });
   } else {
     res.json({ success: true, source: 'env-fallback', provider: null, store });
   }
@@ -162,7 +162,7 @@ router.get('/:id', (req, res) => {
     type: provider.type,
     active: provider.isActive,
   });
-  res.json({ success: true, provider: withSupportedRuntimes(provider) });
+  res.json({ success: true, provider: withProviderRecordFacts(provider) });
 });
 
 /**

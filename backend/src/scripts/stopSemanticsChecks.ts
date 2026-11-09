@@ -5,7 +5,7 @@
 import {createHash} from 'node:crypto';
 
 /**
- * Pure evaluation for the manual draft / provisional / stop verifier
+ * Pure evaluation for the manual draft / stop verifier
  * (`verifyAgentSseStopSemantics.ts`). No I/O: the CLI normalizes what it read
  * from a running backend into these shapes, and this module decides, per
  * check, whether the target branch was hit (`pass`), a legal race decided the
@@ -14,8 +14,7 @@ import {createHash} from 'node:crypto';
  */
 
 export type StopEntry = 'agent' | 'conversation';
-export const STOP_SCENARIOS = ['no_stop', 'stop_after_provisional', 'force_after_provisional',
-  'stop_before_provisional'] as const;
+export const STOP_SCENARIOS = ['no_stop', 'stop_before_answer'] as const;
 export type StopScenario = typeof STOP_SCENARIOS[number];
 export type StopCheckStatus = 'pass' | 'legal_race' | 'not_exercised' | 'fail';
 
@@ -85,8 +84,7 @@ export function splitSseFrames(buffer: string): {frames: SseFrame[]; rest: strin
   return {frames, rest};
 }
 
-export type StopEventKind = 'draft_token' | 'draft_reset' | 'provisional' | 'plain_conclusion' | 'review_started'
-  | 'review_finished' | 'completed' | 'cancelled' | 'failed' | 'other';
+export type StopEventKind = 'draft_token' | 'draft_reset' | 'plain_conclusion' | 'completed' | 'cancelled' | 'failed' | 'other';
 
 /** The finalized verdict a terminal event (or a stored turn) carries. */
 export interface StopVerdict {
@@ -111,10 +109,6 @@ export interface StopObservedEvent {
   liveOnly?: boolean;
   /** Draft token or answer body. Kept in memory only; redacted before any write. */
   text?: string;
-  verificationPending?: boolean;
-  answerReadable?: boolean;
-  reviewOutcome?: string;
-  reviewReason?: string;
   verdict?: StopVerdict;
 }
 
@@ -140,15 +134,6 @@ function draftFields(content: Record<string, unknown> | undefined): Pick<StopObs
     attempt: typeof content?.attempt === 'number' ? content.attempt : undefined,
     text: str(content?.token),
   };
-}
-
-function reviewFields(content: Record<string, unknown> | undefined): Partial<StopObservedEvent> | undefined {
-  if (content?.phase !== 'final_review') return undefined;
-  if (content.stage === 'started') return {kind: 'review_started', answerReadable: content.answerReadable === true};
-  if (content.stage === 'finished') {
-    return {kind: 'review_finished', reviewOutcome: str(content.outcome), reviewReason: str(content.reason)};
-  }
-  return undefined;
 }
 
 function resultVerdict(result: Record<string, unknown> | undefined): StopVerdict {
@@ -180,11 +165,7 @@ export function normalizeAgentFrame(frame: SseFrame, index: number, atMs: number
     case 'answer_segment_reset':
       return {...base, kind: 'draft_reset', ...draftFields(content)};
     case 'conclusion':
-      return content?.provisional === true
-        ? {...base, kind: 'provisional', text: str(content.conclusion), verificationPending: content.verification === 'pending'}
-        : {...base, kind: 'plain_conclusion', text: str(content?.conclusion)};
-    case 'progress':
-      return {...base, kind: 'other', ...reviewFields(content)};
+      return {...base, kind: 'plain_conclusion', text: str(content?.conclusion)};
     case 'analysis_completed':
       return {...base, kind: 'completed', text: str(content?.conclusion),
         verdict: {...resultVerdict(content), reportUrlPresent: Boolean(str(content?.reportUrl))}};
@@ -213,10 +194,8 @@ export function normalizeConversationFrame(frame: SseFrame, index: number, atMs:
       const wireType = `runtime_update:${str(update?.type) ?? 'unknown'}`;
       if (update?.type === 'answer_token') return {...base, wireType, kind: 'draft_token', ...draftFields(content)};
       if (update?.type === 'answer_segment_reset') return {...base, wireType, kind: 'draft_reset', ...draftFields(content)};
-      return {...base, wireType, kind: 'other', ...(update?.type === 'progress' ? reviewFields(content) : undefined)};
+      return {...base, wireType, kind: 'other'};
     }
-    case 'provisional_answer':
-      return {...base, kind: 'provisional', text: str(payload?.message), verificationPending: payload?.verification === 'pending'};
     case 'run_completed': {
       const outcome = record(payload?.outcome);
       const kind = str(outcome?.kind);
@@ -234,10 +213,9 @@ export function normalizeConversationFrame(frame: SseFrame, index: number, atMs:
 // Stop requests
 // ---------------------------------------------------------------------------
 
-export type StopTrigger = 'provisional' | 'first_draft' | 'first_progress' | 'after_first_stop';
+export type StopTrigger = 'first_draft' | 'first_progress' | 'failure_cleanup';
 
 export interface StopAttempt {
-  order: 1 | 2;
   trigger: StopTrigger;
   /** Index of the event that triggered the stop (or of the last event seen when it was sent). */
   sentAfterEventIndex: number;
@@ -249,14 +227,12 @@ export interface StopAttempt {
   code?: string;
 }
 
-export type StopResponseClass = 'review_only' | 'full_cancel' | 'force_committed' | 'force_fallback'
-  | 'already_terminal' | 'error';
+export type StopResponseClass = 'full_cancel' | 'already_terminal' | 'error';
 
 /**
- * Agent route: `review_stop_requested`, `completed` + `committed` |
- * `review_not_finished`, `cancelled`, or 409 RUN_NOT_CANCELLABLE /
- * RUN_NOT_ACTIVE. Conversation: `review_stop_requested`, the settled outcome
- * kind, or 409 CONVERSATION_RUN_NOT_ACTIVE when the run is no longer active.
+ * Agent route: `cancelled`, or 409 RUN_NOT_CANCELLABLE / RUN_NOT_ACTIVE.
+ * Conversation: the settled outcome kind (a non-cancelled kind means the run
+ * had already finished), or 409 CONVERSATION_RUN_NOT_ACTIVE.
  */
 export function classifyStopResponse(entry: StopEntry, attempt: StopAttempt): StopResponseClass {
   if (attempt.httpStatus === undefined) return 'error';
@@ -265,15 +241,12 @@ export function classifyStopResponse(entry: StopEntry, attempt: StopAttempt): St
       ? 'already_terminal' : 'error';
   }
   if (attempt.httpStatus !== 200) return 'error';
-  if (attempt.status === 'review_stop_requested') return 'review_only';
   if (entry === 'agent') {
-    if (attempt.status === 'completed' && attempt.outcome === 'committed') return 'force_committed';
-    if (attempt.status === 'completed' && attempt.outcome === 'review_not_finished') return 'force_fallback';
     if (attempt.status === 'cancelled') return attempt.outcome === 'already_cancelled' ? 'already_terminal' : 'full_cancel';
     return 'error';
   }
   if (attempt.status === 'cancelled') return 'full_cancel';
-  return ['answered', 'needs_user_input', 'recommend_full'].includes(attempt.status ?? '') ? 'force_committed' : 'error';
+  return ['answered', 'needs_user_input', 'recommend_full'].includes(attempt.status ?? '') ? 'already_terminal' : 'error';
 }
 
 // ---------------------------------------------------------------------------
@@ -299,7 +272,7 @@ export interface StopStorageObservation {
   /** Agent route: the status endpoint still carries the report URL. */
   statusReportUrlPresent?: boolean;
   replay: {read: 'ok' | 'failed'; events: StopObservedEvent[]};
-  /** Conversation only: history read the moment the provisional answer arrived. */
+  /** Conversation only: history read the moment the first draft token arrived. */
   midRunHistory?: {read: 'ok' | 'failed'; activeRunMatches?: boolean; assistantMessageForRun?: boolean};
 }
 
@@ -347,14 +320,12 @@ function revokedSegmentTexts(events: readonly StopObservedEvent[]): string[] {
 interface Context {
   obs: StopScenarioObservation;
   drafts: StopObservedEvent[];
-  provisional?: StopObservedEvent;
   terminal?: StopObservedEvent;
-  reviewDispatched: boolean;
   stopClasses: StopResponseClass[];
   storedBodies: string[];
 }
 
-function draftChecks({obs, drafts, provisional, terminal}: Context): StopCheckResult[] {
+function draftChecks({obs, drafts, terminal}: Context): StopCheckResult[] {
   const gap = obs.subscriptionGapMs === undefined ? 'unknown' : `${obs.subscriptionGapMs}ms`;
   if (drafts.length === 0) {
     const detail = `no draft event observed after subscription (subscription gap ${gap}); drafts are live-only`;
@@ -404,178 +375,59 @@ function draftChecks({obs, drafts, provisional, terminal}: Context): StopCheckRe
     ? check('S1.draft_live_only', 'fail', `${replayable.length} draft event(s) carried a replay id or lacked liveOnly`)
     : check('S1.draft_live_only', 'pass', 'every draft event was live-only (no SSE id)'));
 
-  const answerIndex = Math.min(provisional?.index ?? Infinity,
-    first(obs.events, 'plain_conclusion')?.index ?? Infinity, terminal?.index ?? Infinity);
+  const answerIndex = Math.min(first(obs.events, 'plain_conclusion')?.index ?? Infinity, terminal?.index ?? Infinity);
   const late = drafts.filter(event => event.index > answerIndex);
   results.push(late.length
     ? check('S1.draft_before_answer', 'fail', `${late.length} draft event(s) arrived after the answer or terminal`)
-    : check('S1.draft_before_answer', 'pass', 'all drafts preceded the provisional/final answer'));
+    : check('S1.draft_before_answer', 'pass', 'all drafts preceded the final answer'));
   return results;
 }
 
-function reviewChecks(ctx: Context): StopCheckResult[] {
-  const {obs, provisional, terminal, reviewDispatched} = ctx;
-  const started = first(obs.events, 'review_started');
-  const finished = first(obs.events, 'review_finished');
-  const results: StopCheckResult[] = [];
-  const cancelledBeforeReview = obs.scenario === 'stop_before_provisional' && ctx.stopClasses[0] === 'full_cancel';
-
-  if (!reviewDispatched || cancelledBeforeReview) {
-    results.push(check('S2.provisional_before_completion', 'not_exercised', cancelledBeforeReview
-      ? 'run was fully cancelled before any review' : 'no review was dispatched (no provisional answer, no review start)'));
-  } else if (!provisional) {
-    results.push(started?.answerReadable
-      ? check('S2.provisional_before_completion', 'fail', 'review progress says the answer is readable but no provisional answer arrived')
-      : check('S2.provisional_before_completion', 'not_exercised', 'review started without a deliverable body (answerReadable false)'));
-  } else {
-    const provisionals = obs.events.filter(event => event.kind === 'provisional').length;
-    const problems = [
-      provisionals !== 1 ? `${provisionals} provisional answers` : '',
-      !provisional.verificationPending ? 'provisional answer not marked verification pending' : '',
-      !normalizeBody(provisional.text) ? 'provisional answer has an empty body' : '',
-      terminal && terminal.index < provisional.index ? 'provisional answer arrived after the terminal event' : '',
-      started && started.index < provisional.index ? 'review started before the provisional answer' : '',
-      started && !started.answerReadable ? 'review progress after delivery lacks answerReadable' : '',
-    ].filter(Boolean);
-    results.push(problems.length
-      ? check('S2.provisional_before_completion', 'fail', problems.join('; '))
-      : check('S2.provisional_before_completion', 'pass', terminal
-        ? `provisional #${provisional.index} precedes ${terminal.wireType} #${terminal.index}`
-        : `provisional #${provisional.index} arrived; no terminal observed`));
+function answerChecks({obs, terminal}: Context): StopCheckResult[] {
+  if (terminal?.kind !== 'completed') {
+    return [check('S2.answer_before_completion', 'not_exercised', `run did not complete (${terminal?.wireType ?? 'no terminal'})`)];
   }
-
-  if (reviewDispatched || terminal?.kind !== 'completed') {
-    results.push(check('S2.no_review_branch', 'not_exercised', reviewDispatched
-      ? 'a review was dispatched' : `run did not complete (${terminal?.wireType ?? 'no terminal'})`));
-  } else {
-    const plains = obs.events.filter(event => event.kind === 'plain_conclusion');
-    const problems = [
-      finished ? 'review progress present without a review start' : '',
-      obs.entry === 'agent' && plains.length !== 1 ? `${plains.length} plain conclusions (expected 1)` : '',
-      obs.entry === 'agent' && plains[0] && plains[0].index > terminal.index ? 'plain conclusion after completion' : '',
-      obs.entry === 'conversation' && !normalizeBody(terminal.text) ? 'run_completed carries no answer body' : '',
-    ].filter(Boolean);
-    results.push(problems.length
-      ? check('S2.no_review_branch', 'fail', problems.join('; '))
-      : check('S2.no_review_branch', 'pass', obs.entry === 'agent'
-        ? 'no provisional answer or review progress; plain conclusion preceded analysis_completed'
-        : 'no provisional answer or review progress; run_completed carried the answer'));
-  }
-  return results;
+  const plains = obs.events.filter(event => event.kind === 'plain_conclusion');
+  const problems = [
+    obs.entry === 'agent' && plains.length !== 1 ? `${plains.length} plain conclusions (expected 1)` : '',
+    obs.entry === 'agent' && plains[0] && plains[0].index > terminal.index ? 'plain conclusion after completion' : '',
+    obs.entry === 'conversation' && !normalizeBody(terminal.text) ? 'run_completed carries no answer body' : '',
+  ].filter(Boolean);
+  return [problems.length
+    ? check('S2.answer_before_completion', 'fail', problems.join('; '))
+    : check('S2.answer_before_completion', 'pass', obs.entry === 'agent'
+      ? 'one plain conclusion preceded analysis_completed'
+      : 'run_completed carried the answer')];
 }
 
 function describeStop(attempt: StopAttempt | undefined, cls: StopResponseClass | undefined): string {
   if (!attempt) return 'not sent';
   const body = [attempt.status, attempt.outcome, attempt.code, attempt.requestError].filter(Boolean).join('/');
-  return `stop#${attempt.order} after event #${attempt.sentAfterEventIndex} -> HTTP ${attempt.httpStatus ?? '-'} ${body} (${cls})`;
+  return `stop after event #${attempt.sentAfterEventIndex} -> HTTP ${attempt.httpStatus ?? '-'} ${body} (${cls})`;
 }
 
-function stopAfterProvisionalChecks(ctx: Context): StopCheckResult[] {
-  const {obs, terminal, stopClasses} = ctx;
-  const [stop1, stop2] = obs.stops;
-  const results: StopCheckResult[] = [];
-  const stop1Text = describeStop(stop1, stopClasses[0]);
-  if (!stop1) {
-    results.push(check('S3.first_stop_review_only', 'not_exercised', 'no provisional answer arrived, so no stop was sent'));
-  } else {
-    switch (stopClasses[0]) {
-      case 'review_only':
-        results.push(terminal?.kind === 'completed'
-          ? check('S3.first_stop_review_only', 'pass', `${stop1Text}; run still completed`)
-          : check('S3.first_stop_review_only', 'fail', `${stop1Text}; run ended with ${terminal?.wireType ?? 'no terminal'}`));
-        break;
-      case 'already_terminal':
-        results.push(check('S3.first_stop_review_only', 'legal_race', `${stop1Text}; the run had already committed`));
-        break;
-      case 'full_cancel':
-        results.push(check('S3.first_stop_review_only', 'fail', `${stop1Text}; a stop after the provisional answer fully cancelled the run`));
-        break;
-      default:
-        results.push(check('S3.first_stop_review_only', 'fail', stop1Text));
-    }
-  }
-
-  if (obs.scenario === 'stop_after_provisional') {
-    if (stopClasses[0] !== 'review_only') {
-      results.push(check('S3.review_stop_verdict', 'not_exercised', 'first stop was not review-only'));
-    } else {
-      const finished = first(obs.events, 'review_finished');
-      const verdict = terminal?.verdict;
-      const claimText = `claim verification ${verdict?.claimVerificationStatus ?? 'unknown'}` +
-        `${verdict?.deliverable ? `, deliverable ${verdict.deliverable}` : ''}`;
-      if (finished?.reviewReason === 'cancelled_by_user' || verdict?.notCheckedReason === 'cancelled_by_user') {
-        results.push(check('S3.review_stop_verdict', 'pass', `review ended cancelled_by_user; ${claimText}`));
-      } else if (verdict?.terminationReason === 'review_not_finished') {
-        results.push(check('S3.review_stop_verdict', 'not_exercised', 'the watchdog fallback committed the read body'));
-      } else if (finished) {
-        results.push(check('S3.review_stop_verdict', 'legal_race',
-          `review finished on its own first (${finished.reviewOutcome ?? 'unknown'}${finished.reviewReason ? `/${finished.reviewReason}` : ''}); ${claimText}`));
-      } else {
-        results.push(check('S3.review_stop_verdict', 'fail', `no review finish and no cancelled_by_user verdict; ${claimText}`));
-      }
-    }
-  }
-
-  if (obs.scenario === 'force_after_provisional') {
-    const stop2Text = describeStop(stop2, stopClasses[1]);
-    if (!stop2) {
-      results.push(check('S5.force_stop', 'not_exercised', `second stop not sent (${stop1Text})`));
-    } else {
-      const fallback = terminal?.verdict?.terminationReason === 'review_not_finished';
-      switch (stopClasses[1]) {
-        case 'force_committed':
-          results.push(terminal?.kind === 'completed'
-            ? check('S5.force_stop', 'pass', `${stop2Text}; branch ${fallback ? 'review_not_finished' : 'committed'}`)
-            : check('S5.force_stop', 'fail', `${stop2Text}; but run ended with ${terminal?.wireType ?? 'no terminal'}`));
-          break;
-        case 'force_fallback':
-          results.push(terminal?.kind === 'completed' && fallback
-            ? check('S5.force_stop', 'pass', `${stop2Text}; branch review_not_finished`)
-            : check('S5.force_stop', 'fail', `${stop2Text}; terminal is not a review_not_finished completion`));
-          break;
-        case 'full_cancel':
-          results.push(terminal?.kind === 'cancelled'
-            ? check('S5.force_stop', 'pass', `${stop2Text}; branch cancelled`)
-            : check('S5.force_stop', 'fail', `${stop2Text}; but run ended with ${terminal?.wireType ?? 'no terminal'}`));
-          break;
-        case 'already_terminal':
-          results.push(check('S5.force_stop', 'legal_race', `${stop2Text}; the run had already committed`));
-          break;
-        case 'review_only':
-          results.push(check('S5.force_stop', 'fail', `${stop2Text}; a second stop must force, not stop the review again`));
-          break;
-        default:
-          results.push(check('S5.force_stop', 'fail', stop2Text));
-      }
-    }
-  }
-  return results;
-}
-
-function stopBeforeProvisionalChecks(ctx: Context): StopCheckResult[] {
+function stopBeforeAnswerChecks(ctx: Context): StopCheckResult[] {
   const {obs, terminal, stopClasses, storedBodies} = ctx;
   const stop = obs.stops[0];
   const stopText = describeStop(stop, stopClasses[0]);
   if (!stop) {
     const detail = 'the trigger event did not arrive before the answer or terminal';
-    return [check('S4.full_cancel_before_provisional', 'not_exercised', detail),
+    return [check('S4.full_cancel_before_answer', 'not_exercised', detail),
       check('S4.cancel_marker_only', 'not_exercised', detail)];
   }
   const results: StopCheckResult[] = [];
   const cls = stopClasses[0];
   if (cls === 'full_cancel') {
     const answered = obs.events.filter(event => event.index > stop.sentAfterEventIndex &&
-      (event.kind === 'provisional' || event.kind === 'plain_conclusion' || event.kind === 'completed'));
+      (event.kind === 'plain_conclusion' || event.kind === 'completed'));
     results.push(terminal?.kind === 'cancelled' && answered.length === 0
-      ? check('S4.full_cancel_before_provisional', 'pass', `${stopText}; run ended cancelled`)
-      : check('S4.full_cancel_before_provisional', 'fail',
+      ? check('S4.full_cancel_before_answer', 'pass', `${stopText}; run ended cancelled`)
+      : check('S4.full_cancel_before_answer', 'fail',
         `${stopText}; terminal ${terminal?.wireType ?? 'none'}, ${answered.length} answer event(s) after the stop`));
-  } else if (cls === 'review_only' || cls === 'already_terminal') {
-    results.push(check('S4.full_cancel_before_provisional', 'legal_race', cls === 'review_only'
-      ? `${stopText}; the provisional answer was delivered before the stop reached the server`
-      : `${stopText}; the run had already committed`));
+  } else if (cls === 'already_terminal') {
+    results.push(check('S4.full_cancel_before_answer', 'legal_race', `${stopText}; the run had already committed`));
   } else {
-    results.push(check('S4.full_cancel_before_provisional', 'fail', stopText));
+    results.push(check('S4.full_cancel_before_answer', 'fail', stopText));
   }
 
   if (cls !== 'full_cancel') {
@@ -588,7 +440,7 @@ function stopBeforeProvisionalChecks(ctx: Context): StopCheckResult[] {
     return results;
   }
   const replayAnswers = storage.replay.events.filter(event =>
-    event.kind === 'provisional' || event.kind === 'plain_conclusion' || event.kind === 'completed');
+    event.kind === 'plain_conclusion' || event.kind === 'completed');
   const replayCancelled = storage.replay.events.some(event => event.kind === 'cancelled');
   const problems = [
     storedBodies.length ? `${storedBodies.length} stored answer body(ies)` : '',
@@ -605,7 +457,7 @@ function stopBeforeProvisionalChecks(ctx: Context): StopCheckResult[] {
 }
 
 function storageChecks(ctx: Context): StopCheckResult[] {
-  const {obs, drafts, terminal, stopClasses, storedBodies} = ctx;
+  const {obs, drafts, terminal, storedBodies} = ctx;
   const storage = obs.storage;
   const results: StopCheckResult[] = [];
   const liveTerminals = obs.events.filter(event => TERMINAL_KINDS.has(event.kind));
@@ -651,37 +503,13 @@ function storageChecks(ctx: Context): StopCheckResult[] {
   } else if (!storageOk) {
     results.push(check('R.persisted_body_is_verdict', 'fail', 'history unreadable'));
   } else {
-    const delivered = new Set([terminal.text, ctx.provisional?.text, first(obs.events, 'plain_conclusion')?.text]
+    const delivered = new Set([terminal.text, first(obs.events, 'plain_conclusion')?.text]
       .map(normalizeBody).filter(Boolean));
     const mismatched = storedBodies.filter(body => !delivered.has(normalizeBody(body)));
     results.push(storedBodies.length !== 1 || mismatched.length
       ? check('R.persisted_body_is_verdict', 'fail',
         `${storedBodies.length} stored body(ies), ${mismatched.length} differ from the delivered answer`)
       : check('R.persisted_body_is_verdict', 'pass', 'the one stored body is the delivered answer'));
-  }
-
-  const fallbackTriggered = stopClasses.includes('force_fallback') ||
-    terminal?.verdict?.terminationReason === 'review_not_finished';
-  if (!fallbackTriggered) {
-    results.push(check('R.watchdog_fallback', 'not_exercised', 'the review-stop watchdog did not fire'));
-  } else {
-    const verdict = terminal?.verdict;
-    const turn = storage?.turns[0];
-    const problems = [
-      terminal?.kind !== 'completed' ? `terminal ${terminal?.wireType ?? 'none'}` : '',
-      verdict?.partial !== true ? 'terminal not partial' : '',
-      verdict?.terminationReason !== 'review_not_finished' ? `terminal reason ${verdict?.terminationReason ?? 'none'}` : '',
-      verdict?.claimVerificationStatus !== undefined && verdict.claimVerificationStatus !== 'not_checked'
-        ? `terminal claim verification ${verdict.claimVerificationStatus}` : '',
-      !storageOk || !turn ? 'no stored turn' : '',
-      turn && turn.partial !== true ? 'stored turn not partial' : '',
-      turn && turn.terminationReason !== 'review_not_finished' ? `stored reason ${turn.terminationReason ?? 'none'}` : '',
-      turn?.claimVerificationStatus !== undefined && turn.claimVerificationStatus !== 'not_checked'
-        ? `stored claim verification ${turn.claimVerificationStatus}` : '',
-    ].filter(Boolean);
-    results.push(problems.length
-      ? check('R.watchdog_fallback', 'fail', problems.join('; '))
-      : check('R.watchdog_fallback', 'pass', 'fallback turn is partial / review_not_finished / not_checked'));
   }
 
   if (obs.entry === 'agent') {
@@ -699,15 +527,15 @@ function storageChecks(ctx: Context): StopCheckResult[] {
   } else {
     const mid = storage?.midRunHistory;
     if (!mid) {
-      results.push(check('R.conversation_store_verdict_only', 'not_exercised', 'history was not read at the provisional answer'));
+      results.push(check('R.conversation_store_verdict_only', 'not_exercised', 'no draft token arrived, so history was not read mid-run'));
     } else if (mid.read !== 'ok') {
-      results.push(check('R.conversation_store_verdict_only', 'fail', 'history read at the provisional answer failed'));
+      results.push(check('R.conversation_store_verdict_only', 'fail', 'history read at the first draft failed'));
     } else if (!mid.activeRunMatches) {
       results.push(check('R.conversation_store_verdict_only', 'legal_race', 'the run had already committed when history was read'));
     } else {
       results.push(mid.assistantMessageForRun
-        ? check('R.conversation_store_verdict_only', 'fail', 'an assistant message was stored before the verdict')
-        : check('R.conversation_store_verdict_only', 'pass', 'no assistant message stored while the review ran'));
+        ? check('R.conversation_store_verdict_only', 'fail', 'an assistant message was stored before the terminal event')
+        : check('R.conversation_store_verdict_only', 'pass', 'no assistant message stored while the answer was streaming'));
     }
   }
   return results;
@@ -716,13 +544,10 @@ function storageChecks(ctx: Context): StopCheckResult[] {
 export function evaluateStopScenario(obs: StopScenarioObservation): StopCheckResult[] {
   const events = obs.events.filter(event => !event.runId || event.runId === obs.runId || isDraft(event));
   const scoped = {...obs, events};
-  const provisional = first(events, 'provisional');
   const ctx: Context = {
     obs: scoped,
     drafts: events.filter(isDraft),
-    provisional,
     terminal: events.find(event => TERMINAL_KINDS.has(event.kind)),
-    reviewDispatched: Boolean(provisional || first(events, 'review_started')),
     stopClasses: obs.stops.map(attempt => classifyStopResponse(obs.entry, attempt)),
     storedBodies: obs.storage?.read === 'ok'
       ? [...obs.storage.turns.map(turn => turn.body ?? ''), ...(obs.storage.assistantMessages ?? [])].filter(body => body.trim())
@@ -730,10 +555,8 @@ export function evaluateStopScenario(obs: StopScenarioObservation): StopCheckRes
   };
   return [
     ...draftChecks(ctx),
-    ...reviewChecks(ctx),
-    ...(obs.scenario === 'stop_after_provisional' || obs.scenario === 'force_after_provisional'
-      ? stopAfterProvisionalChecks(ctx) : []),
-    ...(obs.scenario === 'stop_before_provisional' ? stopBeforeProvisionalChecks(ctx) : []),
+    ...answerChecks(ctx),
+    ...(obs.scenario === 'stop_before_answer' ? stopBeforeAnswerChecks(ctx) : []),
     ...storageChecks(ctx),
   ];
 }

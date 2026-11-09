@@ -2,7 +2,9 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {runClaudeStructuredReviewQuery} from '../../agentRuntime/engines/claude/claudeAuxiliaryQueries';
+import {runResolvedOneShot} from '../oneShotModelCall';
+
+const NO_JSON_DETAILS = 'no JSON object in agent response';
 
 export type StructuredReviewExecutionResult =
   | {ok: true; value: Record<string, unknown>}
@@ -15,46 +17,46 @@ export type StructuredReviewExecutionResult =
 export interface StructuredReviewExecutionOptions {
   prompt: string;
   logPrefix: string;
-  defaultModel: string;
   timeoutMs: number;
-  maxTurns: number;
-  model?: string;
 }
 
 /**
- * Shared no-tool structured review execution for learning pipelines.
+ * Shared no-tool structured review execution for learning pipelines, on the
+ * active provider's runtime. Details carry a reason code, never model output.
  */
 export async function executeStructuredReview(
   input: StructuredReviewExecutionOptions,
 ): Promise<StructuredReviewExecutionResult> {
-  const model = input.model ??
-    process.env.CLAUDE_LIGHT_MODEL ??
-    input.defaultModel;
-  const outcome = await runClaudeStructuredReviewQuery({
+  const outcome = await runResolvedOneShot({
     prompt: input.prompt,
-    logPrefix: input.logPrefix,
-    model,
-    maxTurns: input.maxTurns,
+    tier: 'light',
     timeoutMs: input.timeoutMs,
+    logLabel: input.logPrefix,
   });
-  if (outcome.kind === 'timeout') {
-    return {
-      ok: false,
-      reason: 'sdk_timeout',
-      details: `${input.timeoutMs}ms budget exhausted`,
-    };
-  }
-  if (outcome.kind === 'error') {
-    return {ok: false, reason: 'sdk_error', details: errorMessage(outcome.error)};
+  if (!outcome.ok) {
+    switch (outcome.reason) {
+      case 'timed_out':
+        return {
+          ok: false,
+          reason: 'sdk_timeout',
+          details: `${input.timeoutMs}ms budget exhausted`,
+        };
+      case 'empty_response':
+        return {ok: false, reason: 'sdk_invalid', details: NO_JSON_DETAILS};
+      case 'runtime_not_supported':
+        return {
+          ok: false,
+          reason: 'sdk_error',
+          details: `runtime_not_supported: ${outcome.runtime ?? 'unknown'}`,
+        };
+      default:
+        return {ok: false, reason: 'sdk_error', details: outcome.reason};
+    }
   }
   const parsed = extractFirstJsonObject(outcome.text);
   return parsed
     ? {ok: true, value: parsed}
-    : {
-        ok: false,
-        reason: 'sdk_invalid',
-        details: 'no JSON object in agent response',
-      };
+    : {ok: false, reason: 'sdk_invalid', details: NO_JSON_DETAILS};
 }
 
 export function extractFirstJsonObject(
@@ -96,8 +98,4 @@ export function extractFirstJsonObject(
     }
   }
   return null;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

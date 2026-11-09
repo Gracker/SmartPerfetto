@@ -208,6 +208,105 @@ describe('ProviderService', () => {
     });
   });
 
+  describe('credential origin follows the resolved API surface', () => {
+    const P = 'https://proxy.example/anthropic';
+    const O = 'https://openai.example/v1';
+    const customInput = (connection: ProviderCreateInput['connection']): ProviderCreateInput => ({
+      name: 'Surface Custom', category: 'custom', type: 'custom',
+      models: {primary: 'model-a', light: 'model-b'}, connection,
+    });
+    const originError = /re-enter or clear credential field 'apiKey'/;
+    const piBaseUrl = (id: string) => piModel(id).route.baseUrl;
+
+    it('rejects a Claude-to-OpenAI switch with no OpenAI endpoint instead of falling back to OpenAI', () => {
+      const p = svc.create(customInput({apiKey: 'sk-shared-key', claudeBaseUrl: P, apiSurface: 'claude'}));
+      expect(() => svc.update(p.id, {connection: {apiSurface: 'openai'}}))
+        .toThrow(/no OpenAI-compatible endpoint; set connection\.openaiBaseUrl or connection\.baseUrl/);
+      expect(svc.getRaw(p.id)!.connection.apiSurface).toBe('claude');
+      expect(piBaseUrl(p.id)).toBe(P);
+    });
+
+    it('requires the credential again when a Claude-to-OpenAI switch reaches another origin', () => {
+      const p = svc.create(customInput({apiKey: 'sk-shared-key', claudeBaseUrl: P, apiSurface: 'claude'}));
+      svc.update(p.id, {connection: {openaiBaseUrl: O, apiKey: 'sk-new-key'}});
+      expect(() => svc.update(p.id, {connection: {apiSurface: 'openai'}})).toThrow(originError);
+      expect(() => svc.update(p.id, {connection: {apiSurface: 'openai', apiKey: '****masked'}})).toThrow(originError);
+      expect(svc.getRaw(p.id)!.connection.apiSurface).toBe('claude');
+
+      const saved = svc.update(p.id, {connection: {apiSurface: 'openai', apiKey: 'sk-reentered'}});
+      expect(saved.connection.apiSurface).toBe('openai');
+      expect(piBaseUrl(p.id)).toBe(O);
+    });
+
+    it('rejects an OpenAI-to-Claude switch with no Claude endpoint and reconfirms a new origin', () => {
+      const p = svc.create(customInput({apiKey: 'sk-shared-key', openaiBaseUrl: O, apiSurface: 'openai'}));
+      expect(() => svc.update(p.id, {connection: {apiSurface: 'claude'}}))
+        .toThrow(/no Anthropic-compatible endpoint/);
+      svc.update(p.id, {connection: {claudeBaseUrl: P, apiKey: 'sk-new-key'}});
+      expect(() => svc.update(p.id, {connection: {apiSurface: 'claude'}})).toThrow(originError);
+      svc.update(p.id, {connection: {apiSurface: 'claude', apiKey: 'sk-reentered'}});
+      expect(piBaseUrl(p.id)).toBe(P);
+    });
+
+    it('requires the shared key again when a dual-surface type moves to the other surface URL', () => {
+      const p = svc.create({name: 'Dual', category: 'official', type: 'glm',
+        models: {primary: 'glm-5', light: 'glm-4'},
+        connection: {apiKey: 'sk-shared-key', claudeBaseUrl: P, openaiBaseUrl: O, apiSurface: 'claude'}});
+      expect(() => svc.update(p.id, {connection: {apiSurface: 'openai'}})).toThrow(originError);
+      expect(piBaseUrl(p.id)).toBe(P);
+      svc.update(p.id, {connection: {apiSurface: 'openai', apiKey: 'sk-reentered'}});
+      expect(piBaseUrl(p.id)).toBe(O);
+    });
+
+    it('needs no reconfirmation when both surfaces reach the same origin', () => {
+      const p = svc.create(customInput({apiKey: 'sk-shared-key', baseUrl: 'https://shared.example/v1', apiSurface: 'claude'}));
+      const saved = svc.update(p.id, {connection: {apiSurface: 'openai'}});
+      expect(saved.connection.apiSurface).toBe('openai');
+      expect(new URL(piBaseUrl(p.id)).origin).toBe('https://shared.example');
+      expect(svc.getRaw(p.id)!.connection.apiKey).toBe('sk-shared-key');
+    });
+
+    it('treats a whitespace-only URL as no endpoint', () => {
+      expect(() => svc.create(customInput({apiKey: 'sk-shared-key', claudeBaseUrl: '   ', apiSurface: 'claude'})))
+        .toThrow(/no Anthropic-compatible endpoint/);
+      const p = svc.create(customInput({apiKey: 'sk-shared-key', claudeBaseUrl: P, openaiBaseUrl: '  ', baseUrl: ' ',
+        apiSurface: 'claude'}));
+      expect(() => svc.update(p.id, {connection: {apiSurface: 'openai'}})).toThrow(/no OpenAI-compatible endpoint/);
+      const shared = svc.create(customInput({apiKey: 'sk-shared-key', openaiBaseUrl: '   ', baseUrl: 'https://shared.example/v1',
+        apiSurface: 'openai'}));
+      expect(new URL(piBaseUrl(shared.id)).origin).toBe('https://shared.example');
+    });
+
+    it('does not let a blank base-URL override reopen a vendor default', () => {
+      const p = svc.create({...customInput({apiKey: 'sk-shared-key', openaiBaseUrl: O, apiSurface: 'openai'}),
+        custom: {envOverrides: {OPENAI_BASE_URL: '   '}}});
+      expect(piBaseUrl(p.id)).toBe(O);
+    });
+
+    it('requires the credential again when an env override moves the origin', () => {
+      const p = svc.create(customInput({apiKey: 'sk-shared-key', openaiBaseUrl: O, apiSurface: 'openai'}));
+      expect(() => svc.update(p.id, {custom: {envOverrides: {OPENAI_BASE_URL: 'https://elsewhere.example/v1'}}}))
+        .toThrow(originError);
+      expect(piBaseUrl(p.id)).toBe(O);
+    });
+
+    it('rejects a custom provider created on a surface with no endpoint', () => {
+      expect(() => svc.create(customInput({apiKey: 'sk-shared-key', apiSurface: 'openai'})))
+        .toThrow(/no OpenAI-compatible endpoint/);
+    });
+
+    it('keeps saving a stored custom record that already had no endpoint when the write does not move it', async () => {
+      const file = path.join(dir, 'providers.json');
+      const record = {id: 'stored-custom', name: 'Stored', category: 'custom', type: 'custom', isActive: false,
+        createdAt: 'x', updatedAt: 'x', models: {primary: 'model-a', light: 'model-b'},
+        connection: {agentRuntime: 'pi-agent-core', apiKey: 'sk-stored-key', apiSurface: 'claude'}};
+      await fsp.writeFile(file, JSON.stringify([record]));
+      const stored = new ProviderService(file);
+      expect(stored.update('stored-custom', {connection: {apiKey: 'sk-rotated-key'}}).connection.apiKey).toBeDefined();
+      expect(() => stored.update('stored-custom', {connection: {apiSurface: 'openai'}})).toThrow(/no OpenAI-compatible endpoint/);
+    });
+  });
+
   describe('delete', () => {
     it('deletes inactive provider', () => {
       const p = svc.create(validInput);
