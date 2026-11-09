@@ -387,6 +387,19 @@ Pi。OpenCode 配置中的 OpenAI-compatible 字段（或 model JSON 中的 `bas
 `apiKey`）会换算为 Pi 的 Chat Completions 模型；Qoder 使用自己的服务，无法换算，需要改为
 Anthropic- 或 OpenAI-compatible endpoint。
 
+### 从本机 AI 工具导入 Provider
+
+已经用第三方 Key 配置过 Claude Code 或 Codex（包括通过 CC Switch）的，可以在 Provider 管理页点“从本机 AI 工具导入”。这个按钮只在 source / portable 本机模式显示。
+
+| 项目 | 行为 |
+|---|---|
+| 何时读取 | 只在你看过说明并点击“扫描”之后，启动时不会自动扫描 |
+| 读取内容 | `~/.claude/settings.json` 的 `env` 和 `model`；`~/.codex/config.toml` 的模型与 `model_providers`。分别遵循后端进程的 `CLAUDE_CONFIG_DIR`、`CODEX_HOME` |
+| 不读取 | CC Switch 数据库、Keychain、`.credentials.json`、`auth.json`、环境变量；不运行 `apiKeyHelper` |
+| 无法导入 | 官方订阅登录、`env_key` 或 `apiKeyHelper` 提供的密钥、CC Switch 路由模式（配置里只有 `PROXY_MANAGED` 占位符），这些情况请手动添加 |
+| 密钥去向 | 不会发到页面。系统原生确认框显示端点和模型，确认后明文保存到本机 `providers.json`，文件权限 `0600`（Windows 由用户目录权限保护） |
+| 导入之后 | 自动测试连接，由你决定是否启用；这是一次性复制，之后修改原工具配置不会同步 |
+
 ### 运行时与 Provider 诊断
 
 Claude Code 的本地登录态不能作为 SmartPerfetto 已配置的依据。第三方 endpoint 的地址、API key/token 和模型也需要显式配置。SmartPerfetto 不会自动读取 Codex CLI、Gemini CLI、OpenCode 或 Qoder 的登录态；那些工具管理的是各自 CLI 的配置文件。

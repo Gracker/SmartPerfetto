@@ -5,7 +5,7 @@
 import fs from 'fs';
 import path from 'path';
 import {AsyncLocalStorage} from 'async_hooks';
-import Database from 'better-sqlite3';
+import Database from '../sqliteDatabase';
 
 import type {StrategyRegistryContribution} from '../../agentv3/strategyLoader';
 import {userDataPath} from '../../runtimePaths';

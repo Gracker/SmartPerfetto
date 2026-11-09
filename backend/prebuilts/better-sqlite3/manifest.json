@@ -1,0 +1,18 @@
+{
+  "version": "12.11.1",
+  "nodeAbi": "137",
+  "archives": {
+    "darwin-arm64": "6eaefc8a9c088fea873365f7db2c0f89be6ea021ede62f6a71832f5130826a93",
+    "darwin-x64": "f9fe570a2ef7d6069196dd595f49bc8592574963dd1f249dcaa8878626773fc9",
+    "linux-x64": "99c43785639d5d3690c396ba245ee680ac8b469a46b19233a3546f0eb7f8e312",
+    "linux-arm64": "60da4cbe1b1714c8db62f2ee71a9928cde5303dab57bde14c02debd12a784439",
+    "win32-x64": "4ee5e653174d6ddd301605d351798cdae2613da06c4f37ecdce263021fcf1255"
+  },
+  "binaries": {
+    "darwin-arm64": "c6fac315df023cf5efec45a3511e6515c6b0f7461a4a284b1b7a79c7ef8febe7",
+    "darwin-x64": "682f2d9850acd02e6209a2c1c5f7db19ec8c51ecc761b71a5501df56557c2f11",
+    "linux-x64": "45cb92a176fb758533db6d9a343acdfc73e4de27ac4c20a0cb2a6fb5be3e84f2",
+    "linux-arm64": "9205c98574900414ce2f9c74b1c3b77054c99e90eef1bd23e44a8854e347ce18",
+    "win32-x64": "e75b8c024a85179d8e0e51203a8b8867916e9a51327ce3953db5f8483cc9a91e"
+  }
+}

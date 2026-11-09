@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import Database from 'better-sqlite3';
+import Database from '../services/sqliteDatabase';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';

@@ -7,7 +7,7 @@
  * Handles long-term storage of analysis sessions using SQLite
  */
 
-import Database from 'better-sqlite3';
+import Database from './sqliteDatabase';
 import path from 'path';
 import fs from 'fs';
 import {

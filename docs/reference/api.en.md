@@ -969,6 +969,11 @@ Legacy base path: `/api/v1/providers`. New integrations should prefer
 | `POST` | `/:id/runtime` | Update runtime pinning |
 | `POST` | `/:id/rotate-secret` | Rotate provider secret |
 | `POST` | `/:id/test` | Test a provider; returns `AI_DISABLED` without provider network calls when AI is disabled |
+| `GET` | `/local-import/capability` | Whether importing local AI tool configuration is available, and which files it would read |
+| `POST` | `/local-import/scan` | After a user click, reads the Claude Code and Codex configuration and returns candidates (endpoint, model, whether a key exists); never a key |
+| `POST` | `/local-import/import` | `{candidateId, models?}`: re-reads and checks the configuration, then creates an inactive provider after a native confirmation; `imported: false` when declined |
+
+`local-import` routes work only on source and portable installs, on loopback, where a system dialog can be shown; POST requires a local Origin. Otherwise they answer `LOCAL_AI_IMPORT_UNAVAILABLE`.
 
 AI disabled only blocks Provider connection tests. Provider profile list, create,
 update, delete, activate, deactivate, runtime pinning, and secret rotation remain

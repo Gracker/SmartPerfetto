@@ -13,6 +13,24 @@ Detailed commit-level history is available via `git log`.
 
 ## [Unreleased]
 
+## [1.18.1] - 2026-11-10
+
+### Added
+
+- **Source per conversation**: source selection is saved per conversation, and a new conversation starts from your most recent selection.
+- **Quick source selection**: choose a folder from the composer's analysis context. When you name a folder in the composer, a card opens the system folder dialog at that path; only your choice there grants access. The trace-less AI conversation page now has the same control.
+- **Import from local AI tools**: Provider Management can import a third-party gateway configured in Claude Code or Codex, including one activated through CC Switch. It runs only after you start it, reads two named files, never shows the key, and asks for confirmation in a system dialog. See the configuration guide for what is and is not read.
+
+### Fixed
+
+- The npm package now carries `better-sqlite3` bindings for macOS arm64/x64, Linux x64/arm64 and Windows x64 on Node.js 24, so it works when npm does not run install scripts (the npm 12 default).
+- Strategy files with CRLF line endings now parse the same as LF, and the repository checks out with LF on every platform.
+- The Docker release gate now checks out the Perfetto submodule, which 1.18.0 needed to publish its image, and the npm public smoke follows the Pi default runtime.
+
+### Security
+
+- `providers.json` is created readable only by the current user, without a brief wider-permission window.
+
 ## [1.18.0] - 2026-11-09
 
 ### Added

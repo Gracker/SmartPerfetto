@@ -26,45 +26,15 @@ Docker 或 GitHub 免安装包。
 
 ### npm 阻止安装脚本时
 
-如果安装输出列出 blocked 或 skipped 的依赖脚本，先检查对应依赖的安装脚本。
-`better-sqlite3` 的原生绑定用于 `query`、`skill` 等核心命令；即使禁用 AI 也需要它。
-`@google/genai`、
-`protobufjs`、`esbuild` 等其他条目要按实际脚本和所用功能判断，不能只凭名单认定
-SQLite 或整个 CLI 已损坏。
+npm 12 默认不运行依赖的安装脚本。这不影响 SmartPerfetto：`query`、`skill` 等核心命令需要的
+`better-sqlite3` 原生绑定已随 npm 包内置（macOS arm64/x64、Linux x64/arm64、Windows x64，Node.js 24），
+安装时不需要额外参数或审批。安装输出里出现的 `@google/genai`、`protobufjs` 等脚本提示可以忽略。
 
-全局安装或一次性 `npm exec` / `npx` 使用命令级审批，仅授权审查过的依赖：
+`smp doctor` 的 `sqlite_native` 仍报错时，说明当前平台没有内置绑定（例如 Alpine/musl），需要显式允许并重建：
 
 ```bash
 npm install -g @gracker/smartperfetto --allow-scripts=better-sqlite3
-npm exec --allow-scripts=better-sqlite3 --package=@gracker/smartperfetto -- smp doctor
 ```
-
-这些参数只用于本次命令。项目内安装由消费项目根目录 `package.json` 的
-`allowScripts` 决定；SmartPerfetto 发布包中的 `allowScripts` 不能替消费项目授权。
-全局和一次性命令的用法见 [npm 官方安装策略](https://docs.npmjs.com/cli/install/)。
-
-在项目内，如果当前 npm 提供 `install-scripts` 命令，先列出待审查脚本，审查后审批
-所需依赖并定向重建 SQLite：
-
-```bash
-npm install-scripts ls
-npm install-scripts approve better-sqlite3
-npm rebuild better-sqlite3
-```
-
-审批会写入消费项目的 `allowScripts`。具体用法见
-[npm install-scripts](https://docs.npmjs.com/cli/v11/commands/npm-install-scripts/)。
-安装和重建仍须使用 Node.js 24；无需修改全局 npm 配置或允许全部依赖脚本。
-
-审批、重装或重建后，在同一安装中运行 doctor，并用本机已有 trace 执行真实 SQL：
-
-```bash
-smp doctor --format json
-smp query /path/to/trace.pftrace --sql "SELECT COUNT(*) AS slice_count FROM slice" --format json
-```
-
-将路径换成实际 trace。项目内安装使用 `npx --no-install smp` 替代 `smp`，确保检查
-的是本地安装。确认 doctor 中 `sqlite_native` 为 `ok`，并且 query 成功返回结果。
 
 ## 全局选项
 

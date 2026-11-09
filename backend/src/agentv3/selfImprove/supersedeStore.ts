@@ -19,7 +19,7 @@
  * See docs/architecture/self-improving-design.md "组件级 Review 与 Patch 边界".
  */
 
-import Database from 'better-sqlite3';
+import Database from '../../services/sqliteDatabase';
 import * as path from 'path';
 import * as fs from 'fs';
 import {backendDataPath} from '../../runtimePaths';

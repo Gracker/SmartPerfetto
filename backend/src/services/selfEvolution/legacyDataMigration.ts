@@ -5,7 +5,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import {randomUUID} from 'crypto';
-import Database from 'better-sqlite3';
+import Database from '../sqliteDatabase';
 
 import type {
   LegacySelfImproveMigrationResult,

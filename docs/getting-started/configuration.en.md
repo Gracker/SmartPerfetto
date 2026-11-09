@@ -458,6 +458,19 @@ maps to Pi. An OpenCode configuration's OpenAI-compatible fields (or the `baseUR
 `apiKey` in its model JSON) become a Pi Chat Completions model; Qoder used its own service and
 cannot be translated, so switch it to an Anthropic- or OpenAI-compatible endpoint.
 
+### Import A Provider From Local AI Tools
+
+If Claude Code or Codex already uses a third-party key, including through CC Switch, choose **Import from local AI tools** in Provider Management. The button appears only on local source and portable installs.
+
+| Topic | Behavior |
+|---|---|
+| When files are read | Only after you read the notice and click **Scan**; never at startup |
+| What is read | `env` and `model` in `~/.claude/settings.json`; the model and `model_providers` in `~/.codex/config.toml`. `CLAUDE_CONFIG_DIR` and `CODEX_HOME` of the backend process are honored |
+| Never read | CC Switch databases, Keychain, `.credentials.json`, `auth.json`, environment variables; `apiKeyHelper` is not run |
+| Not importable | Subscription logins, keys supplied by `env_key` or `apiKeyHelper`, and CC Switch routing mode (the file only holds a `PROXY_MANAGED` placeholder). Add these manually |
+| Where the key goes | Never to the page. A native dialog shows the endpoint and model; after you confirm, the key is saved in plain text to the local `providers.json` with mode `0600` (on Windows, protected by the user directory's permissions) |
+| After import | The connection is tested and you decide whether to activate it. This is a one-time copy that does not follow later changes |
+
 ### Runtime and Provider Diagnostics
 
 SmartPerfetto does not read Codex CLI, Gemini CLI, OpenCode, or Qoder login state; those tools manage their own config files.

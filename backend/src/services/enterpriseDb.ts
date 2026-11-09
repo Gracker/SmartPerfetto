@@ -4,7 +4,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import Database from 'better-sqlite3';
+import Database from './sqliteDatabase';
 import { applyEnterpriseMinimalSchema } from './enterpriseSchema';
 
 export const ENTERPRISE_DB_PATH_ENV = 'SMARTPERFETTO_ENTERPRISE_DB_PATH';

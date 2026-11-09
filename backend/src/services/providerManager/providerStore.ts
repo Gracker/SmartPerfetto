@@ -4,7 +4,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import crypto from 'crypto';
-import Database from 'better-sqlite3';
+import Database from '../sqliteDatabase';
 import {resolveAuthConfig} from '../../config';
 import { openEnterpriseDb } from '../enterpriseDb';
 import {
@@ -974,8 +974,7 @@ export class ProviderStore {
     if (!legacyProviderWritesEnabled()) return;
     const dir = path.dirname(this.filePath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    atomicWriteFileSync(this.filePath, JSON.stringify(Array.from(this.providers.values()), null, 2));
-    try { fs.chmodSync(this.filePath, 0o600); } catch { /* Windows */ }
+    atomicWriteFileSync(this.filePath, JSON.stringify(Array.from(this.providers.values()), null, 2), {mode: 0o600});
     this.loadedVersion = fileVersion(this.filePath);
   }
 

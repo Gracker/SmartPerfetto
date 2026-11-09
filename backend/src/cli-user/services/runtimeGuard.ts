@@ -54,7 +54,7 @@ function chosenSdkBinaryPath(sdkBinary: unknown): string | undefined {
 
 function buildSqliteNativeCheck(): DoctorCheck {
   try {
-    const Database = require('better-sqlite3') as typeof import('better-sqlite3');
+    const Database = (require('../../services/sqliteDatabase') as typeof import('../../services/sqliteDatabase')).default;
     const database = new Database(':memory:');
     try {
       const row = database.prepare('SELECT 1 AS value').get() as {value: number} | undefined;
@@ -73,7 +73,7 @@ function buildSqliteNativeCheck(): DoctorCheck {
       name: 'sqlite_native',
       ok: false,
       status: 'error',
-      message: 'SQLite native binding is unavailable. Review dependency installation scripts and rebuild under Node.js 24; see docs/reference/cli.md.',
+      message: 'SQLite native binding is unavailable on this platform. Use Node.js 24 on a supported platform, or rebuild better-sqlite3; see docs/reference/cli.md.',
       details: {error: error instanceof Error ? error.message : String(error)},
     };
   }

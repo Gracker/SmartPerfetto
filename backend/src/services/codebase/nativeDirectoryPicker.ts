@@ -5,7 +5,9 @@
 import {execFile} from 'child_process';
 import {randomBytes} from 'crypto';
 import * as fs from 'fs';
+import * as fsPromises from 'fs/promises';
 import * as net from 'net';
+import * as os from 'os';
 import * as path from 'path';
 
 import {resolveFeatureConfig, resolveServerConfig} from '../../config';
@@ -21,6 +23,10 @@ const DIRECTORY_SELECTION_TTL_MS = 5 * 60 * 1000;
 const MAX_PENDING_SELECTIONS_PER_SCOPE = 8;
 const PICKER_TIMEOUT_MS = 5 * 60 * 1000;
 const PICKER_MAX_BUFFER_BYTES = 64 * 1024;
+const DEFAULT_PATH_MAX_LENGTH = 1024;
+const DEFAULT_PATH_STAT_TIMEOUT_MS = 2000;
+const DIALOG_TEXT_ENV = 'SMARTPERFETTO_DIALOG_TEXT';
+const PICKER_DEFAULT_PATH_ENV = 'SMARTPERFETTO_PICKER_DEFAULT_PATH';
 
 type DirectoryPickerProvider =
   | 'macos'
@@ -96,6 +102,7 @@ interface PickerCommand {
   provider: DirectoryPickerProvider;
   executable: string;
   args: string[];
+  env?: NodeJS.ProcessEnv;
   convertWithWslpath?: string;
 }
 
@@ -110,6 +117,7 @@ interface CommandError extends Error {
 type CommandRunner = (
   executable: string,
   args: readonly string[],
+  env?: NodeJS.ProcessEnv,
 ) => Promise<CommandResult>;
 
 export interface NativeDirectoryPickerOptions {
@@ -123,6 +131,8 @@ export interface NativeDirectoryPickerOptions {
   findExecutable?: (name: string) => string | undefined;
   runCommand?: CommandRunner;
   resolveDirectory?: (selectedPath: string) => string;
+  homeDirectory?: string;
+  statDirectory?: (candidate: string) => Promise<boolean>;
   selectionTtlMs?: number;
   maxPendingSelectionsPerScope?: number;
 }
@@ -186,6 +196,7 @@ function executableOnPath(
 function defaultCommandRunner(
   executable: string,
   args: readonly string[],
+  env?: NodeJS.ProcessEnv,
 ): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
     execFile(
@@ -196,6 +207,7 @@ function defaultCommandRunner(
         timeout: PICKER_TIMEOUT_MS,
         maxBuffer: PICKER_MAX_BUFFER_BYTES,
         windowsHide: true,
+        ...(env ? {env: {...process.env, ...env}} : {}),
       },
       (error, stdout, stderr) => {
         if (error) {
@@ -209,6 +221,21 @@ function defaultCommandRunner(
       },
     );
   });
+}
+
+async function defaultStatDirectory(candidate: string): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<boolean>(resolve => {
+    timer = setTimeout(() => resolve(false), DEFAULT_PATH_STAT_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([
+      fsPromises.stat(candidate).then(stats => stats.isDirectory(), () => false),
+      timeout,
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function defaultDirectoryResolver(selectedPath: string): string {
@@ -305,6 +332,8 @@ export class NativeDirectoryPicker {
   private readonly findExecutable: (name: string) => string | undefined;
   private readonly runCommand: CommandRunner;
   private readonly resolveDirectory: (selectedPath: string) => string;
+  private readonly homeDirectory: string;
+  private readonly statDirectory: (candidate: string) => Promise<boolean>;
   private readonly selectionTtlMs: number;
   private readonly maxPendingSelectionsPerScope: number;
   private readonly pendingSelections = new Map<string, PendingDirectorySelection>();
@@ -323,6 +352,8 @@ export class NativeDirectoryPicker {
       (name => executableOnPath(name, this.env, this.platform));
     this.runCommand = options.runCommand ?? defaultCommandRunner;
     this.resolveDirectory = options.resolveDirectory ?? defaultDirectoryResolver;
+    this.homeDirectory = options.homeDirectory ?? os.homedir();
+    this.statDirectory = options.statDirectory ?? defaultStatDirectory;
     this.selectionTtlMs = options.selectionTtlMs ?? DIRECTORY_SELECTION_TTL_MS;
     this.maxPendingSelectionsPerScope = options.maxPendingSelectionsPerScope ??
       MAX_PENDING_SELECTIONS_PER_SCOPE;
@@ -368,8 +399,12 @@ export class NativeDirectoryPicker {
   async chooseDirectory(
     scope: CodebaseScope,
     purpose: DirectoryPickerPurpose = 'codebase',
+    defaultPath?: unknown,
   ): Promise<DirectoryPickerSelection | DirectoryPickerCancelled> {
-    const command = this.resolvePickerCommand(DIRECTORY_PICKER_PROMPTS[purpose]);
+    const command = this.resolvePickerCommand(
+      DIRECTORY_PICKER_PROMPTS[purpose],
+      await this.usableDefaultPath(defaultPath),
+    );
     const capability = this.capability();
     if (!capability.available || 'reason' in command) {
       throw new NativeDirectoryPickerError(
@@ -448,7 +483,108 @@ export class NativeDirectoryPicker {
     }
   }
 
-  private resolvePickerCommand(prompt = DIRECTORY_PICKER_PROMPTS.codebase):
+  /**
+   * Where a dialog may start. The path comes from text the user typed, so it
+   * only positions the dialog: the user's choice there is what authorizes a
+   * folder. Anything that could reach out to the network, or that would make
+   * pressing Return hand over a sensitive directory, opens at the OS default.
+   */
+  private async usableDefaultPath(value: unknown): Promise<string | undefined> {
+    if (typeof value !== 'string' || !value || value.length > DEFAULT_PATH_MAX_LENGTH) return undefined;
+    // eslint-disable-next-line no-control-regex
+    if (/[\u0000-\u001f\u007f]/.test(value)) return undefined;
+    const pathApi = this.platform === 'win32' ? path.win32 : path.posix;
+    const expanded = value === '~' || value.startsWith('~/')
+      ? pathApi.join(this.homeDirectory, value.slice(1))
+      : value;
+    if (/^[\\/]{2}/.test(expanded) || !pathApi.isAbsolute(expanded)) return undefined;
+    const candidate = pathApi.normalize(expanded);
+    if (pathApi.dirname(candidate) === candidate) return undefined;
+    const relativeToHome = pathApi.relative(this.homeDirectory, candidate);
+    if (relativeToHome === '') return undefined;
+    const insideHome = !relativeToHome.startsWith('..') && !pathApi.isAbsolute(relativeToHome);
+    if (insideHome && relativeToHome.split(pathApi.sep).some(part => part.startsWith('.'))) return undefined;
+    return await this.statDirectory(candidate) ? candidate : undefined;
+  }
+
+  /**
+   * A yes/no question in a native dialog, the local trust anchor for an action
+   * no folder choice stands behind. The text may quote file content, so it
+   * travels as an argument or environment value, never as script source.
+   */
+  /** A confirmation needs the dialogs of the picker, and WSL cannot pass it the text safely. */
+  canConfirm(): boolean {
+    const capability = this.capability();
+    return capability.available && capability.provider !== 'windows_wsl';
+  }
+
+  async confirm(message: string): Promise<boolean> {
+    const command = this.resolveConfirmCommand(message);
+    if (!this.capability().available || 'reason' in command) {
+      throw new NativeDirectoryPickerError('DIRECTORY_PICKER_UNAVAILABLE', 'no_supported_dialog', 409);
+    }
+    if (this.pickerBusy) {
+      throw new NativeDirectoryPickerError('DIRECTORY_PICKER_BUSY', 'A system dialog is already open', 409);
+    }
+    this.pickerBusy = true;
+    try {
+      await this.execute(command);
+      return true;
+    } catch (error) {
+      const commandError = error as CommandError;
+      if (commandError.killed || commandError.signal === 'SIGTERM') {
+        throw new NativeDirectoryPickerError('DIRECTORY_PICKER_TIMEOUT', 'The confirmation dialog timed out', 408);
+      }
+      if (isPickerCancellation(command.provider, commandError)) return false;
+      throw new NativeDirectoryPickerError('DIRECTORY_PICKER_FAILED', 'Unable to open the confirmation dialog', 500);
+    } finally {
+      this.pickerBusy = false;
+    }
+  }
+
+  private resolveConfirmCommand(message: string): PickerCommand | {reason: DirectoryPickerUnavailableReason} {
+    const picker = this.resolvePickerCommand();
+    if ('reason' in picker) return picker;
+    if (picker.provider === 'macos') {
+      return {
+        provider: 'macos',
+        executable: picker.executable,
+        args: [
+          '-e', 'on run argv',
+          '-e', 'display dialog (item 1 of argv) with title "SmartPerfetto" buttons {"Cancel", "Import"} default button "Cancel" cancel button "Cancel"',
+          '-e', 'end run',
+          message,
+        ],
+      };
+    }
+    if (picker.provider === 'windows') {
+      const script = [
+        'Add-Type -AssemblyName System.Windows.Forms',
+        `$answer = [System.Windows.Forms.MessageBox]::Show($env:${DIALOG_TEXT_ENV}, 'SmartPerfetto', 'YesNo', 'Question', 'Button2')`,
+        "if ($answer -eq 'Yes') { exit 0 }",
+        'exit 2',
+      ].join('; ');
+      return {
+        provider: 'windows',
+        executable: picker.executable,
+        args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-Command', script],
+        env: {[DIALOG_TEXT_ENV]: message},
+      };
+    }
+    if (picker.provider === 'zenity') {
+      return {
+        provider: 'zenity',
+        executable: picker.executable,
+        args: ['--question', '--no-markup', '--title=SmartPerfetto', `--text=${message}`, '--default-cancel'],
+      };
+    }
+    if (picker.provider === 'kdialog') {
+      return {provider: 'kdialog', executable: picker.executable, args: ['--title', 'SmartPerfetto', '--warningyesno', message]};
+    }
+    return {reason: 'no_supported_dialog'};
+  }
+
+  private resolvePickerCommand(prompt = DIRECTORY_PICKER_PROMPTS.codebase, defaultPath?: string):
     | PickerCommand
     | {reason: Extract<DirectoryPickerUnavailableReason, 'no_graphical_session' | 'no_supported_dialog'>} {
     if (this.platform === 'darwin') {
@@ -459,10 +595,17 @@ export class NativeDirectoryPicker {
         ? {
             provider: 'macos',
             executable,
-            args: [
-              '-e',
-              `POSIX path of (choose folder with prompt "${prompt}")`,
-            ],
+            args: defaultPath
+              ? [
+                  '-e', 'on run argv',
+                  '-e', `POSIX path of (choose folder with prompt "${prompt}" default location (POSIX file (item 1 of argv)))`,
+                  '-e', 'end run',
+                  defaultPath,
+                ]
+              : [
+                  '-e',
+                  `POSIX path of (choose folder with prompt "${prompt}")`,
+                ],
           }
         : {reason: 'no_supported_dialog'};
     }
@@ -482,7 +625,7 @@ export class NativeDirectoryPicker {
         ? systemPowerShell
         : this.findExecutable('powershell.exe') ?? this.findExecutable('pwsh.exe');
       return executable
-        ? this.windowsPickerCommand(executable, 'windows', prompt)
+        ? this.windowsPickerCommand(executable, 'windows', prompt, defaultPath)
         : {reason: 'no_supported_dialog'};
     }
 
@@ -510,6 +653,7 @@ export class NativeDirectoryPicker {
             '--file-selection',
             '--directory',
             `--title=${prompt}`,
+            ...(defaultPath ? [`--filename=${defaultPath.replace(/\/*$/, '/')}`] : []),
           ],
         };
       }
@@ -518,7 +662,7 @@ export class NativeDirectoryPicker {
         return {
           provider: 'kdialog',
           executable: kdialog,
-          args: ['--getexistingdirectory', '.', '--title', prompt],
+          args: ['--getexistingdirectory', defaultPath ?? '.', '--title', prompt],
         };
       }
       return {reason: 'no_supported_dialog'};
@@ -531,6 +675,7 @@ export class NativeDirectoryPicker {
     executable: string,
     provider: 'windows' | 'windows_wsl',
     prompt: string,
+    defaultPath?: string,
   ): PickerCommand {
     const script = [
       '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
@@ -538,6 +683,7 @@ export class NativeDirectoryPicker {
       '$dialog = New-Object System.Windows.Forms.FolderBrowserDialog',
       `$dialog.Description = "${prompt}"`,
       '$dialog.ShowNewFolderButton = $false',
+      ...(defaultPath ? [`$dialog.SelectedPath = $env:${PICKER_DEFAULT_PATH_ENV}`] : []),
       'try {',
       '  if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {',
       '    [Console]::Out.WriteLine($dialog.SelectedPath)',
@@ -552,12 +698,19 @@ export class NativeDirectoryPicker {
       provider,
       executable,
       args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-Command', script],
+      ...(defaultPath ? {env: {[PICKER_DEFAULT_PATH_ENV]: defaultPath}} : {}),
     };
+  }
+
+  private execute(command: PickerCommand): Promise<CommandResult> {
+    return command.env
+      ? this.runCommand(command.executable, command.args, command.env)
+      : this.runCommand(command.executable, command.args);
   }
 
   private async runPickerCommand(command: PickerCommand): Promise<string | null> {
     try {
-      const result = await this.runCommand(command.executable, command.args);
+      const result = await this.execute(command);
       let selectedPath = withoutCommandLineTerminator(result.stdout);
       if (!selectedPath) return null;
       if (command.convertWithWslpath) {
@@ -582,7 +735,8 @@ export class NativeDirectoryPicker {
         'DIRECTORY_PICKER_FAILED',
         'Unable to open the system directory picker',
         500,
-        commandError,
+        // Only the exit facts: the failed command line can quote a typed path.
+        Object.assign(new Error('directory_picker_command_failed'), {code: commandError.code, signal: commandError.signal}),
       );
     }
   }

@@ -410,3 +410,110 @@ describe('NativeDirectoryPicker selection authorization', () => {
     );
   });
 });
+
+describe('NativeDirectoryPicker default path', () => {
+  function recording(overrides: ConstructorParameters<typeof NativeDirectoryPicker>[0] = {}) {
+    const calls: Array<{executable: string; args: readonly string[]; env?: NodeJS.ProcessEnv}> = [];
+    const picker = localPicker({
+      homeDirectory: '/home/me',
+      statDirectory: async () => true,
+      runCommand: async (executable, args, env) => {
+        calls.push({executable, args, env});
+        return {stdout: `${tmpDir}\n`, stderr: ''};
+      },
+      ...overrides,
+    });
+    return {picker, calls};
+  }
+
+  it('starts the dialog at a typed folder as an argument', async () => {
+    const {picker, calls} = recording();
+    await picker.chooseDirectory({tenantId: 't', workspaceId: 'w', userId: 'u'}, 'codebase', '~/work/app');
+    expect(calls[0].args).toContain('--filename=/home/me/work/app/');
+  });
+
+  it('passes the path to AppleScript as argv, never as source', async () => {
+    const hostile = '/Volumes/x" & (do shell script "id") & "';
+    const {picker, calls} = recording({platform: 'darwin', findExecutable: () => '/usr/bin/osascript'});
+    await picker.chooseDirectory({tenantId: 't', workspaceId: 'w', userId: 'u'}, 'codebase', hostile);
+    const script = calls[0].args.slice(0, -1).join(' ');
+    expect(script).not.toContain('do shell script');
+    expect(calls[0].args[calls[0].args.length - 1]).toBe(hostile);
+  });
+
+  it('passes the path to PowerShell through the environment', async () => {
+    const {picker, calls} = recording({
+      platform: 'win32',
+      env: {SystemRoot: tmpDir, PATH: ''},
+      homeDirectory: 'C:\\Users\\me',
+      findExecutable: name => name === 'powershell.exe' ? 'powershell.exe' : undefined,
+    });
+    await picker.chooseDirectory({tenantId: 't', workspaceId: 'w', userId: 'u'}, 'codebase', 'D:\\src\\app');
+    expect(calls[0].args.join(' ')).not.toContain('D:\\src');
+    expect(calls[0].env?.SMARTPERFETTO_PICKER_DEFAULT_PATH).toBe('D:\\src\\app');
+  });
+
+  it.each([
+    ['the filesystem root', '/'],
+    ['the home directory', '/home/me'],
+    ['a hidden directory in home', '/home/me/.ssh'],
+    ['a folder inside a hidden directory', '/home/me/.codex/sessions'],
+    ['a relative path', 'work/app'],
+    ['a network path', '//server/share'],
+    ['control characters', '/home/me/a\nb'],
+    ['a very long path', `/home/me/${'a'.repeat(2000)}`],
+  ])('ignores %s', async (_label, value) => {
+    const {picker, calls} = recording();
+    await picker.chooseDirectory({tenantId: 't', workspaceId: 'w', userId: 'u'}, 'codebase', value);
+    expect(calls[0].args.join(' ')).not.toContain('--filename');
+  });
+
+  it.each(['/\\server\\share\\sub', '\\/server\\share\\sub', '\\\\server\\share'])('never stats the Windows network path %s', async value => {
+    const statDirectory = jest.fn(async () => true);
+    const {picker} = recording({
+      platform: 'win32',
+      env: {SystemRoot: tmpDir, PATH: ''},
+      homeDirectory: 'C:\\Users\\me',
+      findExecutable: name => name === 'powershell.exe' ? 'powershell.exe' : undefined,
+      statDirectory,
+    });
+    await picker.chooseDirectory({tenantId: 't', workspaceId: 'w', userId: 'u'}, 'codebase', value);
+    expect(statDirectory).not.toHaveBeenCalled();
+  });
+
+  it('ignores a folder that does not exist', async () => {
+    const {picker, calls} = recording({statDirectory: async () => false});
+    await picker.chooseDirectory({tenantId: 't', workspaceId: 'w', userId: 'u'}, 'codebase', '/srv/missing');
+    expect(calls[0].args.join(' ')).not.toContain('--filename');
+  });
+});
+
+describe('NativeDirectoryPicker confirmation', () => {
+  it('passes the text as data', async () => {
+    const calls: Array<readonly string[]> = [];
+    const picker = localPicker({
+      platform: 'darwin',
+      findExecutable: () => '/usr/bin/osascript',
+      runCommand: async (_executable, args) => {
+        calls.push(args);
+        return {stdout: '', stderr: ''};
+      },
+    });
+    await expect(picker.confirm('Endpoint: "); do shell script "id')).resolves.toBe(true);
+    expect(calls[0].slice(0, -1).join(' ')).not.toContain('do shell script');
+  });
+
+  it('reads a declined dialog as no', async () => {
+    const picker = localPicker({
+      runCommand: async () => {
+        throw Object.assign(new Error('declined'), {code: 1, stderr: ''});
+      },
+    });
+    await expect(picker.confirm('Message')).resolves.toBe(false);
+  });
+
+  it('is refused where no dialog can be shown', async () => {
+    await expect(localPicker({distribution: 'docker'}).confirm('Message'))
+      .rejects.toMatchObject({code: 'DIRECTORY_PICKER_UNAVAILABLE'});
+  });
+});

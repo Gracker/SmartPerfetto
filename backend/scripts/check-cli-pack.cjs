@@ -38,6 +38,7 @@ const requiredFiles = [
   'prebuilts/trace_processor/linux-x64/trace_processor_shell',
   'prebuilts/trace_processor/darwin-arm64/trace_processor_shell',
   'prebuilts/trace_processor/win32-x64/trace_processor_shell.exe',
+  'prebuilts/better-sqlite3/manifest.json',
   'prebuilts/android-platform-tools/README.md',
   'prebuilts/perfetto-recording-tools/README.md',
   'skills/atomic/longest_process_slices.skill.yaml',
@@ -50,6 +51,11 @@ const requiredFiles = [
   'public/admin-control-plane/app.js',
   'public/admin-control-plane/style.css',
 ];
+
+const sqlitePrebuilts = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'prebuilts/better-sqlite3/manifest.json'), 'utf8'));
+for (const target of Object.keys(sqlitePrebuilts.binaries)) {
+  requiredFiles.push(`prebuilts/better-sqlite3/node-v${sqlitePrebuilts.nodeAbi}-${target}/better_sqlite3.node`);
+}
 
 for (const file of requiredFiles) {
   if (!files.has(file)) failures.push(`missing required package file: ${file}`);

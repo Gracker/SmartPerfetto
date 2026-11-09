@@ -510,23 +510,23 @@ test('npm trusted publishing isolates release packaging from the OIDC publish cr
   assert.match(smokeJob, /needs:\s+- package\s+- propagation\n/);
 
   assert.match(smokeJob, /NPM_CONFIG_USERCONFIG:\s*\/dev\/null/);
-  assert.match(smokeJob, /npm install --no-audit --no-fund "@gracker\/smartperfetto@\$\{VERSION\}"/);
+  assert.match(smokeJob, /npm install --ignore-scripts --no-audit --no-fund "@gracker\/smartperfetto@\$\{VERSION\}"/);
   assert.match(smokeJob, /packageJson\.bin\[binName\]/);
   assert.match(smokeJob, /spawnSync\(\s+process\.execPath/);
   assert.ok(smokeJob.includes("['smp', ['--version']]"));
   assert.ok(smokeJob.includes("['smartperfetto', ['--help']]"));
   assert.ok(smokeJob.includes("['smp', ['doctor', '--format', 'json']]"));
   // Only doctor may exit 1 without credentials, and only for the default Claude
-  // runtime missing credentials; its native binary stays a required package check.
+  // runtime missing credentials; the SQLite binding stays a required package check.
   assert.ok(smokeJob.includes("new Set(['smp:doctor --format json'])"));
   assert.ok(smokeJob.includes('reportsFailureAsData.has(key) ? [0, 1] : [0]'));
   assert.match(smokeJob, /\.filter\(\(check\) => check\.status === 'error'\)/);
   assert.match(smokeJob, /doctor\.aiPolicy\?\.aiEnabled === true/);
-  assert.match(smokeJob, /doctor\.runtime\?\.kind === 'claude-agent-sdk'/);
+  assert.match(smokeJob, /doctor\.runtime\?\.kind === 'pi-agent-core'/);
   assert.match(smokeJob, /doctor\.runtime\?\.source === 'default'/);
   assert.match(smokeJob, /doctor\.runtimeDiagnostics\?\.configured === false/);
   assert.match(smokeJob, /check\.name === 'runtime' && defaultRuntimeWithoutCredentials/);
-  assert.match(smokeJob, /check\.name === 'claude_sdk_binary'/);
+  assert.ok(smokeJob.includes('npm install --ignore-scripts --no-audit --no-fund'));
   assert.match(smokeJob, /doctorRun\.status !== \(doctor\.ok \? 0 : 1\)/);
   assert.doesNotMatch(smokeJob, /node_modules\/\.bin/);
   assert.doesNotMatch(smokeJob, /id-token:\s*write/);

@@ -673,6 +673,11 @@ export class CodebaseRegistry {
     return mergeDualWriteCodebaseFailClosed(filesystemRef, databaseRef, scope);
   }
 
+  /** The active registration of this exact folder and kind, when it has one. */
+  findActiveByRoot(rootRealpath: string, kind: CodebaseRef['kind'], scope: CodebaseScope = {}): CodebaseRef | undefined {
+    return this.listRefs(scope).find(item => item.lifecycleState === 'active' && item.kind === kind && item.rootRealpath === rootRealpath);
+  }
+
   list(scope: CodebaseScope = {}): CodebaseRefSummary[] {
     return this.listRefs(scope).map(ref => summarizeCodebase(ref));
   }

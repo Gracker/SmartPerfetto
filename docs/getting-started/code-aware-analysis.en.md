@@ -24,6 +24,14 @@ opens the Codebases page in Settings. The context cannot change while an
 analysis runs. When the backend sets `SMARTPERFETTO_CODE_AWARE=off`, the popover
 says that source analysis is disabled on the backend.
 
+### Choose Source From The Conversation
+
+Source selection is saved per conversation: returning to a conversation restores what it used, and a new conversation starts from your most recent selection.
+
+- Open **Analysis context for this turn** next to the composer and choose **Choose folder…**. The folder you pick in the system dialog is registered and used in this conversation. Sending source text first shows its scope for confirmation.
+- When you type something like "the source is at /path/to/app", a card appears above the composer. It opens the system folder dialog at that path, and only your choice there takes effect. The text grants no access, and your question is sent unchanged.
+- The system dialog is available on local source and portable installs; Docker, remote and enterprise deployments keep using Settings or the CLI. The filesystem root, your home directory and hidden directories under it (such as `.ssh`) are never used as the starting location.
+
 CLI example:
 
 ```bash

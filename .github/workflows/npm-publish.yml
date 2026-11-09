@@ -339,23 +339,10 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/npm-smoke"
           cd "${RUNNER_TEMP}/npm-smoke"
           npm init -y >/dev/null
-          # This job explicitly approves the source-reviewed pins for its own
-          # consumer project; a dependency's allowScripts cannot authorize it.
-          node <<'NODE'
-          const fs = require('node:fs');
-          const source = JSON.parse(fs.readFileSync(`${process.env.GITHUB_WORKSPACE}/backend/package.json`, 'utf8'));
-          const consumer = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-          if (!source.allowScripts || typeof source.allowScripts !== 'object' || Array.isArray(source.allowScripts) ||
-              Object.entries(source.allowScripts).some(([pin, value]) =>
-                !/^(?:@[^/@\s]+\/)?[^/@\s]+@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(pin) || typeof value !== 'boolean')) {
-            throw new Error('reviewed source install policy is missing or invalid');
-          }
-          consumer.allowScripts = source.allowScripts;
-          fs.writeFileSync('package.json', JSON.stringify(consumer, null, 2) + '\n');
-          NODE
           export SMARTPERFETTO_HOME="${RUNNER_TEMP}/npm-smoke-home"
           mkdir -m 700 "${SMARTPERFETTO_HOME}"
-          npm install --no-audit --no-fund "@gracker/smartperfetto@${VERSION}"
+          # No install scripts: the bundled SQLite binding must work without them (the npm 12 default).
+          npm install --ignore-scripts --no-audit --no-fund "@gracker/smartperfetto@${VERSION}"
           node <<'NODE'
           const {spawnSync} = require('node:child_process');
           const {readFileSync} = require('node:fs');
@@ -417,9 +404,9 @@ jobs:
             failDoctor(`public CLI doctor did not print a JSON report: ${error.message}`);
           }
           if (!Array.isArray(doctor.checks)) failDoctor('public CLI doctor report has no checks');
-          // The only accepted failure is the default Claude runtime without credentials.
+          // The only accepted failure is the default Pi runtime without a configured model.
           const defaultRuntimeWithoutCredentials = doctor.aiPolicy?.aiEnabled === true &&
-            doctor.runtime?.kind === 'claude-agent-sdk' &&
+            doctor.runtime?.kind === 'pi-agent-core' &&
             doctor.runtime?.source === 'default' &&
             doctor.runtimeDiagnostics?.configured === false;
           // Same rule as doctor's own report.ok; capture-tool warnings are not failures.
@@ -429,11 +416,6 @@ jobs:
           if (failedChecks.length > 0) {
             const details = failedChecks.map((check) => `${check.name} (${check.message})`).join('; ');
             failDoctor(`public CLI doctor failed package checks: ${details}`);
-          }
-          // Emitted only for the enabled default Claude runtime; absence fails closed.
-          const sdkBinary = doctor.checks.find((check) => check.name === 'claude_sdk_binary');
-          if (sdkBinary?.status !== 'ok') {
-            failDoctor('public CLI Claude Agent SDK native binary is unavailable');
           }
           if (doctorRun.status !== (doctor.ok ? 0 : 1)) {
             failDoctor('public CLI doctor exit status does not match its report');

@@ -831,6 +831,11 @@ Legacy base path: `/api/v1/providers`。新集成优先使用
 | `POST` | `/:id/runtime` | 更新 provider runtime pinning |
 | `POST` | `/:id/rotate-secret` | 轮换 provider secret |
 | `POST` | `/:id/test` | 测试 provider；AI disabled 时返回 `AI_DISABLED` 且不发起 provider 网络请求 |
+| `GET` | `/local-import/capability` | 本机 AI 工具配置导入是否可用，可用时返回将读取的文件路径 |
+| `POST` | `/local-import/scan` | 用户点击后读取 Claude Code 和 Codex 配置，返回候选（端点、模型、是否有 key）；不返回 key |
+| `POST` | `/local-import/import` | `{candidateId, models?}`：重新读取并校验配置，经系统原生确认框后创建未激活的 provider；用户拒绝时 `imported: false` |
+
+`local-import` 路由只在 source / portable、本机 loopback 且能打开系统对话框时可用，POST 必须带本机 Origin，其他情况返回 `LOCAL_AI_IMPORT_UNAVAILABLE`。
 
 AI disabled 只阻断 provider connection test。Provider profile 的列表、创建、更新、
 删除、激活、停用、runtime pinning 和 secret rotation 仍是配置操作，可以继续使用。

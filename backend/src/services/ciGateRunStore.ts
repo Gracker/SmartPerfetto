@@ -21,7 +21,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import Database from 'better-sqlite3';
+import Database from './sqliteDatabase';
 
 import {backendDataPath} from '../runtimePaths';
 import type {CiGateRunRecord} from '../types/ciGateContracts';

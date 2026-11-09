@@ -205,6 +205,10 @@ In-run supplements stay inside the same authorization and privacy boundary. The 
 
 `AnalysisResult.runSupplements` records only supplements that entered the agent's context. Private runs carry no text; ordinary runs carry the redacted text; neither reaches `conclusion`. The HTML report adds one provenance line with the count, and the snapshot stores a count. The text is user input rather than evidence and grants no data access or tool permission; a classifier verdict authorizes nothing either.
 
+## Per-Conversation Source Selection
+
+The UI saves the source selection per local conversation, and a new conversation starts from the most recent one. This only decides what the next turn submits; the backend still checks authorization by fingerprint. A path typed in the composer only positions the system folder dialog, and a `directorySelectionId` comes only from the user's choice there. The filesystem root, home and hidden directories under it, and network paths are never used as the starting location.
+
 ## Registration And Deletion Lifecycle
 
 On-demand search/read becomes available as soon as registration succeeds and

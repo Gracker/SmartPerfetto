@@ -22,7 +22,7 @@ import {createHash} from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import Database from 'better-sqlite3';
+import Database from '../sqliteDatabase';
 
 import {userDataPath} from '../../runtimePaths';
 import {PublicRequestError} from '../../utils/publicRequestError';

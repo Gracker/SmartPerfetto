@@ -4,7 +4,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import Database from 'better-sqlite3';
+import Database from '../sqliteDatabase';
 
 import {userDataPath} from '../../runtimePaths';
 import type {

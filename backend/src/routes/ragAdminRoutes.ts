@@ -686,7 +686,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
       }
       const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
       try {
-        const result = await directoryPicker.chooseDirectory(scope, purpose);
+        const result = await directoryPicker.chooseDirectory(scope, purpose, req.body?.defaultPath);
         return res.json({success: true, ...result});
       } catch (error) {
         return sendDirectoryPickerError(res, error);
@@ -852,6 +852,11 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
           if (enumeration.enumerationComplete && enumeration.files.length === 0) {
             throw new EmptyEffectiveSelection(enumeration);
           }
+          // The composer's quick add may pick a folder that is already registered.
+          const existing = pickedRoot && req.body?.reuseExisting === true
+            ? registry.findActiveByRoot(rootRealpath, kind, scope)
+            : undefined;
+          if (existing) return {ref: existing, enumeration};
           const ref = registry.register({
             kind,
             displayName: normalizedDisplayName ||

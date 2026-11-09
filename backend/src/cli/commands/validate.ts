@@ -1025,7 +1025,7 @@ function validateVerifierMisdiagnosisFrontmatter(
 }
 
 function parseStrategyFrontmatter(content: string, file: string): { frontmatter: Record<string, unknown> | null; errors: string[] } {
-  const match = content.match(STRATEGY_FRONTMATTER_RE);
+  const match = content.replace(/\r\n/g, '\n').match(STRATEGY_FRONTMATTER_RE);
   if (!match) return { frontmatter: null, errors: [`${file}: missing or invalid YAML frontmatter`] };
   try {
     const frontmatter = yaml.load(match[1]);

@@ -1,2 +1,7 @@
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.node binary
 backend/prebuilts/trace_processor/*/trace_processor_shell binary
 backend/prebuilts/trace_processor/*/trace_processor_shell.exe binary

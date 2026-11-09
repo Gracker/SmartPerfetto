@@ -16,6 +16,8 @@ import { withProviderRecordFacts, withTemplateApiSurfaces } from '../services/pr
 import { authenticate, requireRequestContext, type RequestContext } from '../middleware/auth';
 import { sendRouteError } from '../middleware/routeFailure';
 import { ProviderRequestError } from '../services/providerManager/providerRequestError';
+import {isLocalDirectoryPickerRequest, NativeDirectoryPicker, NativeDirectoryPickerError} from '../services/codebase/nativeDirectoryPicker';
+import {LocalAiImportError, LocalAiToolImporter} from '../services/providerManager/localAiToolImport';
 import { recordEnterpriseAuditEventForContext } from '../services/enterpriseAuditService';
 import { hasRbacPermission, sendForbidden } from '../services/rbac';
 import { requireAiEnabledForHttp } from './aiCapabilityPolicyHttp';
@@ -95,6 +97,93 @@ const TEMPLATES_WITH_RUNTIMES = officialTemplates.map(withTemplateApiSurfaces);
 
 router.get('/templates', (_req, res) => {
   res.json({ success: true, templates: TEMPLATES_WITH_RUNTIMES });
+});
+
+function isLocalImportRequest(req: express.Request, options: {allowMissingOrigin?: boolean} = {}): boolean {
+  return isLocalDirectoryPickerRequest({
+    hostname: req.hostname,
+    remoteAddress: req.socket.remoteAddress,
+    origin: req.get('origin'),
+  }, options);
+}
+
+let localImport: {picker: NativeDirectoryPicker; importer: LocalAiToolImporter<ProviderScope>} | undefined;
+
+/** Local desktop only, on the same conditions and the same native dialogs as the folder picker. */
+function localImportService(): {picker: NativeDirectoryPicker; importer: LocalAiToolImporter<ProviderScope>} {
+  if (!localImport) {
+    const picker = new NativeDirectoryPicker();
+    localImport = {picker, importer: new LocalAiToolImporter<ProviderScope>({
+      confirm: message => picker.confirm(message),
+      listProviders: scope => getProviderService().list(scope),
+      createProvider: (input, scope) => getProviderService().create(input, scope),
+    })};
+  }
+  return localImport;
+}
+
+function sendLocalImportError(res: express.Response, error: unknown): void {
+  sendRouteError(res, error, {
+    code: 'local_ai_import_failed',
+    error: 'Importing the local AI tool configuration failed',
+    logLabel: '[ProviderRoutes] Local AI import error',
+  }, [LocalAiImportError, NativeDirectoryPickerError, ProviderRequestError, ProviderStoreUnreadableError]);
+}
+
+function rejectUnavailableLocalImport(req: express.Request, res: express.Response): boolean {
+  if (isLocalImportRequest(req) && localImportService().picker.canConfirm()) return false;
+  res.status(403).json({
+    success: false,
+    code: 'LOCAL_AI_IMPORT_UNAVAILABLE',
+    error: 'Importing local AI tool configuration is available only from the local SmartPerfetto UI',
+  });
+  return true;
+}
+
+router.get('/local-import/capability', (req, res) => {
+  const {picker, importer} = localImportService();
+  const capability = picker.capability();
+  const available = picker.canConfirm() && isLocalImportRequest(req, {allowMissingOrigin: true});
+  res.json({
+    success: true,
+    available,
+    ...(available ? {sources: importer.sourcePaths()} : {reason: capability.reason ?? 'remote_request'}),
+  });
+});
+
+router.post('/local-import/scan', async (req, res) => {
+  if (rejectUnavailableLocalImport(req, res)) return;
+  try {
+    res.json({success: true, ...await localImportService().importer.scan(providerScopeForRequest(req))});
+  } catch (error) {
+    sendLocalImportError(res, error);
+  }
+});
+
+router.post('/local-import/import', async (req, res) => {
+  if (rejectUnavailableLocalImport(req, res)) return;
+  try {
+    const context = requireRequestContext(req);
+    const scope = providerScopeForRequest(req);
+    const result = await localImportService().importer.importCandidate(req.body?.candidateId, req.body?.models, scope);
+    if (!result.imported) {
+      res.json({success: true, imported: false, cancelled: true});
+      return;
+    }
+    recordProviderAudit(context, 'provider.created', result.provider.id, {
+      type: result.provider.type,
+      category: result.provider.category,
+      runtime: result.provider.connection.agentRuntime,
+      source: 'local_ai_tool_import',
+    });
+    res.status(201).json({
+      success: true,
+      imported: true,
+      provider: withProviderRuntimes(getProviderService().get(result.provider.id, scope)),
+    });
+  } catch (error) {
+    sendLocalImportError(res, error);
+  }
 });
 
 router.get('/:id/models', async (req, res) => {

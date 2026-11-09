@@ -67,6 +67,19 @@ describe('Provider Routes', () => {
     await fsp.rm(dir, { recursive: true, force: true });
   });
 
+  it('refuses a local AI tool scan or import without a local page origin', async () => {
+    for (const route of ['scan', 'import']) {
+      const res = await request(appServer).post(`/api/v1/providers/local-import/${route}`).send({});
+      expect(res.status).toBe(403);
+      expect(res.body.code).toBe('LOCAL_AI_IMPORT_UNAVAILABLE');
+    }
+    const foreign = await request(appServer)
+      .post('/api/v1/providers/local-import/scan')
+      .set('Origin', 'https://attacker.example.com')
+      .send({});
+    expect(foreign.status).toBe(403);
+  });
+
   function restoreEnvValue(key: string, value: string | undefined): void {
     if (value === undefined) {
       delete process.env[key];

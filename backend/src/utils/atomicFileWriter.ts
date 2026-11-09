@@ -26,10 +26,15 @@ function makeTmpPath(target: string): string {
 }
 
 /** Atomic write — synchronous variant. */
-export function atomicWriteFileSync(target: string, content: string | Buffer): void {
+export function atomicWriteFileSync(
+  target: string,
+  content: string | Buffer,
+  options: {mode?: number} = {},
+): void {
   const tmp = makeTmpPath(target);
   try {
-    fs.writeFileSync(tmp, content);
+    // A mode applies from creation: the file is never readable more widely, and the rename replaces its predecessor's mode.
+    fs.writeFileSync(tmp, content, options);
     fs.renameSync(tmp, target);
   } catch (err) {
     // A partial write (ENOSPC) or a failed rename (cross-device) — drop the

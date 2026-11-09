@@ -160,6 +160,11 @@ const DEV_MODE = process.env.NODE_ENV !== 'production';
 
 let baseCache: Map<string, StrategyDefinition> | null = null;
 
+/** Strategy text with LF line endings, so a CRLF checkout parses and fingerprints like any other. */
+function readStrategyText(filePath: string): string {
+  return fs.readFileSync(filePath, 'utf-8').replace(/\r\n/g, '\n');
+}
+
 /**
  * An `append_phase_hints` operation persisted in a Self-Evolution overlay
  * before phase hints were removed. Its hints are kept verbatim so the overlay's
@@ -560,7 +565,7 @@ export function defaultStrategyDetail(
 }
 
 function parseStrategyFile(filePath: string, investigationProfiles: InvestigationProfiles): StrategyDefinition | null {
-  const raw = fs.readFileSync(filePath, 'utf-8');
+  const raw = readStrategyText(filePath);
   const match = raw.match(FRONTMATTER_RE);
   if (!match) return null;
 
@@ -713,7 +718,7 @@ function baseStrategies(): Map<string, StrategyDefinition> {
 
   const loaded = new Map<string, StrategyDefinition>();
   const investigationProfiles = withStrategyParseContext(() => parseInvestigationProfiles(yaml.load(
-    fs.readFileSync(path.join(STRATEGIES_DIR, 'investigation-profiles.yaml'), 'utf8'),
+    readStrategyText(path.join(STRATEGIES_DIR, 'investigation-profiles.yaml')),
   )), path.join(STRATEGIES_DIR, 'investigation-profiles.yaml'));
   const files = fs.readdirSync(STRATEGIES_DIR)
     .filter(file => file.endsWith('.strategy.md'))
@@ -1126,7 +1131,7 @@ export function loadPromptTemplate(name: string): string | undefined {
   const filePath = path.join(STRATEGIES_DIR, `${name}.template.md`);
   if (!fs.existsSync(filePath)) return undefined;
 
-  const content = fs.readFileSync(filePath, 'utf-8').trim();
+  const content = readStrategyText(filePath).trim();
   templateCache.set(name, content);
   currentRunManifestAttributionSink()?.recordPromptTemplate(
     name,
@@ -1151,7 +1156,7 @@ export function loadStrategyRegistry<T>(name: string): T | undefined {
   if (registryCache.has(name) && !DEV_MODE) return registryCache.get(name) as T;
   const filePath = path.join(STRATEGIES_DIR, `${name}.registry.yaml`);
   if (!fs.existsSync(filePath)) return undefined;
-  const parsed = yaml.load(fs.readFileSync(filePath, 'utf-8')) as T;
+  const parsed = yaml.load(readStrategyText(filePath)) as T;
   registryCache.set(name, parsed);
   return parsed;
 }
@@ -1170,7 +1175,7 @@ export function loadStrategyYaml<T>(
   }
   const filePath = path.join(STRATEGIES_DIR, `${name}.yaml`);
   if (!fs.existsSync(filePath)) return undefined;
-  const parsed = parse(yaml.load(fs.readFileSync(filePath, 'utf-8')));
+  const parsed = parse(yaml.load(readStrategyText(filePath)));
   registryCache.set(cacheKey, parsed);
   return parsed;
 }

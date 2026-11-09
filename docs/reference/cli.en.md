@@ -30,50 +30,17 @@ experience.
 
 ### When npm blocks install scripts
 
-If installation lists blocked or skipped dependency scripts, review those scripts
-first. The native `better-sqlite3` binding supports core commands such as `query`
-and `skill`, including when AI is disabled. Assess other entries, such as `@google/genai`,
-`protobufjs`, and `esbuild`, by their actual scripts and the features you use;
-the list alone does not establish a broken SQLite binding or CLI.
+npm 12 does not run dependency install scripts by default. SmartPerfetto does not need them: the
+`better-sqlite3` native binding used by core commands such as `query` and `skill` ships in the npm package
+(macOS arm64/x64, Linux x64/arm64, Windows x64, Node.js 24), so no flag or approval is required. Notes about
+scripts from `@google/genai`, `protobufjs` and similar packages can be ignored.
 
-For global installation or one-off `npm exec` / `npx`, approve only the reviewed
-packages for that command:
+If `smp doctor` still reports `sqlite_native` as an error, your platform has no bundled binding (for example
+Alpine/musl). Allow and rebuild it explicitly:
 
 ```bash
 npm install -g @gracker/smartperfetto --allow-scripts=better-sqlite3
-npm exec --allow-scripts=better-sqlite3 --package=@gracker/smartperfetto -- smp doctor
 ```
-
-These flags apply to that command. A project-local install uses `allowScripts`
-in the consuming project's root `package.json`; the field in the published
-SmartPerfetto package cannot grant approval for its consumer. See the
-[official npm install policy](https://docs.npmjs.com/cli/install/).
-
-In a consuming project, if your npm provides `install-scripts`, list pending
-scripts, review them, approve the required dependency, and rebuild SQLite:
-
-```bash
-npm install-scripts ls
-npm install-scripts approve better-sqlite3
-npm rebuild better-sqlite3
-```
-
-Approval updates the consumer's `allowScripts`. See
-[npm install-scripts](https://docs.npmjs.com/cli/v11/commands/npm-install-scripts/).
-Keep Node.js 24 for installation and rebuilding; no global npm configuration
-change or blanket script approval is needed.
-
-After approval, reinstallation, or rebuilding, check the same installation with
-doctor and a real SQL query against an existing local trace:
-
-```bash
-smp doctor --format json
-smp query /path/to/trace.pftrace --sql "SELECT COUNT(*) AS slice_count FROM slice" --format json
-```
-
-Replace the trace path. For project-local installation, substitute
-`npx --no-install smp` for `smp`. Confirm that doctor reports `sqlite_native` as
-`ok` and that the query returns successfully.
 
 ## Global Options
 
