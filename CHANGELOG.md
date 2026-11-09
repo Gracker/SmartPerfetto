@@ -13,6 +13,44 @@ Detailed commit-level history is available via `git log`.
 
 ## [Unreleased]
 
+## [1.18.0] - 2026-11-09
+
+### Added
+
+- Run supplements: send extra context to an analysis while it runs. The panel shows whether each supplement was queued, delivered, or could not be applied. On by default; set `SMARTPERFETTO_RUN_SUPPLEMENT=false` to turn it off.
+- Producer semantic notes and structured facts on Skill results, and a first-turn acquisition status for investigation requirements, so the agent reasons from the producer's units and row scope.
+
+### Changed
+
+- **Pi Agent Core is now the default analysis agent**, and answer drafts stream on it. External-issue triage and Self-Evolution review also run on Pi.
+- Existing providers and env-only setups migrate without action: the API surface, endpoint, model, and credential form stay the same, and recovered sessions keep their provider pin only when the target is unchanged.
+- The Claude and OpenAI engines remain a hidden fallback for this release through `SMARTPERFETTO_LEGACY_AGENT_RUNTIME`.
+- Provider settings are Pi-only in the UI. Switching a provider's API surface requires re-entering a key when the request host changes, so a stored key is never sent to another vendor.
+- Provider tuning and the `CLAUDE_*` / `OPENAI_*` limits now apply on Pi as `AGENT_MAX_TURNS`, `AGENT_QUICK_MAX_TURNS`, `AGENT_QUICK_PER_TURN_MS`, `AGENT_FULL_PER_TURN_MS`, `AGENT_CLASSIFIER_TIMEOUT_MS`, `SMARTPERFETTO_PI_MAX_BUDGET_USD`, and `SMARTPERFETTO_PI_EFFORT`. An explicit Pi setting wins.
+
+### Removed
+
+- OpenCode and Qoder runtimes. A provider that used them reports an explicit error asking for an Anthropic- or OpenAI-compatible endpoint.
+- The runtime declaration and claim-verification chain. Analysis now trusts Skill and SQL results and fixes acquisition at the source.
+
+### Fixed
+
+- Third-party Anthropic-compatible endpoints keep the thinking effort the previous engine sent. In the 11-case acceptance set, cumulative time fell from 43.9 to 13.2 minutes on GLM and from 37.0 to 25.6 minutes on DeepSeek.
+- A run that reaches its turn limit now writes a conclusion through the closeout turn. Acquisition previously consumed that turn, so such runs could end without one.
+- A long run no longer ends on an empty reply when its context fills up: acquisition stops and the closeout writes the conclusion.
+- A closeout or correction keeps the run's thinking level and the model's full output allowance, so thinking cannot truncate the conclusion.
+- A retried or restored private supplement stays out of browser storage.
+
+### Known limits
+
+- Real-credential acceptance covered GLM and DeepSeek only. Anthropic, OpenAI, Bedrock, and Vertex were not verified with real credentials.
+- `SMARTPERFETTO_EVIDENCE_FIRST` stays off by default; it did not pass its accuracy gates.
+- Synthesized Vertex models and Claude models behind a relay run without extended thinking on Pi.
+- The per-run cost cap applies only to models with known pricing, and one closeout call can still run after it is reached.
+- `enableSubAgents` and the light-model field have no effect on Pi. `max` effort acts as `high`.
+- With thinking off, DeepSeek occasionally ends a run after one sentence.
+- Claude Code login alone has never configured SmartPerfetto: a subscription-only user needs an API key.
+
 ## [1.17.0] - 2026-11-05
 
 ### Added
