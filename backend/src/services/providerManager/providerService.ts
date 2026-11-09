@@ -47,6 +47,7 @@ import {
   piCatalogProviderEnv,
   piCatalogRouteBaseUrl,
   piEnvForLegacyRoute,
+  PI_INHERITS_CLAUDE_LIMITS_ENV,
   piEnvForTuning,
   providerModelJsonEnv,
   resolvePiRouteFromLegacyEnv,
@@ -752,6 +753,7 @@ export class ProviderService {
       // Pi gets its model, key and limits only under its own env; no Claude/OpenAI surface env.
       this.applyPiAgentCoreConnection(env, provider);
       Object.assign(env, piEnvForTuning(provider.tuning));
+      if (previousProviderAgentRuntime(provider) === CLAUDE_AGENT_RUNTIME_KIND) env[PI_INHERITS_CLAUDE_LIMITS_ENV] = 'true';
       env.SMARTPERFETTO_AGENT_RUNTIME = runtime;
       return env;
     }

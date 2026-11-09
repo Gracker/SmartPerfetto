@@ -90,8 +90,8 @@ Anthropic/Bedrock/Vertex 32000、OpenAI 16384），Anthropic-compatible 网关�
 旧 Claude 引擎服务过的路由（`anthropic-messages`、`bedrock-converse-stream`，模型支持 reasoning 且未显式配置等级）按运行决定思考等级：
 快速预算用 `low`，完整分析用该场景 strategy 的 `effort`，运维的 effort 覆盖只作用于完整分析（`max` 按 `high`）。合成的 Vertex 模型和中转站上的 Claude 模型不开启思考。
 
-Provider 的 `tuning` 和进程级旧 env（`CLAUDE_*`/`OPENAI_*`，由 `runtimeEnvFor` 统一读取）映射到 Pi 的 `AGENT_MAX_TURNS`、`AGENT_QUICK_PER_TURN_MS`、`AGENT_CLASSIFIER_TIMEOUT_MS`、
-`AGENT_FULL_REQUEST_TIMEOUT_MS`（`fullPerTurnMs × maxTurns`，有硬上限）、`SMARTPERFETTO_PI_MAX_BUDGET_USD` 和 `SMARTPERFETTO_PI_EFFORT`，显式的 Pi 设置优先。
+Provider 的 `tuning`、env-only 配置的旧 env（`CLAUDE_*`/`OPENAI_*`），以及旧 Claude 引擎服务过的 provider 未设置的进程级 `CLAUDE_*` 限额（不含 effort，由 `runtimeEnvFor` 读取）映射到 Pi 的 `AGENT_MAX_TURNS`、`AGENT_QUICK_PER_TURN_MS`、`AGENT_CLASSIFIER_TIMEOUT_MS`、
+`AGENT_FULL_PER_TURN_MS`（乘以实际轮数，以 `AGENT_FULL_REQUEST_TIMEOUT_MS` 为上限）、`SMARTPERFETTO_PI_MAX_BUDGET_USD` 和 `SMARTPERFETTO_PI_EFFORT`，显式的 Pi 设置优先。
 费用上限只对有定价的模型生效，网关合成模型不上报费用；`enableSubAgents` 在 Pi 上无效。上下文、费用或轮数到限时结束取证，走同一个收尾流程。
 合成模型只在 env 时派生，从不持久化；显式 `piAgentCoreModelJson` 仍是用户覆盖。
 

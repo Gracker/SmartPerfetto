@@ -105,9 +105,10 @@ review send `disabled`. Model ids in the Claude family behind a relay and synthe
 not enable it. A route the retired Claude engine served (`anthropic-messages`, `bedrock-converse-stream`,
 on a reasoning model with no explicit level) sets its level per run: `low` for a quick budget, the scene
 strategy's `effort` for a full analysis, where an operator's effort override applies (`max` acts as
-`high`). A provider's `tuning` and the retired process-level `CLAUDE_*`/`OPENAI_*` env (read in
+`high`). A provider's `tuning`, the retired `CLAUDE_*`/`OPENAI_*` env of an env-only setup, and the
+process-level `CLAUDE_*` limits (not effort) a provider the Claude engine served left unset (read in
 `runtimeEnvFor`) map to `AGENT_MAX_TURNS`, `AGENT_QUICK_PER_TURN_MS`,
-`AGENT_CLASSIFIER_TIMEOUT_MS`, `AGENT_FULL_REQUEST_TIMEOUT_MS` (`fullPerTurnMs × maxTurns`, under a hard cap),
+`AGENT_CLASSIFIER_TIMEOUT_MS`, `AGENT_FULL_PER_TURN_MS` (multiplied by the effective turn limit, capped by `AGENT_FULL_REQUEST_TIMEOUT_MS`),
 `SMARTPERFETTO_PI_MAX_BUDGET_USD` and `SMARTPERFETTO_PI_EFFORT`; an explicit Pi setting wins. The cost cap
 applies only to models with known pricing, since a synthesized gateway model reports no cost, and
 `enableSubAgents` has no effect on Pi. Reaching the context, cost or turn limit ends acquisition and

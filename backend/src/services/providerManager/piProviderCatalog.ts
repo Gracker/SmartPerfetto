@@ -25,8 +25,6 @@ import {
   type RecordedProductionRuntimeKind,
 } from '../../agentRuntime/runtimeKinds';
 import {PI_CATALOG_ROUTES, firstNonBlank} from './providerTypes';
-import {DEFAULT_FULL_REQUEST_TIMEOUT_MS, resolveFullRequestTimeoutMs} from '../../agentRuntime/runtimeLimits';
-import {DEFAULT_AGENT_MAX_TURNS} from '../../config';
 import type {ProviderConfig, ProviderTuning, ProviderType} from './types';
 
 type PiCatalogProviderType = keyof typeof PI_CATALOG_ROUTES;
@@ -300,6 +298,9 @@ export function piRequestOrigin(baseUrl: string | undefined): string | undefined
  * former default (Claude credentials, Bedrock or Vertex), else OpenAI
  * credentials. Undefined when the env configures no retired runtime.
  */
+/** Marks a provider the retired Claude engine served: its unset limits still come from the process-level CLAUDE_ env. */
+export const PI_INHERITS_CLAUDE_LIMITS_ENV = 'SMARTPERFETTO_PI_INHERITS_CLAUDE_LIMITS';
+
 const PROVIDER_EFFORTS: ReadonlyArray<ProviderTuning['effort']> = ['low', 'medium', 'high', 'max'];
 
 function previousEnvOnlyRuntime(env: EnvLike): RecordedProductionRuntimeKind | undefined {
@@ -328,21 +329,12 @@ export function withEnvOnlyPiModel<T extends EnvLike>(env: T): T {
     {provider: 'smartperfetto-env', hostCredentialChain: true}))};
 }
 
-/**
- * The Pi env for a provider's per-run limits. `fullPerTurnMs` was multiplied by
- * the turn limit under a hard cap on the retired engines; Pi takes the result.
- */
-export function piEnvForTuning(
-  tuning: ProviderTuning | undefined,
-  requestTimeoutCapMs: number = DEFAULT_FULL_REQUEST_TIMEOUT_MS,
-): Record<string, string> {
+/** The Pi env for a provider's per-run limits. */
+export function piEnvForTuning(tuning: ProviderTuning | undefined): Record<string, string> {
   if (!tuning) return {};
   const env: Record<string, string> = {};
   if (tuning.maxTurns) env.AGENT_MAX_TURNS = String(tuning.maxTurns);
-  if (tuning.fullPerTurnMs) {
-    env.AGENT_FULL_REQUEST_TIMEOUT_MS = String(resolveFullRequestTimeoutMs(
-      tuning.fullPerTurnMs, tuning.maxTurns ?? DEFAULT_AGENT_MAX_TURNS, requestTimeoutCapMs));
-  }
+  if (tuning.fullPerTurnMs) env.AGENT_FULL_PER_TURN_MS = String(tuning.fullPerTurnMs);
   if (tuning.quickPerTurnMs) env.AGENT_QUICK_PER_TURN_MS = String(tuning.quickPerTurnMs);
   if (tuning.classifierTimeoutMs) env.AGENT_CLASSIFIER_TIMEOUT_MS = String(tuning.classifierTimeoutMs);
   if (tuning.maxBudgetUsd) env[PI_MAX_BUDGET_USD_ENV] = String(tuning.maxBudgetUsd);
@@ -350,12 +342,10 @@ export function piEnvForTuning(
   return env;
 }
 
-/**
- * The same limits from the process env the retired runtimes read, which a
- * provider's unset fields inherited. OpenAI read its own names, then Claude's.
- */
-function piEnvForLegacyTuning(env: EnvLike): Record<string, string> {
-  const prefixes = previousEnvOnlyRuntime(env) === OPENAI_AGENT_RUNTIME_KIND ? ['OPENAI', 'CLAUDE'] : ['CLAUDE', 'OPENAI'];
+/** The same limits from the process env the retired runtime read. OpenAI read its own names, then Claude's. */
+function piEnvForLegacyTuning(env: EnvLike, previous: RecordedProductionRuntimeKind | undefined): Record<string, string> {
+  if (!previous) return {};
+  const prefixes = previous === OPENAI_AGENT_RUNTIME_KIND ? ['OPENAI', 'CLAUDE'] : ['CLAUDE'];
   const positive = (key: string) => prefixes.map(prefix => Number(env[`${prefix}_${key}`])).find(value => value > 0);
   const effort = prefixes.map(prefix => env[`${prefix}_EFFORT`]?.trim().toLowerCase())
     .find((value): value is NonNullable<ProviderTuning['effort']> => PROVIDER_EFFORTS.includes(value as never));
@@ -363,8 +353,8 @@ function piEnvForLegacyTuning(env: EnvLike): Record<string, string> {
   const quickMaxTurns = positive('QUICK_MAX_TURNS');
   const limits = piEnvForTuning({maxTurns: positive('MAX_TURNS'), maxBudgetUsd: positive('MAX_BUDGET_USD'), effort,
     fullPerTurnMs: positive('FULL_PER_TURN_MS'), quickPerTurnMs: positive('QUICK_PER_TURN_MS'),
-    classifierTimeoutMs: positive('CLASSIFIER_TIMEOUT_MS')}, requestTimeoutMs);
-  if (requestTimeoutMs) limits.AGENT_FULL_REQUEST_TIMEOUT_MS ??= String(requestTimeoutMs);
+    classifierTimeoutMs: positive('CLASSIFIER_TIMEOUT_MS')});
+  if (requestTimeoutMs) limits.AGENT_FULL_REQUEST_TIMEOUT_MS = String(requestTimeoutMs);
   if (quickMaxTurns) limits.AGENT_QUICK_MAX_TURNS = String(quickMaxTurns);
   return limits;
 }
@@ -383,6 +373,11 @@ export function runtimeEnvFor(
   const merged = mergeIsolatedProviderEnv(baseEnv, providerEnv);
   if (kind !== PI_AGENT_CORE_RUNTIME_KIND) return merged;
   // Explicit Pi settings and the provider's own tuning are in `merged` and win.
-  const withLimits = {...piEnvForLegacyTuning(baseEnv), ...merged};
-  return providerEnv ? withLimits : withEnvOnlyPiModel(withLimits);
+  if (!providerEnv) {
+    return withEnvOnlyPiModel({...piEnvForLegacyTuning(baseEnv, previousEnvOnlyRuntime(baseEnv)), ...merged});
+  }
+  if (!providerEnv[PI_INHERITS_CLAUDE_LIMITS_ENV]) return merged;
+  // Process-level CLAUDE_EFFORT never overrode a provider's scene effort; only its own tuning does.
+  const {[PI_EFFORT_ENV]: _processEffort, ...inherited} = piEnvForLegacyTuning(baseEnv, CLAUDE_AGENT_RUNTIME_KIND);
+  return {...inherited, ...merged};
 }

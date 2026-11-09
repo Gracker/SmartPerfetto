@@ -150,6 +150,7 @@ import {
   DEFAULT_FULL_REQUEST_TIMEOUT_MS,
   DEFAULT_PROVIDER_STREAM_IDLE_TIMEOUT_MS,
   type RuntimeTimeoutKind,
+  resolveFullRequestTimeoutMs,
 } from '../../runtimeLimits';
 import type {AgentOptions as InstalledPiAgentOptions} from '@earendil-works/pi-agent-core';
 import type {ModelThinkingLevel, SystemMessage, Usage} from '@earendil-works/pi-ai';
@@ -191,6 +192,7 @@ export const PI_AGENT_CORE_STREAM_IDLE_TIMEOUT_MS_ENV = 'SMARTPERFETTO_PI_AGENT_
 export const PI_AGENT_CORE_ABORT_JOIN_TIMEOUT_MS_ENV = 'SMARTPERFETTO_PI_AGENT_CORE_ABORT_JOIN_TIMEOUT_MS';
 
 const AGENT_FULL_REQUEST_TIMEOUT_MS_ENV = 'AGENT_FULL_REQUEST_TIMEOUT_MS';
+const AGENT_FULL_PER_TURN_MS_ENV = 'AGENT_FULL_PER_TURN_MS';
 const AGENT_STREAM_IDLE_TIMEOUT_MS_ENV = 'AGENT_STREAM_IDLE_TIMEOUT_MS';
 const PI_AGENT_CORE_DEFAULT_ABORT_JOIN_TIMEOUT_MS = 5_000;
 
@@ -410,17 +412,22 @@ function positiveIntegerEnv(env: EnvLike, keys: readonly string[], fallback: num
   return fallback;
 }
 
-function resolvePiRuntimeTimeouts(env: EnvLike): {
+/** @internal Exported for tests. */
+export function resolvePiRuntimeTimeouts(env: EnvLike): {
   requestTimeoutMs: number;
   streamIdleTimeoutMs: number;
   abortJoinTimeoutMs: number;
 } {
+  const requestCapMs = positiveIntegerEnv(
+    env,
+    [PI_AGENT_CORE_REQUEST_TIMEOUT_MS_ENV, AGENT_FULL_REQUEST_TIMEOUT_MS_ENV],
+    DEFAULT_FULL_REQUEST_TIMEOUT_MS,
+  );
+  const fullPerTurnMs = positiveIntegerEnv(env, [AGENT_FULL_PER_TURN_MS_ENV], 0);
   return {
-    requestTimeoutMs: positiveIntegerEnv(
-      env,
-      [PI_AGENT_CORE_REQUEST_TIMEOUT_MS_ENV, AGENT_FULL_REQUEST_TIMEOUT_MS_ENV],
-      DEFAULT_FULL_REQUEST_TIMEOUT_MS,
-    ),
+    requestTimeoutMs: fullPerTurnMs > 0
+      ? resolveFullRequestTimeoutMs(fullPerTurnMs, resolveAgentRuntimeBudgetConfig(env).maxTurns, requestCapMs)
+      : requestCapMs,
     streamIdleTimeoutMs: positiveIntegerEnv(
       env,
       [PI_AGENT_CORE_STREAM_IDLE_TIMEOUT_MS_ENV, AGENT_STREAM_IDLE_TIMEOUT_MS_ENV],

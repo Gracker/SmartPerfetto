@@ -25,7 +25,7 @@ import {
   type PiAgentCoreEvent,
 } from '../piAgentCoreRuntime';
 import * as piAgentCoreRuntimeModule from '../piAgentCoreRuntime';
-import {piContextNearlyFull, piRunThinkingLevel} from '../engines/pi/piAgentCoreRuntime';
+import {piContextNearlyFull, piRunThinkingLevel, resolvePiRuntimeTimeouts} from '../engines/pi/piAgentCoreRuntime';
 import {installedPiAiVersion, parsePiAgentCoreModelConfig, piRuntimeFingerprintInput} from '../engines/pi/piAgentCoreConfig';
 import {resolvePiCatalogModel} from '../engines/pi/piAgentCoreProvider';
 import * as analysisRunSpecModule from '../analysisRunSpec';
@@ -5196,5 +5196,17 @@ describe('piContextNearlyFull', () => {
   it('never fires without a window or usage', () => {
     expect(piContextNearlyFull(usage(500_000), 0)).toBe(false);
     expect(piContextNearlyFull({}, 128_000)).toBe(false);
+  });
+});
+
+describe('resolvePiRuntimeTimeouts', () => {
+  it('multiplies the per-turn estimate by the effective turn limit, under the operator cap', () => {
+    expect(resolvePiRuntimeTimeouts({AGENT_FULL_PER_TURN_MS: '1000', AGENT_MAX_TURNS: '20'}).requestTimeoutMs).toBe(20_000);
+    expect(resolvePiRuntimeTimeouts({AGENT_FULL_PER_TURN_MS: '120000', AGENT_FULL_REQUEST_TIMEOUT_MS: '3600000'}).requestTimeoutMs).toBe(3_600_000);
+    expect(resolvePiRuntimeTimeouts({AGENT_FULL_PER_TURN_MS: '120000'}).requestTimeoutMs).toBe(20 * 60_000);
+  });
+
+  it('keeps the operator deadline without a per-turn estimate', () => {
+    expect(resolvePiRuntimeTimeouts({AGENT_FULL_REQUEST_TIMEOUT_MS: '7000'}).requestTimeoutMs).toBe(7_000);
   });
 });

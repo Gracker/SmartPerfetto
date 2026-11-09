@@ -581,17 +581,12 @@ describe('per-run limits an operator set before the migration', () => {
   it('carries a provider\'s tuning to Pi', () => {
     const env = piEnvOf({...templateRecord('kimi', 'claude-agent-sdk'),
       tuning: {maxTurns: 20, maxBudgetUsd: 1.5, effort: 'medium', fullPerTurnMs: 1_000, quickPerTurnMs: 2_000, classifierTimeoutMs: 3_000}});
-    expect(env).toMatchObject({AGENT_MAX_TURNS: '20', AGENT_FULL_REQUEST_TIMEOUT_MS: '20000', AGENT_QUICK_PER_TURN_MS: '2000',
+    expect(env).toMatchObject({AGENT_MAX_TURNS: '20', AGENT_FULL_PER_TURN_MS: '1000', AGENT_QUICK_PER_TURN_MS: '2000',
       AGENT_CLASSIFIER_TIMEOUT_MS: '3000', SMARTPERFETTO_PI_MAX_BUDGET_USD: '1.5', SMARTPERFETTO_PI_EFFORT: 'medium'});
   });
 
   it('adds nothing without tuning', () => {
     expect(Object.keys(piEnvOf(templateRecord('kimi', 'claude-agent-sdk'))).filter(key => key.startsWith('AGENT_'))).toEqual([]);
-  });
-
-  it('caps the full deadline as the retired engines did', () => {
-    expect(piEnvOf({...templateRecord('kimi', 'claude-agent-sdk'), tuning: {fullPerTurnMs: 120_000}}))
-      .toMatchObject({AGENT_FULL_REQUEST_TIMEOUT_MS: String(20 * 60_000)});
   });
 
   it('reads the env the retired runtime used, and an explicit Pi setting wins', () => {
@@ -601,10 +596,25 @@ describe('per-run limits an operator set before the migration', () => {
       SMARTPERFETTO_PI_EFFORT: 'low', AGENT_QUICK_PER_TURN_MS: '999', AGENT_FULL_REQUEST_TIMEOUT_MS: '7000'});
   });
 
-  it('lets a provider inherit a process limit it did not set, and its own tuning wins', () => {
-    const base = {CLAUDE_MAX_TURNS: '30', CLAUDE_MAX_BUDGET_USD: '2'};
-    expect(runtimeEnvFor(base, {SMARTPERFETTO_AGENT_RUNTIME: 'pi-agent-core', AGENT_MAX_TURNS: '9'}, 'pi-agent-core'))
-      .toMatchObject({AGENT_MAX_TURNS: '9', SMARTPERFETTO_PI_MAX_BUDGET_USD: '2'});
+  describe('a provider inheriting process-level limits', () => {
+    const base = {CLAUDE_MAX_TURNS: '30', CLAUDE_MAX_BUDGET_USD: '2', CLAUDE_EFFORT: 'low', OPENAI_QUICK_MAX_TURNS: '8'};
+
+    it('inherits Claude limits it did not set when the Claude engine served it, and its own tuning wins', () => {
+      const claude = piEnvOf({...templateRecord('kimi', 'claude-agent-sdk'), tuning: {maxTurns: 9}});
+      const env = runtimeEnvFor(base, claude, 'pi-agent-core');
+      expect(env).toMatchObject({AGENT_MAX_TURNS: '9', SMARTPERFETTO_PI_MAX_BUDGET_USD: '2'});
+      expect(env.AGENT_QUICK_MAX_TURNS).toBeUndefined();
+    });
+
+    it('never takes the process-level effort over the scene', () => {
+      expect(runtimeEnvFor(base, piEnvOf(templateRecord('kimi', 'claude-agent-sdk')), 'pi-agent-core').SMARTPERFETTO_PI_EFFORT).toBeUndefined();
+    });
+
+    it('leaves a provider the OpenAI engine served alone', () => {
+      const env = runtimeEnvFor(base, piEnvOf(templateRecord('ollama', 'openai-agents-sdk')), 'pi-agent-core');
+      expect(env.AGENT_MAX_TURNS).toBeUndefined();
+      expect(env.SMARTPERFETTO_PI_MAX_BUDGET_USD).toBeUndefined();
+    });
   });
 
   it('falls back to the Claude names for an OpenAI env-only setup, as the OpenAI runtime did', () => {
