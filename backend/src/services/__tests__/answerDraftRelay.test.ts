@@ -221,8 +221,6 @@ describe('AnswerDraftRelay', () => {
   });
 
   it('creates no relay for a runtime without the draft reset contract', () => {
-    expect(createAnswerDraftRelay({runtimeKind: 'pi-agent-core', runId: 'run-1', projectionSessionId: 's',
-      privateKnowledge: false, outputLanguage: 'en', deliver: () => undefined})).toBeUndefined();
     expect(createAnswerDraftRelay({runtimeKind: undefined, runId: 'run-1', projectionSessionId: 's',
       privateKnowledge: false, outputLanguage: 'en', deliver: () => undefined})).toBeUndefined();
   });
@@ -298,9 +296,9 @@ describe('projected answer draft', () => {
 
   it('is the only path to a draft for every draft-capable runtime', () => {
     // A runtime added here must send a private run's answer text through
-    // createProjectedAnswerDraft, with a test like the OpenAI and Claude ones.
+    // createProjectedAnswerDraft, with a test like the OpenAI, Claude and Pi ones.
     expect(PRODUCTION_RUNTIME_KINDS.filter(runtimeSupportsDraftAnswerStreaming))
-      .toEqual(['claude-agent-sdk', 'openai-agents-sdk']);
+      .toEqual(['claude-agent-sdk', 'openai-agents-sdk', 'pi-agent-core']);
   });
 
   it('reaches the surface as a revocation: the relay clears what it showed and forwards nothing more', () => {
