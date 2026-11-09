@@ -7721,6 +7721,27 @@ kbd.pf-keycap.pf-spacing-large {
   text-align: right;
 }
 
+.ai-run-supplement-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--chat-text-muted, #888);
+}
+
+.ai-run-supplement-action {
+  padding: 1px 6px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
 .ai-feedback-bar {
   display: flex;
   gap: 4px;
