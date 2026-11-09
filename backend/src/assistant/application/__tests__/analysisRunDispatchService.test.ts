@@ -622,7 +622,7 @@ describe('shared analysis run dispatch', () => {
     });
 
     it('issues nothing and leaves the response unchanged when the flag is off', async () => {
-      delete process.env[flagEnv];
+      process.env[flagEnv] = 'false';
       const f = piFixture();
       const response = await dispatchAnalysisRun(f.input, f.deps);
       await tick();

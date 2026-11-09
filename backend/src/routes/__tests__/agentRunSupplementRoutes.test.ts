@@ -79,7 +79,7 @@ describe('POST /sessions/:sessionId/runs/:runId/supplements', () => {
   });
 
   it('reports RUN_SUPPLEMENT_UNSUPPORTED when the flag is off, even for an invalid body', async () => {
-    delete process.env[RUN_SUPPLEMENT_FLAG_ENV];
+    process.env[RUN_SUPPLEMENT_FLAG_ENV] = 'false';
     const res = await request(makeApp(liveSession())).post(url()).send({nonsense: true});
     expect(res.status).toBe(409);
     expect(res.body).toMatchObject({success: false, code: 'RUN_SUPPLEMENT_UNSUPPORTED'});

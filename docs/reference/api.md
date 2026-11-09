@@ -400,7 +400,7 @@ Base path: `/api/agent/v1`
 | `POST` | `/conversation/:sessionId/cancel` | 取消精确对话 run |
 | `GET` | `/conversation/:sessionId/full-handoff` | 读取已建议的完整分析交接 |
 | `POST` | `/sessions/:sessionId/runs` | 在已有 session 下启动新 run |
-| `POST` | `/sessions/:sessionId/runs/:runId/supplements` | 向运行中的 run 追加用户补充说明（`SMARTPERFETTO_RUN_SUPPLEMENT` 开启时） |
+| `POST` | `/sessions/:sessionId/runs/:runId/supplements` | 向运行中的 run 追加用户补充说明（`SMARTPERFETTO_RUN_SUPPLEMENT=false` 时关闭） |
 | `GET` | `/:sessionId/stream` | SSE 流 |
 | `GET` | `/runs/:runId/stream` | 按 run id 订阅 SSE |
 | `GET` | `/:sessionId/status` | 查询状态 |
@@ -435,7 +435,7 @@ Workspace-scoped agent base 为 `/api/workspaces/:workspaceId/agent`，其子路
 
 ### 运行中补充说明
 
-`POST /api/agent/v1/sessions/:sessionId/runs/:runId/supplements` 在分析进行中追加一段用户说明，把它带给正在运行的 Agent，不重启、不增加轮次、不改变期限。默认关闭，需要 `SMARTPERFETTO_RUN_SUPPLEMENT` 开启；否则一律返回 `409 RUN_SUPPLEMENT_UNSUPPORTED`。启动 run 的响应在支持时带 `runSupplement: {"supported": true}`。
+`POST /api/agent/v1/sessions/:sessionId/runs/:runId/supplements` 在分析进行中追加一段用户说明，把它带给正在运行的 Agent，不重启、不增加轮次、不改变期限。默认开启，`SMARTPERFETTO_RUN_SUPPLEMENT=false` 可关闭，关闭后一律返回 `409 RUN_SUPPLEMENT_UNSUPPORTED`。启动 run 的响应在支持时带 `runSupplement: {"supported": true}`。
 
 请求体严格为 `{"idempotencyKey": string, "text": string}`，`idempotencyKey` 匹配 `[a-zA-Z0-9_.:-]{1,128}`，`text` 上限 4 KiB，每个 run 最多 6 条；相同 `idempotencyKey` 重试返回原回执。成功返回 `202 {"receipt": {"id", "runId", "sequence", "state", "reason?", "disposition?"}}`：
 

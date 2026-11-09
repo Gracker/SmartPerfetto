@@ -381,7 +381,7 @@ OpenAI 的采集截止时间可随实际进展延后，但不侵占预留交付�
 
 ### 运行中补充说明
 
-`SMARTPERFETTO_RUN_SUPPLEMENT` 开启且 runtime 声明 `EngineCapabilities.runSupplement` 时（目前只有 Pi），每个普通分析 run 创建一个 `RunSupplementChannel`，由 `finishExecution` 在所有结束路径上调用 `terminate`。Channel 不读取 session 级别的 agent，只通过 run 绑定的 sidecar 进入 runtime（`analysisRunDispatchService.ts` → `agentRoutes.ts` 的 `baseAnalyzeOptions`），sidecar 不在 HTTP options 白名单里，Pi 绑定前校验 `channel.runId === executionLease.key.runId`。
+默认开启（`SMARTPERFETTO_RUN_SUPPLEMENT=false` 关闭）。runtime 声明 `EngineCapabilities.runSupplement` 时（目前只有 Pi），每个普通分析 run 创建一个 `RunSupplementChannel`，由 `finishExecution` 在所有结束路径上调用 `terminate`。Channel 不读取 session 级别的 agent，只通过 run 绑定的 sidecar 进入 runtime（`analysisRunDispatchService.ts` → `agentRoutes.ts` 的 `baseAnalyzeOptions`），sidecar 不在 HTTP options 白名单里，Pi 绑定前校验 `channel.runId === executionLease.key.runId`。
 
 Agent 是否接收由小型分类器决定：`runSupplementIntent.ts` 解析封闭 schema，确定性决策表把结果映射为就地应用或 `restart_required`。不改变的是预算：`providerTurnLimit`、`totalTurns`、期限都不增加，一次分类记为一次 `classification` model call，deadline 为 `min(run deadline, now+10s)`，且按 run 严格串行。分类失败一律 `rejected`。窗口关闭或 run 结束时，进行中的分类请求会被 abort，channel 随后清除文本和回调闭包，只保留内存摘要用于幂等重放，携带补充文本的 provider 调用不会比 run 活得更久。有已送达补充说明的 run 被 Self-Evolution curation 排除（`curation_run_supplemented`），不进入配对基线。
 

@@ -446,7 +446,7 @@ Base path: `/api/agent/v1`
 | `POST` | `/conversation/:sessionId/cancel` | Cancel the exact conversation run |
 | `GET` | `/conversation/:sessionId/full-handoff` | Read a recommended full-analysis handoff |
 | `POST` | `/sessions/:sessionId/runs` | Start a new run in an existing session |
-| `POST` | `/sessions/:sessionId/runs/:runId/supplements` | Add a user supplement to a running run (when `SMARTPERFETTO_RUN_SUPPLEMENT` is on) |
+| `POST` | `/sessions/:sessionId/runs/:runId/supplements` | Add a user supplement to a running run (off with `SMARTPERFETTO_RUN_SUPPLEMENT=false`) |
 | `GET` | `/:sessionId/stream` | Subscribe to SSE |
 | `GET` | `/runs/:runId/stream` | Subscribe to SSE by run id |
 | `GET` | `/:sessionId/status` | Poll status |
@@ -487,7 +487,7 @@ it the route answers 403.
 
 ### Run Supplements
 
-`POST /api/agent/v1/sessions/:sessionId/runs/:runId/supplements` adds a user note to an analysis in progress. It reaches the running agent without a restart, extra turns or a deadline change. Default off behind `SMARTPERFETTO_RUN_SUPPLEMENT`; otherwise it always returns `409 RUN_SUPPLEMENT_UNSUPPORTED`. The run start response carries `runSupplement: {"supported": true}` when available.
+`POST /api/agent/v1/sessions/:sessionId/runs/:runId/supplements` adds a user note to an analysis in progress. It reaches the running agent without a restart, extra turns or a deadline change. On by default; with `SMARTPERFETTO_RUN_SUPPLEMENT=false` it always returns `409 RUN_SUPPLEMENT_UNSUPPORTED`. The run start response carries `runSupplement: {"supported": true}` when available.
 
 The body is exactly `{"idempotencyKey": string, "text": string}`; `idempotencyKey` matches `[a-zA-Z0-9_.:-]{1,128}`, `text` is capped at 4 KiB and a run accepts at most 6 supplements. A retry with the same `idempotencyKey` replays the original receipt. Success is `202 {"receipt": {"id", "runId", "sequence", "state", "reason?", "disposition?"}}`:
 

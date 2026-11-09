@@ -22,7 +22,7 @@ export const RUN_SUPPLEMENT_MAX_BYTES = 4096;
 
 /** Default off until the release gate passes; only an explicit truthy value enables it. */
 export function runSupplementFeatureEnabled(env: Record<string, string | undefined> = process.env): boolean {
-  return parseFlagValue(env[RUN_SUPPLEMENT_FLAG_ENV]) === true;
+  return parseFlagValue(env[RUN_SUPPLEMENT_FLAG_ENV]) !== false;
 }
 
 /** The classifier's verdict, already passed through the deterministic decision table. */
