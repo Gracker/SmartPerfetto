@@ -758,11 +758,10 @@ describe('real-provider semantic delta wrapper contract', () => {
     expect(sourceBindingFailed).toMatchObject({sourceSemanticPassed: false});
   });
 
-  it('records every missing Qoder authentication boundary without calling it a pass', () => {
+  it('reports the retired Qoder runtime as unsupported, never a pass', () => {
     expect(wrapper.realProviderAvailability?.('qoder-agent-sdk', {})).toEqual({
       available: false,
-      reason:
-        'GLM_CODING_PLAN_API_KEY_MISSING;QODER_PERSONAL_ACCESS_TOKEN_OR_QODERCLI_PATH_MISSING',
+      reason: 'UNSUPPORTED_RUNTIME',
     });
   });
 });
