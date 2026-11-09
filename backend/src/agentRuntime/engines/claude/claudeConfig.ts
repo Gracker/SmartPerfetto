@@ -5,7 +5,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { SceneType } from '../../../agentv3/sceneClassifier';
-import { getRegisteredScenes } from '../../../agentv3/strategyLoader';
+import { sceneEffort } from '../../../agentv3/strategyLoader';
 import { DEFAULT_OUTPUT_LANGUAGE, localize, outputLanguageDisplayName, parseOutputLanguage, type OutputLanguage } from '../../../agentv3/outputLanguage';
 import { mergeIsolatedProviderEnv } from '../../../services/providerManager/envIsolation';
 import type { ProviderScope } from '../../../services/providerManager';
@@ -176,10 +176,7 @@ export function resolveEffort(
   if (options.configuredEffortOverridesScene) return config.effort;
   if (!sceneType) return config.effort;
 
-  const scenes = getRegisteredScenes();
-  const scene = scenes.find(s => s.scene === sceneType);
-  if (scene?.effort) return scene.effort as EffortLevel;
-  return config.effort;
+  return (sceneEffort(sceneType) || config.effort) as EffortLevel;
 }
 
 export function hasConfiguredClaudeEffortOverride(

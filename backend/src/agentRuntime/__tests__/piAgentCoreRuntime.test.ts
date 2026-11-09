@@ -25,6 +25,7 @@ import {
   type PiAgentCoreEvent,
 } from '../piAgentCoreRuntime';
 import * as piAgentCoreRuntimeModule from '../piAgentCoreRuntime';
+import {piContextNearlyFull, piRunThinkingLevel} from '../engines/pi/piAgentCoreRuntime';
 import {installedPiAiVersion, parsePiAgentCoreModelConfig, piRuntimeFingerprintInput} from '../engines/pi/piAgentCoreConfig';
 import {resolvePiCatalogModel} from '../engines/pi/piAgentCoreProvider';
 import * as analysisRunSpecModule from '../analysisRunSpec';
@@ -5153,5 +5154,36 @@ describe('Pi catalog model references', () => {
     expect(loader).toHaveBeenCalledWith('@earendil-works/pi-ai/providers/all');
     await expect(resolvePiCatalogModel({providers: ['zai'], id: 'glm-4.7-flash'}, loader))
       .rejects.toThrow('Pi catalog has no model glm-4.7-flash under zai');
+  });
+});
+
+describe('piRunThinkingLevel', () => {
+  const gateway = {thinkingLevel: 'low', runThinkingFollowsScene: true} as const;
+
+  it('keeps the authored level on every other route', () => {
+    expect(piRunThinkingLevel({thinkingLevel: 'high'}, true, 'anr')).toBe('high');
+    expect(piRunThinkingLevel({thinkingLevel: undefined}, false, 'anr')).toBe('off');
+  });
+
+  it('follows the budget and the scene strategy on a gateway', () => {
+    expect(piRunThinkingLevel(gateway, true, 'general')).toBe('low');
+    expect(piRunThinkingLevel(gateway, false, 'anr')).toBe('medium');
+    expect(piRunThinkingLevel(gateway, false, 'general')).toBe('high');
+    expect(piRunThinkingLevel(gateway, false, 'not-a-scene' as never)).toBe('high');
+  });
+});
+
+describe('piContextNearlyFull', () => {
+  const usage = (input: number, output = 0) => ({usage: {input, output, cacheRead: 0, cacheWrite: 0, totalTokens: input + output} as never});
+
+  it('stops acquisition once the reserve no longer fits', () => {
+    expect(piContextNearlyFull(usage(90_000, 1_000), 128_000)).toBe(false);
+    expect(piContextNearlyFull(usage(111_616), 128_000)).toBe(true);
+    expect(piContextNearlyFull(usage(110_000, 1_616), 128_000)).toBe(true);
+  });
+
+  it('never fires without a window or usage', () => {
+    expect(piContextNearlyFull(usage(500_000), 0)).toBe(false);
+    expect(piContextNearlyFull({}, 128_000)).toBe(false);
   });
 });

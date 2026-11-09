@@ -73,6 +73,7 @@ const PI_API_MODULES = {
 
 type SupportedPiApi = keyof typeof PI_API_MODULES;
 const ANTHROPIC_VERTEX_API = 'anthropic-vertex' satisfies PiRouteApi & SupportedPiApi;
+const ANTHROPIC_API_HOST = 'api.anthropic.com';
 
 export type PiAgentCoreProviderModels = Models;
 
@@ -97,6 +98,8 @@ export interface PiAgentCoreProviderRuntime {
   streamFnForPurpose?: (purpose: RuntimeModelDispatchPurpose, policy?: PiStreamPurposePolicy) => PiStreamFunction;
   /** The authored reasoning level, including a catalog reference's resolved default; undefined: provider default. */
   thinkingLevel: ModelThinkingLevel | undefined;
+  /** Each run takes its level from the budget and scene, as the retired Claude engine did on this endpoint. */
+  runThinkingFollowsScene?: boolean;
 }
 
 export type PiAgentCoreProviderRuntimeLoader = (
@@ -471,6 +474,8 @@ export async function resolvePiCatalogModel(
  */
 export const PI_SYNTHESIZED_MODEL_DEFAULTS = {
   contextWindow: 128_000,
+  /** The window the retired Claude engine assumed for a gateway model; a smaller one starves long runs' output. */
+  anthropicGatewayContextWindow: 200_000,
   maxTokens: {
     'anthropic-messages': 32_000,
     'anthropic-vertex': 32_000,
@@ -493,10 +498,13 @@ function endpointHost(baseUrl: unknown): string | undefined {
  * A route's model: the installed catalog entry when a builtin provider serves
  * this id with this API on this endpoint host (or is the only provider serving
  * this API, as with Bedrock), with the route's own base URL; otherwise a model
- * synthesized on the route's API and endpoint. A synthesized model keeps
- * reasoning off, takes limits from a same-host catalog entry for this id (any
- * API), else the template, else the defaults above, and does not send the
- * newer `eager_input_streaming` tool field to an Anthropic-compatible gateway.
+ * synthesized on the route's API and endpoint. A synthesized model takes
+ * limits from a same-host catalog entry for this id (any API), else the
+ * template, else the defaults above, and does not send the newer
+ * `eager_input_streaming` tool field to an Anthropic-compatible gateway. It
+ * keeps reasoning off, except on a gateway serving a non-Claude model, where
+ * sending nothing leaves the endpoint on its own, much heavier default: there
+ * it uses the adaptive thinking the retired Claude engine sent.
  */
 export async function resolvePiRouteModel(
   route: PiModelRoute,
@@ -521,20 +529,24 @@ export async function resolvePiRouteModel(
   }
   const peer = providers.flatMap(provider => provider.models).find(model => model.id === route.id && sameHost(model));
   const anthropicSurface = route.api === 'anthropic-messages' || route.api === ANTHROPIC_VERTEX_API;
+  const adaptiveGateway = servesAdaptiveGatewayModel(route.api, host, route.id);
+  const defaultContextWindow = adaptiveGateway ? PI_SYNTHESIZED_MODEL_DEFAULTS.anthropicGatewayContextWindow
+    : PI_SYNTHESIZED_MODEL_DEFAULTS.contextWindow;
   return {
     id: route.id,
     name: route.id,
     api: route.api,
     provider: route.provider,
     baseUrl: route.baseUrl,
-    reasoning: false,
+    reasoning: adaptiveGateway,
     input: Array.isArray(peer?.input) ? peer.input : ['text'],
     cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
     contextWindow: typeof peer?.contextWindow === 'number' ? peer.contextWindow
-      : route.limits?.contextWindow ?? PI_SYNTHESIZED_MODEL_DEFAULTS.contextWindow,
+      : route.limits?.contextWindow ?? defaultContextWindow,
     maxTokens: typeof peer?.maxTokens === 'number' ? peer.maxTokens
       : route.limits?.maxTokens ?? PI_SYNTHESIZED_MODEL_DEFAULTS.maxTokens[route.api],
-    ...(anthropicSurface && host !== 'api.anthropic.com' ? {compat: {supportsEagerToolInputStreaming: false}} : {}),
+    ...(anthropicSurface && host !== ANTHROPIC_API_HOST ? {compat: {supportsEagerToolInputStreaming: false,
+      ...(adaptiveGateway ? {forceAdaptiveThinking: true} : {})}} : {}),
   };
 }
 
@@ -722,6 +734,11 @@ export async function createPiAgentCoreProviderRuntime(
     ? await vertexProviderStreams(loadedStreams, config.route!, authEnv.GOOGLE_APPLICATION_CREDENTIALS?.trim(), moduleLoader)
     : loadedStreams;
   const supportedLevels = piAi.getSupportedThinkingLevels(model);
+  // Only a model synthesized for the route: a catalog entry keeps its own reasoning defaults.
+  const adaptiveGateway = config.route !== undefined && config.thinkingLevel === undefined
+    && model.provider === config.route.provider
+    && (model as Model<'anthropic-messages'>).compat?.forceAdaptiveThinking === true
+    && servesAdaptiveGatewayModel(model.api, endpointHost(model.baseUrl), model.id);
   const authoredLevel = config.thinkingLevel ?? (config.catalog?.defaultThinkingLevel === 'lowest_supported'
     ? LOWEST_THINKING_LEVELS.find(level => supportedLevels.includes(level)) : undefined);
   const assertSupportedLevel = (level: ModelThinkingLevel | undefined) => {
@@ -808,7 +825,7 @@ export async function createPiAgentCoreProviderRuntime(
           : sentModel.api === 'anthropic-messages' || sentModel.api === ANTHROPIC_VERTEX_API ? 'anthropic_messages' : 'unknown';
         const stageCandidate = purpose === 'classification' || purpose === 'review' ||
           purpose === 'continuation' && policy?.outputOnly === true;
-        const sdkLevel = (options as SimpleStreamOptions | undefined)?.reasoning ?? authoredLevel;
+        const sdkLevel = (options as SimpleStreamOptions | undefined)?.reasoning ?? authoredLevel ?? (adaptiveGateway ? 'low' : undefined);
         const profileInput: ResolveModelExecutionProfileInput = {runtimeKind: 'pi-agent-core', protocol, modelId: sentModel.id,
           baseUrl: sentModel.baseUrl, sdk: policy?.sdkIdentity ?? {packageName: '@earendil-works/pi-ai',
             version: 'unknown', adapterContractVersion: 'pi-native-purpose@1'},
@@ -824,8 +841,10 @@ export async function createPiAgentCoreProviderRuntime(
         selected = resolveModelExecutionPolicy({profile, purpose, outputOnly: policy?.outputOnly,
           selection: stageCandidate ? 'minimum_legal_candidate' : 'preserve'});
         if (selected.status === 'unsupported') throw new PiModelExecutionConfigurationError();
-        requestedLevel = selected.controls.surface === 'pi_stream' ? selected.controls.reasoning
-          : stageCandidate && authoredLevel !== undefined ? authoredLevel : sdkLevel;
+        // A short capped call must not spend its cap thinking; both surveyed gateways accept `disabled`.
+        requestedLevel = adaptiveGateway && stageCandidate ? 'off'
+          : selected.controls.surface === 'pi_stream' ? selected.controls.reasoning
+            : stageCandidate && authoredLevel !== undefined ? authoredLevel : sdkLevel;
         assertSupportedLevel(requestedLevel);
         const nativeMapped = requestedLevel && sentModel.thinkingLevelMap?.[requestedLevel];
         const sdkEffective = requestedLevel === undefined ? undefined : requestedLevel === 'off' ? asSetting('off')
@@ -863,7 +882,14 @@ export async function createPiAgentCoreProviderRuntime(
       return nativeStream(sentModel, context, scopedOptions);
     };
   };
-  return {model, models, streamFn: streamFnForPurpose('answer_turn'), streamFnForPurpose, thinkingLevel: authoredLevel};
+  return {model, models, streamFn: streamFnForPurpose('answer_turn'), streamFnForPurpose, thinkingLevel: authoredLevel,
+    runThinkingFollowsScene: adaptiveGateway};
+}
+
+/** A non-Claude model behind an Anthropic-compatible gateway; Claude ids keep their own per-model thinking rules. */
+function servesAdaptiveGatewayModel(api: unknown, host: string | undefined, modelId: string): boolean {
+  return api === 'anthropic-messages' && host !== undefined && host !== ANTHROPIC_API_HOST &&
+    !/claude|opus|sonnet|haiku/i.test(modelId);
 }
 
 function isOfficialGlmModel(model: Model<Api>): boolean {

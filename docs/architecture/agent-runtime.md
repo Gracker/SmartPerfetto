@@ -82,8 +82,11 @@ active provider、记录下的 runtime pin（session snapshot、CLI session）�
 
 创建 provider runtime 时（`piAgentCoreProvider.ts` 的 `resolvePiRouteModel`），installed pi-ai catalog
 在同一 host、同一 API 下有该模型时使用目录条目（只替换为 route 的 base URL）；否则在原 API 上合成：
-reasoning 关闭、费用为 0、限制取同 host 的目录条目、模板声明或保守默认（context 128000；输出
+费用为 0、限制取同 host 的目录条目、模板声明或保守默认（context 128000；输出
 Anthropic/Bedrock/Vertex 32000、OpenAI 16384），Anthropic-compatible 网关不发送 `eager_input_streaming`。
+合成模型默认关闭 reasoning；例外是 Anthropic-compatible 网关上的非 Claude 模型，不发思考参数时端点会走自己更重的默认，
+因此沿用旧 Claude 引擎的请求形状：`thinking:{type:adaptive}` 加 `output_config.effort`，快速预算用 `low`，
+完整分析用该场景 strategy 的 `effort`；分类、复审等带输出上限的短调用发 `disabled`。模型 id 属于 Claude 系列的中转站保持原规则。
 合成模型只在 env 时派生，从不持久化；显式 `piAgentCoreModelJson` 仍是用户覆盖。
 
 Provider profile 在读取时由 `retiredRuntime.ts` 的 `withMigratedAgentRuntime` 迁移（与

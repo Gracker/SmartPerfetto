@@ -30,7 +30,7 @@ import type {RuntimeToolObserver} from '../../runtimeToolObserver';
 import {runIntentTransport, type IntentTransportInput} from '../../intentTransport';
 import {runPiIntentTransport} from './piIntentTransport';
 import {createPiRunSupplementBinding} from './piRunSupplementBinding';
-import {createPiAgentModelCallTracker} from './piAgentModelCalls';
+import {createPiAgentModelCallTracker, piUsageToModelCallUsage} from './piAgentModelCalls';
 import {createPiAnswerDraftController} from './piAnswerDraft';
 import {piAssistantMessageHasToolCall} from './piAssistantMessage';
 import {SILENT_ANSWER_DRAFT, createAnswerDraftStream, createProjectedAnswerDraft} from '../../answerDraftStream';
@@ -120,7 +120,7 @@ import {
   buildRuntimeMemoryContext,
   detectRunFocusApps,
 } from '../../runtimePromptContext';
-import { loadPromptTemplate } from '../../../agentv3/strategyLoader';
+import { loadPromptTemplate, sceneEffort } from '../../../agentv3/strategyLoader';
 import { PI_AGENT_CORE_RUNTIME_KIND } from '../../runtimeKinds';
 import { getProductionEngineCapabilities } from '../../runtimeDescriptors';
 import {
@@ -151,7 +151,7 @@ import {
   type RuntimeTimeoutKind,
 } from '../../runtimeLimits';
 import type {AgentOptions as InstalledPiAgentOptions} from '@earendil-works/pi-agent-core';
-import type {SystemMessage} from '@earendil-works/pi-ai';
+import type {ModelThinkingLevel, SystemMessage, Usage} from '@earendil-works/pi-ai';
 import {
   createPiAgentCoreProviderRuntime,
   type PiAgentCoreProviderRuntime,
@@ -293,6 +293,37 @@ export interface PiAgentCoreRuntimeOptions {
   env?: EnvLike;
   moduleLoader?: PiAgentCoreModuleLoader;
   providerRuntimeLoader?: PiAgentCoreProviderRuntimeLoader;
+}
+
+/**
+ * The run's reasoning level. An Anthropic-compatible gateway keeps the depth
+ * the retired Claude engine asked of it: low for a quick budget, otherwise the
+ * scene strategy's `effort`, which the strategy registry owns.
+ * @internal Exported for tests.
+ */
+export function piRunThinkingLevel(
+  providerRuntime: Pick<PiAgentCoreProviderRuntime, 'thinkingLevel' | 'runThinkingFollowsScene'>,
+  quickMode: boolean,
+  sceneType: SceneType,
+): ModelThinkingLevel {
+  if (!providerRuntime.runThinkingFollowsScene) return providerRuntime.thinkingLevel ?? 'off';
+  if (quickMode) return 'low';
+  const effort = sceneEffort(sceneType);
+  return effort === 'low' || effort === 'medium' ? effort : 'high';
+}
+
+/** Below this much remaining context the SDK starves the next request's output, so acquisition stops first. */
+const PI_CONTEXT_RESERVE_TOKENS = 16_384;
+
+/**
+ * Whether this turn left too little context for another: a run ends through
+ * the turn-budget closeout rather than on an empty, output-starved reply.
+ * @internal Exported for tests.
+ */
+export function piContextNearlyFull(message: {usage?: Usage}, contextWindow: number): boolean {
+  const usage = piUsageToModelCallUsage(message.usage);
+  if (!usage || !(contextWindow > 0)) return false;
+  return (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0) + PI_CONTEXT_RESERVE_TOKENS >= contextWindow;
 }
 
 interface PiAnalysisPreparation {
@@ -1688,7 +1719,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         // history is in the prompt, and a native transcript would carry stale
         // selections and unbounded tool payloads.
         messages: [],
-        thinkingLevel: providerRuntime.thinkingLevel ?? 'off',
+        thinkingLevel: piRunThinkingLevel(providerRuntime, prep.quickMode, prep.sceneType),
       },
       sessionId,
       streamFn: (...args: Parameters<PiAgentCoreProviderRuntime['streamFn']>) => {
@@ -1711,13 +1742,14 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       thinkingBudgets: modelConfig.thinkingBudgets,
       // Pi calls this after the real assistant/tool turn, before dispatching another.
       finishTurn: (({message}) => {
-        if (!supplements && rounds < providerTurnLimit) return undefined;
+        const budgetSpent = rounds >= providerTurnLimit || piContextNearlyFull(message, providerRuntime.model.contextWindow);
+        if (!supplements && !budgetSpent) return undefined;
         const toolCall = piAssistantMessageHasToolCall(message);
         // Never steer onto a finished answer: it would buy a provider request of its own.
         // Error and aborted turns are hard exits; the run's outcome settles those instead.
         const declinedSupplements = !toolCall && message.stopReason !== 'error' && message.stopReason !== 'aborted'
           ? supplements?.closeOnFinishedAnswer() ?? false : false;
-        if (rounds < providerTurnLimit) return declinedSupplements ? {action: 'end' as const} : undefined;
+        if (!budgetSpent) return declinedSupplements ? {action: 'end' as const} : undefined;
         supplements?.closeWindow('turn_budget');
         const finished = message.stopReason === 'stop' && !message.errorMessage
           && message.deferred === undefined && !toolCall;

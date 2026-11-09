@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {parsePiAgentCoreModelConfig} from '../../../agentRuntime/engines/pi/piAgentCoreConfig';
-import {PI_SYNTHESIZED_MODEL_DEFAULTS, resolvePiRouteModel} from '../../../agentRuntime/engines/pi/piAgentCoreProvider';
+import {createPiAgentCoreProviderRuntime, PI_SYNTHESIZED_MODEL_DEFAULTS, resolvePiRouteModel} from '../../../agentRuntime/engines/pi/piAgentCoreProvider';
 import type {RecordedProductionRuntimeKind} from '../../../agentRuntime/runtimeKinds';
 import {resetRuntimeDeprecationWarningsForTests} from '../../../agentRuntime/legacyRuntimeFallback';
 import {piRequestOrigin, withEnvOnlyPiModel} from '../piProviderCatalog';
@@ -494,7 +494,7 @@ describe('Pi model resolution against the installed pi-ai catalog', () => {
   it.each([
     ['kimi', 'claude-agent-sdk', {contextWindow: 262_144, maxTokens: 262_144}],
     ['kimi_code', 'claude-agent-sdk', {contextWindow: 1_048_576, maxTokens: 32_768}],
-    ['qwen', 'claude-agent-sdk', {contextWindow: PI_SYNTHESIZED_MODEL_DEFAULTS.contextWindow,
+    ['qwen', 'claude-agent-sdk', {contextWindow: PI_SYNTHESIZED_MODEL_DEFAULTS.anthropicGatewayContextWindow,
       maxTokens: PI_SYNTHESIZED_MODEL_DEFAULTS.maxTokens['anthropic-messages']}],
     ['ollama', 'openai-agents-sdk', {contextWindow: PI_SYNTHESIZED_MODEL_DEFAULTS.contextWindow,
       maxTokens: PI_SYNTHESIZED_MODEL_DEFAULTS.maxTokens['openai-completions']}],
@@ -502,16 +502,70 @@ describe('Pi model resolution against the installed pi-ai catalog', () => {
       maxTokens: PI_SYNTHESIZED_MODEL_DEFAULTS.maxTokens['anthropic-vertex']}],
   ] as const)('synthesizes %s on its previous API and endpoint with catalog-peer or default limits', async (type, runtime, limits) => {
     const {config, model} = await resolve(templateRecord(type, runtime));
+    const adaptiveGateway = config.route!.api === 'anthropic-messages';
     expect(model).toMatchObject({provider: config.route!.provider, api: config.route!.api, baseUrl: config.route!.baseUrl,
-      reasoning: false, cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}, ...limits});
+      reasoning: adaptiveGateway, cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}, ...limits});
     if (config.route!.api !== 'openai-completions') {
-      expect(model.compat).toEqual({supportsEagerToolInputStreaming: false});
+      expect(model.compat).toEqual({supportsEagerToolInputStreaming: false, ...(adaptiveGateway ? {forceAdaptiveThinking: true} : {})});
     }
   });
 
   it('takes limits from a same-host catalog entry for an OpenAI model on Chat Completions', async () => {
     const {model} = await resolve(templateRecord('openai', 'openai-agents-sdk', {openaiProtocol: 'chat_completions'}));
     expect(model).toMatchObject({api: 'openai-completions', provider: 'smartperfetto-openai', contextWindow: 272_000, maxTokens: 128_000});
+  });
+});
+
+describe('thinking on an Anthropic-compatible gateway', () => {
+  const catalog = {builtinProviders: () => [], getBuiltinModels: () => [], getBuiltinModel: () => undefined};
+  const context = {messages: [], tools: []} as never;
+
+  // Jest's sandbox gives structuredClone results another realm's prototypes, which the runtime's deep-equal identity check rejects.
+  beforeEach(() => {jest.spyOn(globalThis, 'structuredClone').mockImplementation(value => ({...(value as object)}) as never);});
+  afterEach(() => {jest.restoreAllMocks();});
+
+  async function gatewayRuntime(modelId: string) {
+    const sent: Array<Record<string, any>> = [];
+    const piAi = {
+      getSupportedThinkingLevels: () => ['off', 'minimal', 'low', 'medium', 'high'],
+      InMemoryCredentialStore: class {async modify(_id: string, update: () => Promise<unknown>) {return update();}},
+      envApiKeyAuth: () => ({apiKey: {name: 'test', resolve: async () => undefined}}),
+      createProvider: (provider: unknown) => provider,
+      createModels: () => ({setProvider: () => undefined, streamSimple: (_model: unknown, _context: unknown, options: Record<string, any>) => {
+        sent.push(options);
+        return {};
+      }}),
+    };
+    const loader = async (specifier: string) => specifier.endsWith('/providers/all') ? catalog
+      : specifier.includes('/api/') ? new Proxy({}, {get: (_target, key) => key === 'then' ? undefined : () => ({stream: () => undefined, streamSimple: () => undefined})})
+        : piAi;
+    const record = {...templateRecord('kimi', 'claude-agent-sdk'), models: {primary: modelId, light: modelId}};
+    const env = piEnvOf(record);
+    const config = parsePiAgentCoreModelConfig(env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON);
+    return {sent, runtime: await createPiAgentCoreProviderRuntime(config, env, loader as never)};
+  }
+
+  it('gives a non-Claude model the adaptive thinking the retired engine sent', async () => {
+    const {runtime, sent} = await gatewayRuntime('kimi-test');
+    expect(runtime).toMatchObject({thinkingLevel: undefined, runThinkingFollowsScene: true, model: {reasoning: true}});
+    await runtime.streamFn(runtime.model, context, {reasoning: 'medium'} as never);
+    expect(sent[0].reasoning).toBe('medium');
+    expect(runtime.model.compat).toMatchObject({forceAdaptiveThinking: true});
+  });
+
+  it.each(['classification', 'review'] as const)('disables thinking for a capped %s call', async purpose => {
+    const {runtime, sent} = await gatewayRuntime('kimi-test');
+    await runtime.streamFnForPurpose!(purpose)(runtime.model, context, {maxTokens: 1024} as never);
+    expect(sent[0].reasoning).toBeUndefined();
+  });
+
+  it('leaves a Claude model behind a relay on its own thinking rules', async () => {
+    const {runtime, sent} = await gatewayRuntime('claude-sonnet-5');
+    expect(runtime.runThinkingFollowsScene).toBe(false);
+    expect(runtime.thinkingLevel).toBeUndefined();
+    expect(runtime.model.reasoning).toBe(false);
+    await runtime.streamFn(runtime.model, context, {} as never);
+    expect(sent[0].reasoning).toBeUndefined();
   });
 });
 

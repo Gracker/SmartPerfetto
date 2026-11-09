@@ -1056,6 +1056,11 @@ export function getRegisteredScenes(): StrategyDefinition[] {
     .filter(def => def.strategyKind !== 'contract_only');
 }
 
+/** A registered scene's strategy-owned `effort`; undefined for an unregistered scene. */
+export function sceneEffort(sceneType: string): string | undefined {
+  return getRegisteredScenes().find(scene => scene.scene === sceneType)?.effort;
+}
+
 /**
  * Get the scene-owned final report completeness contract. Returns null for
  * scenes that have no declarative contract yet.
