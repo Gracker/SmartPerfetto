@@ -18,7 +18,7 @@ import {
 } from '../../runSupplementIntent';
 import type {RuntimeModelCallStart, RuntimePerformanceRecorder} from '../../runtimePerformance';
 
-const CLASSIFICATION_TIMEOUT_MS = 5_000;
+const CLASSIFICATION_TIMEOUT_MS = 10_000;
 const CLOSEOUT_FALLBACK_MAX_BYTES = 32 * 1024;
 
 /** The optional steering surface; another module can supply an Agent without it. */
