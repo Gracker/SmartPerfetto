@@ -3287,7 +3287,6 @@ async function main(): Promise<void> {
       ? {}
       : {
         ...(options.allowNoDataEnvelopes ? {} : { hasDataEnvelopes: sse.dataEnvelopeCount > 0 }),
-        hasPlanSubmitted: sse.planSubmittedCount > 0,
         hasArchitectureDetected: sse.architectureDetectedCount > 0,
       };
     const dualTraceChecks: Record<string, boolean> = options.referenceTracePath
@@ -3303,7 +3302,8 @@ async function main(): Promise<void> {
     if (!capabilityLimitedRuntime && options.analysisMode === 'fast') {
       modeExpectationChecks.fastModeHonored = options.expectation ? sse.quickRun?.resolvedMode === 'quick' : isQuickMode;
     } else if (!capabilityLimitedRuntime && options.analysisMode === 'full' && !options.expectation) {
-      modeExpectationChecks.fullModeHonored = !isQuickMode;
+      // A submitted plan is optional, so only the resolved mode can say a full run fell back to quick.
+      modeExpectationChecks.fullModeHonored = sse.quickRun?.resolvedMode !== 'quick';
     }
     const conclusionEvidenceChecks: Record<string, boolean> = options.requireConclusionEvidence
       ? {
