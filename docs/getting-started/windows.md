@@ -82,8 +82,8 @@ Microsoft 的说明见
 1. 选择与账号匹配的 Provider，并以厂商控制台给出的协议、Base URL 和模型 ID 为准。
 2. 填写 **Provider API Key**。Connection 页的 backend auth token 不是模型厂商 key，
    只有部署者设置了 SMARTPERFETTO_API_KEY 才需要填写。
-3. 核对 runtime：Claude/Anthropic-compatible 通常用 Claude Agent SDK；
-   OpenAI/OpenAI-compatible 通常用 OpenAI Agents SDK。
+3. 核对接口：Claude/Anthropic-compatible 选 Anthropic 接口，OpenAI/OpenAI-compatible
+   选 OpenAI 接口；分析都由 Pi Agent Core 运行。
 4. 保存 Provider。
 5. 运行连接测试；失败时先核对 Base URL、模型 ID、协议、代理和系统时间。
 6. 激活 Provider。只保存但不激活时，仍会使用之前的 active provider 或 env fallback。

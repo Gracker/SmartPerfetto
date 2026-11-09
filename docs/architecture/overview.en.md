@@ -151,7 +151,7 @@ to come from the existing configuration sources.
 
 ## Turn Limits and Follow-ups
 
-The five runtimes share acquisition budgets and closeout state. Budgets above one
+Every runtime shares acquisition budgets and closeout state. Budgets above one
 reserve the last call for a tool-free conclusion from returned facts, remaining
 gaps, and next steps. Cancellation, revoked authority, and provider errors do not
 trigger another summary. An OpenAI acquisition timeout with returned data may
@@ -230,7 +230,7 @@ metadata-only visibility.
 5. Backend streams output
    SDK events -> runtime bridge -> privacy/narrative projection -> SSE
       -> frontend renders progress, tables, thoughts
-   draftAnswerStreaming runtime (Claude/OpenAI) -> answer_token draft + answer_segment_reset
+   draftAnswerStreaming runtime (Pi and the hidden fallback engines) -> answer_token draft + answer_segment_reset
       -> owner projection + narrative projection + coalescing -> live only (never replayed or persisted), replaced by conclusion
    finalizeAnalysisResult -> conclusion after finalization, before report/snapshot generation
    stop -> cancels the run
@@ -312,9 +312,9 @@ Source use adds another orthogonal boundary. `SourceUseDecisionV1` records selec
 
 | Runtime | Providers | Key boundary |
 |---|---|---|
-| `claude-agent-sdk` | Anthropic, Bedrock, Vertex, Claude/Anthropic-compatible providers | All run modes require explicit provider/env credentials; Claude Code login does not establish SDK readiness |
-| `openai-agents-sdk` | OpenAI, Ollama, OpenAI-compatible providers | Credentials and Responses/chat-completions protocol are validated by OpenAI runtime rules |
-| `pi-agent-core` | Custom, GLM, DeepSeek, Kimi, Kimi Code, MiniMax providers | Custom needs explicit Pi model JSON or equivalent env; catalog-backed providers resolve the model from the Pi builtin catalog; does not read `.pi` project config, package extensions, shell tools, or file tools |
+| `pi-agent-core` | Every provider type | Default and only selectable runtime; all run modes require explicit provider/env credentials and Claude Code login does not establish readiness; Custom needs explicit Pi model JSON or equivalent env; catalog-backed providers resolve the model from the Pi builtin catalog; does not read `.pi` project config, package extensions, shell tools, or file tools |
+| `claude-agent-sdk` | Hidden fallback | Kept for one release behind a maintainer-only switch, see [Agent Runtime](agent-runtime.en.md); not a user choice |
+| `openai-agents-sdk` | Hidden fallback | Same as above |
 
 The OpenCode and Qoder engines are removed. Records that name `opencode` or
 `qoder-agent-sdk` are read as provenance and run on the effective runtime; see

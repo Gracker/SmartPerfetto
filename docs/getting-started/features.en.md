@@ -32,7 +32,8 @@ Output:
 - Each round places its analysis process and steps above its final conclusion, keeping each round together.
 - Conclusions should trace back to concrete time ranges, threads, slices, SQL rows, or Skill results.
 - Server delivery details are collapsed by default; expand them for the full evidence and source references. Numbers come from Skill and SQL results rather than a per-sentence check; the server records native completion, dual-trace comparison identity and, with source selected, whether written source locations match source this run read. Warnings remain visible.
-- With the Claude or OpenAI runtime, the answer streams in as a draft while it is written. Once the run finishes, the final answer replaces the draft, with no review step after it; Stop cancels the run. The Pi runtime shows no draft: the answer appears once it is finished. Sessions with source or knowledge selected also show a draft, but only to you and only after the same redacting projection as the final answer; once any draft text needs redaction, the draft is withdrawn for the rest of the run and the projected answer appears when it is finished.
+- The answer streams in as a draft while it is written. Once the run finishes, the final answer replaces the draft, with no review step after it; Stop cancels the run. Sessions with source or knowledge selected also show a draft, but only to you and only after the same redacting projection as the final answer; once any draft text needs redaction, the draft is withdrawn for the rest of the run and the projected answer appears when it is finished.
+- While an analysis runs you can send more context to it (on by default; `SMARTPERFETTO_RUN_SUPPLEMENT=false` turns it off). The note enters the running agent's context; if it changes the goal or scope, the UI asks you to restart.
 
 ### Panel Layout And Shortcuts
 
@@ -76,7 +77,7 @@ analysis only once a backend Skill, strategy, or tool uses it.
 
 Both AI summaries use the current Provider and require the `agent:run`
 permission. When AI is disabled, permission or credentials are missing, or the
-Provider is not the Claude runtime, they return a rule-based fallback summary;
+model call fails or times out, they return a rule-based fallback summary;
 the analysis itself still returns. Results are not written to reports,
 snapshots, or the conversation. See
 [Critical Path And Flamegraph](critical-path-and-flamegraph.en.md).
@@ -271,7 +272,7 @@ Output:
 
 See [Code-Aware Analysis](code-aware-analysis.en.md) for the full workflow.
 
-## 10. Provider Management And Runtime Switching
+## 10. Provider Management
 
 SmartPerfetto supports UI-managed model providers and `.env` configuration.
 
@@ -279,11 +280,12 @@ Entry points:
 
 - `Providers` tab in AI Assistant settings.
 - `backend/.env` or Docker root `.env`.
-- Provider/runtime switcher near the AI input.
+- Provider switcher near the AI input.
 
 Output:
 
 - Supports Anthropic, Claude/Anthropic-compatible providers, and OpenAI/OpenAI-compatible providers.
+- Analysis always runs on Pi Agent Core; existing providers and env migrate on read, and an unconvertible Qoder/OpenCode record needs an endpoint.
 - The active Provider Manager profile takes priority over `.env`.
 - The protected `/api/runtime-health` endpoint shows the current credential
   source for troubleshooting; public `/health` exposes only readiness and version.

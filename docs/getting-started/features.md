@@ -32,7 +32,8 @@ SmartPerfetto 在 Perfetto UI 中内置 AI Assistant 面板。用户加载 `.pft
 - 每轮的分析过程和步骤位于本轮结论上方，结论是该轮最后的内容；各轮独立排列。
 - 结论应能追溯到具体时间段、线程、slice、SQL 行或 Skill 结果。
 - 服务器交付详情默认折叠，点击可查看完整证据和源码引用。数值来自 Skill 与 SQL 结果，而不是逐句复核；服务器记录原生完成状态、双 Trace 对比身份，以及选用源码时正文写出的源码位置是否与本轮读取的源码一致。警告仍直接显示。
-- 使用 Claude 或 OpenAI runtime 时，回答会边生成边显示为草稿；运行结束后由最终回答替换草稿，之后不再有复核步骤；点“停止”会取消本次运行。Pi runtime 不显示草稿，回答写完后一次性显示。选用了源码或知识库的会话同样显示草稿，但草稿只发给本人，并先经过与最终回答相同的脱敏投影；一旦某段草稿需要脱敏，本轮草稿整体撤回，回答写完后再显示投影后的正文。
+- 回答会边生成边显示为草稿；运行结束后由最终回答替换草稿，之后不再有复核步骤；点“停止”会取消本次运行。选用了源码或知识库的会话同样显示草稿，但草稿只发给本人，并先经过与最终回答相同的脱敏投影；一旦某段草稿需要脱敏，本轮草稿整体撤回，回答写完后再显示投影后的正文。
+- 分析进行中可以继续发送补充说明（默认开启，`SMARTPERFETTO_RUN_SUPPLEMENT=false` 关闭）；说明会进入正在运行的 Agent 上下文，若改变了分析目标或范围，界面会提示重新开始。
 
 ### 面板布局与快捷操作
 
@@ -67,7 +68,7 @@ Skill、策略或工具接入后才会进入 AI 分析。
   再给出自占/累计热点、热点路径和归类。
 
 两者的 AI 总结使用当前 Provider，要求调用方有 `agent:run` 权限；AI 被关闭、权限或凭证不足、
-Provider 不是 Claude runtime 时返回规则兜底总结，分析本身照常返回。结果不写入报告、快照或对话。
+模型调用失败或超时时返回规则兜底总结，分析本身照常返回。结果不写入报告、快照或对话。
 操作说明见 [Critical path 与火焰图](critical-path-and-flamegraph.md)。
 
 ### 智能分析模式
@@ -252,7 +253,7 @@ Code-Aware Analysis 允许用户把本机 App、AOSP、kernel 或 OEM SDK 源码
 
 完整说明见 [Code-Aware Analysis](code-aware-analysis.md)。
 
-## 10. Provider 管理和运行时切换
+## 10. Provider 管理
 
 SmartPerfetto 支持在 UI 中管理模型 provider，也支持通过 `.env` 配置。
 
@@ -260,11 +261,12 @@ SmartPerfetto 支持在 UI 中管理模型 provider，也支持通过 `.env` 配
 
 - AI Assistant 设置面板中的 `Providers` 页。
 - `backend/.env` 或 Docker 根目录 `.env`。
-- AI 输入框旁的 provider/runtime 切换入口。
+- AI 输入框旁的 provider 切换入口。
 
 效果：
 
 - 可以接入 Anthropic、Claude/Anthropic-compatible provider、OpenAI/OpenAI-compatible provider。
+- 分析统一运行在 Pi Agent Core 上；已有 provider 和 env 在读取时自动迁移，无法换算的 Qoder/OpenCode 记录需要改填 endpoint。
 - UI 中激活的 Provider Manager profile 优先于 `.env`。
 - 受保护的 `/api/runtime-health` 会显示当前 credential source，便于排障；
   公开 `/health` 只提供 readiness 与版本。

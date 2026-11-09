@@ -6,7 +6,7 @@ legacy 组件边界见下文
 **权威源**：生产启动代码、类型、配置解析和测试；本文不保存 PR/实施历史
 
 Self-Improving 的目标是让历史分析结果在受控边界内改善后续分析，同时不把模型输出
-直接升级成事实、代码或公共知识。Web UI、CLI、API、五种 runtime、报告、snapshot
+直接升级成事实、代码或公共知识。Web UI、CLI、API、各 runtime、报告、snapshot
 和私有知识投影仍遵守[产品面规则](../../.claude/rules/product-surface.md)。
 面向部署者和管理员的启用、权限、用户影响与测试步骤见
 [Self-Evolution 使用与验收](../getting-started/self-evolution.md)；本文只维护运行时
@@ -294,7 +294,7 @@ fingerprint 和 supersede。这些是可测试组件，不代表生产启动：
   对账时被标为 `validationState: error` / `inert_injection_target_unsupported`
   （quarantined），报告中有同名 `validation_error` issue，且永不应用；RunManifest
   的 `injections.phaseHints` 保留为恒空数组，supersede 库的 `phase_hint_id` 列保留但不再读写。
-  需要影响运行时的注入请用 `skillNotes`（由五个 runtime 消费），需要绑定实际取证的义务
+  需要影响运行时的注入请用 `skillNotes`（由各 runtime 消费），需要绑定实际取证的义务
   请用场景的 `investigation_contract`；
 - 内容扫描、fingerprint 和测试通过也只生成候选变更，永不自动 merge；
 - Skill SQL patch 没有可用入口。

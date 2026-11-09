@@ -6,14 +6,14 @@
 
 SmartPerfetto separates model SDK mechanics from Perfetto analysis capability.
 The HTTP and CLI session layers depend on the shared `IOrchestrator` contract;
-the concrete runtime is selected from the request provider, Provider Manager,
-or environment.
+Pi Agent Core is the default and only selectable runtime, and a provider or the
+environment decides only the endpoint, model, and credentials.
 
 | Runtime | SDK | Provider family | Notes |
 |---|---|---|---|
-| `claude-agent-sdk` | Claude Agent SDK | Anthropic, Bedrock, Vertex, DeepSeek, Anthropic-compatible gateways | Default when env carries Claude credentials; requires explicit provider/env credentials and supports MCP server and configurable sub-agents under shared completion and verification contracts |
-| `openai-agents-sdk` | OpenAI Agents SDK | OpenAI, Ollama, OpenAI-compatible gateways | Native OpenAI runtime; adapts the same SmartPerfetto tools as function tools |
-| `pi-agent-core` | Pi Agent Core | custom, GLM, DeepSeek, Kimi, Kimi Code, MiniMax | Optional public runtime; real model configurations reuse the shared SmartPerfetto prompt/tool/report pipeline, while fake-stream remains smoke-only; does not enable `.pi` discovery, package extensions, shell tools, or file tools |
+| `pi-agent-core` | Pi Agent Core | Every provider type: Provider Manager profiles, `.env` Anthropic/OpenAI/Bedrock/Vertex variables, or an explicit Pi model JSON | Default and only selectable runtime; real model configurations reuse the shared SmartPerfetto prompt/tool/report pipeline, while fake-stream remains smoke-only; does not enable `.pi` discovery, package extensions, shell tools, or file tools |
+| `claude-agent-sdk` | Claude Agent SDK | Hidden fallback | Kept for one release behind the maintainer-only `SMARTPERFETTO_LEGACY_AGENT_RUNTIME`, removed in the next release; requires explicit provider/env credentials |
+| `openai-agents-sdk` | OpenAI Agents SDK | Hidden fallback | Same as above; adapts the same SmartPerfetto tools as function tools |
 
 The OpenCode and Qoder engines and their SDK dependencies are removed. The
 `opencode` and `qoder-agent-sdk` labels remain readable wherever a record names
@@ -168,11 +168,12 @@ and requires the currently available provider snapshot to match that hash
 exactly. It never reads a later active provider or falls back to another
 runtime.
 
-Claude/Anthropic-compatible source runs use a no-tool Claude SDK call for
-triage. OpenAI/OpenAI-compatible source runs use a lightweight Chat
-Completions call. Both receive only bounded public source context and do not
-share the analysis SDK session. Pi Agent Core, runs recorded under the removed
-Qoder runtime, legacy manifests, unavailable credentials, snapshot drift, or
+Pi Agent Core source runs execute triage through Pi's isolated one-shot call
+(`runIsolatedPiOneShot`); runs on the hidden Claude or OpenAI fallback use a
+no-tool Claude SDK call or a lightweight Chat Completions call. All receive only
+bounded public source context and do not share the analysis SDK session. Runs
+recorded under the removed Qoder runtime, legacy manifests, unavailable
+credentials, snapshot drift, or
 invalid model output use an explicit deterministic fallback in V1 and are never presented as if the
 same Agent reviewed the result. See
 [Agent-Assisted GitHub Feedback](../getting-started/agent-assisted-feedback.en.md)
@@ -185,8 +186,8 @@ for the user-visible contract.
 | `backend/src/agentRuntime/runtimeSelection.ts` | Runtime selection and the shared orchestrator factory |
 | `backend/src/agentRuntime/runtimeKinds.ts` | Production runtime kinds and the current registered set |
 | `backend/src/agentRuntime/runtimeDescriptors.ts` | Runtime descriptors, `EngineCapabilities`, and canonical loaders |
-| `backend/src/agentRuntime/engines/claude/claudeRuntime.ts` | Claude Agent SDK orchestrator |
-| `backend/src/agentRuntime/engines/openai/openAiRuntime.ts` | OpenAI Agents SDK orchestrator |
+| `backend/src/agentRuntime/engines/claude/claudeRuntime.ts` | Claude Agent SDK orchestrator (hidden fallback) |
+| `backend/src/agentRuntime/engines/openai/openAiRuntime.ts` | OpenAI Agents SDK orchestrator (hidden fallback) |
 | `backend/src/agentRuntime/engines/openai/openAiToolAdapter.ts` | Shared MCP descriptors adapted to OpenAI function tools |
 | `backend/src/agentRuntime/engines/pi/piAgentCoreRuntime.ts` | Pi Agent Core runtime adapter |
 | `backend/src/agentRuntime/runtimeExecutionGuard.ts` | Runtime/session single-active execution, cancellation, and stale-settle isolation |
@@ -800,11 +801,12 @@ Authenticated `GET /api/runtime-health` exposes the selected runtime. Public
 ```json
 {
   "aiEngine": {
-    "runtime": "openai-agents-sdk",
-    "providerMode": "openai_responses",
+    "runtime": "pi-agent-core",
+    "providerMode": "pi-agent-core",
     "diagnostics": {
-      "protocol": "responses",
-      "model": "gpt-5.4-mini"
+      "runtime": "pi-agent-core",
+      "package": "@earendil-works/pi-agent-core",
+      "modelConfigured": true
     }
   }
 }

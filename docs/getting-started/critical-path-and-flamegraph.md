@@ -13,7 +13,7 @@
 - Trace 已在 AI Assistant 中完成后端绑定（面板显示当前 Trace 已连接）。
 - 调用方能读取该 Trace（`trace:read`）。AI 总结额外要求 `agent:run` 权限：只能读 trace
   不足以动用 workspace 的模型。
-- AI 总结使用调用方当前的 Provider Manager profile，按 Claude runtime 的一次性调用执行。
+- AI 总结使用调用方当前的 Provider Manager profile，由 Pi Agent Core 执行一次性调用。
 
 ## Critical path 等待链
 
@@ -48,7 +48,7 @@
 
 AI 总结（feature `critical_path_ai_summary` / `flamegraph_ai_summary`）在以下情况改为规则兜底
 总结，分析本身照常返回，并通过 `aiSummary.fallbackReason` 和 `warnings` 说明原因：AI 被关闭、
-调用方没有 `agent:run`、当前 Provider 不是 Claude Agent SDK runtime、凭证缺失、超时或客户端断开。
+调用方没有 `agent:run`、凭证缺失、超时或客户端断开。
 这两个入口不会因为 AI 关闭而返回 403。请求连接断开时，后端会取消未完成的查询和模型调用。
 
 ## 部署与接口

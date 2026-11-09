@@ -35,12 +35,12 @@ git fetch --tags origin
 npm view @gracker/smartperfetto version --json
 ```
 
-同步版本并提交：
+同步版本并提交。`version:set` 不更新 `CHANGELOG.md`，提交前手动写好该版本的条目：
 
 ```bash
 npm run version:set -- <version>
 npm run version:sync -- --check
-git add package.json package-lock.json backend/package.json backend/package-lock.json
+git add CHANGELOG.md package.json package-lock.json backend/package.json backend/package-lock.json
 git commit -m "chore: release v<version>"
 git push origin main
 ```

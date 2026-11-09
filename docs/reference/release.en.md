@@ -37,12 +37,12 @@ git fetch --tags origin
 npm view @gracker/smartperfetto version --json
 ```
 
-Synchronize and commit the version:
+Synchronize and commit the version. `version:set` does not update `CHANGELOG.md`, so write that version's entry before committing:
 
 ```bash
 npm run version:set -- <version>
 npm run version:sync -- --check
-git add package.json package-lock.json backend/package.json backend/package-lock.json
+git add CHANGELOG.md package.json package-lock.json backend/package.json backend/package-lock.json
 git commit -m "chore: release v<version>"
 git push origin main
 ```

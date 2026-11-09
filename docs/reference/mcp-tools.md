@@ -12,7 +12,7 @@ Tool implementation
   -> request-visible tool surface
 ```
 
-`claudeMcpServer.ts` 是工具实现入口；`mcpToolRegistry.ts` 是工具描述、exposure level 和 allowlist 的单一事实源。Claude runtime 直接使用 in-process MCP server；OpenAI runtime 读取同一份 registry 并适配成 OpenAI Agents SDK function tools。
+`claudeMcpServer.ts` 是工具实现入口；`mcpToolRegistry.ts` 是工具描述、exposure level 和 allowlist 的单一事实源。Pi Agent Core 用同一份 registry 构建 request-scoped native tools；隐藏回退的 Claude 与 OpenAI 引擎分别适配为 in-process MCP server 和 function tools。
 
 不要把工具总数写死在代码或文档中。新增、删除或改名工具时，以 registry 和测试为准。
 
@@ -187,7 +187,7 @@ Comparison 工具只在请求包含 `referenceTraceId` 且 comparison context �
 
 ## 维护清单
 
-- 工具实现或可见性变化：更新 `claudeMcpServer.ts`、`mcpToolRegistry.ts`、OpenAI adapter 相关测试和本页。
+- 工具实现或可见性变化：更新 `claudeMcpServer.ts`、`mcpToolRegistry.ts`、Pi native tool 相关测试和本页。
 - Code-aware 工具变化：同时检查 `docs/getting-started/code-aware-analysis*.md`。
 - Comparison 工具变化：同时检查 comparison docs、CLI docs 和 report/snapshot contract。
 - 不要新增静态工具总数；如果需要当前 inventory，请从 registry 或源码 grep 生成。

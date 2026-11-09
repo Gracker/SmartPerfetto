@@ -65,8 +65,8 @@ SmartPerfetto 在 Perfetto Trace 之上增加 AI 分析层。加载 Trace、用�
   知识库只作背景，不替代当前 trace 的证据。见
   [私有知识库](docs/getting-started/private-knowledge.md)与
   [Android Internals 知识](docs/getting-started/android-internals-knowledge.md)。
-- 边生成边显示：Claude 与 OpenAI runtime 先显示回答草稿，运行完成后由最终回答替换，
-  之后不再追加复核调用。停止即取消本次运行。
+- 边生成边显示：先显示实时回答草稿，运行完成后由最终回答替换，
+  之后不再追加复核调用。停止即取消本次运行，分析进行中也可以继续发送补充说明。
 - 在选中的 `thread_state` 上打开 Critical path 等待链抽屉，或在火焰图页查看 CPU 调用栈热点，
   均带规则兜底的 AI 总结。见 [Critical path 与火焰图](docs/getting-started/critical-path-and-flamegraph.md)。
 - 用 `smp capture` 从连接的 Android 设备按预置或自定义配置抓 trace，可选抓完直接分析。
@@ -121,8 +121,8 @@ npm install -g @gracker/smartperfetto --allow-scripts=better-sqlite3
 ### 2. 配置一个 AI Provider
 
 Web UI 启动后，打开 **AI Assistant 设置 → Providers**，添加一个 Provider，依次保存、
-测试并激活。本地源码运行也可在 `backend/.env` 配置凭据；Claude Code 登录态不能作为 SDK 已配置的依据。
-第一次启动不需要配置所有 Runtime；只选一条 Provider 路径，按
+测试并激活。本地源码运行也可在 `backend/.env` 配置凭据；Claude Code 登录态不能作为模型已配置的依据。
+分析统一运行在 Pi Agent Core 上，第一次启动只选一条 Provider 路径，按
 [配置指南](docs/getting-started/configuration.md)操作即可。已保存 Provider
 会通过受控缓存刷新供应商支持的模型建议；目录不支持或不可用时继续使用内置预置。
 

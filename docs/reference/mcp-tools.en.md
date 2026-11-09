@@ -12,7 +12,7 @@ Tool implementation
   -> request-visible tool surface
 ```
 
-`claudeMcpServer.ts` implements the tools. `mcpToolRegistry.ts` is the source of truth for descriptors, exposure levels, and allowlists. Claude runtime uses the in-process MCP server directly; OpenAI runtime reads the same registry and adapts descriptors into OpenAI Agents SDK function tools.
+`claudeMcpServer.ts` implements the tools. `mcpToolRegistry.ts` is the source of truth for descriptors, exposure levels, and allowlists. Pi Agent Core builds request-scoped native tools from the same registry; the hidden fallback Claude and OpenAI engines adapt it to an in-process MCP server and function tools.
 
 Do not hardcode the total tool count in code or docs. Treat the registry and tests as authoritative.
 
@@ -196,7 +196,7 @@ Comparison tools are registered only when `referenceTraceId` and comparison cont
 
 ## Maintenance Checklist
 
-- Tool implementation or visibility changes: update `claudeMcpServer.ts`, `mcpToolRegistry.ts`, OpenAI adapter tests, and this page.
+- Tool implementation or visibility changes: update `claudeMcpServer.ts`, `mcpToolRegistry.ts`, Pi native tool tests, and this page.
 - Code-aware tool changes: check `docs/getting-started/code-aware-analysis*.md`.
 - Comparison tool changes: check comparison docs, CLI docs, and report/snapshot contracts.
 - Do not add a static total tool count; generate current inventory from the registry or source when needed.

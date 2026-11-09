@@ -101,13 +101,14 @@ Light and sub-agent models also accept direct input. IDs keep their case; only
 leading and trailing whitespace is trimmed. The provider determines availability.
 
 The common form shows the provider, API key, and primary model. **Advanced settings**
-contains the display name, light and sub-agent models, runtime, connection overrides,
+contains the display name, light and sub-agent models, connection overrides,
 and tuning. It starts collapsed; toggling it does not clear saved values. Custom,
 Bedrock, and Vertex connections still expose the fields needed to configure them.
 
 New profiles use template defaults, favoring current general-purpose, lightweight,
 or automatic-routing options. Primary and light models can be the same; Custom
-profiles use the primary model when no light model is specified. Reopen settings
+profiles use the primary model when no light model is specified. Pi has one
+model, so light-model settings have no effect on it. Reopen settings
 after updating the backend to load new options and new-profile defaults. Editing
 or cloning a profile does not replace its saved values with template defaults or
 change session pins. Save your selection and test the connection. Suggestions
@@ -288,6 +289,10 @@ An OpenAI-compatible endpoint does not require installing or logging in to Claud
 The model source priority is: request/session `providerId`, active Provider Manager profile, then `.env`. With `.env` only, when both Anthropic and OpenAI variables exist the old rule picks the side: `SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk` (deprecated but still read) picks OpenAI; otherwise an Anthropic key/token, Bedrock, or Vertex picks Anthropic; otherwise `OPENAI_*` is used. Do not enable both `ANTHROPIC_*` and `OPENAI_*` for first setup. An active Provider Manager profile overrides `.env` fallback; confirm the current source with `aiEngine.credentialSource` and `aiEngine.providerOverridesEnv` from authenticated `/api/runtime-health`.
 
 Perfetto UI Provider Management can store both endpoint families for the same provider: `claudeBaseUrl` / `claudeApiKey` / `claudeAuthToken` for the Anthropic-compatible API, and `openaiBaseUrl` / `openaiApiKey` / `openaiProtocol` for the OpenAI-compatible API; `apiSurface` (`claude` or `openai`) records which side Pi calls, defaulting to the type's former default (the Anthropic side for dual-surface providers). The API returns `supportedRuntimes: ["pi-agent-core"]` for every provider; writing a retired runtime value logs a warning and lands on Pi through the migration above. Custom providers can also set `piAgentCoreModelJson` with an optional module path/system prompt as an explicit override.
+
+Moving a provider's `apiSurface` to a different host, or changing an endpoint's
+origin, requires re-entering or clearing that provider's credential; the save is
+rejected otherwise, so a stored key is never sent to another host.
 
 In enterprise mode, remote Provider Manager endpoints must use public HTTPS by
 default, including DNS-result validation, and redirects must remain same-origin.
@@ -502,7 +507,7 @@ fail closed and are reported through authenticated `/api/runtime-health` as `aiP
 
 Still available while disabled: trace upload/read, SQL queries, capture config
 proposals, Android capture without `--analyze`, report reads, Provider profile
-list/edit/activate/runtime switching, and Skills (no Skill step calls a model).
+list/edit/activate, and Skills (no Skill step calls a model).
 Blocked: agent analyze/resume, cold scene reconstruction start, Provider
 connection tests, `smp provider test`, and `smp capture android --analyze`. Blocked responses include `code: "AI_DISABLED"` and
 `retryable: false`. Degraded rather than blocked: the Critical path wait-chain
@@ -869,6 +874,17 @@ monthly runs bound analysis resources; they are not per-request rate limits.
 
 The backend orchestration runtime is always Pi Agent Core; a provider decides only the endpoint, model, and credentials. `SMARTPERFETTO_AGENT_RUNTIME` is deprecated: it accepts only runtime names that were once valid (`claude-agent-sdk`, `openai-agents-sdk`, `pi-agent-core`, `opencode`, `qoder-agent-sdk`), maps them all to Pi with one deprecation warning, and still rejects unknown values such as a provider name like `deepseek`.
 
+## Pi Analysis Switches
+
+The defaults suit most deployments; change these only for troubleshooting or rollout:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `SMARTPERFETTO_RUN_SUPPLEMENT` | On | Accept user supplements during a running analysis; `false` turns it off |
+| `SMARTPERFETTO_EVIDENCE_FIRST` | Off | With `true`, a scene that declares `evidence_first` runs its entry Skill first; only the ANR scene declares it |
+| `SMARTPERFETTO_INVESTIGATION_ACQUISITION_STATUS` | On | The first request's investigation requirements carry acquisition status; `false` turns it off |
+| `SMARTPERFETTO_SKILL_RESULT_FACTS` | On | Skill results carry column notes and rule facts; `false` turns them off |
+
 ## Runtime Concurrency Candidate Admission
 
 Shipped configuration admits no performance-concurrency candidate by default.
@@ -876,7 +892,7 @@ Only maintainers who have completed the candidate's deterministic and real-
 provider A/B gates may set the following on the target backend process:
 
 ```bash
-SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES=task4,task6
+SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES=task4,task7
 ```
 
 The value accepts only a comma-separated list of `task4`, `task5`, `task6`, and
@@ -889,7 +905,7 @@ never edit or activate it automatically.
 
 - `task4`: reuse quick-evidence/focus preflight across every runtime.
 - `task5`: permit bounded overlap for marked commutative reads across every runtime; other tools stay exclusive.
-- `task6`: overlap independent Claude/OpenAI preflights.
+- `task6`: overlap independent Claude/OpenAI preflights (not applicable to Pi).
 - `task7`: load independent Pi SDK/provider startup concurrently and enable quick parallel-batch scheduling; descriptor/tool gates still serialize exclusive work.
 
 Once `task5` is admitted, safe read concurrency is on by default. The following
@@ -921,8 +937,8 @@ cd backend
 npm run benchmark:agent-latency -- \
   --base-url http://127.0.0.1:10000 \
   --candidate-url http://127.0.0.1:10001 \
-  --runtime openai-agents-sdk \
-  --candidate task6 \
+  --runtime pi-agent-core \
+  --candidate task7 \
   --candidate-config-fingerprint <lowercase-hex-fingerprint> \
   --output-run-nonce <lowercase-hex-nonce> \
   --output-dir test-output/runtime-concurrency/<fresh-run> \
@@ -947,7 +963,7 @@ cd backend
 npm run benchmark:agent-latency -- \
   --base-url http://127.0.0.1:10000 \
   --candidate-url http://127.0.0.1:10001 \
-  --runtime openai-agents-sdk \
+  --runtime pi-agent-core \
   --output-dir test-output/runtime-concurrency/<fresh-diagnostic>
 ```
 

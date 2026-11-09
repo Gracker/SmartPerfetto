@@ -128,13 +128,17 @@ popup or frontend workspace-selection flow.
 ## 4. Runtimes And Providers
 
 Every runtime currently registered by `PRODUCTION_RUNTIME_KINDS` implements the
-shared `IOrchestrator` contract:
+shared `IOrchestrator` contract. Pi Agent Core is the default and only selectable
+runtime; the Claude Agent SDK and OpenAI Agents SDK engines remain as a hidden
+fallback for one release (see the maintainer switch in
+[Agent Runtime](agent-runtime.en.md)); the OpenCode and Qoder engines are removed
+and their recorded labels stay readable:
 
 | Runtime | Primary providers | Resume state |
 |---|---|---|
-| `claude-agent-sdk` | Anthropic, Bedrock, Vertex, Claude-compatible | No native state across turns (provider pin only) |
-| `openai-agents-sdk` | OpenAI Responses, OpenAI-compatible, Ollama/chat-completions | No native state across turns (provider pin only) |
-| `pi-agent-core` | Provider Manager custom profile / Pi model config | No native state across turns (provider pin only) |
+| `pi-agent-core` | Every provider type (Provider Manager profiles, `.env` endpoint variables, or Pi model config) | No native state across turns (provider pin only) |
+| `claude-agent-sdk` | Hidden fallback | No native state across turns (provider pin only) |
+| `openai-agents-sdk` | Hidden fallback | No native state across turns (provider pin only) |
 
 Canonical loaders and capabilities come from
 `backend/src/agentRuntime/runtimeDescriptors.ts`, with implementations under
@@ -143,14 +147,16 @@ compatibility facade for old import paths. `backend/src/agentv3/` still owns
 canonical shared MCP, strategy, planning, and verifier layers, so the namespace
 as a whole is not legacy.
 
-Selection order is request-level Provider Manager profile, persisted session
-snapshot, `SMARTPERFETTO_AGENT_RUNTIME`, then the default runtime. A session
+Selection precedence is the explicit or active Provider Manager profile, persisted
+session snapshot, the deprecated `SMARTPERFETTO_AGENT_RUNTIME`, then the default;
+every source resolves to one effective runtime, Pi Agent Core (or the engine the
+hidden fallback switch selects). A session
 pins its provider/runtime at creation; resume must not silently follow a newly
 activated profile.
 
-Provider Manager profiles override `.env` fallback. Claude Agent SDK requires
-explicit provider/env credentials in every run mode; Claude Code login does not
-establish SDK readiness.
+Provider Manager profiles override `.env` fallback. Every run mode requires
+explicit provider/env credentials; Claude Code login does not establish
+readiness.
 
 ## 5. MCP Tool Surface
 

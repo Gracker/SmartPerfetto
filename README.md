@@ -79,9 +79,9 @@ Register the public Android Internals Wiki (or your own team documents) as a doc
   knowledge base is background, never a substitute for current-trace evidence.
   See [Private Knowledge](docs/getting-started/private-knowledge.en.md) and
   [Android Internals Knowledge](docs/getting-started/android-internals-knowledge.en.md).
-- Streams the answer as it is written: the Claude and OpenAI runtimes show a
-  draft that the finished answer replaces as soon as the run completes, with no
-  extra review call after it. Stop cancels the run.
+- Streams the answer as it is written: a live draft that the finished answer
+  replaces as soon as the run completes, with no extra review call after it.
+  Stop cancels the run, and you can send more context to a running analysis.
 - Opens a critical-path wait-chain drawer on a selected `thread_state`, and a
   flamegraph page for CPU call-stack hotspots, both with a rule-based fallback
   AI summary. See [Critical Path And Flamegraph](docs/getting-started/critical-path-and-flamegraph.en.md).
@@ -142,8 +142,8 @@ The complete prerequisites and distribution choices are in the
 
 After the Web UI starts, open **AI Assistant Settings → Providers**, add one
 provider, save it, test it, and activate it. Local source runs may instead configure explicit provider credentials in
-`backend/.env`. Claude Code login does not configure the SDK. Do not configure every
-runtime for the first launch; choose one provider path and follow the
+`backend/.env`. Claude Code login is not a model configuration. Analysis runs on
+Pi Agent Core, so for the first launch choose one provider path and follow the
 [Configuration Guide](docs/getting-started/configuration.en.md). Saved providers also
 refresh their model suggestions from supported provider catalogs with a bounded
 cache; unsupported or unavailable catalogs keep the curated preset list.

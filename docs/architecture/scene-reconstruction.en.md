@@ -48,7 +48,7 @@ The registry publishes an optional `planPhaseId` on every evidence-capable tool;
 
 ## Proposal Pacing and Budget
 
-The strategy asks for an early small revision, yet real runs spent the whole budget acquiring and the first accepted revision typically landed at the end of acquisition. Pacing is applied by the shared registry before each acquisition call, identically for all five runtimes and after authorization and lifecycle refusals:
+The strategy asks for an early small revision, yet real runs spent the whole budget acquiring and the first accepted revision typically landed at the end of acquisition. Pacing is applied by the shared registry before each acquisition call, identically for every runtime and after authorization and lifecycle refusals:
 
 - With no committed segment after a few acquisitions, acquisition results carry a reminder; after an acquisition count or a fraction of the base budget, acquisition pauses until the model submits a segment-bearing proposal (a rejected one counts as an attempt, so it cannot deadlock), and pauses again a few acquisitions later while nothing is committed.
 - When fewer than a few of the slowest recent model rounds (capped at a fraction of the acquisition span) remain before the acquisition limit, acquisition closes for good; proposals, retained-artifact reads and the final answer remain.

@@ -39,11 +39,14 @@ asset registry, not generated output. Backend contract changes regenerate plugin
   text unfinished; stored messages cannot remain pending. Conversation uses its
   deterministic run/message identity and persists only terminal results.
 - Stop-and-redirect releases the composer only after matching terminal ownership.
-  A stop cancels the run; a late stop response is a no-op. The plugin still
-  handles legacy provisional answers, `provisional_answer`,
-  `review_stop_requested` and `final_review` progress, which the current
-  backend no longer emits; remove that UI only with a prebuild and submodule
-  update.
+  A stop cancels the run; a late stop response is a no-op. There is no
+  provisional answer or review-only stop: the draft is the live state and the
+  final answer replaces the same message, so a replayed `provisional_answer`
+  event or `provisional` marker is ignored.
+- Run supplements move through typed `classifying`, `queued`, `delivered`,
+  `restart_required`, `rejected` and `not_applied` states from receipts or error
+  codes, never wording. `delivered` means the agent's context, not the provider;
+  a supplement the run left unresolved settles locally until a backend verdict.
 - Retry only bounded busy conflicts (`CANCELLATION_IN_PROGRESS`,
   `RUN_ALREADY_ACTIVE`); source/authorization 409s need their existing handling,
   never a retry loop. Context-changing mode/provider edits start a compatible

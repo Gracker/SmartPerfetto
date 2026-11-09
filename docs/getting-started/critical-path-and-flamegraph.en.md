@@ -18,7 +18,7 @@ snapshots. Hand a result to the conversation when you want to dig further.
   requires the `agent:run` permission: reading a trace is not enough to spend
   the workspace's model.
 - The AI summary uses the caller's current Provider Manager profile through a
-  one-shot Claude runtime call.
+  one-shot Pi Agent Core call.
 
 ## Critical Path Wait Chain
 
@@ -64,8 +64,7 @@ warning. The flamegraph page and its AI summary are Chinese only.
 
 The AI summary (feature `critical_path_ai_summary` / `flamegraph_ai_summary`)
 becomes a rule-based fallback summary, while the analysis itself still returns,
-when AI is disabled, the caller lacks `agent:run`, the current Provider is not
-the Claude Agent SDK runtime, credentials are missing, the call times out, or
+when AI is disabled, the caller lacks `agent:run`, credentials are missing, the call times out, or
 the client disconnects. `aiSummary.fallbackReason` and `warnings` state the
 reason. Disabling AI never makes these entry points return 403. When the request
 connection drops, the backend cancels unfinished queries and model calls.

@@ -189,13 +189,13 @@ block，或一个 OpenAI-compatible env block。`smp provider list` 和
 `smp provider test <providerId>` 只检查该 CLI store；CLI 当前不提供 profile 的
 add、edit 或 activate 命令。
 
-Runtime 判断按实际选择的 provider/runtime 执行：
+分析运行在 Pi Agent Core 上，运行前校验、doctor 和 system provider test 按实际解析到的 endpoint 判断：
 
-- Claude Agent SDK：需要 API key/auth token 或 Bedrock/Vertex 配置；仅有代理地址或
-  Claude Code 登录态时，运行前校验、doctor 和 system provider test 均不通过。
-- OpenAI Agents SDK：需要 `OPENAI_API_KEY`，或本地
-  `localhost` / `127.0.0.1` / `0.0.0.0` OpenAI-compatible endpoint。
-- Ollama provider 默认走 OpenAI-compatible runtime。
+- Anthropic/Claude-compatible：需要 API key/auth token 或 Bedrock/Vertex 配置；仅有代理地址或
+  Claude Code 登录态时均不通过。
+- OpenAI-compatible：需要 `OPENAI_API_KEY`，或本地
+  `localhost` / `127.0.0.1` / `0.0.0.0` endpoint。
+- Ollama provider 走 OpenAI-compatible endpoint。
 
 从 v1.15.1 起，`smp doctor` 的 `sqlite_native` 检查会加载原生 SQLite 绑定；
 缺失或无法加载时返回 `error`，命令退出码为 1。该检查在 AI 禁用时也执行，

@@ -4,13 +4,13 @@
 
 <!-- i18n-headings: paired -->
 
-SmartPerfetto 后端现在把“模型 SDK”与“Perfetto 分析能力”分层。HTTP/CLI 会话层只依赖统一的 `IOrchestrator` 合约；具体运行时由 Provider 或 env 选择：
+SmartPerfetto 后端现在把“模型 SDK”与“Perfetto 分析能力”分层。HTTP/CLI 会话层只依赖统一的 `IOrchestrator` 合约。Pi Agent Core 是默认且唯一可选的 runtime；Provider 或 env 只决定 endpoint、模型和凭据：
 
 | Runtime | SDK | Provider 类型 | 说明 |
 |---|---|---|---|
-| `claude-agent-sdk` | Claude Agent SDK | Anthropic、Bedrock、Vertex、DeepSeek、Anthropic-compatible gateway | env 已有 Claude 凭据时的默认运行时，需要显式 provider/env 凭据，支持 MCP server 和可配置 sub-agent，复用共享终态与验证合约 |
-| `openai-agents-sdk` | OpenAI Agents SDK | OpenAI、Ollama、OpenAI-compatible gateway | 原生 OpenAI runtime，通过 function tools 复用同一套 SmartPerfetto 工具 |
-| `pi-agent-core` | Pi Agent Core | custom、GLM、DeepSeek、Kimi、Kimi Code、MiniMax | 可选 public runtime；真实模型配置下复用 SmartPerfetto 共享 prompt/tool/report 管线，fake-stream 仅用于 smoke；不启用 `.pi` discovery、package extension、shell/file tools |
+| `pi-agent-core` | Pi Agent Core | 全部 Provider 类型：Provider Manager profile、`.env` 的 Anthropic/OpenAI/Bedrock/Vertex 变量，或显式 Pi model JSON | 默认且唯一可选的 runtime；真实模型配置下复用 SmartPerfetto 共享 prompt/tool/report 管线，fake-stream 仅用于 smoke；不启用 `.pi` discovery、package extension、shell/file tools |
+| `claude-agent-sdk` | Claude Agent SDK | 隐藏回退 | 由维护者开关 `SMARTPERFETTO_LEGACY_AGENT_RUNTIME` 保留一个版本，下一版本删除；需要显式 provider/env 凭据 |
+| `openai-agents-sdk` | OpenAI Agents SDK | 隐藏回退 | 同上；通过 function tools 复用同一套 SmartPerfetto 工具 |
 
 OpenCode 与 Qoder 引擎及其 SDK 依赖已删除。记录里出现的 `opencode`、`qoder-agent-sdk` 标签仍可读取
 （`RECORDED_PRODUCTION_RUNTIME_KINDS`），执行时使用 effective runtime。
@@ -137,9 +137,9 @@ Agent 辅助 GitHub 反馈不是主分析 session 的 resume。分析完成时�
 provider snapshot 与该 hash 完全一致。它不会读取后来切换的 active provider，也不会
 回退到另一个 runtime。
 
-Claude/Anthropic-compatible 源 run 通过无工具 Claude SDK 调用执行 triage；
-OpenAI/OpenAI-compatible 源 run 通过轻量 Chat Completions 调用执行。两者都只接收有界的
-公开 source context，不共享主分析 SDK session。Pi Agent Core、记录在已删除的 Qoder runtime
+Pi Agent Core 源 run 通过 Pi 的独立单次调用（`runIsolatedPiOneShot`）执行 triage；隐藏回退的
+Claude/OpenAI 源 run 分别走无工具 Claude SDK 和轻量 Chat Completions。它们都只接收有界的
+公开 source context，不共享主分析 SDK session。记录在已删除的 Qoder runtime
 下的 run、旧 manifest、凭据不可用、snapshot 漂移或非法模型输出在 V1 中使用明确的确定性 fallback，
 不会伪装成同一 Agent 已复核。完整用户边界见
 [Agent 辅助 GitHub 反馈](../getting-started/agent-assisted-feedback.md)。
@@ -151,8 +151,8 @@ OpenAI/OpenAI-compatible 源 run 通过轻量 Chat Completions 调用执行。�
 | `backend/src/agentRuntime/runtimeSelection.ts` | runtime 选择与统一 orchestrator factory |
 | `backend/src/agentRuntime/runtimeKinds.ts` | production runtime kind 与当前注册集合 |
 | `backend/src/agentRuntime/runtimeDescriptors.ts` | runtime descriptor、`EngineCapabilities` 和 canonical loader |
-| `backend/src/agentRuntime/engines/claude/claudeRuntime.ts` | Claude Agent SDK orchestrator |
-| `backend/src/agentRuntime/engines/openai/openAiRuntime.ts` | OpenAI Agents SDK orchestrator |
+| `backend/src/agentRuntime/engines/claude/claudeRuntime.ts` | Claude Agent SDK orchestrator（隐藏回退） |
+| `backend/src/agentRuntime/engines/openai/openAiRuntime.ts` | OpenAI Agents SDK orchestrator（隐藏回退） |
 | `backend/src/agentRuntime/engines/openai/openAiToolAdapter.ts` | shared MCP descriptor 到 OpenAI function tool 的适配 |
 | `backend/src/agentRuntime/engines/pi/piAgentCoreRuntime.ts` | Pi Agent Core runtime adapter |
 | `backend/src/agentRuntime/runtimeExecutionGuard.ts` | runtime/session 单活执行、取消与 stale settle 隔离 |
@@ -165,7 +165,7 @@ OpenAI/OpenAI-compatible 源 run 通过轻量 Chat Completions 调用执行。�
 | `backend/src/agentRuntime/runtimeActivity.ts`, `runtimePerformanceContext.ts` | 有界调用与采集活动、私有运行归属及迟到回调隔离 |
 | `backend/src/agentRuntime/runtimeToolResultAudit.ts` | RunManifest 内部工具结果交接 receipt：每次调用交给 runtime 的文本规模与受审计字段是否逐字可见 |
 | `backend/src/agentRuntime/runtimeToolConcurrency.ts` | request-scoped 公平读写调度与默认独占策略 |
-| `backend/src/agentv3/claudeMcpServer.ts` | SmartPerfetto 工具注册，仍是工具单一事实源 |
+| `backend/src/agentv3/claudeMcpServer.ts` | SmartPerfetto 工具实现与按请求组合（descriptor 的单一事实源是 `mcpToolRegistry.ts`） |
 | `backend/src/agentv3/mcpToolRegistry.ts` | 工具 descriptor、exposure level 和 allowlist 单一事实源 |
 | `backend/src/services/canonicalAnalysisResult.ts`, `finalizeAnalysisResult.ts` | canonical 正文（剥离模型残留声明）与产品层唯一异步 finalizer |
 | `backend/src/services/finalResultQualityGate.ts`, `evidence/evidenceReadView.ts` | 交付保证（完成状态、对比身份、源码引用）与原始采集读取 |
@@ -190,7 +190,7 @@ SmartPerfetto 的分析能力由 `createClaudeMcpServer()` 实现，并通过 `M
 
 OpenAI runtime 不复制工具逻辑，而是读取同一份 `McpToolRegistry`，把每个 tool descriptor 适配为 OpenAI Agents SDK function tool。工具名称保留 `mcp__smartperfetto__*` 前缀，便于 SSE、日志和报告复用现有语义。
 
-当前 production runtime 保持同一个产品合约：输入通过各自 pinned provider 的原生无工具 transport 解析为共享 typed intent，输出交给同一个产品层 finalizer 和报告边界。Claude 使用 in-process MCP、tool allowlist 和可配置 sub-agent，每轮开启新的 SDK session；OpenAI 使用同一工具注册表适配的 function tools，SDK history 只在本轮内用于续写/恢复调用，不写入快照、也不用 `previousResponseId` 跨轮续接；Pi 使用 request-scoped native tools。各 SDK 的调用节奏、流式事件、恢复和成本/超时语义仍有差异。
+Pi 与两个隐藏回退引擎保持同一个产品合约：输入通过各自 pinned provider 的原生无工具 transport 解析为共享 typed intent，输出交给同一个产品层 finalizer 和报告边界。Claude 使用 in-process MCP、tool allowlist 和可配置 sub-agent，每轮开启新的 SDK session；OpenAI 使用同一工具注册表适配的 function tools，SDK history 只在本轮内用于续写/恢复调用，不写入快照、也不用 `previousResponseId` 跨轮续接；Pi 使用 request-scoped native tools。各 SDK 的调用节奏、流式事件、恢复和成本/超时语义仍有差异。
 
 SQL 工具的 `executionContext` 独立于模型、预算和源码权限。省略或 `working` 使用
 当前工作区（包括已加载模块和临时表）；`original_trace` 显式请求本轮原始 Trace 的
@@ -542,11 +542,12 @@ comparison identity 读写。
 ```json
 {
   "aiEngine": {
-    "runtime": "openai-agents-sdk",
-    "providerMode": "openai_responses",
+    "runtime": "pi-agent-core",
+    "providerMode": "pi-agent-core",
     "diagnostics": {
-      "protocol": "responses",
-      "model": "gpt-5.4-mini"
+      "runtime": "pi-agent-core",
+      "package": "@earendil-works/pi-agent-core",
+      "modelConfigured": true
     }
   }
 }

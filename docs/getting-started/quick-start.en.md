@@ -33,17 +33,17 @@ Initialize the submodule only when you need to modify the AI Assistant frontend 
 
 ## 3. Prepare Model Configuration
 
-You do not need to configure every runtime. For first setup, pick one entry point: UI Provider Manager, one Claude-compatible env block, one OpenAI-compatible env block, or a custom Pi Agent Core block.
+Analysis always runs on Pi Agent Core, so for first setup pick one model source: UI Provider Manager, one Claude-compatible env block, one OpenAI-compatible env block, or an explicit Pi model configuration.
 
-Claude Agent SDK requires an explicit API key/auth token or Bedrock/Vertex configuration through Provider Manager or env. Claude Code login and a Base URL alone do not configure the SDK.
+Provider Manager or env must carry an explicit API key/auth token or Bedrock/Vertex configuration. Claude Code login and a Base URL alone are not a configuration (a local OpenAI-compatible endpoint can omit the key).
 
 If you choose env configuration, create the env file:
 
 Step 1: run `cp backend/.env.example backend/.env`.
 
-Step 2: edit `backend/.env`. Uncomment `ANTHROPIC_API_KEY` for direct Anthropic access, uncomment one Claude Code / Anthropic-compatible provider block for compatible providers, use the OpenAI Agents SDK fields for OpenAI / OpenAI-compatible providers, or use the Pi Agent Core custom section. An old OpenCode setup migrates to Pi; a Qoder setup must be re-entered with an Anthropic- or OpenAI-compatible endpoint.
+Step 2: edit `backend/.env`. Uncomment `ANTHROPIC_API_KEY` for direct Anthropic access, uncomment one Claude Code / Anthropic-compatible provider block for compatible providers, use the `OPENAI_*` fields for OpenAI / OpenAI-compatible providers, or use the Pi Agent Core custom section for a full model definition. Pi calls that endpoint with its API and model. An old OpenCode setup migrates to Pi; a Qoder setup must be re-entered with an Anthropic- or OpenAI-compatible endpoint.
 
-`backend/.env.example` includes presets for common Claude-compatible and OpenAI-compatible providers such as DeepSeek, GLM, Qwen, Kimi, Doubao, MiniMax, MiMo, and TokenHub. Docker reads the repository-root `.env` file, including both Docker Hub images and local source Docker builds:
+`backend/.env.example` includes presets for common Claude-compatible and OpenAI-compatible providers such as DeepSeek, GLM, Qwen, Kimi, Doubao, MiniMax, MiMo, and TokenHub. Pi uses the main model only, so `CLAUDE_LIGHT_MODEL` / `OPENAI_LIGHT_MODEL` have no effect on it. Docker reads the repository-root `.env` file, including both Docker Hub images and local source Docker builds:
 
 Step 1: run `cp .env.example .env`.
 

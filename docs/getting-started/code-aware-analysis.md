@@ -215,7 +215,7 @@ node backend/scripts/run-glm-agent-e2e.cjs \
 
 ```bash
 node backend/scripts/run-glm-agent-e2e.cjs \
-  --suite code-aware-semantic-delta --runtime openai-agents-sdk \
+  --suite code-aware-semantic-delta --runtime pi-agent-core \
   --preflight --query-id explicit-source-location --condition A2
 ```
 

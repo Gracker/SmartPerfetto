@@ -91,8 +91,8 @@ Open **AI Assistant Settings → Providers**:
    for protocol, Base URL, and model IDs.
 2. Enter the **Provider API Key**. The backend auth token on the Connection page is not a
    model-provider key; it is needed only when an operator configured SMARTPERFETTO_API_KEY.
-3. Check the runtime. Claude/Anthropic-compatible providers usually use the Claude Agent SDK;
-   OpenAI/OpenAI-compatible providers usually use the OpenAI Agents SDK.
+3. Check the API. Claude/Anthropic-compatible providers use the Anthropic API;
+   OpenAI/OpenAI-compatible providers use the OpenAI API. Analysis always runs on Pi Agent Core.
 4. Save the Provider.
 5. Run the connection test. Check Base URL, model IDs, protocol, proxy, and system time first
    when it fails.

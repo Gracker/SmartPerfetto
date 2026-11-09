@@ -115,13 +115,15 @@ Cookie 写请求除了 CORS 之外还要经过精确 Origin 检查，因为 CORS
 ## 4. Runtime 与 Provider
 
 `PRODUCTION_RUNTIME_KINDS` 当前注册的 production runtime 都实现共享
-`IOrchestrator` 合约：
+`IOrchestrator` 合约。Pi Agent Core 是默认且唯一可选的 runtime；Claude Agent SDK 与
+OpenAI Agents SDK 引擎只作为隐藏回退保留一个版本（维护者开关见
+[Agent 运行时](agent-runtime.md)）；OpenCode 与 Qoder 引擎已删除，记录标签仍可读取：
 
 | Runtime | 主要 Provider | 恢复状态 |
 |---|---|---|
-| `claude-agent-sdk` | Anthropic、Bedrock、Vertex、Claude-compatible | 不跨轮保留原生状态（只保留 provider 钉定） |
-| `openai-agents-sdk` | OpenAI Responses、OpenAI-compatible、Ollama/chat-completions | 不跨轮保留原生状态（只保留 provider 钉定） |
-| `pi-agent-core` | Provider Manager custom profile / Pi model config | 不跨轮保留原生状态（只保留 provider 钉定） |
+| `pi-agent-core` | 全部 Provider 类型（Provider Manager profile、`.env` 端点变量或 Pi model config） | 不跨轮保留原生状态（只保留 provider 钉定） |
+| `claude-agent-sdk` | 隐藏回退 | 不跨轮保留原生状态（只保留 provider 钉定） |
+| `openai-agents-sdk` | 隐藏回退 | 不跨轮保留原生状态（只保留 provider 钉定） |
 
 canonical loader 和 capabilities 来自
 `backend/src/agentRuntime/runtimeDescriptors.ts`，具体实现在
@@ -129,12 +131,13 @@ canonical loader 和 capabilities 来自
 的 compatibility facade；`backend/src/agentv3/` 仍包含 canonical MCP、strategy、
 planning 和 verifier shared layers，不能整体视为 legacy。
 
-选择顺序是：请求显式 Provider Manager profile、持久化 session snapshot、
-`SMARTPERFETTO_AGENT_RUNTIME`、默认 runtime。session 创建后固定 provider/runtime；
+selection 的来源优先级是：请求显式或当前 active 的 Provider Manager profile、持久化
+session snapshot、已废弃的 `SMARTPERFETTO_AGENT_RUNTIME`、默认；每个来源都解析到同一个
+effective runtime，即 Pi Agent Core（或隐藏回退开关选择的引擎）。session 创建后固定 provider/runtime；
 恢复时不能因为当前 active profile 改变而静默换 provider。
 
-Provider Manager profile 优先于 `.env` fallback。Claude Agent SDK 在所有运行方式下
-都需要显式 provider/env 凭据；Claude Code 登录态不代表 SDK 已配置。
+Provider Manager profile 优先于 `.env` fallback。所有运行方式都需要显式 provider/env
+凭据；Claude Code 登录态不代表已配置。
 
 ## 5. MCP 工具面
 

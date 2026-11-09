@@ -216,13 +216,13 @@ the current CLI store, one Claude-compatible env block, or one OpenAI-compatible
 env block. `smp provider list` and `smp provider test <providerId>` inspect that
 CLI store; the CLI does not currently add, edit, or activate profiles.
 
-Runtime checks follow the actually selected provider/runtime:
+Analysis runs on Pi Agent Core; preflight, doctor, and system provider tests follow the resolved endpoint:
 
-- Claude Agent SDK requires an API key/auth token or Bedrock/Vertex configuration.
-  A proxy URL or Claude Code login alone fails preflight, doctor, and system provider tests.
-- OpenAI Agents SDK requires `OPENAI_API_KEY` or a local
-  `localhost` / `127.0.0.1` / `0.0.0.0` OpenAI-compatible endpoint.
-- Ollama providers use the OpenAI-compatible runtime.
+- Anthropic/Claude-compatible requires an API key/auth token or Bedrock/Vertex configuration.
+  A proxy URL or Claude Code login alone fails these checks.
+- OpenAI-compatible requires `OPENAI_API_KEY` or a local
+  `localhost` / `127.0.0.1` / `0.0.0.0` endpoint.
+- Ollama providers use an OpenAI-compatible endpoint.
 
 Since v1.15.1, `smp doctor` loads the native SQLite binding in its `sqlite_native`
 check. A missing or unloadable binding reports `error` and exits with code 1.

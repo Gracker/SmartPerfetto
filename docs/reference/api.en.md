@@ -581,7 +581,7 @@ present such a turn as incomplete. Clients may keep handling
 `provisional_answer` and `status: "review_stop_requested"` for legacy servers.
 
 When the runtime declares the `draftAnswerStreaming` capability (currently
-Claude and OpenAI), the answer the model is writing before finalization streams
+Pi Agent Core), the answer the model is writing before finalization streams
 live as `runtime_update`: `update.type` is `answer_token` (`content` is
 `{token, runId, attempt}`, sidecar-free, owner-projected, coalesced at about
 200 ms / 256 characters) or `answer_segment_reset` (`{runId, attempt}`, which
@@ -680,7 +680,7 @@ backend no longer sends `conclusion` with `provisional: true` /
 handling them for legacy servers.
 
 Answer draft: for a runtime with the `draftAnswerStreaming` capability
-(currently Claude and OpenAI) the stream sends display-only `answer_token`
+(currently Pi Agent Core) the stream sends display-only `answer_token`
 events before finalization (`data` is `{token, runId, attempt}`, sidecar-free,
 owner-projected, coalesced at about 200 ms / 256 characters) and
 `answer_segment_reset` (`{runId, attempt}`), which revokes the draft shown so
@@ -1310,8 +1310,7 @@ are additive; each ms field is rounded once from its ns value. Omitted
 `aiSummary` falls back to the deterministic rule summary (`generated: false`)
 with a `fallbackReason` and localized `warnings` when AI is disabled (feature
 `critical_path_ai_summary`), the caller lacks `agent:run` (`permission_denied`:
-reading a trace is not enough to spend the model), the active provider is not
-on the Claude Agent SDK runtime, credentials are missing, the call times out, or
+reading a trace is not enough to spend the model), credentials are missing, the call times out, or
 the client disconnects. Raw model errors go only to the server log.
 Disabling AI never turns this route into a 403. A client disconnect cancels the
 in-flight model call and any pending trace query; no response is written then.

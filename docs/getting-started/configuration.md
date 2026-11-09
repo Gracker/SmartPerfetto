@@ -87,11 +87,11 @@ active Provider Manager profile 会覆盖 `.env`。如果希望 `.env` 修改重
 不变，仅移除首尾空格；是否实际可用由供应商验证。
 
 常用表单只显示供应商、密钥和主模型。**高级设置**中可修改显示名称、轻量模型、子 Agent
-模型、运行时、连接覆盖项及调优参数，默认折叠；展开或收起不会清除已保存值。
+模型、连接覆盖项及调优参数，默认折叠；展开或收起不会清除已保存值。
 Custom、Bedrock、Vertex 等需要额外配置的入口仍显示其必要字段。
 
 新建配置自动使用模板默认值，优先选择供应商当前提供的通用、轻量或自动路由型号。
-主模型与轻量模型可以相同；Custom 未填写轻量模型时使用主模型。更新后端后重新打开
+主模型与轻量模型可以相同；Custom 未填写轻量模型时使用主模型。Pi 只有一个模型，轻量模型对 Pi 不生效。更新后端后重新打开
 设置即可获取新选项和新建默认值；编辑或克隆已有配置不会被新模板覆盖，会话绑定也
 不会改变。选择新模型后保存配置，再测试连接。建议项来自公开目录，实际权限
 仍由账号、套餐和地区决定；标记为 Experimental 或 Preview 的型号属于实验或预览版本。
@@ -235,6 +235,8 @@ Bedrock/Vertex 变量，或显式 Pi model JSON。
 模型来源的优先级是：请求/会话里的 `providerId`、Provider Manager 当前 active provider、最后是 `.env`。只用 `.env` 时，若同时存在 Anthropic 与 OpenAI 两类变量，按原规则选择：`SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk`（已废弃但仍被读取）选 OpenAI 一侧，否则有 Anthropic key/token、Bedrock 或 Vertex 时选 Anthropic 一侧，再否则使用 `OPENAI_*`。首次配置不要同时启用 `ANTHROPIC_*` 和 `OPENAI_*`。active Provider Manager profile 会覆盖 `.env` fallback；当前来源可通过带鉴权的 `/api/runtime-health` 中的 `aiEngine.credentialSource` 和 `aiEngine.providerOverridesEnv` 确认。
 
 Perfetto UI 的 Provider Management 支持把同一个 provider 的两组端点一起保存：`claudeBaseUrl` / `claudeApiKey` / `claudeAuthToken` 对应 Anthropic-compatible 接口，`openaiBaseUrl` / `openaiApiKey` / `openaiProtocol` 对应 OpenAI-compatible 接口；`apiSurface`（`claude` 或 `openai`）记录 Pi 调用哪一侧，未设置时按 provider 类型的原默认侧（双端点 provider 为 Anthropic 一侧）。API 只为每种 provider 返回 `supportedRuntimes: ["pi-agent-core"]`；写入旧 runtime 值会记录警告并按上面的迁移规则落到 Pi。custom provider 还可以填写 `piAgentCoreModelJson` 以及可选 module path / system prompt，作为显式覆盖。切换 provider 会开启新的 session。
+
+把 provider 的 `apiSurface` 切换到另一个 host，或修改 endpoint 的 origin 时，需要重新填写或清除该 provider 的凭据，否则保存会被拒绝，避免把已保存的 key 发给另一台主机。
 
 Enterprise 模式下，Provider Manager 的远端端点默认必须是公网 HTTPS，并会校验 DNS
 解析结果；重定向也必须保持同源。确实需要访问经过审计的内网 Ollama/网关时，使用
@@ -437,7 +439,7 @@ SMARTPERFETTO_AI_ENABLED=false
 
 未设置该变量时默认启用 AI。显式值接受 `1/0`、`true/false`、`yes/no`、`on/off`、`enabled/disabled`；无效值会 fail closed，也就是按禁用处理，并在 `/api/runtime-health` 的 `aiPolicy.env.valid=false`（需鉴权）和 `smp doctor` 中暴露原因。
 
-禁用后仍可用：trace 上传/读取、SQL 查询、capture config proposal、Android capture（不带 `--analyze`）、报告读取、Provider profile 列表/编辑/激活/runtime 切换，以及确定性 Skill（Skill 步骤都不调用模型）。会被阻断：agent analyze/resume、场景还原冷启动、Provider connection test、`smp provider test`、`smp capture android --analyze`。阻断响应统一包含 `code: "AI_DISABLED"` 和 `retryable: false`。只降级、不阻断：Critical path 等待链分析照常返回，其 AI 总结（feature `critical_path_ai_summary`）改为规则兜底总结，并通过 `aiSummary.fallbackReason: "ai_disabled"` 和 `aiSummary.warnings` 说明原因。
+禁用后仍可用：trace 上传/读取、SQL 查询、capture config proposal、Android capture（不带 `--analyze`）、报告读取、Provider profile 列表/编辑/激活，以及确定性 Skill（Skill 步骤都不调用模型）。会被阻断：agent analyze/resume、场景还原冷启动、Provider connection test、`smp provider test`、`smp capture android --analyze`。阻断响应统一包含 `code: "AI_DISABLED"` 和 `retryable: false`。只降级、不阻断：Critical path 等待链分析照常返回，其 AI 总结（feature `critical_path_ai_summary`）改为规则兜底总结，并通过 `aiSummary.fallbackReason: "ai_disabled"` 和 `aiSummary.warnings` 说明原因。
 
 三个辅助 AI 总结只降级、不阻断，也都走同一个隔离的单轮模型调用（无工具、无 MCP、不读用户设置、不落会话），跟随调用者的 Provider Manager 配置：
 
@@ -736,19 +738,30 @@ trace 大小、并发 run 与每月 run 配额只约束分析资源，不是按�
 
 后端编排 runtime 固定为 Pi Agent Core；provider 只决定 endpoint、模型和凭据。`SMARTPERFETTO_AGENT_RUNTIME` 已废弃：只接受曾经有效的 runtime 名称（`claude-agent-sdk`、`openai-agents-sdk`、`pi-agent-core`、`opencode`、`qoder-agent-sdk`），全部映射为 Pi 并提示一次废弃；未知值（例如 `deepseek` 这类 provider 名称）仍会报错。
 
+## Pi 分析开关
+
+默认值适用于绝大多数部署，只在排障或灰度时修改：
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `SMARTPERFETTO_RUN_SUPPLEMENT` | 开启 | 分析进行中接收用户补充说明；设为 `false` 关闭 |
+| `SMARTPERFETTO_EVIDENCE_FIRST` | 关闭 | 设为 `true` 后，声明了 `evidence_first` 的场景先运行入口 Skill；目前只有 ANR 场景声明 |
+| `SMARTPERFETTO_INVESTIGATION_ACQUISITION_STATUS` | 开启 | 第 1 次请求的调查要求附带采集状态；设为 `false` 关闭 |
+| `SMARTPERFETTO_SKILL_RESULT_FACTS` | 开启 | Skill 结果附带列语义说明和规则事实；设为 `false` 关闭 |
+
 ## Runtime 并发候选准入
 
 发布配置默认不启用任何性能并发候选。只有维护者完成对应的确定性与真实 provider A/B 后，才可在目标 backend 进程上设置：
 
 ```bash
-SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES=task4,task6
+SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES=task4,task7
 ```
 
 该变量只接受 `task4`、`task5`、`task6`、`task7` 的逗号列表；随 OpenCode、Qoder 引擎删除的 `task8`、`task9` 已是未知项。值不能包含前后或分项空白、重复项、空项或未知项；任一问题都会让整个值 fail closed 为“无候选获准”。它是维护者部署边界，不属于 Provider Manager、UI 或 provider credential env。benchmark 产物也不会自动修改或激活它。
 
 - `task4`：各 runtime 复用 quick evidence/focus 预取。
 - `task5`：各 runtime 允许已标记的可交换只读工具做有界重叠；其余工具仍独占。
-- `task6`：Claude/OpenAI 重叠独立 preflight。
+- `task6`：Claude/OpenAI 重叠独立 preflight（Pi 不适用）。
 - `task7`：Pi 并发加载独立 SDK/provider，并在 quick 模式启用 parallel batch 调度；descriptor/tool gate 仍串行独占工作。
 
 `task5` 已获准时，安全只读并发默认开启；下面的变量只能把它回滚为独占，不能在缺少 `task5` 准入时强行开启：
@@ -768,8 +781,8 @@ cd backend
 npm run benchmark:agent-latency -- \
   --base-url http://127.0.0.1:10000 \
   --candidate-url http://127.0.0.1:10001 \
-  --runtime openai-agents-sdk \
-  --candidate task6 \
+  --runtime pi-agent-core \
+  --candidate task7 \
   --candidate-config-fingerprint <lowercase-hex-fingerprint> \
   --output-run-nonce <lowercase-hex-nonce> \
   --output-dir test-output/runtime-concurrency/<fresh-run> \
@@ -785,7 +798,7 @@ cd backend
 npm run benchmark:agent-latency -- \
   --base-url http://127.0.0.1:10000 \
   --candidate-url http://127.0.0.1:10001 \
-  --runtime openai-agents-sdk \
+  --runtime pi-agent-core \
   --output-dir test-output/runtime-concurrency/<fresh-diagnostic>
 ```
 

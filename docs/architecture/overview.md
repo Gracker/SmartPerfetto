@@ -202,7 +202,7 @@ Session 和数据库所有权为准；前端请求头只是传输上下文，不
 5. 后端流式输出
    SDK/server events -> runtime bridge -> privacy/narrative projection -> SSE
       -> frontend renders progress, tables, thought
-   draftAnswerStreaming runtime（Claude/OpenAI）-> answer_token 草稿 + answer_segment_reset
+   draftAnswerStreaming runtime（Pi 及隐藏回退引擎）-> answer_token 草稿 + answer_segment_reset
       -> owner 投影 + narrative 投影 + 合并 -> 仅实时发送（不重放、不持久化），由 conclusion 替换
    finalizeAnalysisResult -> 最终化后、报告/快照生成前发送 conclusion
    停止 -> 取消本次 run
@@ -270,9 +270,9 @@ private advisory。详见
 
 | Runtime | Provider | 关键边界 |
 |---|---|---|
-| `claude-agent-sdk` | Anthropic、Bedrock、Vertex、Claude/Anthropic-compatible provider | 所有运行方式都需要显式 provider/env 凭据；Claude Code 登录态不代表 SDK 已配置 |
-| `openai-agents-sdk` | OpenAI、Ollama、OpenAI-compatible provider | 按 OpenAI runtime 规则验证凭证和 chat-completions/Responses 协议 |
-| `pi-agent-core` | Custom、GLM、DeepSeek、Kimi、Kimi Code、MiniMax provider | Custom 需要显式 Pi model JSON 或等价 env，目录型 provider 由 Pi 内置目录解析模型；不读取 `.pi` project config、package extension、shell tool 或 file tool |
+| `pi-agent-core` | 全部 Provider 类型 | 默认且唯一可选的 runtime；所有运行方式都需要显式 provider/env 凭据，Claude Code 登录态不代表已配置；Custom 需要显式 Pi model JSON 或等价 env，目录型 provider 由 Pi 内置目录解析模型；不读取 `.pi` project config、package extension、shell tool 或 file tool |
+| `claude-agent-sdk` | 隐藏回退 | 仅保留一个版本，由维护者开关启用，见[Agent 运行时](agent-runtime.md)；不对用户开放 |
+| `openai-agents-sdk` | 隐藏回退 | 同上 |
 
 OpenCode 与 Qoder 引擎已删除。记录 `opencode` 或 `qoder-agent-sdk` 标签的数据只作为
 provenance 读取，执行时使用 effective runtime，见[Agent 运行时](agent-runtime.md)。
