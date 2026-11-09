@@ -238,6 +238,10 @@ function thinkingLevel(value: unknown): ModelThinkingLevel | undefined {
   return value.trim() as ModelThinkingLevel;
 }
 
+/** Per-run cost cap in USD; only enforced where the model reports a cost. */
+export const PI_MAX_BUDGET_USD_ENV = 'SMARTPERFETTO_PI_MAX_BUDGET_USD';
+/** Operator override of a full run's scene effort on a route that follows the scene. */
+export const PI_EFFORT_ENV = 'SMARTPERFETTO_PI_EFFORT';
 export const PI_AGENT_CORE_MODEL_JSON_ENV = 'SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON';
 /** The API key and Bearer token a derived route sends; Pi-owned names, so no other runtime reads them. */
 export const PI_AGENT_CORE_API_KEY_ENV = 'SMARTPERFETTO_PI_AGENT_CORE_API_KEY';

@@ -5171,6 +5171,17 @@ describe('piRunThinkingLevel', () => {
     expect(piRunThinkingLevel(gateway, false, 'general')).toBe('high');
     expect(piRunThinkingLevel(gateway, false, 'not-a-scene' as never)).toBe('high');
   });
+
+  it('lets an operator override a full run but not a quick one', () => {
+    expect(piRunThinkingLevel(gateway, false, 'general', 'low')).toBe('low');
+    expect(piRunThinkingLevel(gateway, false, 'anr', 'max')).toBe('high');
+    expect(piRunThinkingLevel(gateway, true, 'anr', 'high')).toBe('low');
+  });
+
+  it('keeps the scene effort for an unrecognized override', () => {
+    expect(piRunThinkingLevel(gateway, false, 'anr', 'banana')).toBe('medium');
+    expect(piRunThinkingLevel(gateway, false, 'general', ' LOW ')).toBe('low');
+  });
 });
 
 describe('piContextNearlyFull', () => {

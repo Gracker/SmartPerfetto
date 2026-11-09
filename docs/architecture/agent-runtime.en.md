@@ -96,13 +96,22 @@ When the provider runtime is created (`resolvePiRouteModel` in `piAgentCoreProvi
 pi-ai catalog supplies the model if it serves this ID with this API on this host (only the route's base
 URL replaces its own); otherwise the model is synthesized on the previous API with zero
 cost and limits from a same-host catalog entry, the template, or conservative defaults (context
-128000; output 32000 for Anthropic/Bedrock/Vertex, 16384 for OpenAI), and an Anthropic-compatible
+200000 for Anthropic/Bedrock/Vertex, 128000 for OpenAI; output 32000 and 16384), and an Anthropic-compatible
 gateway receives no `eager_input_streaming`. A synthesized model keeps reasoning off, except for a
 non-Claude model on an Anthropic-compatible gateway: sending no thinking field leaves such an endpoint
 on its own, much heavier default, so the route keeps the retired Claude engine's request shape,
-`thinking:{type:adaptive}` with `output_config.effort` (`low` for a quick budget, the scene strategy's
-`effort` for a full analysis), and capped calls such as classification and review send `disabled`.
-Model ids in the Claude family behind a relay keep their previous behavior. The synthesized model is derived at env time and never
+`thinking:{type:adaptive}` with `output_config.effort`, and capped calls such as classification and
+review send `disabled`. Model ids in the Claude family behind a relay and synthesized Vertex models do
+not enable it. A route the retired Claude engine served (`anthropic-messages`, `bedrock-converse-stream`,
+on a reasoning model with no explicit level) sets its level per run: `low` for a quick budget, the scene
+strategy's `effort` for a full analysis, where an operator's effort override applies (`max` acts as
+`high`). A provider's `tuning` and the retired process-level `CLAUDE_*`/`OPENAI_*` env (read in
+`runtimeEnvFor`) map to `AGENT_MAX_TURNS`, `AGENT_QUICK_PER_TURN_MS`,
+`AGENT_CLASSIFIER_TIMEOUT_MS`, `AGENT_FULL_REQUEST_TIMEOUT_MS` (`fullPerTurnMs × maxTurns`, under a hard cap),
+`SMARTPERFETTO_PI_MAX_BUDGET_USD` and `SMARTPERFETTO_PI_EFFORT`; an explicit Pi setting wins. The cost cap
+applies only to models with known pricing, since a synthesized gateway model reports no cost, and
+`enableSubAgents` has no effect on Pi. Reaching the context, cost or turn limit ends acquisition and
+goes through the same closeout. The synthesized model is derived at env time and never
 persisted; an explicit `piAgentCoreModelJson` remains the user's override.
 
 Provider profiles migrate on read through `withMigratedAgentRuntime` in `retiredRuntime.ts` (next to

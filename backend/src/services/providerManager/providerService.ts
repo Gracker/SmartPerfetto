@@ -47,6 +47,7 @@ import {
   piCatalogProviderEnv,
   piCatalogRouteBaseUrl,
   piEnvForLegacyRoute,
+  piEnvForTuning,
   providerModelJsonEnv,
   resolvePiRouteFromLegacyEnv,
   withVertexHostCredentials,
@@ -748,8 +749,9 @@ export class ProviderService {
   ): Record<string, string> {
     const env: Record<string, string> = {};
     if (runtime === 'pi-agent-core') {
-      // Pi gets its model and key only under its own env; no Claude/OpenAI surface env or tuning knobs.
+      // Pi gets its model, key and limits only under its own env; no Claude/OpenAI surface env.
       this.applyPiAgentCoreConnection(env, provider);
+      Object.assign(env, piEnvForTuning(provider.tuning));
       env.SMARTPERFETTO_AGENT_RUNTIME = runtime;
       return env;
     }

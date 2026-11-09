@@ -10,7 +10,7 @@ import {parsePiAgentCoreModelConfig} from '../../../agentRuntime/engines/pi/piAg
 import {createPiAgentCoreProviderRuntime, PI_SYNTHESIZED_MODEL_DEFAULTS, resolvePiRouteModel} from '../../../agentRuntime/engines/pi/piAgentCoreProvider';
 import type {RecordedProductionRuntimeKind} from '../../../agentRuntime/runtimeKinds';
 import {resetRuntimeDeprecationWarningsForTests} from '../../../agentRuntime/legacyRuntimeFallback';
-import {piRequestOrigin, withEnvOnlyPiModel} from '../piProviderCatalog';
+import {piRequestOrigin, runtimeEnvFor, withEnvOnlyPiModel} from '../piProviderCatalog';
 import {reconcileRecordedProviderPin} from '../providerPinContinuity';
 import {supportedAgentRuntimesForType, withProviderRecordFacts} from '../providerRuntimeMatrix';
 import {ProviderService} from '../providerService';
@@ -494,11 +494,11 @@ describe('Pi model resolution against the installed pi-ai catalog', () => {
   it.each([
     ['kimi', 'claude-agent-sdk', {contextWindow: 262_144, maxTokens: 262_144}],
     ['kimi_code', 'claude-agent-sdk', {contextWindow: 1_048_576, maxTokens: 32_768}],
-    ['qwen', 'claude-agent-sdk', {contextWindow: PI_SYNTHESIZED_MODEL_DEFAULTS.anthropicGatewayContextWindow,
+    ['qwen', 'claude-agent-sdk', {contextWindow: PI_SYNTHESIZED_MODEL_DEFAULTS.contextWindow['anthropic-messages'],
       maxTokens: PI_SYNTHESIZED_MODEL_DEFAULTS.maxTokens['anthropic-messages']}],
-    ['ollama', 'openai-agents-sdk', {contextWindow: PI_SYNTHESIZED_MODEL_DEFAULTS.contextWindow,
+    ['ollama', 'openai-agents-sdk', {contextWindow: PI_SYNTHESIZED_MODEL_DEFAULTS.contextWindow['openai-completions'],
       maxTokens: PI_SYNTHESIZED_MODEL_DEFAULTS.maxTokens['openai-completions']}],
-    ['vertex', undefined, {contextWindow: PI_SYNTHESIZED_MODEL_DEFAULTS.contextWindow,
+    ['vertex', undefined, {contextWindow: PI_SYNTHESIZED_MODEL_DEFAULTS.contextWindow['anthropic-vertex'],
       maxTokens: PI_SYNTHESIZED_MODEL_DEFAULTS.maxTokens['anthropic-vertex']}],
   ] as const)('synthesizes %s on its previous API and endpoint with catalog-peer or default limits', async (type, runtime, limits) => {
     const {config, model} = await resolve(templateRecord(type, runtime));
@@ -517,14 +517,14 @@ describe('Pi model resolution against the installed pi-ai catalog', () => {
 });
 
 describe('thinking on an Anthropic-compatible gateway', () => {
-  const catalog = {builtinProviders: () => [], getBuiltinModels: () => [], getBuiltinModel: () => undefined};
+  const catalog = {builtinProviders: () => [], getBuiltinModels: () => [], getBuiltinModel: () => undefined} as Record<string, unknown>;
   const context = {messages: [], tools: []} as never;
 
   // Jest's sandbox gives structuredClone results another realm's prototypes, which the runtime's deep-equal identity check rejects.
   beforeEach(() => {jest.spyOn(globalThis, 'structuredClone').mockImplementation(value => ({...(value as object)}) as never);});
   afterEach(() => {jest.restoreAllMocks();});
 
-  async function gatewayRuntime(modelId: string) {
+  async function gatewayRuntime(modelId: string, catalogModule: Record<string, unknown> = catalog) {
     const sent: Array<Record<string, any>> = [];
     const piAi = {
       getSupportedThinkingLevels: () => ['off', 'minimal', 'low', 'medium', 'high'],
@@ -536,7 +536,7 @@ describe('thinking on an Anthropic-compatible gateway', () => {
         return {};
       }}),
     };
-    const loader = async (specifier: string) => specifier.endsWith('/providers/all') ? catalog
+    const loader = async (specifier: string) => specifier.endsWith('/providers/all') ? catalogModule
       : specifier.includes('/api/') ? new Proxy({}, {get: (_target, key) => key === 'then' ? undefined : () => ({stream: () => undefined, streamSimple: () => undefined})})
         : piAi;
     const record = {...templateRecord('kimi', 'claude-agent-sdk'), models: {primary: modelId, light: modelId}};
@@ -559,6 +559,14 @@ describe('thinking on an Anthropic-compatible gateway', () => {
     expect(sent[0].reasoning).toBeUndefined();
   });
 
+  it('keeps the scene depth on a catalog model the retired engine served', async () => {
+    const entry = {id: 'kimi-test', api: 'anthropic-messages', provider: 'catalog', baseUrl: 'https://x.example',
+      reasoning: true, input: ['text'], cost: {input: 1, output: 1, cacheRead: 0, cacheWrite: 0}, contextWindow: 100_000, maxTokens: 8_000};
+    const {runtime} = await gatewayRuntime('kimi-test', {builtinProviders: () => [{id: 'catalog', name: 'catalog', auth: {}}],
+      getBuiltinModels: () => [entry], getBuiltinModel: () => entry});
+    expect(runtime).toMatchObject({runThinkingFollowsScene: true, thinkingLevel: undefined, model: {provider: 'catalog', contextWindow: 100_000}});
+  });
+
   it('leaves a Claude model behind a relay on its own thinking rules', async () => {
     const {runtime, sent} = await gatewayRuntime('claude-sonnet-5');
     expect(runtime.runThinkingFollowsScene).toBe(false);
@@ -566,6 +574,46 @@ describe('thinking on an Anthropic-compatible gateway', () => {
     expect(runtime.model.reasoning).toBe(false);
     await runtime.streamFn(runtime.model, context, {} as never);
     expect(sent[0].reasoning).toBeUndefined();
+  });
+});
+
+describe('per-run limits an operator set before the migration', () => {
+  it('carries a provider\'s tuning to Pi', () => {
+    const env = piEnvOf({...templateRecord('kimi', 'claude-agent-sdk'),
+      tuning: {maxTurns: 20, maxBudgetUsd: 1.5, effort: 'medium', fullPerTurnMs: 1_000, quickPerTurnMs: 2_000, classifierTimeoutMs: 3_000}});
+    expect(env).toMatchObject({AGENT_MAX_TURNS: '20', AGENT_FULL_REQUEST_TIMEOUT_MS: '20000', AGENT_QUICK_PER_TURN_MS: '2000',
+      AGENT_CLASSIFIER_TIMEOUT_MS: '3000', SMARTPERFETTO_PI_MAX_BUDGET_USD: '1.5', SMARTPERFETTO_PI_EFFORT: 'medium'});
+  });
+
+  it('adds nothing without tuning', () => {
+    expect(Object.keys(piEnvOf(templateRecord('kimi', 'claude-agent-sdk'))).filter(key => key.startsWith('AGENT_'))).toEqual([]);
+  });
+
+  it('caps the full deadline as the retired engines did', () => {
+    expect(piEnvOf({...templateRecord('kimi', 'claude-agent-sdk'), tuning: {fullPerTurnMs: 120_000}}))
+      .toMatchObject({AGENT_FULL_REQUEST_TIMEOUT_MS: String(20 * 60_000)});
+  });
+
+  it('reads the env the retired runtime used, and an explicit Pi setting wins', () => {
+    const env = runtimeEnvFor({ANTHROPIC_API_KEY: 'sk-ant', CLAUDE_MAX_TURNS: '30', CLAUDE_QUICK_MAX_TURNS: '12', CLAUDE_MAX_BUDGET_USD: '2',
+      CLAUDE_EFFORT: 'Low', AGENT_QUICK_PER_TURN_MS: '999', CLAUDE_QUICK_PER_TURN_MS: '5', CLAUDE_FULL_REQUEST_TIMEOUT_MS: '7000'}, null, 'pi-agent-core');
+    expect(env).toMatchObject({AGENT_MAX_TURNS: '30', AGENT_QUICK_MAX_TURNS: '12', SMARTPERFETTO_PI_MAX_BUDGET_USD: '2',
+      SMARTPERFETTO_PI_EFFORT: 'low', AGENT_QUICK_PER_TURN_MS: '999', AGENT_FULL_REQUEST_TIMEOUT_MS: '7000'});
+  });
+
+  it('lets a provider inherit a process limit it did not set, and its own tuning wins', () => {
+    const base = {CLAUDE_MAX_TURNS: '30', CLAUDE_MAX_BUDGET_USD: '2'};
+    expect(runtimeEnvFor(base, {SMARTPERFETTO_AGENT_RUNTIME: 'pi-agent-core', AGENT_MAX_TURNS: '9'}, 'pi-agent-core'))
+      .toMatchObject({AGENT_MAX_TURNS: '9', SMARTPERFETTO_PI_MAX_BUDGET_USD: '2'});
+  });
+
+  it('falls back to the Claude names for an OpenAI env-only setup, as the OpenAI runtime did', () => {
+    expect(runtimeEnvFor({OPENAI_API_KEY: 'sk-oai', CLAUDE_MAX_TURNS: '30'}, null, 'pi-agent-core')).toMatchObject({AGENT_MAX_TURNS: '30'});
+    expect(runtimeEnvFor({OPENAI_API_KEY: 'sk-oai', OPENAI_MAX_TURNS: '8', CLAUDE_MAX_TURNS: '30'}, null, 'pi-agent-core')).toMatchObject({AGENT_MAX_TURNS: '8'});
+  });
+
+  it('ignores an unrecognized effort', () => {
+    expect(runtimeEnvFor({ANTHROPIC_API_KEY: 'sk-ant', CLAUDE_EFFORT: 'banana'}, null, 'pi-agent-core').SMARTPERFETTO_PI_EFFORT).toBeUndefined();
   });
 });
 

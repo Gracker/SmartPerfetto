@@ -82,11 +82,17 @@ active provider、记录下的 runtime pin（session snapshot、CLI session）�
 
 创建 provider runtime 时（`piAgentCoreProvider.ts` 的 `resolvePiRouteModel`），installed pi-ai catalog
 在同一 host、同一 API 下有该模型时使用目录条目（只替换为 route 的 base URL）；否则在原 API 上合成：
-费用为 0、限制取同 host 的目录条目、模板声明或保守默认（context 128000；输出
+费用为 0、限制取同 host 的目录条目、模板声明或保守默认（context：Claude 系 200000、OpenAI 128000；输出
 Anthropic/Bedrock/Vertex 32000、OpenAI 16384），Anthropic-compatible 网关不发送 `eager_input_streaming`。
-合成模型默认关闭 reasoning；例外是 Anthropic-compatible 网关上的非 Claude 模型，不发思考参数时端点会走自己更重的默认，
-因此沿用旧 Claude 引擎的请求形状：`thinking:{type:adaptive}` 加 `output_config.effort`，快速预算用 `low`，
-完整分析用该场景 strategy 的 `effort`；分类、复审等带输出上限的短调用发 `disabled`。模型 id 属于 Claude 系列的中转站保持原规则。
+合成模型默认关闭 reasoning；
+例外是 Anthropic-compatible 网关上的非 Claude 模型，不发思考参数时端点会走自己更重的默认，因此沿用旧 Claude 引擎的请求形状：
+`thinking:{type:adaptive}` 加 `output_config.effort`；分类、复审等带输出上限的短调用发 `disabled`。模型 id 属于 Claude 系列的中转站不开启。
+旧 Claude 引擎服务过的路由（`anthropic-messages`、`bedrock-converse-stream`，模型支持 reasoning 且未显式配置等级）按运行决定思考等级：
+快速预算用 `low`，完整分析用该场景 strategy 的 `effort`，运维的 effort 覆盖只作用于完整分析（`max` 按 `high`）。合成的 Vertex 模型和中转站上的 Claude 模型不开启思考。
+
+Provider 的 `tuning` 和进程级旧 env（`CLAUDE_*`/`OPENAI_*`，由 `runtimeEnvFor` 统一读取）映射到 Pi 的 `AGENT_MAX_TURNS`、`AGENT_QUICK_PER_TURN_MS`、`AGENT_CLASSIFIER_TIMEOUT_MS`、
+`AGENT_FULL_REQUEST_TIMEOUT_MS`（`fullPerTurnMs × maxTurns`，有硬上限）、`SMARTPERFETTO_PI_MAX_BUDGET_USD` 和 `SMARTPERFETTO_PI_EFFORT`，显式的 Pi 设置优先。
+费用上限只对有定价的模型生效，网关合成模型不上报费用；`enableSubAgents` 在 Pi 上无效。上下文、费用或轮数到限时结束取证，走同一个收尾流程。
 合成模型只在 env 时派生，从不持久化；显式 `piAgentCoreModelJson` 仍是用户覆盖。
 
 Provider profile 在读取时由 `retiredRuntime.ts` 的 `withMigratedAgentRuntime` 迁移（与

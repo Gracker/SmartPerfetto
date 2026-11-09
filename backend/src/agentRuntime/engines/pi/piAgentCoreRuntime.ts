@@ -33,6 +33,7 @@ import {createPiRunSupplementBinding} from './piRunSupplementBinding';
 import {createPiAgentModelCallTracker, piUsageToModelCallUsage} from './piAgentModelCalls';
 import {createPiAnswerDraftController} from './piAnswerDraft';
 import {piAssistantMessageHasToolCall} from './piAssistantMessage';
+import logger from '../../../utils/logger';
 import {SILENT_ANSWER_DRAFT, createAnswerDraftStream, createProjectedAnswerDraft} from '../../answerDraftStream';
 import {createPiInvestigationAdapter} from './piInvestigationAdapter';
 import {prepareInvestigationAcquisition} from '../../investigation/investigationAcquisition';
@@ -160,6 +161,8 @@ import {
 import {
   PI_AGENT_CORE_MODEL_JSON_ENV,
   PI_AGENT_CORE_MODEL_UNAVAILABLE_ENV,
+  PI_EFFORT_ENV,
+  PI_MAX_BUDGET_USD_ENV,
   piModelUnavailableHint,
   readPiAgentCoreModelConfig,
   type PiAgentCoreModelConfig,
@@ -305,11 +308,21 @@ export function piRunThinkingLevel(
   providerRuntime: Pick<PiAgentCoreProviderRuntime, 'thinkingLevel' | 'runThinkingFollowsScene'>,
   quickMode: boolean,
   sceneType: SceneType,
+  operatorEffort?: string,
 ): ModelThinkingLevel {
   if (!providerRuntime.runThinkingFollowsScene) return providerRuntime.thinkingLevel ?? 'off';
   if (quickMode) return 'low';
-  const effort = sceneEffort(sceneType);
+  const operator = operatorEffort?.trim().toLowerCase();
+  const effort = operator === 'low' || operator === 'medium' || operator === 'high' || operator === 'max'
+    ? operator : sceneEffort(sceneType);
   return effort === 'low' || effort === 'medium' ? effort : 'high';
+}
+
+function piMaxBudgetUsd(raw: string | undefined): number {
+  const value = Number(raw ?? 0);
+  if (value > 0) return value;
+  if (raw?.trim() && value !== 0) logger.warn('PiAgentCoreRuntime', `Ignoring invalid ${PI_MAX_BUDGET_USD_ENV}; no cost cap applies`);
+  return 0;
 }
 
 /** Below this much remaining context the SDK starves the next request's output, so acquisition stops first. */
@@ -1682,6 +1695,9 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const turnBudget = resolveRuntimeTurnBudget(maxTurns);
     let rounds = 0;
     let turnLimitReached = false;
+    let spentUsd = 0;
+    // Enforced where the model has known pricing; a gateway model reports no cost.
+    const maxBudgetUsd = piMaxBudgetUsd(this.env[PI_MAX_BUDGET_USD_ENV]);
     let correctionInProgress = false;
     let providerTurnLimit = turnBudget.acquisitionTurns;
     let attempt = 0;
@@ -1719,7 +1735,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         // history is in the prompt, and a native transcript would carry stale
         // selections and unbounded tool payloads.
         messages: [],
-        thinkingLevel: piRunThinkingLevel(providerRuntime, prep.quickMode, prep.sceneType),
+        thinkingLevel: piRunThinkingLevel(providerRuntime, prep.quickMode, prep.sceneType, this.env[PI_EFFORT_ENV]),
       },
       sessionId,
       streamFn: (...args: Parameters<PiAgentCoreProviderRuntime['streamFn']>) => {
@@ -1742,7 +1758,9 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       thinkingBudgets: modelConfig.thinkingBudgets,
       // Pi calls this after the real assistant/tool turn, before dispatching another.
       finishTurn: (({message}) => {
-        const budgetSpent = rounds >= providerTurnLimit || piContextNearlyFull(message, providerRuntime.model.contextWindow);
+        spentUsd += message.usage?.cost?.total ?? 0;
+        const budgetSpent = rounds >= providerTurnLimit || piContextNearlyFull(message, providerRuntime.model.contextWindow)
+          || (maxBudgetUsd > 0 && spentUsd >= maxBudgetUsd);
         if (!supplements && !budgetSpent) return undefined;
         const toolCall = piAssistantMessageHasToolCall(message);
         // Never steer onto a finished answer: it would buy a provider request of its own.

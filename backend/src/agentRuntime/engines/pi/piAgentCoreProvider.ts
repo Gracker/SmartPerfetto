@@ -74,6 +74,8 @@ const PI_API_MODULES = {
 type SupportedPiApi = keyof typeof PI_API_MODULES;
 const ANTHROPIC_VERTEX_API = 'anthropic-vertex' satisfies PiRouteApi & SupportedPiApi;
 const ANTHROPIC_API_HOST = 'api.anthropic.com';
+const CLAUDE_LINEAGE_APIS: readonly string[] = ['anthropic-messages', 'bedrock-converse-stream'];
+const SCENE_THINKING_LEVELS: readonly ModelThinkingLevel[] = ['low', 'medium', 'high'];
 
 export type PiAgentCoreProviderModels = Models;
 
@@ -98,7 +100,7 @@ export interface PiAgentCoreProviderRuntime {
   streamFnForPurpose?: (purpose: RuntimeModelDispatchPurpose, policy?: PiStreamPurposePolicy) => PiStreamFunction;
   /** The authored reasoning level, including a catalog reference's resolved default; undefined: provider default. */
   thinkingLevel: ModelThinkingLevel | undefined;
-  /** Each run takes its level from the budget and scene, as the retired Claude engine did on this endpoint. */
+  /** Each run takes its level from the budget and scene, as the retired Claude engine did on this route. */
   runThinkingFollowsScene?: boolean;
 }
 
@@ -473,9 +475,14 @@ export async function resolvePiCatalogModel(
  * Anthropic surfaces); cost is unknown and recorded as zero, never used to gate.
  */
 export const PI_SYNTHESIZED_MODEL_DEFAULTS = {
-  contextWindow: 128_000,
-  /** The window the retired Claude engine assumed for a gateway model; a smaller one starves long runs' output. */
-  anthropicGatewayContextWindow: 200_000,
+  /** Claude surfaces take the window the retired engine assumed; a smaller one starves long runs' output. */
+  contextWindow: {
+    'anthropic-messages': 200_000,
+    'anthropic-vertex': 200_000,
+    'bedrock-converse-stream': 200_000,
+    'openai-completions': 128_000,
+    'openai-responses': 128_000,
+  } satisfies Record<PiRouteApi, number>,
   maxTokens: {
     'anthropic-messages': 32_000,
     'anthropic-vertex': 32_000,
@@ -530,8 +537,6 @@ export async function resolvePiRouteModel(
   const peer = providers.flatMap(provider => provider.models).find(model => model.id === route.id && sameHost(model));
   const anthropicSurface = route.api === 'anthropic-messages' || route.api === ANTHROPIC_VERTEX_API;
   const adaptiveGateway = servesAdaptiveGatewayModel(route.api, host, route.id);
-  const defaultContextWindow = adaptiveGateway ? PI_SYNTHESIZED_MODEL_DEFAULTS.anthropicGatewayContextWindow
-    : PI_SYNTHESIZED_MODEL_DEFAULTS.contextWindow;
   return {
     id: route.id,
     name: route.id,
@@ -542,7 +547,7 @@ export async function resolvePiRouteModel(
     input: Array.isArray(peer?.input) ? peer.input : ['text'],
     cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
     contextWindow: typeof peer?.contextWindow === 'number' ? peer.contextWindow
-      : route.limits?.contextWindow ?? defaultContextWindow,
+      : route.limits?.contextWindow ?? PI_SYNTHESIZED_MODEL_DEFAULTS.contextWindow[route.api],
     maxTokens: typeof peer?.maxTokens === 'number' ? peer.maxTokens
       : route.limits?.maxTokens ?? PI_SYNTHESIZED_MODEL_DEFAULTS.maxTokens[route.api],
     ...(anthropicSurface && host !== ANTHROPIC_API_HOST ? {compat: {supportsEagerToolInputStreaming: false,
@@ -882,8 +887,11 @@ export async function createPiAgentCoreProviderRuntime(
       return nativeStream(sentModel, context, scopedOptions);
     };
   };
+  // A route the retired Claude engine served keeps its reasoning depth, on a catalog model too.
+  const runThinkingFollowsScene = config.route !== undefined && config.thinkingLevel === undefined && model.reasoning
+    && CLAUDE_LINEAGE_APIS.includes(api) && SCENE_THINKING_LEVELS.every(level => supportedLevels.includes(level));
   return {model, models, streamFn: streamFnForPurpose('answer_turn'), streamFnForPurpose, thinkingLevel: authoredLevel,
-    runThinkingFollowsScene: adaptiveGateway};
+    runThinkingFollowsScene};
 }
 
 /** A non-Claude model behind an Anthropic-compatible gateway; Claude ids keep their own per-model thinking rules. */
