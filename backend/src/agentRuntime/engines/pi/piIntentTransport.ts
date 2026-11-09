@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import type {AssistantMessage} from '@earendil-works/pi-ai';
+import type {AssistantMessage, ModelThinkingLevel} from '@earendil-works/pi-ai';
 import {PiModelExecutionConfigurationError, type PiAgentCoreProviderRuntime, type PiStreamPurposePolicy} from './piAgentCoreProvider';
 import {intentTransportTextResult, runIntentTransport, type IntentTransportInput} from '../../intentTransport';
 import type {RuntimeModelDispatchPurpose} from '../../runtimePerformance';
@@ -13,6 +13,8 @@ export interface PiIntentTransportInput extends IntentTransportInput {
   providerRuntime: Pick<PiAgentCoreProviderRuntime, 'model' | 'streamFn' | 'streamFnForPurpose'>;
   purpose?: RuntimeModelDispatchPurpose;
   maxOutputTokens?: number;
+  /** The reasoning level of the run this call completes; unset leaves the provider runtime's own default. */
+  reasoning?: ModelThinkingLevel;
   sdkIdentity?: PiStreamPurposePolicy['sdkIdentity'];
   onExecutionPolicy?: PiStreamPurposePolicy['onExecutionPolicy'];
 }
@@ -62,6 +64,7 @@ export function runPiIntentTransport(input: PiIntentTransportInput) {
         signal: scope.signal,
         timeoutMs: scope.remainingMs(),
         maxRetries: 0,
+        ...(input.reasoning && input.reasoning !== 'off' ? {reasoning: input.reasoning} : {}),
         maxTokens: input.maxOutputTokens !== undefined ? Math.min(input.maxOutputTokens, model.maxTokens)
           : piOutputTokensForByteLimit(input.outputByteLimit, model.maxTokens),
         cacheRetention: 'none',

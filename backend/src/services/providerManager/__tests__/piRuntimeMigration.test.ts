@@ -553,10 +553,24 @@ describe('thinking on an Anthropic-compatible gateway', () => {
     expect(runtime.model.compat).toMatchObject({forceAdaptiveThinking: true});
   });
 
-  it.each(['classification', 'review'] as const)('disables thinking for a capped %s call', async purpose => {
+  it.each(['classification', 'review'] as const)('disables thinking for a tightly capped %s call', async purpose => {
     const {runtime, sent} = await gatewayRuntime('kimi-test');
     await runtime.streamFnForPurpose!(purpose)(runtime.model, context, {maxTokens: 1024} as never);
     expect(sent[0].reasoning).toBeUndefined();
+  });
+
+  it('keeps thinking on a review with room to write, at the gateway default', async () => {
+    const {runtime, sent} = await gatewayRuntime('kimi-test');
+    await runtime.streamFnForPurpose!('review')(runtime.model, context, {maxTokens: 16_000} as never);
+    expect(sent[0].reasoning).toBe('low');
+    expect(sent[0].maxTokens).toBe(runtime.model.maxTokens);
+  });
+
+  it('writes a closeout at the run\'s own level', async () => {
+    const {runtime, sent} = await gatewayRuntime('kimi-test');
+    await runtime.streamFnForPurpose!('continuation', {outputOnly: true})(runtime.model, context, {maxTokens: 20_000, reasoning: 'high'} as never);
+    expect(sent[0].reasoning).toBe('high');
+    expect(sent[0].maxTokens).toBe(runtime.model.maxTokens);
   });
 
   it('keeps the scene depth on a catalog model the retired engine served', async () => {

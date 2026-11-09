@@ -86,7 +86,7 @@ active provider、记录下的 runtime pin（session snapshot、CLI session）�
 Anthropic/Bedrock/Vertex 32000、OpenAI 16384），Anthropic-compatible 网关不发送 `eager_input_streaming`。
 合成模型默认关闭 reasoning；
 例外是 Anthropic-compatible 网关上的非 Claude 模型，不发思考参数时端点会走自己更重的默认，因此沿用旧 Claude 引擎的请求形状：
-`thinking:{type:adaptive}` 加 `output_config.effort`；分类、复审等带输出上限的短调用发 `disabled`。模型 id 属于 Claude 系列的中转站不开启。
+`thinking:{type:adaptive}` 加 `output_config.effort`；输出上限低于 4096 token 的调用（分类、连接测试）发 `disabled`；收尾和修正沿用本次运行的等级，复审用 `low`。模型 id 属于 Claude 系列的中转站不开启。
 旧 Claude 引擎服务过的路由（`anthropic-messages`、`bedrock-converse-stream`，模型支持 reasoning 且未显式配置等级）按运行决定思考等级：
 快速预算用 `low`，完整分析用该场景 strategy 的 `effort`，运维的 effort 覆盖只作用于完整分析（`max` 按 `high`）。合成的 Vertex 模型和中转站上的 Claude 模型不开启思考。
 

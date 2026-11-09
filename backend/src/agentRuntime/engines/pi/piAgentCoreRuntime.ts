@@ -1697,6 +1697,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       selection: prep.analysisRunSpec.selection});
     work.assertActive();
 
+    const runThinkingLevel = piRunThinkingLevel(providerRuntime, prep.quickMode, prep.sceneType, this.env[PI_EFFORT_ENV]);
     const quickBudget = resolveQuickTurnBudget({env: this.env, enforcement: 'turn_cap'});
     const maxTurns = prep.quickMode ? quickBudget.hardCapTurns : resolveAgentRuntimeBudgetConfig(this.env).maxTurns;
     const turnBudget = resolveRuntimeTurnBudget(maxTurns);
@@ -1742,7 +1743,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         // history is in the prompt, and a native transcript would carry stale
         // selections and unbounded tool payloads.
         messages: [],
-        thinkingLevel: piRunThinkingLevel(providerRuntime, prep.quickMode, prep.sceneType, this.env[PI_EFFORT_ENV]),
+        thinkingLevel: runThinkingLevel,
       },
       sessionId,
       streamFn: (...args: Parameters<PiAgentCoreProviderRuntime['streamFn']>) => {
@@ -1766,7 +1767,8 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       // Pi calls this after the real assistant/tool turn, before dispatching another.
       finishTurn: (({message}) => {
         spentUsd += message.usage?.cost?.total ?? 0;
-        const budgetSpent = rounds >= providerTurnLimit || piContextNearlyFull(message, providerRuntime.model.contextWindow)
+        // Pi calls this before `turn_end`, so the turn it describes is not in `rounds` yet.
+        const budgetSpent = rounds + 1 >= providerTurnLimit || piContextNearlyFull(message, providerRuntime.model.contextWindow)
           || (maxBudgetUsd > 0 && spentUsd >= maxBudgetUsd);
         if (!supplements && !budgetSpent) return undefined;
         const toolCall = piAssistantMessageHasToolCall(message);
@@ -1924,6 +1926,8 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
               prompt: closeoutPrompt, systemPrompt: prep.systemPrompt,
               signal: work.signal, deadlineMs: getRunDeadlineMs(),
               outputByteLimit: 64 * 1024, providerRuntime,
+              // The closeout writes the conclusion, so it keeps the depth this run followed.
+              ...(providerRuntime.runThinkingFollowsScene ? {reasoning: runThinkingLevel} : {}),
             });
             executionLease.throwIfAborted();
             authorization.assertCurrent();

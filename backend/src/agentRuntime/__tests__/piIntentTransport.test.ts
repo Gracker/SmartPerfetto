@@ -34,6 +34,14 @@ describe('Pi intent transport', () => {
   beforeEach(() => {jest.useFakeTimers({now: 1000});});
   afterEach(() => {jest.useRealTimers();});
 
+  it('passes the run\'s reasoning level to a closeout, and never an off level', async () => {
+    const {input, streamFn} = fixture();
+    await runPiIntentTransport({...input, reasoning: 'medium'});
+    await runPiIntentTransport({...input, reasoning: 'off'});
+    expect(streamFn.mock.calls[0][2]).toMatchObject({reasoning: 'medium'});
+    expect(streamFn.mock.calls[1][2]).not.toHaveProperty('reasoning');
+  });
+
   it('uses the supplied authenticated stream and complete model for one tool-free call', async () => {
     const {input, model, streamFn, result} = fixture();
     await expect(runPiIntentTransport(input)).resolves.toEqual({

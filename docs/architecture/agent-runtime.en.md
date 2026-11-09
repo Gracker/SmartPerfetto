@@ -100,8 +100,9 @@ cost and limits from a same-host catalog entry, the template, or conservative de
 gateway receives no `eager_input_streaming`. A synthesized model keeps reasoning off, except for a
 non-Claude model on an Anthropic-compatible gateway: sending no thinking field leaves such an endpoint
 on its own, much heavier default, so the route keeps the retired Claude engine's request shape,
-`thinking:{type:adaptive}` with `output_config.effort`, and capped calls such as classification and
-review send `disabled`. Model ids in the Claude family behind a relay and synthesized Vertex models do
+`thinking:{type:adaptive}` with `output_config.effort`. A call capped below 4096 output tokens
+(classification, connection test) sends `disabled`; a closeout or correction keeps the run's level, and
+review uses `low`. Model ids in the Claude family behind a relay and synthesized Vertex models do
 not enable it. A route the retired Claude engine served (`anthropic-messages`, `bedrock-converse-stream`,
 on a reasoning model with no explicit level) sets its level per run: `low` for a quick budget, the scene
 strategy's `effort` for a full analysis, where an operator's effort override applies (`max` acts as

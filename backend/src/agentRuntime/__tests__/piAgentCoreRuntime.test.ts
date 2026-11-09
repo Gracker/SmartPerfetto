@@ -3676,8 +3676,9 @@ describe('experimental Pi agent-core runtime contract', () => {
       while (true) {
         dispatched++;
         const message = {role: 'assistant', stopReason: 'toolUse', content: [{type: 'text', text: `attempt ${dispatched}`} ]};
+        const decision = await (agent.options?.finishTurn as any)({message});
         agent.emitForTest({type: 'turn_end', message});
-        if (await (agent.options?.finishTurn as any)({message})) return [message];
+        if (decision) return [message];
         if (dispatched > 5) throw new Error('native turn guard was not enforced');
       }
     };
@@ -3705,8 +3706,8 @@ describe('experimental Pi agent-core runtime contract', () => {
     );
     FakePiAgent.promptHandler = async agent => {
       const message = {role: 'assistant', stopReason: 'toolUse', content: [{type: 'text', text: 'Retained evidence'}]};
-      agent.emitForTest({type: 'turn_end', message});
       expect(await (agent.options?.finishTurn as any)({message})).toEqual({action: 'end'});
+      agent.emitForTest({type: 'turn_end', message});
       return [message];
     };
     const result = await typedRuntime({env: {AGENT_QUICK_MAX_TURNS: String(maxTurns)}})
@@ -3848,8 +3849,8 @@ describe('experimental Pi agent-core runtime contract', () => {
         expect(agent.state.tools).toEqual([]);
         expect(await (agent.options!.beforeToolCall as any)({toolCall: {name: 'execute_sql'}})).toMatchObject({block: true});
       }
-      agent.emitForTest({type: 'turn_end', message});
       expect(await (agent.options!.finishTurn as any)({message})).toEqual(index === 2 ? {action: 'end'} : undefined);
+      agent.emitForTest({type: 'turn_end', message});
       return [message];
     };
     const result = await typedRuntime({env: {AGENT_QUICK_MAX_TURNS: '50'}})
@@ -4941,7 +4942,8 @@ describe('experimental Pi agent-core runtime contract', () => {
         });
         return [answer('limit reached')];
       };
-      takeFinalizationContext(await runWithChannel(channel, {env: {AGENT_QUICK_MAX_TURNS: '2'}}))?.dispose();
+      // Three turns leave two for acquisition and one for delivery.
+      takeFinalizationContext(await runWithChannel(channel, {env: {AGENT_QUICK_MAX_TURNS: '3'}}))?.dispose();
       // Submitted during the last permitted turn: the limit ended the loop before the boundary drained it.
       expect(channel.receipts()[0]).toMatchObject({state: 'not_applied', reason: 'turn_budget'});
       expect(requests).toBe(2);

@@ -76,6 +76,8 @@ const ANTHROPIC_VERTEX_API = 'anthropic-vertex' satisfies PiRouteApi & Supported
 const ANTHROPIC_API_HOST = 'api.anthropic.com';
 const CLAUDE_LINEAGE_APIS: readonly string[] = ['anthropic-messages', 'bedrock-converse-stream'];
 const SCENE_THINKING_LEVELS: readonly ModelThinkingLevel[] = ['low', 'medium', 'high'];
+/** Below this output cap a gateway model's thinking can use the whole allowance. */
+const PI_MIN_THINKING_OUTPUT_TOKENS = 4_096;
 
 export type PiAgentCoreProviderModels = Models;
 
@@ -819,6 +821,9 @@ export async function createPiAgentCoreProviderRuntime(
     // Per-invocation selection: cached provider runtimes must never retain a run's observer or output cap.
     return (sentModel, context, options) => {
       let requestedLevel: ModelThinkingLevel | undefined;
+      let streamMaxTokens = options?.maxTokens;
+      const stageCandidate = purpose === 'classification' || purpose === 'review' ||
+        purpose === 'continuation' && policy?.outputOnly === true;
       let selected: ReturnType<typeof resolveModelExecutionPolicy>;
       try {
         if (!isDeepStrictEqual(identity(sentModel), capturedIdentity)) throw new PiModelExecutionConfigurationError();
@@ -828,8 +833,6 @@ export async function createPiAgentCoreProviderRuntime(
         const protocol = sentModel.api === 'openai-completions' ? 'chat_completions'
           : sentModel.api === 'openai-responses' || sentModel.api === 'azure-openai-responses' ? 'responses'
           : sentModel.api === 'anthropic-messages' || sentModel.api === ANTHROPIC_VERTEX_API ? 'anthropic_messages' : 'unknown';
-        const stageCandidate = purpose === 'classification' || purpose === 'review' ||
-          purpose === 'continuation' && policy?.outputOnly === true;
         const sdkLevel = (options as SimpleStreamOptions | undefined)?.reasoning ?? authoredLevel ?? (adaptiveGateway ? 'low' : undefined);
         const profileInput: ResolveModelExecutionProfileInput = {runtimeKind: 'pi-agent-core', protocol, modelId: sentModel.id,
           baseUrl: sentModel.baseUrl, sdk: policy?.sdkIdentity ?? {packageName: '@earendil-works/pi-ai',
@@ -846,11 +849,15 @@ export async function createPiAgentCoreProviderRuntime(
         selected = resolveModelExecutionPolicy({profile, purpose, outputOnly: policy?.outputOnly,
           selection: stageCandidate ? 'minimum_legal_candidate' : 'preserve'});
         if (selected.status === 'unsupported') throw new PiModelExecutionConfigurationError();
-        // A short capped call must not spend its cap thinking; both surveyed gateways accept `disabled`.
-        requestedLevel = adaptiveGateway && stageCandidate ? 'off'
+        // A tightly capped call must not spend its cap thinking; both surveyed gateways accept `disabled`.
+        // Anything with room to write, such as a closeout, keeps the run's level.
+        const tightlyCapped = options?.maxTokens !== undefined && options.maxTokens < PI_MIN_THINKING_OUTPUT_TOKENS;
+        requestedLevel = adaptiveGateway && stageCandidate ? (tightlyCapped ? 'off' : sdkLevel)
           : selected.controls.surface === 'pi_stream' ? selected.controls.reasoning
             : stageCandidate && authoredLevel !== undefined ? authoredLevel : sdkLevel;
         assertSupportedLevel(requestedLevel);
+        // A cap sized for the text alone would let thinking truncate the answer it precedes; a tight cap is the caller's.
+        if (stageCandidate && !tightlyCapped && requestedLevel && requestedLevel !== 'off') streamMaxTokens = sentModel.maxTokens;
         const nativeMapped = requestedLevel && sentModel.thinkingLevelMap?.[requestedLevel];
         const sdkEffective = requestedLevel === undefined ? undefined : requestedLevel === 'off' ? asSetting('off')
           : typeof nativeMapped === 'string'
@@ -859,12 +866,13 @@ export async function createPiAgentCoreProviderRuntime(
             : asSetting(requestedLevel);
         // Bind the receipt to the SDK's final selected/mapped setting and the actual stream cap.
         selected = resolveModelExecutionPolicy({profile: resolveModelExecutionProfile({...profileInput,
-          effective: {...profileInput.effective, sdkEffectiveReasoning: sdkEffective}}), purpose, outputOnly: policy?.outputOnly,
+          effective: {...profileInput.effective, sdkEffectiveReasoning: sdkEffective, maxOutputTokens: streamMaxTokens}}), purpose, outputOnly: policy?.outputOnly,
           selection: stageCandidate ? 'minimum_legal_candidate' : 'preserve'});
         if (selected.status === 'unsupported') throw new PiModelExecutionConfigurationError();
       } catch {throw new PiModelExecutionConfigurationError();}
       try {policy?.onExecutionPolicy?.(selected.receipt);} catch { /* Observers never change a stream. */ }
       const scopedOptions: SimpleStreamOptions = {...options};
+      if (streamMaxTokens !== undefined) scopedOptions.maxTokens = streamMaxTokens;
       if (requestedLevel && requestedLevel !== 'off') scopedOptions.reasoning = requestedLevel;
       else delete scopedOptions.reasoning;
       if (officialGlm && requestedLevel === undefined) {
