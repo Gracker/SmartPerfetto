@@ -224,6 +224,8 @@ invoke_skill("android_app_background_power_state", { package: "<包名>" })
 - 需要确认应用当时是否真在后台时，用 `invoke_skill("android_process_state_residency", { process_name: "<包名>" })` 看 framework 进程状态驻留（TOP、FOREGROUND_SERVICE、CACHED_* 等）：前台服务期间的持锁和唤醒与 cached 状态下的持锁是两类问题。
 - `runtime_lacks_*` 表示 trace 有数据但 trace processor 早于对应模块，只能写数据存在和版本缺口；`no_*_data` 表示没采集（statsd atom `app_standby_bucket_changed` / `app_freeze_changed`、atrace `power`/`am`），写成采集建议。
 
+`battery_doze_state_timeline` 先读 `doze_state_summary`：`outside_window_intervals > 0` 表示给定时间窗之外还有 Doze 状态变化（例如灭屏前已进入并退出 idle），要一起报告；`min_dwell_ms` 为亚秒级只说明观测到快速状态转换，首区间还可能被 trace 起点截短。是否由外部命令推进（如 dumpsys deviceidle），需额外命令或日志证据。
+
 输出要明确标注：这是状态/事件链证据，能说明“是否频繁唤醒、是否无法进入 Doze、是否有 wakelock”，但不是 rail 级功耗量化。
 
 **Phase 3.5 — 后台执行治理证据（按需）：**

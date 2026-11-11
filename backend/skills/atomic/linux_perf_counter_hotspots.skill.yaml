@@ -2,22 +2,37 @@
 # Copyright (C) 2024-2026 Gracker (Chris)
 # This file is part of SmartPerfetto. See LICENSE for details.
 
+# =============================================================================
+# Linux Perf Counter Hotspots（B 级 atomic）
+# =============================================================================
+# linux.perf 的硬件计数器（cpu-cycles / instructions / cache-* ...）在 trace 里是
+# 每 (perf session, CPU) 一条的累计值轨道：同一轨道相邻两次采样的差值，才是这段
+# 采样周期内发生的事件数，按 perf report 的 period 加权口径归给被采样线程。
+#
+# v1.1: 旧版直接 SUM/AVG 累计值，越晚的样本权重越大，结果没有物理意义；改为先按
+#   track 求差值（差值规则在 fragments/linux_perf_counter_deltas.sql，时间窗下界在
+#   LAG 之后再过滤，窗口内第一个样本也有差值），列改名为 *_delta 以免旧读者按原语义
+#   误读。新增 perf_counter_ratios：按进程给出 cycles 占比、cycles、instructions、
+#   cache-references、cache-misses 与派生的 IPC、cache miss 比例、MPKI。
+#   本 Skill 只需要计数器值，不需要调用栈：perf_sample 没有调用栈时
+#   linux_perf_samples_summary_tree 为空，但这里仍然有数据。
+
 name: linux_perf_counter_hotspots
-version: "1.0"
+version: "1.1"
 type: atomic
 category: kernel
 tier: B
 
 meta:
   display_name: "Linux Perf Counter Hotspots"
-  description: "基于 linux.perf.counters stdlib 汇总 perf sample counter 热点；无 PMU 数据时返回空"
+  description: "按采样周期差值汇总 linux.perf 硬件计数器热点，并按进程给出 IPC、cache miss 比例和 MPKI；无 PMU 数据时返回空"
   icon: "speed"
   tags: [linux, perf, pmu, counters, cache_miss, branch, atomic]
 
 triggers:
   keywords:
-    zh: [PMU, perf counter, cache miss, branch miss, 缓存未命中, 分支预测]
-    en: [pmu, perf counter, cache miss, branch miss, branch mispredict]
+    zh: [PMU, perf counter, cache miss, branch miss, 缓存未命中, 分支预测, IPC, 指令周期]
+    en: [pmu, perf counter, cache miss, branch miss, branch mispredict, ipc, instructions per cycle]
   patterns:
     - ".*(PMU|perf|cache miss|branch).*(热点|统计|分析).*"
     - ".*(pmu|perf|cache|branch).*(hotspot|counter|miss).*"
@@ -68,41 +83,160 @@ steps:
           label: "样本数"
           type: number
           format: compact
-        - name: total_counter_value
-          label: "累计值"
+        - name: total_counter_delta
+          label: "事件总数"
+          label_i18n: {en: "Total Events"}
           type: number
           format: compact
-        - name: avg_counter_value
-          label: "平均值"
+          semantics: >-
+            Sum of per-sample deltas of the cumulative per-CPU counter track, attributed to the sampled thread.
+        - name: avg_counter_delta
+          label: "每样本事件数"
+          label_i18n: {en: "Events per Sample"}
           type: number
           format: compact
+          semantics: >-
+            Mean delta per sample, roughly the configured sample period; not an intensity measure on its own.
+    sql_fragments:
+      - fragments/linux_perf_counter_deltas.sql
     sql: |
       WITH
       input AS (
         SELECT
           COALESCE(NULLIF('${package|}', ''), NULLIF('${process_name|}', ''), '') AS target_process,
-          COALESCE(${start_ts}, 0) AS start_ts,
-          COALESCE(${end_ts}, (SELECT COALESCE(MAX(ts), 0) FROM linux_perf_sample_with_counters)) AS end_ts
+          COALESCE(${start_ts}, 0) AS start_ts
       )
       SELECT
-        COALESCE(tr.name, printf('counter:%d', l.track_id)) AS counter_name,
+        COALESCE(tr.name, printf('counter:%d', d.track_id)) AS counter_name,
         COALESCE(p.name, '<kernel/unknown>') AS process_name,
-        COALESCE(t.name, printf('utid:%d', l.utid)) AS thread_name,
+        COALESCE(t.name, printf('utid:%d', d.utid)) AS thread_name,
         COUNT(*) AS sample_count,
-        ROUND(SUM(l.counter_value), 2) AS total_counter_value,
-        ROUND(AVG(l.counter_value), 2) AS avg_counter_value
-      FROM linux_perf_sample_with_counters l
-      LEFT JOIN thread t ON l.utid = t.utid
+        ROUND(SUM(d.delta), 0) AS total_counter_delta,
+        ROUND(AVG(d.delta), 2) AS avg_counter_delta
+      FROM linux_perf_counter_deltas d
+      LEFT JOIN thread t ON d.utid = t.utid
       LEFT JOIN process p ON t.upid = p.upid
-      LEFT JOIN track tr ON l.track_id = tr.id
+      LEFT JOIN track tr ON d.track_id = tr.id
       CROSS JOIN input i
-      WHERE (i.target_process = '' OR p.name = i.target_process OR p.name GLOB i.target_process || ':*')
-        AND l.ts >= i.start_ts
-        AND l.ts < i.end_ts
+      WHERE d.ts >= i.start_ts
+        AND (i.target_process = '' OR p.name = i.target_process OR p.name GLOB i.target_process || ':*')
       GROUP BY counter_name, process_name, thread_name
-      ORDER BY total_counter_value DESC, sample_count DESC
+      ORDER BY total_counter_delta DESC, sample_count DESC
       LIMIT 100
     save_as: perf_counter_hotspots
+
+  - id: perf_counter_ratios
+    type: atomic
+    name: "PMU 派生比值（按进程）"
+    display:
+      level: summary
+      layer: overview
+      title: "PMU 派生比值（按进程）"
+      title_i18n: {en: "PMU Derived Ratios by Process"}
+      row_semantics: per_entity
+      columns:
+        - name: process_name
+          label: "进程"
+          type: string
+        - name: upid
+          label: "UPID"
+          type: number
+        - name: samples
+          label: "样本数"
+          type: number
+          format: compact
+        - name: cycles_share_pct
+          label: "cycles 占比"
+          type: percentage
+          format: percentage
+          semantics: >-
+            This process's share of all sampled cpu-cycles in the window across every process, even when filtered.
+        - name: cycles_m
+          label: "cycles(百万)"
+          label_i18n: {en: "Cycles (M)"}
+          type: number
+        - name: instructions_m
+          label: "instructions(百万)"
+          label_i18n: {en: "Instructions (M)"}
+          type: number
+        - name: ipc
+          label: "IPC"
+          type: number
+          semantics: >-
+            instructions / cpu-cycles from per-sample deltas. Each hardware counter is sampled in its own perf session,
+            so this is a sampling estimate, not an exact per-instruction measurement.
+        - name: cache_references_m
+          label: "cache-references(百万)"
+          label_i18n: {en: "Cache References (M)"}
+          type: number
+        - name: cache_misses_m
+          label: "cache-misses(百万)"
+          label_i18n: {en: "Cache Misses (M)"}
+          type: number
+        - name: cache_miss_pct
+          label: "cache miss 比例"
+          label_i18n: {en: "Cache Miss Ratio"}
+          type: percentage
+          format: percentage
+          semantics: >-
+            cache-misses / cache-references. These are generic perf events; which cache level they count is decided
+            by the CPU PMU driver, so do not name a specific L1/L2/LLC level from this alone.
+        - name: mpki
+          label: "MPKI"
+          type: number
+          semantics: >-
+            cache-misses per 1000 instructions.
+    sql_fragments:
+      - fragments/linux_perf_counter_deltas.sql
+    sql: |
+      WITH
+      input AS (
+        SELECT
+          COALESCE(NULLIF('${package|}', ''), NULLIF('${process_name|}', ''), '') AS target_process,
+          COALESCE(${start_ts}, 0) AS start_ts
+      ),
+      per_process AS (
+        SELECT
+          COALESCE(p.upid, -1) AS upid,
+          COALESCE(p.name, '<kernel/unknown>') AS process_name,
+          COUNT(*) AS samples,
+          SUM(CASE WHEN LOWER(tr.name) IN ('cpu-cycles', 'cycles') THEN d.delta END) AS cycles,
+          SUM(CASE WHEN LOWER(tr.name) = 'instructions' THEN d.delta END) AS instructions,
+          SUM(CASE WHEN LOWER(tr.name) = 'cache-references' THEN d.delta END) AS cache_references,
+          SUM(CASE WHEN LOWER(tr.name) = 'cache-misses' THEN d.delta END) AS cache_misses
+        FROM linux_perf_counter_deltas d
+        LEFT JOIN thread t ON d.utid = t.utid
+        LEFT JOIN process p ON t.upid = p.upid
+        LEFT JOIN track tr ON d.track_id = tr.id
+        CROSS JOIN input i
+        WHERE d.ts >= i.start_ts
+        GROUP BY 1, 2
+      ),
+      ratios AS (
+        SELECT
+          *,
+          100.0 * cycles / NULLIF(SUM(cycles) OVER (), 0) AS cycles_share
+        FROM per_process
+      )
+      SELECT
+        process_name,
+        upid,
+        samples,
+        ROUND(cycles_share, 2) AS cycles_share_pct,
+        ROUND(cycles / 1e6, 1) AS cycles_m,
+        ROUND(instructions / 1e6, 1) AS instructions_m,
+        ROUND(instructions * 1.0 / NULLIF(cycles, 0), 3) AS ipc,
+        ROUND(cache_references / 1e6, 2) AS cache_references_m,
+        ROUND(cache_misses / 1e6, 2) AS cache_misses_m,
+        ROUND(100.0 * cache_misses / NULLIF(cache_references, 0), 2) AS cache_miss_pct,
+        ROUND(1000.0 * cache_misses / NULLIF(instructions, 0), 2) AS mpki
+      FROM ratios
+      CROSS JOIN input i
+      WHERE COALESCE(cycles, instructions, cache_references, cache_misses) IS NOT NULL
+        AND (i.target_process = '' OR process_name = i.target_process OR process_name GLOB i.target_process || ':*')
+      ORDER BY cycles DESC, samples DESC
+      LIMIT 50
+    save_as: perf_counter_ratios
 
 output:
   format: structured

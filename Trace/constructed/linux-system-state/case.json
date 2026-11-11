@@ -97,10 +97,12 @@
         "source_file": "backend/skills/atomic/linux_perf_counter_hotspots.skill.yaml",
         "parameters": {},
         "required_steps": [
-          "perf_counter_hotspots"
+          "perf_counter_hotspots",
+          "perf_counter_ratios"
         ],
         "required_sql_steps": [
-          "perf_counter_hotspots"
+          "perf_counter_hotspots",
+          "perf_counter_ratios"
         ],
         "forced_sql_steps": [],
         "isolated_sql_probes": [],

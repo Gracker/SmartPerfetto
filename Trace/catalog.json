@@ -5525,10 +5525,12 @@
             "source_file": "backend/skills/atomic/battery_doze_state_timeline.skill.yaml",
             "parameters": {},
             "required_steps": [
+              "doze_state_summary",
               "deep_idle_intervals",
               "light_idle_intervals"
             ],
             "required_sql_steps": [
+              "doze_state_summary",
               "deep_idle_intervals",
               "light_idle_intervals"
             ],
@@ -5538,7 +5540,8 @@
             "semantic_step": "deep_idle_intervals",
             "required_columns": [
               "ts",
-              "dur_sec"
+              "dur_sec",
+              "deep_idle_state"
             ],
             "required_marker": "SmartPerfetto::CASE::input-interaction-latency"
           },
@@ -6623,10 +6626,12 @@
             "source_file": "backend/skills/atomic/linux_perf_counter_hotspots.skill.yaml",
             "parameters": {},
             "required_steps": [
-              "perf_counter_hotspots"
+              "perf_counter_hotspots",
+              "perf_counter_ratios"
             ],
             "required_sql_steps": [
-              "perf_counter_hotspots"
+              "perf_counter_hotspots",
+              "perf_counter_ratios"
             ],
             "forced_sql_steps": [],
             "isolated_sql_probes": [],
@@ -8076,12 +8081,14 @@
             "parameters": {},
             "required_steps": [
               "bitmap_memory",
+              "bitmap_live_shape",
               "heap_bitmap_availability",
               "heap_bitmap_metadata",
               "heap_bitmap_sender_attribution"
             ],
             "required_sql_steps": [
               "bitmap_memory",
+              "bitmap_live_shape",
               "heap_bitmap_availability",
               "heap_bitmap_metadata",
               "heap_bitmap_sender_attribution"

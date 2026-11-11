@@ -10,8 +10,8 @@
     "skillCount": 254,
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
-    "stepCount": 1390,
-    "explicitColumnCount": 5310
+    "stepCount": 1393,
+    "explicitColumnCount": 5348
   },
   "skills": {
     "ams_module": {
@@ -472,7 +472,7 @@
         "en": "Android Bitmap Memory Per Process"
       },
       "description": {
-        "zh-CN": "每进程 Bitmap counter、heap graph metadata 和跨进程来源归因",
+        "zh-CN": "每进程 Bitmap counter 峰值与存活集增长形状、heap graph metadata 和跨进程来源归因",
         "en": "Analyzes Android Bitmap Memory Per Process using trace metrics and supporting evidence."
       },
       "type": "atomic",
@@ -483,6 +483,105 @@
             "en": "Insight Summary"
           },
           "columns": {},
+          "synthesizeLabels": {}
+        },
+        "bitmap_live_shape": {
+          "title": {
+            "zh-CN": "Bitmap 存活集增长形状",
+            "en": "Bitmap Live-Set Growth Shape"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程",
+                "en": "Process Name"
+              }
+            },
+            "upid": {
+              "label": {
+                "zh-CN": "UPID",
+                "en": "UPID"
+              }
+            },
+            "samples": {
+              "label": {
+                "zh-CN": "样本数",
+                "en": "Samples"
+              }
+            },
+            "span_s": {
+              "label": {
+                "zh-CN": "覆盖时长(s)",
+                "en": "Span S"
+              }
+            },
+            "first_mb": {
+              "label": {
+                "zh-CN": "初始 Bitmap 内存(MB)",
+                "en": "First MB"
+              }
+            },
+            "last_mb": {
+              "label": {
+                "zh-CN": "结束 Bitmap 内存(MB)",
+                "en": "Last MB"
+              }
+            },
+            "net_growth_mb": {
+              "label": {
+                "zh-CN": "净增长(MB)",
+                "en": "Net Growth MB"
+              }
+            },
+            "rise_steps": {
+              "label": {
+                "zh-CN": "上升步数",
+                "en": "Rise Steps"
+              }
+            },
+            "drop_steps": {
+              "label": {
+                "zh-CN": "回落步数",
+                "en": "Drop Steps"
+              }
+            },
+            "max_single_drop_mb": {
+              "label": {
+                "zh-CN": "最大单次回落(MB)",
+                "en": "Max Single Drop MB"
+              }
+            },
+            "first_count": {
+              "label": {
+                "zh-CN": "初始 Bitmap 数",
+                "en": "First Count"
+              }
+            },
+            "last_count": {
+              "label": {
+                "zh-CN": "结束 Bitmap 数",
+                "en": "Last Count"
+              }
+            },
+            "gcs_in_span": {
+              "label": {
+                "zh-CN": "期间 GC 次数",
+                "en": "Gcs In Span"
+              }
+            },
+            "shape": {
+              "label": {
+                "zh-CN": "形状",
+                "en": "Shape"
+              }
+            },
+            "process_identity": {
+              "label": {
+                "zh-CN": "进程身份",
+                "en": "Process Identity"
+              }
+            }
+          },
           "synthesizeLabels": {}
         },
         "bitmap_memory": {
@@ -5210,7 +5309,7 @@
         "en": "Battery Doze State Timeline"
       },
       "description": {
-        "zh-CN": "Deep/Light idle 区间时间线",
+        "zh-CN": "Deep/Light Doze 状态机区间（含状态）与全 trace 状态序列汇总",
         "en": "Analyzes Battery Doze State Timeline using trace metrics and supporting evidence."
       },
       "type": "atomic",
@@ -5225,8 +5324,8 @@
         },
         "deep_idle_intervals": {
           "title": {
-            "zh-CN": "Deep Idle 时间段",
-            "en": "Deep Idle Intervals"
+            "zh-CN": "Deep Doze 状态区间",
+            "en": "Deep Doze State Intervals"
           },
           "columns": {
             "ts": {
@@ -5239,6 +5338,81 @@
               "label": {
                 "zh-CN": "时长(秒)",
                 "en": "Dur Sec"
+              }
+            },
+            "deep_idle_state": {
+              "label": {
+                "zh-CN": "Deep Doze 状态",
+                "en": "Deep Doze State"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "doze_state_summary": {
+          "title": {
+            "zh-CN": "Doze 状态机汇总",
+            "en": "Doze State Machine Summary"
+          },
+          "columns": {
+            "state_machine": {
+              "label": {
+                "zh-CN": "状态机",
+                "en": "State Machine"
+              }
+            },
+            "trace_intervals": {
+              "label": {
+                "zh-CN": "全 trace 区间数",
+                "en": "Trace Intervals"
+              }
+            },
+            "window_intervals": {
+              "label": {
+                "zh-CN": "窗口内区间数",
+                "en": "Window Intervals"
+              }
+            },
+            "outside_window_intervals": {
+              "label": {
+                "zh-CN": "窗口外区间数",
+                "en": "Outside Window Intervals"
+              }
+            },
+            "idle_entries": {
+              "label": {
+                "zh-CN": "进入 idle 次数",
+                "en": "Idle Entries"
+              }
+            },
+            "first_idle_ts": {
+              "label": {
+                "zh-CN": "首次进入 idle",
+                "en": "First Idle Ts"
+              }
+            },
+            "idle_total_s": {
+              "label": {
+                "zh-CN": "idle 总时长(s)",
+                "en": "Idle Total S"
+              }
+            },
+            "min_dwell_ms": {
+              "label": {
+                "zh-CN": "最短状态驻留(ms)",
+                "en": "Min Dwell ms"
+              }
+            },
+            "state_sequence": {
+              "label": {
+                "zh-CN": "状态序列",
+                "en": "State Sequence"
+              }
+            },
+            "last_state": {
+              "label": {
+                "zh-CN": "trace 末状态",
+                "en": "Last State"
               }
             }
           },
@@ -5246,8 +5420,8 @@
         },
         "light_idle_intervals": {
           "title": {
-            "zh-CN": "Light Idle 时间段",
-            "en": "Light Idle Intervals"
+            "zh-CN": "Light Doze 状态区间",
+            "en": "Light Doze State Intervals"
           },
           "columns": {
             "ts": {
@@ -5260,6 +5434,12 @@
               "label": {
                 "zh-CN": "时长(秒)",
                 "en": "Dur Sec"
+              }
+            },
+            "light_idle_state": {
+              "label": {
+                "zh-CN": "Light Doze 状态",
+                "en": "Light Doze State"
               }
             }
           },
@@ -24015,7 +24195,7 @@
         "en": "Linux Perf Counter Hotspots"
       },
       "description": {
-        "zh-CN": "基于 linux.perf.counters stdlib 汇总 perf sample counter 热点；无 PMU 数据时返回空",
+        "zh-CN": "按采样周期差值汇总 linux.perf 硬件计数器热点，并按进程给出 IPC、cache miss 比例和 MPKI；无 PMU 数据时返回空",
         "en": "Analyzes Linux Perf Counter Hotspots using trace metrics and supporting evidence."
       },
       "type": "atomic",
@@ -24058,16 +24238,91 @@
                 "en": "Sample Count"
               }
             },
-            "total_counter_value": {
+            "total_counter_delta": {
               "label": {
-                "zh-CN": "累计值",
-                "en": "Total Counter Value"
+                "zh-CN": "事件总数",
+                "en": "Total Events"
               }
             },
-            "avg_counter_value": {
+            "avg_counter_delta": {
               "label": {
-                "zh-CN": "平均值",
-                "en": "Avg Counter Value"
+                "zh-CN": "每样本事件数",
+                "en": "Events per Sample"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "perf_counter_ratios": {
+          "title": {
+            "zh-CN": "PMU 派生比值（按进程）",
+            "en": "PMU Derived Ratios by Process"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程",
+                "en": "Process Name"
+              }
+            },
+            "upid": {
+              "label": {
+                "zh-CN": "UPID",
+                "en": "UPID"
+              }
+            },
+            "samples": {
+              "label": {
+                "zh-CN": "样本数",
+                "en": "Samples"
+              }
+            },
+            "cycles_share_pct": {
+              "label": {
+                "zh-CN": "cycles 占比",
+                "en": "Cycles Share Pct"
+              }
+            },
+            "cycles_m": {
+              "label": {
+                "zh-CN": "cycles(百万)",
+                "en": "Cycles (M)"
+              }
+            },
+            "instructions_m": {
+              "label": {
+                "zh-CN": "instructions(百万)",
+                "en": "Instructions (M)"
+              }
+            },
+            "ipc": {
+              "label": {
+                "zh-CN": "IPC",
+                "en": "IPC"
+              }
+            },
+            "cache_references_m": {
+              "label": {
+                "zh-CN": "cache-references(百万)",
+                "en": "Cache References (M)"
+              }
+            },
+            "cache_misses_m": {
+              "label": {
+                "zh-CN": "cache-misses(百万)",
+                "en": "Cache Misses (M)"
+              }
+            },
+            "cache_miss_pct": {
+              "label": {
+                "zh-CN": "cache miss 比例",
+                "en": "Cache Miss Ratio"
+              }
+            },
+            "mpki": {
+              "label": {
+                "zh-CN": "Mpki",
+                "en": "MPKI"
               }
             }
           },

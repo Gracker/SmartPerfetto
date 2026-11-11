@@ -59,7 +59,7 @@ keywords:
 
 **Phase reminders**
 - sched_latency: 调度问题优先调用 linux_sched_latency_distribution 和 linux_runqueue_depth_timeline；如果用户给定时间窗必须传 start_ts/end_ts。 工具: linux_sched_latency_distribution, linux_runqueue_depth_timeline
-- pmu_perf: PMU 问题调用 linux_perf_counter_hotspots。无 perf sample/counter 数据时必须说明 trace 未启用 PMU，不能给 cache/branch 结论。 工具: linux_perf_counter_hotspots
+- pmu_perf: PMU 问题调用 linux_perf_counter_hotspots（口径见 Phase 2）。PMU 是否在场看 `counter_track.type = 'perf_cpu_counter'`，不看 linux_perf_samples_summary_tree（无调用栈时它为空）。无 perf sample/counter 数据时必须说明 trace 未启用 PMU，不能给 cache/branch 结论。 工具: linux_perf_counter_hotspots
 - linux_memory: Linux 进程内存问题调用 linux_process_rss_swap_timeline；page fault/reclaim 仍用 page_fault_in_range 做窗口级阻塞证据。 工具: linux_process_rss_swap_timeline, page_fault_in_range
 
 **Final report contract summary**
@@ -90,7 +90,7 @@ invoke_skill("linux_runqueue_depth_timeline", { start_ts: "<start>", end_ts: "<e
 invoke_skill("linux_perf_counter_hotspots", { package: "<包名>", start_ts: "<start>", end_ts: "<end>" })
 ```
 
-无 perf samples/counters 时，结论必须是"当前 trace 不支持 PMU 判断"。
+`perf_counter_hotspots` 的事件数来自同一计数器轨道相邻采样的差值；`perf_counter_ratios` 按进程给出 cycles 占比、IPC、cache miss 比例和 MPKI。每个硬件计数器单独采样，比值是采样估计；generic cache-* 事件对应哪级 cache 由 PMU 驱动决定，不要写成具体 L1/L2/LLC。无 perf samples/counters 时，结论必须是"当前 trace 不支持 PMU 判断"。
 
 **Phase 3 — 进程内存 / page fault：**
 

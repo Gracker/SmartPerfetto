@@ -983,6 +983,27 @@
             ]
           },
           {
+            "id": "bitmap_live_shape",
+            "sha256": "ad62f73e6162e284147b9e1ceb01cdc7a112c8aa107d2fe550b1d533b8b6d90f",
+            "required_columns": [
+              "process_name",
+              "upid",
+              "samples",
+              "span_s",
+              "first_mb",
+              "last_mb",
+              "net_growth_mb",
+              "rise_steps",
+              "drop_steps",
+              "max_single_drop_mb",
+              "first_count",
+              "last_count",
+              "gcs_in_span",
+              "shape",
+              "process_identity"
+            ]
+          },
+          {
             "id": "heap_bitmap_availability",
             "sha256": "71dd8beb2b834623bc22a5ee44200a88e4f5760502d1702d0a44672f9a704fc8",
             "required_columns": [
@@ -1704,19 +1725,37 @@
         ],
         "steps": [
           {
+            "id": "doze_state_summary",
+            "sha256": "bb9ca1e95b328d5b7df0b4f30d1a4205d1a5aeec6a1bb707450de50e12a72a4b",
+            "required_columns": [
+              "state_machine",
+              "trace_intervals",
+              "window_intervals",
+              "outside_window_intervals",
+              "idle_entries",
+              "first_idle_ts",
+              "idle_total_s",
+              "min_dwell_ms",
+              "state_sequence",
+              "last_state"
+            ]
+          },
+          {
             "id": "deep_idle_intervals",
-            "sha256": "8f7ff82ae350c2ccb2b3b2ced71ee079b648daf4201756942082fb33ebafe2b8",
+            "sha256": "8bed0446e8a15bdeb2aed7510438cb4e660b56389729e511e34667074573f8c1",
             "required_columns": [
               "ts",
-              "dur_sec"
+              "dur_sec",
+              "deep_idle_state"
             ]
           },
           {
             "id": "light_idle_intervals",
-            "sha256": "b1f50806aa7d638f9c170b256e6fe346d2da5ccfdfd36adbc65a304f3329f0f0",
+            "sha256": "c3992348686f963ea9f2a4f7e506c91fb690c6b565fe4c7571189c23dd2783d9",
             "required_columns": [
               "ts",
-              "dur_sec"
+              "dur_sec",
+              "light_idle_state"
             ]
           }
         ]
@@ -3796,14 +3835,31 @@
         "steps": [
           {
             "id": "perf_counter_hotspots",
-            "sha256": "146c14aa553bbbb0ff3189f440021fdb45cd7b08af88036a2f6195418152f5d4",
+            "sha256": "e4d0d6cace855fe82d6c903f1f49415da16859583c36c5899b0552c82a7b67b8",
             "required_columns": [
               "counter_name",
               "process_name",
               "thread_name",
               "sample_count",
-              "total_counter_value",
-              "avg_counter_value"
+              "total_counter_delta",
+              "avg_counter_delta"
+            ]
+          },
+          {
+            "id": "perf_counter_ratios",
+            "sha256": "8885851f980dfcfa6480ab0fcf1a0b787824d5073664656589c1e82b60749f97",
+            "required_columns": [
+              "process_name",
+              "upid",
+              "samples",
+              "cycles_share_pct",
+              "cycles_m",
+              "instructions_m",
+              "ipc",
+              "cache_references_m",
+              "cache_misses_m",
+              "cache_miss_pct",
+              "mpki"
             ]
           }
         ]

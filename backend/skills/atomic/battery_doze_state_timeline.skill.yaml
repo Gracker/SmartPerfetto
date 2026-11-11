@@ -5,21 +5,31 @@
 # =============================================================================
 # Doze（深度休眠）状态时间线（B 级 atomic）
 # =============================================================================
-# 使用 Perfetto stdlib 的 android.battery.doze 模块，提取 deep idle 和 light
-# idle 区间。Doze 是 Android 最重要的省电模式，频繁退出 Doze 是后台耗电
-# 主因之一。
+# 使用 Perfetto stdlib 的 android.battery.doze 模块，读取 DeviceIdleController
+# 的 DozeDeepState / DozeLightState 计数器轨道解码后的状态区间。Doze 是 Android
+# 最重要的省电模式，频繁退出 Doze 是后台耗电主因之一。
+#
+# v1.1: stdlib 两张表包含状态机的全部区间（active/inactive/idle_pending/…/idle），
+#   区间本身不等于 idle；两个区间步骤补上状态列，标题改为状态区间。新增
+#   doze_state_summary：按状态机给出全 trace 与所给时间窗内的区间数、idle 进入次数、
+#   状态序列和最短驻留，窗口只覆盖灭屏后一小段时，窗口外的 Doze 序列仍能被看到。
 
 name: battery_doze_state_timeline
-version: "1.0"
+version: "1.1"
 type: atomic
 category: power
 tier: B
 
 meta:
   display_name: "Doze 休眠状态时间线"
-  description: "Deep/Light idle 区间时间线"
+  description: "Deep/Light Doze 状态机区间（含状态）与全 trace 状态序列汇总"
   icon: "bedtime"
   tags: [doze, idle, battery, power, atomic]
+
+triggers:
+  keywords:
+    zh: [Doze, 深度休眠, 待机, 灭屏耗电, 设备空闲]
+    en: [doze, device idle, deep idle, light idle, standby]
 
 prerequisites:
   modules:
@@ -34,13 +44,110 @@ inputs:
     required: false
 
 steps:
+  - id: doze_state_summary
+    type: atomic
+    name: "Doze 状态机汇总"
+    display:
+      level: summary
+      layer: overview
+      title: "Doze 状态机汇总"
+      title_i18n: {en: "Doze State Machine Summary"}
+      row_semantics: per_entity
+      columns:
+        - name: state_machine
+          label: "状态机"
+          label_i18n: {en: "State Machine"}
+          type: string
+        - name: trace_intervals
+          label: "全 trace 区间数"
+          type: number
+          format: compact
+        - name: window_intervals
+          label: "窗口内区间数"
+          type: number
+          format: compact
+          semantics: >-
+            Intervals overlapping the requested start_ts/end_ts window (all of them when no window is given).
+        - name: outside_window_intervals
+          label: "窗口外区间数"
+          type: number
+          format: compact
+          semantics: >-
+            Intervals entirely outside the requested window; nonzero means Doze transitions happened that the
+            windowed interval rows below do not show.
+        - name: idle_entries
+          label: "进入 idle 次数"
+          type: number
+          format: compact
+        - name: first_idle_ts
+          label: "首次进入 idle"
+          type: timestamp
+          clickAction: navigate_timeline
+        - name: idle_total_s
+          label: "idle 总时长(s)"
+          type: number
+        - name: min_dwell_ms
+          label: "最短状态驻留(ms)"
+          type: number
+          semantics: >-
+            Shortest observed nonfinal state dwell. A sub-second value shows a rapid transition; the first interval
+            may be clipped by trace start. External forcing requires separate command or log evidence.
+        - name: state_sequence
+          label: "状态序列"
+          label_i18n: {en: "State Sequence"}
+          type: string
+          semantics: >-
+            Decoded states in time order over the whole trace (first 24 intervals), joined by '>'.
+        - name: last_state
+          label: "trace 末状态"
+          label_i18n: {en: "Last State"}
+          type: string
+    sql: |
+      WITH
+      states AS (
+        SELECT 'deep' AS state_machine, ts, dur, deep_idle_state AS state FROM android_deep_idle_state
+        UNION ALL
+        SELECT 'light' AS state_machine, ts, dur, light_idle_state AS state FROM android_light_idle_state
+      ),
+      ranked AS (
+        SELECT
+          state_machine,
+          ts,
+          dur,
+          state,
+          ROW_NUMBER() OVER (PARTITION BY state_machine ORDER BY ts ASC) AS rn_first,
+          ROW_NUMBER() OVER (PARTITION BY state_machine ORDER BY ts DESC) AS rn_last,
+          CASE
+            WHEN (${start_ts} IS NULL OR ts + dur > ${start_ts})
+              AND (${end_ts} IS NULL OR ts < ${end_ts}) THEN 1
+            ELSE 0
+          END AS in_window
+        FROM states
+      )
+      SELECT
+        state_machine,
+        COUNT(*) AS trace_intervals,
+        SUM(in_window) AS window_intervals,
+        COUNT(*) - SUM(in_window) AS outside_window_intervals,
+        SUM(CASE WHEN state = 'idle' THEN 1 ELSE 0 END) AS idle_entries,
+        MIN(CASE WHEN state = 'idle' THEN ts END) AS first_idle_ts,
+        ROUND(SUM(CASE WHEN state = 'idle' THEN dur ELSE 0 END) / 1e9, 3) AS idle_total_s,
+        ROUND(MIN(CASE WHEN rn_last > 1 THEN dur END) / 1e6, 3) AS min_dwell_ms,
+        GROUP_CONCAT(CASE WHEN rn_first <= 24 THEN state END, '>' ORDER BY ts) AS state_sequence,
+        MAX(CASE WHEN rn_last = 1 THEN state END) AS last_state
+      FROM ranked
+      GROUP BY state_machine
+      ORDER BY state_machine
+    save_as: doze_state_summary
+
   - id: deep_idle_intervals
     type: atomic
-    name: "Deep Idle 区间"
+    name: "Deep Doze 状态区间"
     display:
       level: detail
       layer: list
-      title: "Deep Idle 时间段"
+      title: "Deep Doze 状态区间"
+      title_i18n: {en: "Deep Doze State Intervals"}
       columns:
         - name: ts
           label: "起始"
@@ -49,10 +156,15 @@ steps:
           label: "时长(秒)"
           type: duration
           format: compact
+        - name: deep_idle_state
+          label: "Deep Doze 状态"
+          label_i18n: {en: "Deep Doze State"}
+          type: string
     sql: |
       SELECT
         ts,
-        ROUND(dur / 1e9, 1) AS dur_sec
+        ROUND(dur / 1e9, 3) AS dur_sec,
+        deep_idle_state
       FROM android_deep_idle_state
       WHERE (${start_ts} IS NULL OR ts + dur > ${start_ts})
         AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -60,11 +172,12 @@ steps:
 
   - id: light_idle_intervals
     type: atomic
-    name: "Light Idle 区间"
+    name: "Light Doze 状态区间"
     display:
       level: detail
       layer: list
-      title: "Light Idle 时间段"
+      title: "Light Doze 状态区间"
+      title_i18n: {en: "Light Doze State Intervals"}
       columns:
         - name: ts
           label: "起始"
@@ -73,10 +186,15 @@ steps:
           label: "时长(秒)"
           type: duration
           format: compact
+        - name: light_idle_state
+          label: "Light Doze 状态"
+          label_i18n: {en: "Light Doze State"}
+          type: string
     sql: |
       SELECT
         ts,
-        ROUND(dur / 1e9, 1) AS dur_sec
+        ROUND(dur / 1e9, 3) AS dur_sec,
+        light_idle_state
       FROM android_light_idle_state
       WHERE (${start_ts} IS NULL OR ts + dur > ${start_ts})
         AND (${end_ts} IS NULL OR ts < ${end_ts})

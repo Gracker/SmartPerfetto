@@ -12,12 +12,14 @@
       "parameters": {},
       "required_steps": [
         "bitmap_memory",
+        "bitmap_live_shape",
         "heap_bitmap_availability",
         "heap_bitmap_metadata",
         "heap_bitmap_sender_attribution"
       ],
       "required_sql_steps": [
         "bitmap_memory",
+        "bitmap_live_shape",
         "heap_bitmap_availability",
         "heap_bitmap_metadata",
         "heap_bitmap_sender_attribution"

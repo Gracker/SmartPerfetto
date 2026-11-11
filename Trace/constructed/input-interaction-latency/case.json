@@ -109,10 +109,12 @@
         "source_file": "backend/skills/atomic/battery_doze_state_timeline.skill.yaml",
         "parameters": {},
         "required_steps": [
+          "doze_state_summary",
           "deep_idle_intervals",
           "light_idle_intervals"
         ],
         "required_sql_steps": [
+          "doze_state_summary",
           "deep_idle_intervals",
           "light_idle_intervals"
         ],
@@ -122,7 +124,8 @@
         "semantic_step": "deep_idle_intervals",
         "required_columns": [
           "ts",
-          "dur_sec"
+          "dur_sec",
+          "deep_idle_state"
         ],
         "required_marker": "SmartPerfetto::CASE::input-interaction-latency"
       },

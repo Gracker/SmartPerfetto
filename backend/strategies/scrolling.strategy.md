@@ -366,6 +366,7 @@ invoke_skill("scrolling_analysis", { start_ts: "<trace_start>", end_ts: "<trace_
 | 每帧阻塞调用 | `invoke_skill("frame_blocking_calls")` | 将掉帧帧与 Binder/GC/锁竞争/futex/文件 IO 阻塞区间做重叠匹配 |
 | CPU process/thread 周期利用率 | `invoke_skill("cpu_process_utilization_period")` / `invoke_skill("cpu_thread_utilization_period")` | 用于 workload_heavy、后台抢占、线程归因 |
 | 进程 slice CPU 热点 | `invoke_skill("process_slice_cpu_hotspots", { process_name, start_ts, end_ts })` | 用 `thread_state=Running` 求交，确认掉帧窗口内真正消耗 CPU 的 named slice |
+| PMU 硬件计数器 | `invoke_skill("linux_perf_counter_hotspots", { process_name, start_ts, end_ts })` | 仅 trace 含 `perf_cpu_counter` 轨道时：cycles 占比、IPC、cache miss 比例 |
 | CPU cluster 拓扑 | `invoke_skill("cpu_cluster_mapping_view")` | 解释大小核分布，辅助 small_core_placement |
 | GPU work period | `invoke_skill("android_gpu_work_period_track")` | 只有 `gpu_work_period` capability 可用时才做 GPU active region 判断 |
 | Mali power state | `invoke_skill("mali_gpu_power_state")` | Mali 设备专用；无数据时标注设备/trace 不支持 |
