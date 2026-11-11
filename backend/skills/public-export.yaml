@@ -209,6 +209,9 @@ sql_fragments:
   backend/skills/fragments/cpu_cluster_load.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/cpu_cluster_load.sql
+  backend/skills/fragments/linux_perf_counter_deltas.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/linux_perf_counter_deltas.sql
 vendor_overrides:
   backend/skills/vendors/honor/startup.override.yaml:
     disposition: exported

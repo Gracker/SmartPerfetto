@@ -2434,7 +2434,7 @@
     },
     "battery_doze_state_timeline": {
       "source_file": "backend/skills/atomic/battery_doze_state_timeline.skill.yaml",
-      "source_sha256": "f3b10de266791619cc7c7a75b64688301c08509cbcec5cad7787f20ee4389f6b",
+      "source_sha256": "38c6fc6d472d705aaa1f872ee022272227ec52cff40e8269d1c1f0f44b2cc021",
       "type": "atomic",
       "execution": "steps",
       "declared_modules": [

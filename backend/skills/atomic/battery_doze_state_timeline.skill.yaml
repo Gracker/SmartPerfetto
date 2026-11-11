@@ -90,8 +90,8 @@ steps:
           label: "最短状态驻留(ms)"
           type: number
           semantics: >-
-            Shortest dwell among intervals that were followed by another state. Natural deep Doze waits minutes per
-            stage; sub-second dwells mean the state machine was stepped externally (for example dumpsys deviceidle).
+            Shortest observed nonfinal state dwell. A sub-second value shows a rapid transition; the first interval
+            may be clipped by trace start. External forcing requires separate command or log evidence.
         - name: state_sequence
           label: "状态序列"
           label_i18n: {en: "State Sequence"}
