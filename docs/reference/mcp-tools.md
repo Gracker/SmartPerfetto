@@ -104,7 +104,7 @@ Trace 证据或源码引用。每次调用前后都复核授权上下文与固�
 | `resolve_hypothesis` | 标记假设为 confirmed / rejected / unresolved |
 | `flag_uncertainty` | 显式记录不确定性或缺失证据 |
 | `write_analysis_note` | 写入 session 分析笔记，按配置启用 |
-| `fetch_artifact` | 分页读取大型 SQL/Skill artifact，按 artifact store 启用。`detail="rows"` 返回 `rows: {rowIndex, values}`，`rowIndex = offset + 位置`（整个 artifact 内的行号），并带 `rowShape: "indexed_rows@1"`；`detail="full"` 保持原始结构 |
+| `fetch_artifact` | 分页读取大型 SQL/Skill artifact，按 artifact store 启用。`detail="rows"` 返回 `rows: {rowIndex, values}`，`rowIndex = offset + 位置`（整个 artifact 内的行号），并带 `rowShape: "indexed_rows@1"`；单页达到 64 KiB 字节预算即截止（`execute_sql` 结果超过同一预算时也改为摘要加 artifact），返回 `returnedRows` 与 `nextOffset`；`detail="full"` 保持原始结构，受行数与字节上限约束 |
 | `lookup_strategy_detail` | 按场景策略目录中的 detail ref 读取本轮固定策略注册表中的完整细节；informational，不满足 expectedCalls |
 | `read_session_history` | 读取本会话更早轮次的类型化历史（按 `turnId`、`offset` / `limit`、`textOffset` / `maxChars` 分页）；保留原生的部分完成/未知状态、不确定性和已声明的定位符，源码派生历史只在授权指纹一致时返回。不是证据采集，`existing_only` 下可用 |
 | `propose_scene_timeline` | 场景还原 run 专用（internal）：提交带 `baseRevision` 的场景时间线候选修订，见 [场景还原](../architecture/scene-reconstruction.md) |

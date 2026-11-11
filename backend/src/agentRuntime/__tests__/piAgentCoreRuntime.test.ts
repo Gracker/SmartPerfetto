@@ -95,6 +95,8 @@ jest.mock('../runtimeConclusionVerifier', () => {
 
 let piClassifierDecision: AnalysisTurnIntentDecision;
 let piClassifierResponses: Array<Record<string, unknown> | Error>;
+/** The fake provider's pi-ai failure reading; 'other' unless a test sets one. */
+let piFailedTurnClass: (message: unknown) => 'context_overflow' | 'transient' | 'other';
 let piClassifierCalls: Array<{model: unknown; context: any; options: any}>;
 
 async function loadFakePiProviderRuntime(config: {model: Record<string, unknown>; thinkingLevel?: any}) {
@@ -102,6 +104,7 @@ async function loadFakePiProviderRuntime(config: {model: Record<string, unknown>
     model: config.model as any,
     thinkingLevel: config.thinkingLevel,
     models: {} as any,
+    classifyFailedTurn: (message: unknown) => piFailedTurnClass(message),
     streamFn: ((model: unknown, context: unknown, options: unknown) => {
       piClassifierCalls.push({model, context, options});
       return {result: async () => {
@@ -221,6 +224,16 @@ class FakePiAgent {
     this.emit({ type: 'agent_end', messages: this.state.messages });
   }
 
+  continueCount = 0;
+
+  /** Mirrors Pi 1.x: re-runs from the transcript, refusing a transcript that ends on an assistant reply. */
+  async continue(): Promise<void> {
+    const last = this.state.messages[this.state.messages.length - 1] as {role?: string} | undefined;
+    if (last?.role === 'assistant') throw new Error('Cannot continue from message role: assistant');
+    this.continueCount += 1;
+    await this.prompt(this.lastPrompt);
+  }
+
   abort(): void {
     this.aborted = true;
     FakePiAgent.abortHandler?.(this);
@@ -269,6 +282,7 @@ beforeEach(() => {
     scope: 'bounded_question', recommendedComplexity: 'quick', deliverable: 'answer', evidenceAccess: 'read_new'};
   piClassifierResponses = [];
   piClassifierCalls = [];
+  piFailedTurnClass = () => 'other';
   const actualVerifier = jest.requireActual('../runtimeConclusionVerifier') as any;
   mockClaudeVerifierVerifyConclusion.mockReset();
   mockClaudeVerifierVerifyConclusion.mockImplementation((...args: unknown[]) => (
@@ -3696,6 +3710,100 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(piClassifierCalls[1].context.messages[0].content).toContain('23');
     expect(piClassifierCalls[1].options).toMatchObject({maxRetries: 0});
     expect(piClassifierCalls[1].options.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('names a context-window stop as its own budget and closes out, not as the turn cap', async () => {
+    passVerification();
+    piClassifierResponses.push(
+      {role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: JSON.stringify(piClassifierDecision)}]},
+      {role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: 'Observed partial evidence only.'}]},
+    );
+    FakePiAgent.promptHandler = async agent => {
+      const message = {role: 'assistant', stopReason: 'toolUse', content: [{type: 'text', text: 'Retained evidence'}],
+        usage: {input: 95_000, output: 1_000, cacheRead: 0, cacheWrite: 0, totalTokens: 96_000, cost: {total: 0}}};
+      expect(await (agent.options?.finishTurn as any)({message})).toEqual({action: 'end'});
+      agent.emitForTest({type: 'turn_end', message});
+      return [message];
+    };
+    const result = await typedRuntime({env: {AGENT_QUICK_MAX_TURNS: '50'}})
+      .analyze('继续', 'typed-pi-context-limit', 'trace-pi', {analysisMode: 'fast'});
+    expect(result).toMatchObject({partial: true, terminationReason: 'max_context_tokens', rounds: 2,
+      completion: {status: 'incomplete', reason: 'context_limit', attemptId: 'closeout-2'}});
+    expect(result.quickRun?.stopReason).not.toBe('hard_cap');
+    // The closeout tells the model which budget ran out.
+    expect(piClassifierCalls[1].context.messages[0].content).toMatch(/[（(]context_limit[：:]/);
+  });
+
+  it('names a cost-cap stop as its own budget and buys no closeout', async () => {
+    passVerification();
+    piClassifierResponses.push(
+      {role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: JSON.stringify(piClassifierDecision)}]});
+    FakePiAgent.promptHandler = async agent => {
+      const message = {role: 'assistant', stopReason: 'toolUse', content: [{type: 'text', text: 'Retained evidence'}],
+        usage: {input: 1_000, output: 100, cacheRead: 0, cacheWrite: 0, totalTokens: 1_100, cost: {total: 2}}};
+      expect(await (agent.options?.finishTurn as any)({message})).toEqual({action: 'end'});
+      agent.emitForTest({type: 'turn_end', message});
+      return [message];
+    };
+    const result = await typedRuntime({env: {AGENT_QUICK_MAX_TURNS: '50', SMARTPERFETTO_PI_MAX_BUDGET_USD: '1'}})
+      .analyze('继续', 'typed-pi-budget-limit', 'trace-pi', {analysisMode: 'fast'});
+    expect(result).toMatchObject({conclusion: 'Retained evidence', partial: true, terminationReason: 'max_budget_usd', rounds: 1,
+      completion: {status: 'incomplete', reason: 'budget_limit', attemptId: '1'}});
+    expect(piClassifierCalls).toHaveLength(1);
+  });
+
+  /** A run whose first provider turn fails with `failed`; later turns answer. */
+  async function runWithFailedFirstTurn(sessionId: string, failed: Record<string, unknown>) {
+    passVerification();
+    piClassifierResponses.push(
+      {role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: JSON.stringify(piClassifierDecision)}]},
+      {role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: 'Closeout from returned data.'}]});
+    let agent: FakePiAgent | undefined;
+    FakePiAgent.promptHandler = async (current, _prompt, index) => {
+      agent = current;
+      const message = index === 1 ? failed
+        : {role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: 'Recovered answer'}]};
+      current.emitForTest({type: 'message_end', message});
+      current.emitForTest({type: 'turn_end', message});
+      return [message];
+    };
+    const runtime = typedRuntime({env: {AGENT_QUICK_MAX_TURNS: '50'}});
+    const updates: StreamingUpdate[] = [];
+    runtime.on('update', update => updates.push(update));
+    const result = await runtime.analyze('继续', sessionId, 'trace-pi', {analysisMode: 'fast'});
+    return {result, agent: agent!, errors: updates.filter(update => update.type === 'error'), updates};
+  }
+
+  it('re-sends a transiently failed turn and withholds its error', async () => {
+    piFailedTurnClass = () => 'transient';
+    const failed = {role: 'assistant', stopReason: 'error', errorMessage: 'Stream ended without finish_reason',
+      content: [{type: 'text', text: 'partial'}]};
+    const {result, agent, errors, updates} = await runWithFailedFirstTurn('typed-pi-transient-retry', failed);
+    expect(agent.continueCount).toBe(1);
+    // The failed reply is not part of the transcript the retry re-sent.
+    expect(agent.state.messages).not.toContain(failed);
+    expect(result).toMatchObject({conclusion: 'Recovered answer', success: true, rounds: 2, completion: {status: 'completed'}});
+    expect(errors).toEqual([]);
+    expect(updates.some(update => update.type === 'progress' && JSON.stringify(update.content).includes('1/2'))).toBe(true);
+  }, 20_000);
+
+  it('does not re-send a provider failure pi-ai reads as permanent and still reports it', async () => {
+    piFailedTurnClass = () => 'other';
+    const {result, agent, errors} = await runWithFailedFirstTurn('typed-pi-auth-failure',
+      {role: 'assistant', stopReason: 'error', errorMessage: '401 invalid api key', content: []});
+    expect(agent.continueCount).toBe(0);
+    expect(result).toMatchObject({success: false, completion: {status: 'failed', reason: 'provider_error'}});
+    expect(errors.length).toBeGreaterThan(0);
+  });
+
+  it('closes out a provider context overflow as context_limit instead of failing the run', async () => {
+    piFailedTurnClass = () => 'context_overflow';
+    const {result, agent, errors} = await runWithFailedFirstTurn('typed-pi-context-overflow',
+      {role: 'assistant', stopReason: 'error', errorMessage: '400 context length exceeded', content: []});
+    expect(agent.continueCount).toBe(0);
+    expect(result).toMatchObject({conclusion: 'Closeout from returned data.', partial: true,
+      terminationReason: 'max_context_tokens', completion: {status: 'incomplete', reason: 'context_limit'}});
+    expect(errors).toEqual([]);
   });
 
   it.each([1, 2])('never exceeds total Pi budget %s when closeout fails or is unavailable', async maxTurns => {

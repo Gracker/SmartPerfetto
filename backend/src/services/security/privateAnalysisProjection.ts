@@ -40,6 +40,7 @@ function privateControl<T extends string>(value: unknown, allowed: readonly T[],
 
 const SAFE_TERMINATION_REASONS = new Set([
   'max_turns',
+  'max_context_tokens',
   'max_budget_usd',
   'max_structured_output_retries',
   'execution_error',

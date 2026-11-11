@@ -3,12 +3,26 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import type { AnalysisTerminationReason } from '../agent/core/orchestratorTypes';
+import type { AnalysisCompletion } from '../types/analysisDelivery';
 import { DEFAULT_OUTPUT_LANGUAGE, localize, type OutputLanguage } from './outputLanguage';
 
 export const SDK_MAX_TURNS_SUBTYPE = 'error_max_turns';
 export const MAX_TURNS_TERMINATION_REASON: AnalysisTerminationReason = 'max_turns';
 
 export type AnalysisModeLabel = 'fast' | 'full';
+
+/** The termination each exhausted budget records, for every runtime; undefined for other reasons. */
+export function budgetTerminationReason(
+  reason: AnalysisCompletion['reason'],
+): AnalysisTerminationReason | undefined {
+  switch (reason) {
+    case 'turn_limit': return 'max_turns';
+    case 'context_limit': return 'max_context_tokens';
+    case 'budget_limit': return 'max_budget_usd';
+    case 'timeout': return 'timeout';
+    default: return undefined;
+  }
+}
 
 export function isSdkMaxTurnsSubtype(subtype: unknown): boolean {
   return subtype === SDK_MAX_TURNS_SUBTYPE;

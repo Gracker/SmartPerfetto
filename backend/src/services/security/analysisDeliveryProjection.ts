@@ -9,6 +9,7 @@ import {INVESTIGATION_CONDITION_OPERATORS} from '../../types/analysisInvestigati
 import {isRecordedProductionRuntimeKind} from '../../agentRuntime/runtimeKinds';
 import {SOURCE_NEEDS} from '../../types/sourceNeed';
 import {
+  ANALYSIS_COMPLETION_REASONS,
   analysisDeliveryFingerprint,
   type AnalysisCandidateIdentity,
   type AnalysisAssuranceStatus,
@@ -203,7 +204,7 @@ export function copyAnalysisDeliveryFields(input: AnalysisDeliveryFields): Analy
     output.completion = {
       schemaVersion: 1, ...candidate(completion), runtimeKind: completion.runtimeKind,
       status: completion.status,
-      ...(member(completion.reason, ['output_limit', 'turn_limit', 'timeout', 'budget_limit', 'provider_error', 'cancelled'])
+      ...(member(completion.reason, ANALYSIS_COMPLETION_REASONS)
         ? {reason: completion.reason} : {}),
       ...(typeof completion.sdkFinishReason === 'string' ? {sdkFinishReason: completion.sdkFinishReason} : {}),
     };
@@ -217,7 +218,7 @@ export function copyAnalysisDeliveryFields(input: AnalysisDeliveryFields): Analy
     output.runtimeAppendix = {
       schemaVersion: 1, origin: 'runtime_fallback', sourceCandidate: candidate(appendix.sourceCandidate),
       text: appendix.text,
-      ...(member(appendix.reason, ['output_limit', 'turn_limit', 'timeout', 'budget_limit', 'provider_error', 'cancelled'])
+      ...(member(appendix.reason, ANALYSIS_COMPLETION_REASONS)
         ? {reason: appendix.reason} : {}),
     };
   }

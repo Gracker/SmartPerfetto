@@ -78,6 +78,8 @@ export interface IOrchestrator {
 
 export type AnalysisTerminationReason =
   | 'max_turns'
+  /** The context window filled before a finished answer; distinct from the turn cap. */
+  | 'max_context_tokens'
   | 'max_budget_usd'
   | 'max_structured_output_retries'
   | 'execution_error'

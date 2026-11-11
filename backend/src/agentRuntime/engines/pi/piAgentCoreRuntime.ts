@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {setTimeout as delay} from 'node:timers/promises';
 import {resolveRuntimePerformanceRecorder} from '../../runtimePerformanceContext';
 import {ensureRuntimeAdmission} from '../../runtimeTaskDeadline';
 import {createModelRequestMetricsFetch} from '../../modelRequestMetrics';
@@ -85,7 +86,7 @@ import { probeTraceCompleteness } from '../../../agentv3/traceCompletenessProber
 import type {SceneType} from '../../../agentv3/sceneClassifier';
 import { DEFAULT_OUTPUT_LANGUAGE, localize, parseOutputLanguage, type OutputLanguage } from '../../../agentv3/outputLanguage';
 import { formatToolCallNarration, formatToolResultNarration, issuePrivateToolResultNarrationReceipt, toolResultIsFailure } from '../../../agentv3/toolNarration';
-import { estimateAnalysisConfidence } from '../../../agentv3/analysisTermination';
+import { budgetTerminationReason, estimateAnalysisConfidence } from '../../../agentv3/analysisTermination';
 import { planPhaseUpdatedContent } from '../../../agentv3/planPhaseEvents';
 import type {
   AnalysisNote,
@@ -153,7 +154,7 @@ import {
   resolveFullRequestTimeoutMs,
 } from '../../runtimeLimits';
 import type {AgentOptions as InstalledPiAgentOptions} from '@earendil-works/pi-agent-core';
-import type {ModelThinkingLevel, SystemMessage, Usage} from '@earendil-works/pi-ai';
+import type {AssistantMessage, ModelThinkingLevel, SystemMessage, Usage} from '@earendil-works/pi-ai';
 import {
   createPiAgentCoreProviderRuntime,
   type PiAgentCoreProviderRuntime,
@@ -223,6 +224,8 @@ interface PiAgentCoreAgent {
   state: PiAgentCoreAgentState;
   subscribe(listener: (event: PiAgentCoreEvent, signal?: AbortSignal) => Promise<void> | void): () => void;
   prompt(input: string): Promise<void>;
+  /** Re-runs from the current transcript, whose last message must not be an assistant reply. */
+  continue?(): Promise<void>;
   abort(): void;
   reset(): void;
   /** Optional: the installed SDK has these; a module loaded by path may not. */
@@ -340,6 +343,14 @@ export function piContextNearlyFull(message: {usage?: Usage}, contextWindow: num
   if (!usage || !(contextWindow > 0)) return false;
   return (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0) + PI_CONTEXT_RESERVE_TOKENS >= contextWindow;
 }
+
+/**
+ * Re-sends of a turn that failed transiently, per run; each is a counted provider
+ * turn inside the run's budget and deadline. Pi ends the run on an error turn
+ * before running any of its tool calls, so the turn re-sends from the same transcript.
+ */
+const PI_MAX_TRANSIENT_TURN_RETRIES = 2;
+const PI_TRANSIENT_TURN_RETRY_BASE_MS = 2_000;
 
 interface PiAnalysisPreparation {
   systemPrompt: string;
@@ -616,11 +627,15 @@ export function selectAssistantConclusion(messages: unknown[] | undefined): stri
   return extractAssistantText(latestAssistantMessage(messages)).trim();
 }
 
+/** The acquisition budgets a run can exhaust; each is a distinct, separately actionable stop. */
+type PiBudgetStop = Extract<NonNullable<AnalysisCompletion['reason']>, 'turn_limit' | 'context_limit' | 'budget_limit'>;
+
 export function buildPiAnalysisCompletion(input: {
   assistant?: Record<string, unknown>;
   candidate: AnalysisCandidateIdentity;
   runtimeKind: PiAgentCoreRuntimeKind;
-  turnLimitReached?: boolean;
+  /** Which acquisition budget ended the run before a finished answer. */
+  budgetStop?: PiBudgetStop;
 }): AnalysisCompletion {
   const stop = typeof input.assistant?.stopReason === 'string' ? input.assistant.stopReason : undefined;
   const failed = stop === 'error' || Boolean(input.assistant?.errorMessage);
@@ -629,11 +644,11 @@ export function buildPiAnalysisCompletion(input: {
     ...input.candidate,
     schemaVersion: 1,
     runtimeKind: canonicalRuntimeKind(input.runtimeKind),
-    status: input.turnLimitReached ? 'incomplete'
+    status: input.budgetStop ? 'incomplete'
       : stop === 'aborted' ? 'cancelled' : failed ? 'failed'
       : stop === 'length' ? 'incomplete'
       : stop === 'stop' && !toolCall && input.assistant?.deferred === undefined ? 'completed' : 'unknown',
-    ...(input.turnLimitReached ? {reason: 'turn_limit' as const}
+    ...(input.budgetStop ? {reason: input.budgetStop}
       : stop === 'aborted' ? {reason: 'cancelled' as const}
       : failed ? {reason: 'provider_error' as const}
       : stop === 'length' ? {reason: 'output_limit' as const} : {}),
@@ -947,13 +962,15 @@ async function joinPiPromptCleanup(
 async function runPiProviderPromptWithSupervision(input: {
   agent: PiAgentCoreAgent;
   prompt: string;
+  /** Re-send from the transcript instead of adding the prompt again. */
+  resume?: boolean;
   providerIdle: ReturnType<typeof createPiProviderIdleSupervisor>;
   executionLease: RuntimeExecutionLease;
   workSignal?: AbortSignal;
   abortJoinTimeoutMs: number;
 }): Promise<void> {
   input.providerIdle.start();
-  const promptPromise = input.agent.prompt(input.prompt);
+  const promptPromise = input.resume ? input.agent.continue!() : input.agent.prompt(input.prompt);
   const workSignal = input.workSignal ?? input.executionLease.signal;
   const abort = createPiAbortPromise(workSignal);
   void abort.promise.catch(() => undefined);
@@ -1702,7 +1719,16 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const maxTurns = prep.quickMode ? quickBudget.hardCapTurns : resolveAgentRuntimeBudgetConfig(this.env).maxTurns;
     const turnBudget = resolveRuntimeTurnBudget(maxTurns);
     let rounds = 0;
-    let turnLimitReached = false;
+    let budgetStop: PiBudgetStop | undefined;
+    let transientTurnRetries = 0;
+    // Error updates of a failed turn that may still be re-sent; emitted only if it is not.
+    let heldTransientErrors: StreamingUpdate[] = [];
+    const classifyFailedTurn = (message: unknown): 'context_overflow' | 'transient' | undefined => {
+      const assistant = message as {role?: unknown; stopReason?: unknown} | undefined;
+      if (assistant?.role !== 'assistant' || assistant.stopReason !== 'error') return undefined;
+      const failure = providerRuntime.classifyFailedTurn?.(assistant as AssistantMessage);
+      return failure === 'other' ? undefined : failure;
+    };
     let spentUsd = 0;
     // Enforced where the model has known pricing; a gateway model reports no cost.
     const maxBudgetUsd = piMaxBudgetUsd(this.env[PI_MAX_BUDGET_USD_ENV]);
@@ -1711,7 +1737,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     let attempt = 0;
     let acceptedAssistant: Record<string, unknown> | undefined;
     let acceptedAttemptId = 'main';
-    let acceptedTurnLimitReached = false;
+    let acceptedBudgetStop: PiBudgetStop | undefined;
     let acceptedText = '';
     let closeoutAccepted = false;
     let checkpoint: (() => AnalysisResult) | undefined;
@@ -1768,26 +1794,27 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       finishTurn: (({message}) => {
         spentUsd += message.usage?.cost?.total ?? 0;
         // Pi calls this before `turn_end`, so the turn it describes is not in `rounds` yet.
-        const budgetSpent = rounds + 1 >= providerTurnLimit || piContextNearlyFull(message, providerRuntime.model.contextWindow)
-          || (maxBudgetUsd > 0 && spentUsd >= maxBudgetUsd);
-        if (!supplements && !budgetSpent) return undefined;
+        const spentBudget: PiBudgetStop | undefined = rounds + 1 >= providerTurnLimit ? 'turn_limit'
+          : piContextNearlyFull(message, providerRuntime.model.contextWindow) ? 'context_limit'
+          : maxBudgetUsd > 0 && spentUsd >= maxBudgetUsd ? 'budget_limit' : undefined;
+        if (!supplements && !spentBudget) return undefined;
         const toolCall = piAssistantMessageHasToolCall(message);
         // Never steer onto a finished answer: it would buy a provider request of its own.
         // Error and aborted turns are hard exits; the run's outcome settles those instead.
         const declinedSupplements = !toolCall && message.stopReason !== 'error' && message.stopReason !== 'aborted'
           ? supplements?.closeOnFinishedAnswer() ?? false : false;
-        if (!budgetSpent) return declinedSupplements ? {action: 'end' as const} : undefined;
+        if (!spentBudget) return declinedSupplements ? {action: 'end' as const} : undefined;
         supplements?.closeWindow('turn_budget');
         const finished = message.stopReason === 'stop' && !message.errorMessage
           && message.deferred === undefined && !toolCall;
-        turnLimitReached = !finished && message.stopReason !== 'error'
+        budgetStop = !finished && message.stopReason !== 'error'
           && message.stopReason !== 'aborted' && message.stopReason !== 'length'
-          && !message.errorMessage;
+          && !message.errorMessage ? spentBudget : undefined;
         return {action: 'end' as const};
       }) satisfies InstalledPiAgentOptions['finishTurn'],
       beforeToolCall: (async ({toolCall}) => {
         work.assertActive();
-        if (!toolAdmissionsOpen || turnLimitReached || !toolCall?.name || !prep.allowedToolNames.has(toolCall.name)) {
+        if (!toolAdmissionsOpen || budgetStop || !toolCall?.name || !prep.allowedToolNames.has(toolCall.name)) {
           return {block: true, reason: 'Tool is not in the SmartPerfetto request-scoped allowlist.'};
         }
         return undefined;
@@ -1808,7 +1835,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     void providerIdle.promise.catch(() => undefined);
     const runProviderPrompt = async (prompt: string, turnLimit = turnBudget.acquisitionTurns) => {
       work.assertActive();
-      if (rounds >= turnLimit) { turnLimitReached = true; return undefined; }
+      if (rounds >= turnLimit) { budgetStop = 'turn_limit'; return undefined; }
       providerTurnLimit = turnLimit;
       const boundary = agent.state.messages?.length ?? 0;
       const attemptId = `${++attempt}`;
@@ -1817,7 +1844,31 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       draftController.beginAttempt(correctionInProgress ? SILENT_ANSWER_DRAFT : createProjectedAnswerDraft(answerDraft,
         privateAnalysisContext ? createCodeAwareStreamingTextProjection(sessionId, `pi-answer-${attemptId}`, 'owner') : undefined));
       try {
-        await runPiProviderPromptWithSupervision({agent, prompt, providerIdle, executionLease, workSignal: work.signal, abortJoinTimeoutMs});
+        for (let resume = false; ; resume = true) {
+          await runPiProviderPromptWithSupervision({agent, prompt, resume, providerIdle, executionLease,
+            workSignal: work.signal, abortJoinTimeoutMs});
+          const held = heldTransientErrors;
+          heldTransientErrors = [];
+          const messages = agent.state.messages ?? [];
+          const failure = messages.length > boundary ? classifyFailedTurn(messages[messages.length - 1]) : undefined;
+          // A request past the window is the context budget running out, closed out like one.
+          if (failure === 'context_overflow') { budgetStop = 'context_limit'; break; }
+          const backoffMs = PI_TRANSIENT_TURN_RETRY_BASE_MS * 2 ** transientTurnRetries;
+          if (!agent.continue || failure !== 'transient' || transientTurnRetries >= PI_MAX_TRANSIENT_TURN_RETRIES
+            || budgetStop || rounds >= turnLimit || Date.now() + backoffMs >= getRunDeadlineMs()) {
+            for (const update of held) this.emit('update', update);
+            break;
+          }
+          transientTurnRetries++;
+          // Drop the failed reply: the next request re-sends the transcript that preceded it.
+          agent.state.messages = messages.slice(0, -1);
+          logger.warn('PiAgentCoreRuntime', `Provider turn failed in transport; re-sending it (${transientTurnRetries}/${PI_MAX_TRANSIENT_TURN_RETRIES}) in ${backoffMs}ms`);
+          this.emit('update', {type: 'progress', content: {module: 'pi-agent-core', message: localize(outputLanguage,
+            `模型服务连接中断，${Math.round(backoffMs / 1000)}s 后重发本轮 (${transientTurnRetries}/${PI_MAX_TRANSIENT_TURN_RETRIES})...`,
+            `The model provider connection dropped. Re-sending this turn in ${Math.round(backoffMs / 1000)}s (${transientTurnRetries}/${PI_MAX_TRANSIENT_TURN_RETRIES})...`)},
+          timestamp: Date.now()});
+          await delay(backoffMs, undefined, {signal: work.signal});
+        }
       } finally {
         // An attempted provider turn consumes budget even if it fails.
         if (rounds === beforeRounds) rounds++;
@@ -1826,14 +1877,14 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       work.signal.throwIfAborted();
       draftController.finish();
       const assistant = latestAssistantMessage((agent.state.messages ?? []).slice(boundary));
-      return {assistant, attemptId, text: extractAssistantText(assistant).trim(), turnLimitReached};
+      return {assistant, attemptId, text: extractAssistantText(assistant).trim(), budgetStop};
     };
     const candidateIdentity = (text: string, attemptId: string): AnalysisCandidateIdentity => ({
       runId, attemptId, candidateRef: `${runId}:pi:${attemptId}`,
       conclusionFingerprint: analysisDeliveryFingerprint(text),
     });
-    const completionFor = (assistant: Record<string, unknown> | undefined, text: string, attemptId: string, limited = false) => (
-      buildPiAnalysisCompletion({assistant, candidate: candidateIdentity(text, attemptId), runtimeKind: this.selection.kind, turnLimitReached: limited})
+    const completionFor = (assistant: Record<string, unknown> | undefined, text: string, attemptId: string, stop?: PiBudgetStop) => (
+      buildPiAnalysisCompletion({assistant, candidate: candidateIdentity(text, attemptId), runtimeKind: this.selection.kind, budgetStop: stop})
     );
     let acceptingProviderEvents = true;
     const draftController = createPiAnswerDraftController({answerDraft,
@@ -1849,14 +1900,19 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       if (visibleOutput) agentModelCalls.recordFirstOutput();
       const update = projectPiAgentCoreEventToStreamingUpdate(event, Date.now(), outputLanguage);
       if (correctionInProgress && update?.type === 'error') return;
+      // Held until the run decides: a re-sent or overflowed turn is not a run error.
+      if (update?.type === 'error' && classifyFailedTurn((event as {message?: unknown}).message)) {
+        heldTransientErrors.push(update);
+        return;
+      }
       if (visibleOutput) runtimePerformance.recordFirstOutput();
       if (update) this.emit('update', update);
     });
-    const verifyCandidate = async (text: string, assistant: Record<string, unknown> | undefined, attemptId: string, limited = false) => {
+    const verifyCandidate = async (text: string, assistant: Record<string, unknown> | undefined, attemptId: string, stop?: PiBudgetStop) => {
       executionLease.throwIfAborted();
       const phase = runtimePerformance.startPhase('verification');
       try {
-        const completion = completionFor(assistant, text, attemptId, limited);
+        const completion = completionFor(assistant, text, attemptId, stop);
         const draft = await assessRuntimeDraft({
           conclusion: text, plan: prep.analysisPlan.current, hypotheses: prep.hypotheses, outputLanguage,
           deliveryContext: {entry: 'runtime_draft', turnIntent,
@@ -1897,7 +1953,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           acceptedAssistant = candidate.assistant;
           acceptedText = candidate.text;
           acceptedAttemptId = candidate.attemptId;
-          acceptedTurnLimitReached = candidate.turnLimitReached;
+          acceptedBudgetStop = candidate.budgetStop;
           checkpointAccepted();
         }
         providerPhase.end('ok');
@@ -1908,9 +1964,11 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       // The main prompt ended: nothing later may pick up a queued supplement.
       supplements?.closeWindow('window_closed');
       toolAdmissionsOpen = false;
-      if (acceptedTurnLimitReached && turnBudget.deliveryTurns > 0
+      // An exhausted cost budget buys no further call, the closeout included.
+      if (acceptedBudgetStop && acceptedBudgetStop !== 'budget_limit' && turnBudget.deliveryTurns > 0
         && rounds < turnBudget.totalTurns && Date.now() < getRunDeadlineMs()) {
-        const closeoutTapePrompt = closeoutTape.buildPrompt({query, priorConclusion: acceptedText, outputLanguage});
+        const closeoutTapePrompt = closeoutTape.buildPrompt({query, priorConclusion: acceptedText, outputLanguage,
+          budgetExhausted: acceptedBudgetStop});
         // The closeout transport sends only this prompt: delivered supplements must be carried explicitly.
         const closeoutPrompt = closeoutTapePrompt && `${closeoutTapePrompt}${supplements?.renderCloseoutSection() ?? ''}`;
         if (closeoutPrompt) {
@@ -1946,8 +2004,8 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           }
         }
       }
-      const draft = await verifyCandidate(acceptedText, acceptedAssistant, acceptedAttemptId, acceptedTurnLimitReached);
-      const acceptedCompletion = completionFor(acceptedAssistant, acceptedText, acceptedAttemptId, acceptedTurnLimitReached);
+      const draft = await verifyCandidate(acceptedText, acceptedAssistant, acceptedAttemptId, acceptedBudgetStop);
+      const acceptedCompletion = completionFor(acceptedAssistant, acceptedText, acceptedAttemptId, acceptedBudgetStop);
       // One delivery turn, one correction: only recoverable issues get it.
       const recoverableIssues = draft.recoverableIssues;
       const outputLimitDelivery = acceptedCompletion.status === 'incomplete' && acceptedCompletion.reason === 'output_limit' &&
@@ -1976,18 +2034,18 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           const candidate = await runProviderPrompt(correctionPrompt,
             Math.min(turnBudget.totalTurns, rounds + 1));
           authorization.assertCurrent();
-          const correctionCompletion = candidate && completionFor(candidate.assistant, candidate.text, candidate.attemptId, candidate.turnLimitReached);
+          const correctionCompletion = candidate && completionFor(candidate.assistant, candidate.text, candidate.attemptId, candidate.budgetStop);
           console.log('[PiAgentCoreRuntime] correction result: ' +
             `status=${correctionCompletion?.status ?? 'not_dispatched'} reason=${correctionCompletion?.reason ?? 'none'}`);
           if (candidate && correctionCompletion?.status === 'completed') {
-            const checked = await verifyCandidate(candidate.text, candidate.assistant, candidate.attemptId, candidate.turnLimitReached);
+            const checked = await verifyCandidate(candidate.text, candidate.assistant, candidate.attemptId, candidate.budgetStop);
             if (candidateHasAnswerBody(candidate.text) &&
                 checked.deliveryErrors.length === 0 && checked.recoverableIssues.length === 0) {
               work.assertActive();
               acceptedAssistant = candidate.assistant;
               acceptedText = candidate.text;
               acceptedAttemptId = candidate.attemptId;
-              acceptedTurnLimitReached = candidate.turnLimitReached;
+              acceptedBudgetStop = candidate.budgetStop;
               checkpointAccepted();
             }
           }
@@ -2015,11 +2073,11 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     executionLease.throwIfAborted();
     if (checkpoint) return checkpoint();
     return buildAcceptedResult(acceptedText,
-      completionFor(acceptedAssistant, acceptedText, acceptedAttemptId, acceptedTurnLimitReached), acceptedAttemptId, closeoutAccepted);
+      completionFor(acceptedAssistant, acceptedText, acceptedAttemptId, acceptedBudgetStop), acceptedAttemptId, closeoutAccepted);
 
     function checkpointAccepted(): void {
       const text = acceptedText;
-      const completion = Object.freeze(completionFor(acceptedAssistant, text, acceptedAttemptId, acceptedTurnLimitReached));
+      const completion = Object.freeze(completionFor(acceptedAssistant, text, acceptedAttemptId, acceptedBudgetStop));
       const attemptId = acceptedAttemptId;
       const fromCloseout = closeoutAccepted;
       let cached: AnalysisResult | undefined;
@@ -2039,9 +2097,9 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       // Native facts only: draft diagnostics chose a repair above and never set
       // the terminal state, which the shared finalizer assesses.
       const partial = completion.status !== 'completed' || !conclusion;
-      const terminationReason: AnalysisResult['terminationReason'] = completion.reason === 'turn_limit' ? 'max_turns'
-        : completion.status === 'failed' ? 'execution_error'
-        : completion.status === 'cancelled' ? 'timeout' : undefined;
+      const terminationReason: AnalysisResult['terminationReason'] = budgetTerminationReason(completion.reason)
+        ?? (completion.status === 'failed' ? 'execution_error'
+          : completion.status === 'cancelled' ? 'timeout' : undefined);
       const findings = extractFindingsFromText(conclusion);
       const nativeResult: AnalysisResult = {
         sessionId, success: completion.status !== 'failed' && completion.status !== 'cancelled', findings,

@@ -16,6 +16,7 @@ import type {
   Model,
   Models,
   ModelThinkingLevel,
+  AssistantMessage,
   ProviderAuth,
   ProviderEnv,
   ProviderStreams,
@@ -78,6 +79,13 @@ const CLAUDE_LINEAGE_APIS: readonly string[] = ['anthropic-messages', 'bedrock-c
 const SCENE_THINKING_LEVELS: readonly ModelThinkingLevel[] = ['low', 'medium', 'high'];
 /** Below this output cap a gateway model's thinking can use the whole allowance. */
 const PI_MIN_THINKING_OUTPUT_TOKENS = 4_096;
+/**
+ * Provider retries for an unestablished request (408/409/429/5xx, connection
+ * errors), as the retired Claude engine's SDK retried. pi-ai's own default is
+ * none, and pi-agent-core does not forward a count. A caller that sets one,
+ * such as the single-shot intent transport, keeps it.
+ */
+export const PI_PROVIDER_MAX_RETRIES = 2;
 
 export type PiAgentCoreProviderModels = Models;
 
@@ -104,7 +112,14 @@ export interface PiAgentCoreProviderRuntime {
   thinkingLevel: ModelThinkingLevel | undefined;
   /** Each run takes its level from the budget and scene, as the retired Claude engine did on this route. */
   runThinkingFollowsScene?: boolean;
+  /**
+   * pi-ai's own reading of a failed assistant turn: a context overflow, a transient
+   * provider failure worth re-sending (quota and billing limits are not), or neither.
+   */
+  classifyFailedTurn?: (message: AssistantMessage) => PiFailedTurnClass;
 }
+
+export type PiFailedTurnClass = 'context_overflow' | 'transient' | 'other';
 
 export type PiAgentCoreProviderRuntimeLoader = (
   config: PiAgentCoreModelConfig,
@@ -872,6 +887,7 @@ export async function createPiAgentCoreProviderRuntime(
       } catch {throw new PiModelExecutionConfigurationError();}
       try {policy?.onExecutionPolicy?.(selected.receipt);} catch { /* Observers never change a stream. */ }
       const scopedOptions: SimpleStreamOptions = {...options};
+      scopedOptions.maxRetries ??= PI_PROVIDER_MAX_RETRIES;
       if (streamMaxTokens !== undefined) scopedOptions.maxTokens = streamMaxTokens;
       if (requestedLevel && requestedLevel !== 'off') scopedOptions.reasoning = requestedLevel;
       else delete scopedOptions.reasoning;
@@ -898,8 +914,11 @@ export async function createPiAgentCoreProviderRuntime(
   // A route the retired Claude engine served keeps its reasoning depth, on a catalog model too.
   const runThinkingFollowsScene = config.route !== undefined && config.thinkingLevel === undefined && model.reasoning
     && CLAUDE_LINEAGE_APIS.includes(api) && SCENE_THINKING_LEVELS.every(level => supportedLevels.includes(level));
+  const classifyFailedTurn = (message: AssistantMessage): PiFailedTurnClass =>
+    piAi.isContextOverflow(message, model.contextWindow) ? 'context_overflow'
+      : piAi.isRetryableAssistantError(message) ? 'transient' : 'other';
   return {model, models, streamFn: streamFnForPurpose('answer_turn'), streamFnForPurpose, thinkingLevel: authoredLevel,
-    runThinkingFollowsScene};
+    runThinkingFollowsScene, classifyFailedTurn};
 }
 
 /** A non-Claude model behind an Anthropic-compatible gateway; Claude ids keep their own per-model thinking rules. */

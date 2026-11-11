@@ -366,10 +366,12 @@ HTTP、CLI、conversation 与直接 runtime 调用共用私有 `RuntimeAdmission
 空正文续写；已完成候选的结构化交付诊断报告可修正缺口时，可用它做一次同轮修正。只有新候选
 获得自身 completed/stop 记录后才接受；失败、取消、未知、pending tool/deferred 状态不能据此
 续写，续写失败保留原始未完成凭据；acknowledgement 不额外调用模型。补齐期间关闭工具且不重复
-推送正文。回答不带声明，因此不存在声明补交或声明修复调用。调查触顶后，
+推送正文。回答不带声明，因此不存在声明补交或声明修复调用。调查耗尽轮次或上下文窗口后，
 收尾使用本轮固定的模型、Provider、授权与原始截止时间，基于已返回数据和已有正文
 说明有限结论、证据不足及下一轮可追问的问题。它不会继续查询，也不会把调查升级为
-完成；`partial`、`completion.reason=turn_limit` 和 `terminationReason=max_turns` 保留。
+完成；`partial` 保留，并如实记录耗尽的是哪一项：轮次为 `completion.reason=turn_limit`、
+`terminationReason=max_turns`，上下文窗口为 `context_limit`、`max_context_tokens`（含 provider 直接返回的上下文超长错误）。
+显式费用预算耗尽记为 `budget_limit`、`max_budget_usd`，不再发起收尾。
 收尾之后不再追加复核调用。
 
 共享正文扫描器对规范 marker 保持常量状态。对于列首、独占行的其他 `smartperfetto:` 注释，最多暂存 64 KiB；独占闭合行内含唯一完整 `conclusion_contract_v1` JSON 对象时视为模型残留的声明，从正文剥离且不保存。这个识别缓冲不增加原生输出额度，也不接受 marker 别名。普通说明、conversation-control、引用/代码示例、嵌套、截断或超出缓冲的注释仍原样保留；流式和最终解析使用同一语法。
@@ -379,6 +381,13 @@ OpenAI 的采集截止时间可随实际进展延后，但不侵占预留交付�
 不追加复核调用。收尾失败时保留原候选；取消、硬 deadline 到期、授权失效
 或已耗尽的显式费用预算不会启动额外调用。
 只有 1 轮的配置没有额外收尾额度。
+
+Pi 对尚未建立的 provider 请求（408/409/429/5xx、连接错误）重试 2 次，与原 Claude 引擎
+SDK 的重试一致，并遵守 `Retry-After` 上限；显式指定次数的单次调用（分类、收尾）保持不变。
+请求建立后失败的一轮由 pi-ai 判断是否属于瞬态错误（流中断、过载、限流等；额度与计费上限不算）。
+这一轮不会执行其工具调用，因此可以从同一份 transcript 重发：每次运行最多重发 2 次，指数退避，
+每次计入轮次，并受原轮次预算和截止时间约束。
+这一轮的错误事件先暂存，不重发时才推送。整体截止时间已到的运行不重试。
 
 收尾和续写调用在派发前通过 `services/runtimeCallStats.ts` 估计所需时长，
 按 provider origin、model、purpose 和输入大小档使用成功调用的 p75；样本不足时采用

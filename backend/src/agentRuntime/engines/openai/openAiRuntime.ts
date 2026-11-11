@@ -51,7 +51,7 @@ import {localize, type OutputLanguage} from '../../../agentv3/outputLanguage';
 import {createCodeAwareStreamingTextProjection, type CodeAwareStreamingTextProjection} from '../../../services/security/codeAwareOutputRegistry';
 import {projectToolResultForExternalSurface} from '../../../services/rag/toolResultProjectionFilter';
 import {formatToolCallNarration, formatToolResultNarration, issuePrivateToolResultNarrationReceipt, toolResultIsFailure} from '../../../agentv3/toolNarration';
-import {estimateAnalysisConfidence} from '../../../agentv3/analysisTermination';
+import {budgetTerminationReason, estimateAnalysisConfidence} from '../../../agentv3/analysisTermination';
 import {
   SILENT_ANSWER_DRAFT, createAnswerDraftStream, createProjectedAnswerDraft, type ProjectedAnswerDraft,
 } from '../../answerDraftStream';
@@ -289,13 +289,7 @@ function resolveOpenAiNativeCompletion(input: {
 }
 
 function openAiTerminationReason(reason: NonNullable<AnalysisCompletion['reason']>): AnalysisTerminationReason | undefined {
-  switch (reason) {
-    case 'timeout': return 'timeout';
-    case 'turn_limit': return 'max_turns';
-    case 'budget_limit': return 'max_budget_usd';
-    case 'output_limit': return undefined;
-    default: return 'execution_error';
-  }
+  return reason === 'output_limit' ? undefined : budgetTerminationReason(reason) ?? 'execution_error';
 }
 
 /**

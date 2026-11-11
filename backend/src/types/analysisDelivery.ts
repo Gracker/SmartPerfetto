@@ -23,12 +23,17 @@ export interface AnalysisCandidateIdentity {
   conclusionFingerprint: string;
 }
 
+/** Why a native run did not complete; projections admit exactly these. */
+export const ANALYSIS_COMPLETION_REASONS = [
+  'output_limit', 'turn_limit', 'context_limit', 'timeout', 'budget_limit', 'provider_error', 'cancelled',
+] as const;
+
 export interface AnalysisCompletion extends AnalysisCandidateIdentity {
   schemaVersion: 1;
   /** The engine that produced the run; a stored completion may name a removed engine. */
   runtimeKind: RecordedProductionRuntimeKind;
   status: 'completed' | 'incomplete' | 'failed' | 'cancelled' | 'unknown';
-  reason?: 'output_limit' | 'turn_limit' | 'timeout' | 'budget_limit' | 'provider_error' | 'cancelled';
+  reason?: typeof ANALYSIS_COMPLETION_REASONS[number];
   sdkFinishReason?: string;
 }
 

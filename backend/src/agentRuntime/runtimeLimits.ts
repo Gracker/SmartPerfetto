@@ -8,6 +8,12 @@ export const DEFAULT_PROVIDER_STREAM_IDLE_TIMEOUT_MS = 5 * 60_000;
 export const DEFAULT_MAX_RUN_TIMEOUT_MS = 60 * 60_000;
 export const DEFAULT_EXTERNAL_TOOL_RESULT_MAX_CHARS = 2_000;
 export const DEFAULT_OPENAI_HISTORY_MAX_BYTES = 4 * 1024 * 1024;
+/**
+ * Serialized-row budget of one tool response the model reads. Row counts alone do
+ * not bound it: 50 wide per-frame rows reached ~144k tokens and filled a 200k
+ * context. Larger results page on (nextOffset) or go to an artifact summary.
+ */
+export const MODEL_ROW_PAGE_MAX_BYTES = 64 * 1024;
 /** Default wall-clock bound of one batched evidence read; finalization reserves time for it. */
 export const EVIDENCE_READ_MAX_ELAPSED_MS = 1500;
 

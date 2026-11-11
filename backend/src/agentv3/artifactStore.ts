@@ -12,9 +12,9 @@
  *
  * Supports 3 detail levels via fetch_artifact:
  * - summary: compact metadata + bounded column aggregates
- * - rows: paginated rows (offset/limit) with totalRows + hasMore metadata; each
- *   row carries its artifact-wide rowIndex (offset + position)
- * - full: complete original data structure
+ * - rows: paginated rows (offset/limit, bounded by MODEL_ROW_PAGE_MAX_BYTES) with totalRows,
+ *   hasMore and nextOffset metadata; each row carries its artifact-wide rowIndex
+ * - full: the original structure, row- and byte-capped (truncated: true when cut)
  */
 
 import type { TraceProcessorQueryProvenance } from '../services/traceProcessorConnectionModel';
@@ -24,6 +24,7 @@ import type {RuntimeToolInvocationEvent} from '../agentRuntime/runtimeToolObserv
 import {captureInvestigationToolObservation, recordCaptureToolCall,
   type InvestigationToolObservation} from '../services/evidence/investigationEvidenceLedger';
 import {currentRuntimeToolInvocation} from '../agentRuntime/runtimeToolInvocationContext';
+import {MODEL_ROW_PAGE_MAX_BYTES, serializedByteLength} from '../agentRuntime/runtimeLimits';
 import {resolveRuntimePerformanceRecorder, runtimePerformanceRunId} from '../agentRuntime/runtimePerformanceContext';
 import {currentRunManifestAttributionSink} from '../services/selfEvolution/runManifestLifecycle';
 import {createDataEnvelope} from '../types/dataContract';
@@ -224,6 +225,18 @@ function sanitizeModelProjection(value: ModelEvidenceProjectionStatus | undefine
   return {status: 'truncated', truncatedCellCount, truncatedCells,
     ...(truncatedCellCount > truncatedCells.length
       ? {truncatedCellsOmitted: truncatedCellCount - truncatedCells.length} : {})};
+}
+
+/** The leading rows whose serialized size fits `maxBytes`; at least one, so pagination always advances. */
+function rowsWithinByteBudget<T>(rows: readonly T[], maxBytes: number): T[] {
+  let bytes = 0;
+  let count = 0;
+  for (const row of rows) {
+    bytes += serializedByteLength(row) + 1;
+    if (count > 0 && bytes > maxBytes) break;
+    count++;
+  }
+  return rows.slice(0, count);
 }
 
 function queryReviewRefForArtifact(review: QueryReviewV1): ArtifactQueryReviewRef {
@@ -839,8 +852,10 @@ export class ArtifactStore {
         const totalRows = allRows.length;
         const effectiveOffset = offset ?? 0;
         const effectiveLimit = limit ?? ArtifactStore.DEFAULT_PAGE_SIZE;
-        const pagedRows = allRows.slice(effectiveOffset, effectiveOffset + effectiveLimit);
-        const hasMore = effectiveOffset + effectiveLimit < totalRows;
+        const pagedRows = rowsWithinByteBudget(allRows.slice(effectiveOffset, effectiveOffset + effectiveLimit),
+          MODEL_ROW_PAGE_MAX_BYTES);
+        const nextOffset = effectiveOffset + pagedRows.length;
+        const hasMore = nextOffset < totalRows;
         return {
           id: artifact.id,
           columns: artifact.data?.columns || [],
@@ -849,7 +864,9 @@ export class ArtifactStore {
           totalRows,
           offset: effectiveOffset,
           limit: effectiveLimit,
+          returnedRows: pagedRows.length,
           hasMore,
+          ...(hasMore ? {nextOffset} : {}),
           diagnostics: artifact.diagnostics,
           planPhaseId: artifact.planPhaseId,
           planPhaseTitle: artifact.planPhaseTitle,
@@ -875,9 +892,10 @@ export class ArtifactStore {
         // Cap rows at MAX_FULL_ROWS to prevent context window overflow.
         // Larger datasets should use detail="rows" with pagination.
         const fullRows: any[][] = artifact.data?.rows || [];
-        const truncatedFull = fullRows.length > ArtifactStore.MAX_FULL_ROWS;
+        const returnedRows = rowsWithinByteBudget(fullRows.slice(0, ArtifactStore.MAX_FULL_ROWS), MODEL_ROW_PAGE_MAX_BYTES);
+        const truncatedFull = returnedRows.length < fullRows.length;
         const cappedData = truncatedFull
-          ? { ...artifact.data, rows: fullRows.slice(0, ArtifactStore.MAX_FULL_ROWS) }
+          ? { ...artifact.data, rows: returnedRows }
           : artifact.data;
         return {
           id: artifact.id,
@@ -904,7 +922,8 @@ export class ArtifactStore {
           executionError: artifact.executionError,
           modelProjection: artifact.modelProjection,
           ...evidenceMetadata,
-          ...(truncatedFull ? { truncated: true, totalRows: fullRows.length, hint: 'Use detail="rows" with offset/limit for complete data' } : {}),
+          ...(truncatedFull ? { truncated: true, totalRows: fullRows.length, returnedRows: returnedRows.length,
+            hint: 'Use detail="rows" with offset/limit and follow nextOffset for complete data' } : {}),
         };
       }
       default:

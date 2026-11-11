@@ -162,6 +162,7 @@ import {getAnalysisPlanCompletionStatus} from './planCompletionStatus';
 import { formatToolCallNarration, type ToolNarrationOptions } from './toolNarration';
 import { planPhaseUpdatedContent } from './planPhaseEvents';
 import { ArtifactStore, type CompactArtifactSummary } from './artifactStore';
+import {MODEL_ROW_PAGE_MAX_BYTES, serializedByteLength} from '../agentRuntime/runtimeLimits';
 import {
   evidenceHash,
   evidencePart,
@@ -2618,7 +2619,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         const resultNotes = rawSqlResultNotes(result, executionWitness, normalizedSql, success);
         const truncated = result.rows.length > 200;
         const rows = truncated ? result.rows.slice(0, 200) : result.rows;
-        const sqlArtifact = success && result.columns.length > 0 && result.rows.length > SQL_RAW_INLINE_ROW_LIMIT
+        const sqlArtifact = success && result.columns.length > 0 && sqlRowsNeedArtifact(result.rows)
           ? storeSqlResultArtifact(artifactStore, {
               toolName: 'execute_sql',
               executionWitness,
@@ -3961,7 +3962,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       : 'Rows/full remain available when summary evidence is insufficient or the user explicitly requests row-level data.\n\n';
   const fetchArtifact = artifactStore ? tool(
     'fetch_artifact',
-    'Retrieve a stored artifact. Default to detail="summary". Use detail="rows" with offset/limit only when the summary lacks a required field or representative sample, or the user explicitly requests row-level data; read the minimum rows and stop. Rows responses include totalRows and hasMore.\n\n' +
+    'Retrieve a stored artifact. Default to detail="summary". Use detail="rows" with offset/limit only when the summary lacks a required field or representative sample, or the user explicitly requests row-level data; read the minimum rows and stop. Rows responses include totalRows, hasMore and nextOffset; a page returns fewer rows than limit when it reaches its byte budget.\n\n' +
     'Use for summary or targeted row evidence from invoke_skill. Do not copy artifact rows into execute_sql. Use invoke_skill or execute_sql for new data. Set purpose to one short sentence.\n\n' +
     artifactAccessDescription +
     'Examples:\n' +
@@ -7044,7 +7045,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         const resultNotes = rawSqlResultNotes(result, executionWitness, normalizedSql, success);
         const truncated = result.rows.length > 200;
         const rows = truncated ? result.rows.slice(0, 200) : result.rows;
-        const sqlArtifact = success && result.columns.length > 0 && result.rows.length > SQL_RAW_INLINE_ROW_LIMIT
+        const sqlArtifact = success && result.columns.length > 0 && sqlRowsNeedArtifact(result.rows)
           ? storeSqlResultArtifact(artifactStore, {
               toolName: 'execute_sql_on',
               executionWitness,
@@ -7910,6 +7911,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 }
 
 const SQL_RAW_INLINE_ROW_LIMIT = 50;
+
+/** Many rows, or a few too wide to inline, go to an artifact: a summary now, byte-bounded pages on request. */
+function sqlRowsNeedArtifact(rows: readonly unknown[]): boolean {
+  return rows.length > SQL_RAW_INLINE_ROW_LIMIT || serializedByteLength(rows) > MODEL_ROW_PAGE_MAX_BYTES;
+}
 const SQL_ARTIFACT_PAGE_SIZE = 50;
 
 function storeSqlResultArtifact(

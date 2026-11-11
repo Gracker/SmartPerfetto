@@ -579,13 +579,17 @@ new candidate needs its own completed/stop receipt; failed, cancelled, unknown o
 pending tool/deferred states cannot use this recovery. Failure retains the first
 incomplete receipt, and an acknowledgement adds no call. Tools and duplicate
 visible-body streaming stay disabled during this completion. No call completes or
-repairs a declaration: answers carry none. At investigation exhaustion, closeout
-uses the selected model, pinned provider, current authorization and original
-deadline to explain the supported findings, missing evidence and useful
-follow-up questions.
+repairs a declaration: answers carry none. When an investigation exhausts its
+turns or its context window, closeout uses the selected model, pinned provider,
+current authorization and original deadline to explain the supported findings,
+missing evidence and useful follow-up questions.
 
-It cannot query again or certify completion: `partial`, `turn_limit` completion
-and `max_turns` termination remain. No review call follows this closeout.
+It cannot query again or certify completion: `partial` remains, and the record
+names the exhausted budget: turns as `turn_limit` completion with `max_turns`
+termination, the context window as `context_limit` with `max_context_tokens`,
+including a provider's own context-length error.
+An exhausted explicit cost budget records `budget_limit` with `max_budget_usd`
+and starts no closeout. No review call follows this closeout.
 
 OpenAI's acquisition deadline may advance with actual progress without consuming
 the reserved delivery and finalization budgets. An acquisition timeout with
@@ -595,6 +599,17 @@ original candidate. Cancellation, an expired
 hard deadline, revoked authorization or an exhausted explicit cost budget cannot
 start another call.
 A one-turn configuration has no extra delivery allowance.
+
+Pi retries an unestablished provider request (408/409/429/5xx, connection
+errors) twice, as the retired Claude engine's SDK did, within the `Retry-After`
+cap; single-shot calls that set their own count (classification, closeout) keep
+it. pi-ai decides whether a turn that failed after its request was established
+failed transiently (a broken stream, overload, rate limiting; not quota or
+billing limits). Such a turn runs none of its tool calls, so Pi re-sends it from
+the same transcript: at most two
+re-sends per run, with exponential backoff, each a counted turn inside the
+original turn budget and deadline. That turn's error events are held and emitted
+only if it is not re-sent. A run whose overall deadline has passed is not retried.
 
 Before dispatch, closeout and continuation calls use
 `services/runtimeCallStats.ts` to estimate duration from successful calls' p75

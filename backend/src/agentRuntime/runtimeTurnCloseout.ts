@@ -123,8 +123,8 @@ export function createRuntimeTurnCloseoutTape(options: {maxBytes?: number} = {})
     });
   };
   const buildPrompt = (input: DeliveryPromptInput & {
-    /** Which acquisition budget ran out; the delivery call is the same for both. */
-    budgetExhausted?: 'turn_limit' | 'timeout';
+    /** Which acquisition budget ran out; the delivery call is the same for all. */
+    budgetExhausted?: 'turn_limit' | 'context_limit' | 'timeout';
   }): string | undefined => render('prompt-runtime-turn-closeout', input,
     {budget_exhausted: input.budgetExhausted ?? 'turn_limit'});
   /**

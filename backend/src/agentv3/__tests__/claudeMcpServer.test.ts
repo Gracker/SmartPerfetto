@@ -3760,6 +3760,29 @@ describe('createClaudeMcpServer', () => {
       });
     });
 
+    it('auto-summarizes a few raw SQL rows too wide to inline, and keeps small results inline', async () => {
+      const { tools, mockTpService } = createTestServer();
+      await callTool(tools, 'submit_plan', {
+        phases: [{ id: 'p1', name: 'Collect', goal: 'Collect SQL evidence', expectedTools: ['execute_sql', 'fetch_artifact'] }],
+        successCriteria: 'Wide SQL rows remain fetchable without bloating tool context',
+      });
+      await callTool(tools, 'update_plan_phase', { phaseId: 'p1', status: 'in_progress' });
+      const wide = 'x'.repeat(30 * 1024);
+      (mockTpService.query as any).mockResolvedValueOnce({
+        columns: ['id', 'detail'], rows: [[1, wide], [2, wide], [3, wide]], rowCount: 3, durationMs: 1,
+      });
+      const wideResult = await callTool(tools, 'execute_sql', {sql: 'SELECT id, detail FROM wide_rows'});
+      expect(wideResult).toMatchObject({success: true, mode: 'summary', autoSummarized: true, rowsAvailableViaArtifact: true});
+      expect(wideResult.rows).toBeUndefined();
+
+      (mockTpService.query as any).mockResolvedValueOnce({
+        columns: ['id'], rows: [[1], [2], [3]], rowCount: 3, durationMs: 1,
+      });
+      const smallResult = await callTool(tools, 'execute_sql', {sql: 'SELECT id FROM small_rows'});
+      expect(smallResult.rows).toEqual([[1], [2], [3]]);
+      expect(smallResult.artifactId).toBeUndefined();
+    });
+
     it('auto-summarizes large raw SQL results and exposes paginated artifact rows with provenance', async () => {
       const { tools, emittedUpdates, mockTpService } = createTestServer();
       await callTool(tools, 'submit_plan', {

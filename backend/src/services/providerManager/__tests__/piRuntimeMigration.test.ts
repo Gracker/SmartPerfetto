@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {parsePiAgentCoreModelConfig} from '../../../agentRuntime/engines/pi/piAgentCoreConfig';
-import {createPiAgentCoreProviderRuntime, PI_SYNTHESIZED_MODEL_DEFAULTS, resolvePiRouteModel} from '../../../agentRuntime/engines/pi/piAgentCoreProvider';
+import {createPiAgentCoreProviderRuntime, PI_PROVIDER_MAX_RETRIES, PI_SYNTHESIZED_MODEL_DEFAULTS, resolvePiRouteModel} from '../../../agentRuntime/engines/pi/piAgentCoreProvider';
 import type {RecordedProductionRuntimeKind} from '../../../agentRuntime/runtimeKinds';
 import {resetRuntimeDeprecationWarningsForTests} from '../../../agentRuntime/legacyRuntimeFallback';
 import {piRequestOrigin, runtimeEnvFor, withEnvOnlyPiModel} from '../piProviderCatalog';
@@ -524,9 +524,11 @@ describe('thinking on an Anthropic-compatible gateway', () => {
   beforeEach(() => {jest.spyOn(globalThis, 'structuredClone').mockImplementation(value => ({...(value as object)}) as never);});
   afterEach(() => {jest.restoreAllMocks();});
 
-  async function gatewayRuntime(modelId: string, catalogModule: Record<string, unknown> = catalog) {
+  async function gatewayRuntime(modelId: string, catalogModule: Record<string, unknown> = catalog,
+    piAiOverrides: Record<string, unknown> = {}) {
     const sent: Array<Record<string, any>> = [];
     const piAi = {
+      ...piAiOverrides,
       getSupportedThinkingLevels: () => ['off', 'minimal', 'low', 'medium', 'high'],
       InMemoryCredentialStore: class {async modify(_id: string, update: () => Promise<unknown>) {return update();}},
       envApiKeyAuth: () => ({apiKey: {name: 'test', resolve: async () => undefined}}),
@@ -579,6 +581,25 @@ describe('thinking on an Anthropic-compatible gateway', () => {
     const {runtime} = await gatewayRuntime('kimi-test', {builtinProviders: () => [{id: 'catalog', name: 'catalog', auth: {}}],
       getBuiltinModels: () => [entry], getBuiltinModel: () => entry});
     expect(runtime).toMatchObject({runThinkingFollowsScene: true, thinkingLevel: undefined, model: {provider: 'catalog', contextWindow: 100_000}});
+  });
+
+  it('retries an unestablished provider request unless the caller set its own count', async () => {
+    const {runtime, sent} = await gatewayRuntime('kimi-test');
+    await runtime.streamFn(runtime.model, context, {} as never);
+    await runtime.streamFnForPurpose!('classification')(runtime.model, context, {maxRetries: 0, maxTokens: 1024} as never);
+    expect(sent[0].maxRetries).toBe(PI_PROVIDER_MAX_RETRIES);
+    expect(sent[1].maxRetries).toBe(0);
+  });
+
+  it('reads a failed turn through pi-ai, overflow before retryability', async () => {
+    const overflow = jest.fn((message: {errorMessage?: string}, _contextWindow?: number) => message.errorMessage === 'too long');
+    const retryable = jest.fn((message: {errorMessage?: string}) => message.errorMessage !== 'quota');
+    const {runtime} = await gatewayRuntime('kimi-test', catalog, {isContextOverflow: overflow, isRetryableAssistantError: retryable});
+    const turn = (errorMessage: string) => ({role: 'assistant', stopReason: 'error', errorMessage}) as never;
+    expect(runtime.classifyFailedTurn!(turn('too long'))).toBe('context_overflow');
+    expect(runtime.classifyFailedTurn!(turn('Stream ended without finish_reason'))).toBe('transient');
+    expect(runtime.classifyFailedTurn!(turn('quota'))).toBe('other');
+    expect(overflow).toHaveBeenCalledWith(expect.anything(), runtime.model.contextWindow);
   });
 
   it('leaves a Claude model behind a relay on its own thinking rules', async () => {

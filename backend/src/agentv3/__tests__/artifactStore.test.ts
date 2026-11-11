@@ -8,6 +8,7 @@ import {createRuntimePerformanceScope} from '../../agentRuntime/runtimePerforman
 import {buildTraceProcessorQueryProvenance} from '../../services/traceProcessorConnectionModel';
 import {sanitizeQueryReview, SQL_EXECUTION_CONTEXTS} from '../../types/queryReviewContract';
 import {ArtifactStore, EVIDENCE_RETENTION_CELLS_ENV, RETAINED_EVIDENCE_CAPTURE_CEILING} from '../artifactStore';
+import {MODEL_ROW_PAGE_MAX_BYTES} from '../../agentRuntime/runtimeLimits';
 import {captureEvidenceTable} from '../../services/evidence/evidenceCapture';
 import {attachInvestigationEvidence} from '../../services/evidence/investigationEvidenceLedger';
 import {MAX_EVIDENCE_READ_REFERENCES} from '../../services/evidence/evidenceReadView';
@@ -198,6 +199,48 @@ describe('ArtifactStore', () => {
     expect(store.fetch(id, 'full')).toMatchObject({truncated: true, totalRows: data.rows.length,
       modelEvidence: {captureRows: 'available', columnUnits: 'unknown', registeredMetricBinding: 'absent'}});
     expect(store.fetch(id, 'full').data.rows).toHaveLength(ArtifactStore.MAX_FULL_ROWS);
+  });
+
+  it('bounds rows and full fetches by serialized bytes and pages on with nextOffset', () => {
+    const store = new ArtifactStore();
+    // ~10 KiB per row: a 50-row page of such per-frame rows is what filled a 200k context.
+    const wide = 'x'.repeat(10 * 1024);
+    const rows = Array.from({length: 50}, (_, i) => [i, wide]);
+    const id = store.store({skillId: 'wide', data: {columns: ['frame', 'detail'], rows}});
+
+    const first = store.fetch(id, 'rows', 0, 50);
+    expect(Buffer.byteLength(JSON.stringify(first.rows))).toBeLessThanOrEqual(MODEL_ROW_PAGE_MAX_BYTES + 1024);
+    expect(first).toMatchObject({totalRows: 50, offset: 0, limit: 50, hasMore: true});
+    expect(first.returnedRows).toBe(first.rows.length);
+    expect(first.returnedRows).toBeLessThan(50);
+    expect(first.nextOffset).toBe(first.returnedRows);
+
+    // Following nextOffset visits every row exactly once.
+    const seen: number[] = [];
+    let page = first;
+    while (true) {
+      seen.push(...page.rows.map((row: {rowIndex: number}) => row.rowIndex));
+      if (!page.hasMore) break;
+      page = store.fetch(id, 'rows', page.nextOffset, 50);
+    }
+    expect(seen).toEqual(rows.map((_, i) => i));
+    expect(page).not.toHaveProperty('nextOffset');
+
+    const full = store.fetch(id, 'full');
+    expect(full).toMatchObject({truncated: true, totalRows: 50, returnedRows: full.data.rows.length});
+    expect(full.data.rows.length).toBeLessThan(50);
+  });
+
+  it('keeps one oversized row per page and leaves small pages untouched', () => {
+    const store = new ArtifactStore();
+    const huge = 'y'.repeat(MODEL_ROW_PAGE_MAX_BYTES * 2);
+    const id = store.store({skillId: 'huge', data: {columns: ['detail'], rows: [[huge], [huge]]}});
+    expect(store.fetch(id, 'rows', 0, 2)).toMatchObject({returnedRows: 1, hasMore: true, nextOffset: 1});
+
+    const small = store.store({skillId: 'small', data: {columns: ['v'], rows: [[1], [2], [3]]}});
+    const page = store.fetch(small, 'rows', 0, 2);
+    expect(page).toMatchObject({returnedRows: 2, hasMore: true, nextOffset: 2});
+    expect(store.fetch(small, 'full')).not.toHaveProperty('truncated');
   });
 
   it('projects live producer units on every fetch surface without persisting them', () => {
