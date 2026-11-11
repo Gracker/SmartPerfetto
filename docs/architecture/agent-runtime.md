@@ -195,6 +195,12 @@ SmartPerfetto 的分析能力由 `createClaudeMcpServer()` 实现，并通过 `M
 
 注册表只保存与 SDK 无关的共享工具规格（`agentRuntime/runtimeToolSpec.ts`，结果和注解采用 MCP `CallToolResult` / `ToolAnnotations` 形状）；Claude runtime 在自身 engine 内（`engines/claude/claudeSdkTools.ts`）把它们适配为 in-process MCP server。
 
+Pi adapter 对最终交给模型的每份工具结果施加 64 KiB UTF-8 上限，包含 JSON 转义后的大小；
+小结果原样保留，超限结果返回合法 JSON，明确标记 `truncated`、原始大小和不完整文本预览，
+并保留放得下的原生执行事实与 artifact 定位符。原始 `details` 和证据不变。
+截断的 artifact 页应从当前 offset 缩小 limit 重读，不能跳到原页的 nextOffset；
+单行仍超限时需缩小查询列或单元格内容。该上限控制单次膨胀，多次结果累计仍可能耗尽上下文。
+
 `list_skills(metricId, offset)` 可从本轮固定的 Skill 定义与 SQL fragments 发现对应指标的真实生产者、输入、身份选择器和范围限制。发现不执行工具，也不签发证据；raw SQL 列名或模型正文不能替代私有 producer binding。未知指标返回未找到，不能静默退回整个目录。
 
 OpenAI runtime 不复制工具逻辑，而是读取同一份 `McpToolRegistry`，把每个 tool descriptor 适配为 OpenAI Agents SDK function tool。工具名称保留 `mcp__smartperfetto__*` 前缀，便于 SSE、日志和报告复用现有语义。
@@ -386,7 +392,7 @@ Pi 对尚未建立的 provider 请求（408/409/429/5xx、连接错误）重试 
 SDK 的重试一致，并遵守 `Retry-After` 上限；显式指定次数的单次调用（分类、收尾）保持不变。
 请求建立后失败的一轮由 pi-ai 判断是否属于瞬态错误（流中断、过载、限流等；额度与计费上限不算）。
 这一轮不会执行其工具调用，因此可以从同一份 transcript 重发：每次运行最多重发 2 次，指数退避，
-每次计入轮次，并受原轮次预算和截止时间约束。
+每次计入轮次，并受原轮次预算和截止时间约束；失败回合若已计费并耗尽费用预算，不再重发或收尾。
 这一轮的错误事件先暂存，不重发时才推送。整体截止时间已到的运行不重试。
 
 收尾和续写调用在派发前通过 `services/runtimeCallStats.ts` 估计所需时长，

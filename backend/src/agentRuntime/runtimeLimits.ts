@@ -12,6 +12,8 @@ export const DEFAULT_OPENAI_HISTORY_MAX_BYTES = 4 * 1024 * 1024;
  * Serialized-row budget of one tool response the model reads. Row counts alone do
  * not bound it: 50 wide per-frame rows reached ~144k tokens and filled a 200k
  * context. Larger results page on (nextOffset) or go to an artifact summary.
+ * Pi also applies this budget to the final serialized model-facing result,
+ * including summaries and single rows; original evidence stays in details.
  */
 export const MODEL_ROW_PAGE_MAX_BYTES = 64 * 1024;
 /** Default wall-clock bound of one batched evidence read; finalization reserves time for it. */

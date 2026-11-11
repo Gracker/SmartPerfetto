@@ -102,6 +102,7 @@ import {
   readToolResultFacts,
 } from '../../../agentv3/planToolCallRecorder';
 import {assessRuntimeDraft} from '../../runtimeDraftDiagnostics';
+import {decodeRuntimeToolResult} from '../../runtimeToolResult';
 import type { ClaimVerificationResult } from '../../../types/claimVerification';
 import type {
   RuntimeToolConcurrencyPolicy,
@@ -150,6 +151,7 @@ import {getLruCacheEntry, setLruCacheEntry} from '../../runtimeCache';
 import {
   DEFAULT_FULL_REQUEST_TIMEOUT_MS,
   DEFAULT_PROVIDER_STREAM_IDLE_TIMEOUT_MS,
+  MODEL_ROW_PAGE_MAX_BYTES,
   type RuntimeTimeoutKind,
   resolveFullRequestTimeoutMs,
 } from '../../runtimeLimits';
@@ -901,8 +903,48 @@ export function projectPiAgentCoreEventToStreamingUpdate(
   }
 }
 
-function stringifyPiToolResult(result: RuntimeToolResult): Array<{ type: 'text'; text: string }> {
-  return [{type: 'text', text: stringifyRuntimeToolResult(result)}];
+function stringifyPiToolResult(toolName: string, result: RuntimeToolResult): Array<{ type: 'text'; text: string }> {
+  const text = stringifyRuntimeToolResult(result);
+  const originalBytes = Buffer.byteLength(text);
+  if (originalBytes <= MODEL_ROW_PAGE_MAX_BYTES) return [{type: 'text', text}];
+
+  const body = decodeRuntimeToolResult(result).body;
+  const artifactIds = [...new Set([
+    toolName === 'fetch_artifact' ? body?.id : undefined, body?.artifactId, body?.diagnosticsArtifactId,
+    ...(Array.isArray(body?.artifacts) ? body.artifacts.map(item => item?.id) : []),
+    ...(Array.isArray(body?.synthesizeArtifacts) ? body.synthesizeArtifacts.map(item => item?.artifactId) : []),
+  ].filter((id): id is string => typeof id === 'string' && id.length > 0))];
+  const facts = readToolResultFacts(result);
+  const metadata = {...facts, ...(artifactIds.length ? {artifactIds} : {})};
+  // Never shorten an identity into a different one. The original result remains
+  // in details; exceptionally large metadata is explicitly unavailable here.
+  const boundedMetadata = Buffer.byteLength(JSON.stringify(metadata)) <= MODEL_ROW_PAGE_MAX_BYTES / 2
+    ? metadata : {success: facts.success, metadataOmitted: true, artifactCount: artifactIds.length};
+  const projection = {
+    ...boundedMetadata,
+    ...(result.isError === true ? {isError: true} : {}),
+    truncated: true,
+    originalBytes,
+    hint: 'Incomplete text preview, not complete data or independently citable evidence. '
+      + 'Use fetch_artifact with smaller offset/limit pages when available. If a fetched page was cut, '
+      + 'retry its current offset with a smaller limit; do not skip to its original nextOffset. '
+      + 'A single oversized row requires a narrower query or less cell content. Omitted data is not absent.',
+    preview: '',
+  };
+  // Measure the serialized envelope too: quotes/control characters can expand
+  // the preview, and a character limit would undercount CJK and emoji bytes.
+  const prefix = Buffer.from(text).subarray(0, MODEL_ROW_PAGE_MAX_BYTES);
+  const preview = (bytes: number) => prefix.subarray(0, bytes).toString('utf8').replace(/\uFFFD$/u, '');
+  let low = 0;
+  let high = prefix.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    projection.preview = preview(mid);
+    if (Buffer.byteLength(JSON.stringify(projection)) <= MODEL_ROW_PAGE_MAX_BYTES) low = mid;
+    else high = mid - 1;
+  }
+  projection.preview = preview(low);
+  return [{type: 'text', text: JSON.stringify(projection)}];
 }
 
 export type PiAgentCoreNativeToolExecutionMode = 'sequential' | 'parallel';
@@ -1105,7 +1147,7 @@ export function createPiAgentCoreToolFromSharedSpec(
       });
       onUpdate?.({ type: 'smartperfetto_tool_finished', toolCallId, toolName: spec.name });
       return {
-        content: stringifyPiToolResult(result),
+        content: stringifyPiToolResult(spec.name, result),
         details: result,
         ...(result.isError === true ? { isError: true } : {}),
       };
@@ -1851,6 +1893,9 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           heldTransientErrors = [];
           const messages = agent.state.messages ?? [];
           const failure = messages.length > boundary ? classifyFailedTurn(messages[messages.length - 1]) : undefined;
+          // A failed request can still be billed. Neither a retry nor a
+          // context-overflow closeout may spend beyond the remaining cost cap.
+          if (failure && maxBudgetUsd > 0 && spentUsd >= maxBudgetUsd) { budgetStop = 'budget_limit'; break; }
           // A request past the window is the context budget running out, closed out like one.
           if (failure === 'context_overflow') { budgetStop = 'context_limit'; break; }
           const backoffMs = PI_TRANSIENT_TURN_RETRY_BASE_MS * 2 ** transientTurnRetries;

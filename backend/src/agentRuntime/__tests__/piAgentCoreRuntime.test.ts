@@ -31,6 +31,7 @@ import {resolvePiCatalogModel} from '../engines/pi/piAgentCoreProvider';
 import * as analysisRunSpecModule from '../analysisRunSpec';
 import type { RuntimeToolResult, SharedToolSpec } from '../runtimeToolSpec';
 import {createRuntimeToolResult, readRuntimeToolResultFacts} from '../runtimeToolResult';
+import {MODEL_ROW_PAGE_MAX_BYTES} from '../runtimeLimits';
 import {projectCodeAwareStreamingUpdate} from '../../services/security/codeAwareStreamingUpdateProjection';
 import {createClaudeMcpServer} from '../../agentv3/claudeMcpServer';
 import * as claudeMcpModule from '../../agentv3/claudeMcpServer';
@@ -1669,7 +1670,7 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(providerRuntimeLoader).toHaveBeenCalledTimes(2);
   });
 
-  it('preserves complete provider-facing Pi tool text and original details', async () => {
+  it('preserves complete Pi tool text within the model byte budget and original details', async () => {
     const longText = `${'frame evidence '.repeat(400)}TAIL_CANARY_FULL_DETAILS_ONLY`;
     const completeResult = {
       content: [{type: 'text', text: longText}],
@@ -1688,6 +1689,86 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(projected.details).toBe(completeResult);
     expect(projected.content).toEqual([{type: 'text', text: longText}]);
     expect(JSON.stringify(projected.details)).toContain('TAIL_CANARY_FULL_DETAILS_ONLY');
+  });
+
+  it.each([
+    {name: 'invoke_skill', detail: 'previews', payload: {artifacts: [{id: 'art-wide', preview: 'x'.repeat(250_000)}]}},
+    {name: 'fetch_artifact', detail: 'rows', payload: {id: 'art-wide', rows: [['x'.repeat(930_000)]], offset: 0, nextOffset: 1}},
+    {name: 'fetch_artifact', detail: 'summary', payload: {id: 'art-wide', summary: {firstRow: ['x'.repeat(250_000)]}}},
+    {name: 'fetch_artifact', detail: 'full', payload: {id: 'art-wide', data: {rows: [['x'.repeat(250_000)]]}}},
+    {name: 'execute_sql', detail: 'rows', payload: {artifactId: 'art-wide', rows: [['x'.repeat(250_000)]]}},
+  ])('bounds $name $detail for the model without altering backing evidence', async ({name, payload}) => {
+    const original = createRuntimeToolResult({success: true, planPhaseId: 'p1', ...payload});
+    const tool = createPiAgentCoreToolFromSharedSpec({...createSharedSpec(async () => original), name}, {
+      allowedToolNames: new Set([name]),
+    });
+    const result = await tool.execute('wide-tool', {}, undefined);
+    const text = result.content[0].text;
+    const projection = JSON.parse(text);
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(MODEL_ROW_PAGE_MAX_BYTES);
+    expect(projection).toMatchObject({success: true, planPhaseId: 'p1', truncated: true, artifactIds: ['art-wide']});
+    expect(projection.originalBytes).toBeGreaterThan(MODEL_ROW_PAGE_MAX_BYTES);
+    expect(projection.hint).toContain('retry its current offset');
+    expect(projection.hint).toContain('single oversized row');
+    expect(projection.preview).toBeTruthy();
+    expect(result.details).toBe(original);
+    expect(readRuntimeToolResultFacts(result)).toEqual({success: true, planPhaseId: 'p1'});
+  });
+
+  it('bounds UTF-8 and JSON escaping in an explicitly incomplete preview', async () => {
+    const original = createRuntimeToolResult({success: false, planPhaseId: 'p2',
+      error: '中文🙂\u0000"\n\\'.repeat(30_000) + 'OMITTED_TAIL_CANARY'}, {isError: true});
+    const tool = createPiAgentCoreToolFromSharedSpec(createSharedSpec(async () => original), {
+      allowedToolNames: new Set(['query_trace']),
+    });
+    const result = await tool.execute('unicode-tool', {}, undefined);
+    const text = result.content[0].text;
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(MODEL_ROW_PAGE_MAX_BYTES);
+    expect(JSON.parse(text)).toMatchObject({success: false, planPhaseId: 'p2', isError: true, truncated: true});
+    expect(JSON.parse(text).preview).not.toContain('\uFFFD');
+    expect(text).not.toContain('OMITTED_TAIL_CANARY');
+    expect(result.details).toBe(original);
+    expect(result.isError).toBe(true);
+    expect(readRuntimeToolResultFacts(text)).toEqual({success: false, planPhaseId: 'p2'});
+  });
+
+  it('preserves synthesize and diagnostic artifact locators after an oversized body', async () => {
+    const original = createRuntimeToolResult({success: true, preview: 'x'.repeat(250_000),
+      synthesizeArtifacts: [{artifactId: 'art-synthesize'}], diagnosticsArtifactId: 'art-diagnostic'});
+    const tool = createPiAgentCoreToolFromSharedSpec({...createSharedSpec(async () => original), name: 'invoke_skill'}, {
+      allowedToolNames: new Set(['invoke_skill']),
+    });
+    const result = await tool.execute('synthesize-tool', {}, undefined);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({truncated: true,
+      artifactIds: ['art-diagnostic', 'art-synthesize']});
+    expect(result.details).toBe(original);
+  });
+
+  it('does not turn another tool entity id into an artifact locator', async () => {
+    const original = createRuntimeToolResult({success: true, id: 'source-entity', text: 'x'.repeat(250_000)});
+    const tool = createPiAgentCoreToolFromSharedSpec(createSharedSpec(async () => original), {
+      allowedToolNames: new Set(['query_trace']),
+    });
+    const result = await tool.execute('entity-tool', {}, undefined);
+    expect(JSON.parse(result.content[0].text)).not.toHaveProperty('artifactIds');
+    expect(result.details).toBe(original);
+  });
+
+  it('omits oversized metadata explicitly without manufacturing shortened identities', async () => {
+    const planPhaseId = 'phase'.repeat(MODEL_ROW_PAGE_MAX_BYTES);
+    const artifactId = 'artifact'.repeat(MODEL_ROW_PAGE_MAX_BYTES);
+    const original = createRuntimeToolResult({success: true, planPhaseId, artifactId});
+    const tool = createPiAgentCoreToolFromSharedSpec(createSharedSpec(async () => original), {
+      allowedToolNames: new Set(['query_trace']),
+    });
+    const result = await tool.execute('metadata-tool', {}, undefined);
+    expect(Buffer.byteLength(result.content[0].text)).toBeLessThanOrEqual(MODEL_ROW_PAGE_MAX_BYTES);
+    const projection = JSON.parse(result.content[0].text);
+    expect(projection).toMatchObject({success: true, truncated: true, metadataOmitted: true, artifactCount: 1});
+    expect(projection).not.toHaveProperty('artifactIds');
+    expect(projection).not.toHaveProperty('planPhaseId');
+    expect(result.details).toBe(original);
+    expect(readRuntimeToolResultFacts(result)).toEqual({success: true, planPhaseId});
   });
 
   it('preserves producer receipt, payload and error state in provider content and Pi details', async () => {
@@ -3753,7 +3834,7 @@ describe('experimental Pi agent-core runtime contract', () => {
   });
 
   /** A run whose first provider turn fails with `failed`; later turns answer. */
-  async function runWithFailedFirstTurn(sessionId: string, failed: Record<string, unknown>) {
+  async function runWithFailedFirstTurn(sessionId: string, failed: Record<string, unknown>, env: Record<string, string> = {}) {
     passVerification();
     piClassifierResponses.push(
       {role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: JSON.stringify(piClassifierDecision)}]},
@@ -3763,11 +3844,12 @@ describe('experimental Pi agent-core runtime contract', () => {
       agent = current;
       const message = index === 1 ? failed
         : {role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: 'Recovered answer'}]};
+      await (current.options?.finishTurn as any)({message});
       current.emitForTest({type: 'message_end', message});
       current.emitForTest({type: 'turn_end', message});
       return [message];
     };
-    const runtime = typedRuntime({env: {AGENT_QUICK_MAX_TURNS: '50'}});
+    const runtime = typedRuntime({env: {AGENT_QUICK_MAX_TURNS: '50', ...env}});
     const updates: StreamingUpdate[] = [];
     runtime.on('update', update => updates.push(update));
     const result = await runtime.analyze('继续', sessionId, 'trace-pi', {analysisMode: 'fast'});
@@ -3794,6 +3876,19 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(agent.continueCount).toBe(0);
     expect(result).toMatchObject({success: false, completion: {status: 'failed', reason: 'provider_error'}});
     expect(errors.length).toBeGreaterThan(0);
+  });
+
+  it.each(['transient', 'context_overflow'] as const)('buys no retry or closeout when a billed %s failure exhausts the cost cap', async failure => {
+    piFailedTurnClass = () => failure;
+    const {result, agent, errors} = await runWithFailedFirstTurn(`typed-pi-billed-${failure}`,
+      {role: 'assistant', stopReason: 'error', errorMessage: 'Provider failed after partial work',
+        content: [{type: 'text', text: 'Partial provider text'}], usage: {cost: {total: 2}}},
+      {SMARTPERFETTO_PI_MAX_BUDGET_USD: '1'});
+    expect(agent.continueCount).toBe(0);
+    expect(result).toMatchObject({partial: true, rounds: 1, terminationReason: 'max_budget_usd',
+      completion: {status: 'incomplete', reason: 'budget_limit'}});
+    expect(piClassifierCalls).toHaveLength(1);
+    expect(errors).toEqual([]);
   });
 
   it('closes out a provider context overflow as context_limit instead of failing the run', async () => {

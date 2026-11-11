@@ -239,6 +239,15 @@ SmartPerfetto analysis capability is registered through
 execution, Skill invocation, SQL schema lookup, planning/hypothesis tools,
 artifacts, memory, code-aware lookup, baselines, and comparison tools.
 
+The Pi adapter caps each final model-facing tool result at 64 KiB of UTF-8,
+including JSON escaping. Smaller results stay intact; oversized results become
+valid JSON marked `truncated`, with the original size, an incomplete text preview,
+and native execution facts and artifact locators that fit. Original `details`
+and backing evidence stay unchanged. Re-read a cut artifact page from its current
+offset with a smaller limit, rather than jumping to its original nextOffset;
+a single oversized row requires fewer query columns or less cell content.
+This bounds one result; accumulated results can still exhaust the context window.
+
 `list_skills(metricId, offset)` discovers actual metric producers, inputs, identity selectors and scope limits from this run's pinned Skill definitions and SQL fragments. Discovery neither executes a tool nor issues evidence. Raw SQL column names or model prose cannot replace a private producer binding; an unknown metric returns no match rather than silently falling back to the whole catalog.
 
 The registry holds SDK-neutral shared tool specs
@@ -608,7 +617,8 @@ failed transiently (a broken stream, overload, rate limiting; not quota or
 billing limits). Such a turn runs none of its tool calls, so Pi re-sends it from
 the same transcript: at most two
 re-sends per run, with exponential backoff, each a counted turn inside the
-original turn budget and deadline. That turn's error events are held and emitted
+original turn budget and deadline. A billed failed turn that exhausts the cost
+budget buys neither a re-send nor a closeout. That turn's error events are held and emitted
 only if it is not re-sent. A run whose overall deadline has passed is not retried.
 
 Before dispatch, closeout and continuation calls use
