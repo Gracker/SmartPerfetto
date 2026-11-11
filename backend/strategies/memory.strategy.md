@@ -188,6 +188,7 @@ invoke_skill("android_process_state_residency", { process_name })
 | Heap dump class 增长 | `invoke_skill("android_heap_graph_class_growth")`；两份 trace 用 `compare_skill("android_heap_graph_class_growth")` | 同一进程有多次 dump 时直接给首次→末次的 class 增长；前后两份 trace 各一次 dump 时两侧各跑一次排名，只在一侧出现的 class 用 `class_names` 再跑一次拿到两侧对齐的行（缺失为 0），`graph_sample_ts` 只能按侧传 |
 | RSS/Swap 增长 | `invoke_skill("memory_growth_detector")` | 用 RSS 增长率、斜率、单次跳跃、Peak/Avg、Anon+Swap 占比判断增长型内存压力；只能作为泄漏辅证 |
 | Bitmap 内存 | `invoke_skill("android_bitmap_memory_per_process")` | 图片/纹理密集应用的 Bitmap footprint；有 heap graph 时同时看 width/height/density/storage/source attribution |
+| Bitmap 存活集形状 | `invoke_skill("android_bitmap_memory_per_process")` 的 `bitmap_live_shape` | Bitmap Memory/Count 是存活集 counter（释放即回落）：`retained_growth_across_gc` = 期间发生过 GC 仍从不回落，存活集只增不减；有回落是分配后回收。RSS 不计未触碰的像素页，RSS 不涨不能否定 Bitmap 存活集增长；定位持有者仍需 heap graph |
 | Native Heap / Java 分配 | `invoke_skill("native_heap_breakdown")` | trace 含 heapprofd 时，先读 `heap_profile_inventory` 的 (进程, heap) 与 `retention_claim`，再看按进程 × heap 的热点；只覆盖 profiler 启动后的分配 |
 | GC 压力 | `invoke_skill("gc_analysis")` | Java 堆内存问题、频繁 GC |
 | 页缺失 | `execute_sql` 查询 `page_fault` | 内存映射文件访问延迟 |

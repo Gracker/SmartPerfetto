@@ -260,7 +260,7 @@
     },
     "android_bitmap_memory_per_process": {
       "source_file": "backend/skills/atomic/android_bitmap_memory_per_process.skill.yaml",
-      "source_sha256": "c60050ad32c18950da78069dabe941919f7dd55aa3df9ac7ad86d51254da582d",
+      "source_sha256": "9f835d0d275ee8c7689243ac3811b6a71df58d2a4182e0cc564a1897debd1fee",
       "type": "atomic",
       "execution": "steps",
       "declared_modules": [
@@ -269,6 +269,7 @@
       ],
       "top_level_steps": [
         "bitmap_memory",
+        "bitmap_live_shape",
         "heap_bitmap_availability",
         "heap_bitmap_metadata",
         "heap_bitmap_sender_attribution"
@@ -294,9 +295,41 @@
           "forceable": true
         },
         {
-          "id": "heap_bitmap_availability",
+          "id": "bitmap_live_shape",
           "at": "steps[1].sql",
           "top_level_index": 1,
+          "sha256": "7498e74d5a92524364ecb62bf908535e66df57b76df5a044c8e9f94359296ab3",
+          "required_columns": [
+            "process_name",
+            "upid",
+            "samples",
+            "span_s",
+            "first_mb",
+            "last_mb",
+            "net_growth_mb",
+            "rise_steps",
+            "drop_steps",
+            "max_single_drop_mb",
+            "first_count",
+            "last_count",
+            "gcs_in_span",
+            "shape",
+            "process_identity"
+          ],
+          "has_condition": false,
+          "read_only": true,
+          "placeholders": [
+            "${bitmap_growth_min_mb|32}",
+            "${start_ts}",
+            "${end_ts}"
+          ],
+          "process_scope_valid": null,
+          "forceable": true
+        },
+        {
+          "id": "heap_bitmap_availability",
+          "at": "steps[2].sql",
+          "top_level_index": 2,
           "sha256": "71dd8beb2b834623bc22a5ee44200a88e4f5760502d1702d0a44672f9a704fc8",
           "required_columns": [
             "has_heap_graph_bitmaps"
@@ -309,8 +342,8 @@
         },
         {
           "id": "heap_bitmap_metadata",
-          "at": "steps[2].sql",
-          "top_level_index": 2,
+          "at": "steps[3].sql",
+          "top_level_index": 3,
           "sha256": "6994de1bc7fdc4ce5dbb241972011a47f4702da3dfef6a08f1935c058b995ac0",
           "required_columns": [
             "process_name",
@@ -333,8 +366,8 @@
         },
         {
           "id": "heap_bitmap_sender_attribution",
-          "at": "steps[3].sql",
-          "top_level_index": 3,
+          "at": "steps[4].sql",
+          "top_level_index": 4,
           "sha256": "0be6bbc35667240be608dc48e7f7508663a54513fbfa13bde2708bb7b8deead5",
           "required_columns": [
             "receiver_process",
@@ -2401,26 +2434,54 @@
     },
     "battery_doze_state_timeline": {
       "source_file": "backend/skills/atomic/battery_doze_state_timeline.skill.yaml",
-      "source_sha256": "76538da9dab1b6f5e68441be298de8fa40633dbe1e8b0cf79d547d49c1f1e4a1",
+      "source_sha256": "f3b10de266791619cc7c7a75b64688301c08509cbcec5cad7787f20ee4389f6b",
       "type": "atomic",
       "execution": "steps",
       "declared_modules": [
         "android.battery.doze"
       ],
       "top_level_steps": [
+        "doze_state_summary",
         "deep_idle_intervals",
         "light_idle_intervals"
       ],
       "unexecuted_sql": false,
       "units": [
         {
-          "id": "deep_idle_intervals",
+          "id": "doze_state_summary",
           "at": "steps[0].sql",
           "top_level_index": 0,
-          "sha256": "8f7ff82ae350c2ccb2b3b2ced71ee079b648daf4201756942082fb33ebafe2b8",
+          "sha256": "bb9ca1e95b328d5b7df0b4f30d1a4205d1a5aeec6a1bb707450de50e12a72a4b",
+          "required_columns": [
+            "state_machine",
+            "trace_intervals",
+            "window_intervals",
+            "outside_window_intervals",
+            "idle_entries",
+            "first_idle_ts",
+            "idle_total_s",
+            "min_dwell_ms",
+            "state_sequence",
+            "last_state"
+          ],
+          "has_condition": false,
+          "read_only": true,
+          "placeholders": [
+            "${start_ts}",
+            "${end_ts}"
+          ],
+          "process_scope_valid": null,
+          "forceable": true
+        },
+        {
+          "id": "deep_idle_intervals",
+          "at": "steps[1].sql",
+          "top_level_index": 1,
+          "sha256": "8bed0446e8a15bdeb2aed7510438cb4e660b56389729e511e34667074573f8c1",
           "required_columns": [
             "ts",
-            "dur_sec"
+            "dur_sec",
+            "deep_idle_state"
           ],
           "has_condition": false,
           "read_only": true,
@@ -2433,12 +2494,13 @@
         },
         {
           "id": "light_idle_intervals",
-          "at": "steps[1].sql",
-          "top_level_index": 1,
-          "sha256": "b1f50806aa7d638f9c170b256e6fe346d2da5ccfdfd36adbc65a304f3329f0f0",
+          "at": "steps[2].sql",
+          "top_level_index": 2,
+          "sha256": "c3992348686f963ea9f2a4f7e506c91fb690c6b565fe4c7571189c23dd2783d9",
           "required_columns": [
             "ts",
-            "dur_sec"
+            "dur_sec",
+            "light_idle_state"
           ],
           "has_condition": false,
           "read_only": true,
@@ -11206,14 +11268,15 @@
     },
     "linux_perf_counter_hotspots": {
       "source_file": "backend/skills/atomic/linux_perf_counter_hotspots.skill.yaml",
-      "source_sha256": "af7bb5a650cb5630f9a7660853cbc71766190fc42683c59a3cbdd8625d24f3aa",
+      "source_sha256": "f714ec887369f5d3ef4358bbb8033f2196ac55752d0aa8afda0bf8304182c912",
       "type": "atomic",
       "execution": "steps",
       "declared_modules": [
         "linux.perf.counters"
       ],
       "top_level_steps": [
-        "perf_counter_hotspots"
+        "perf_counter_hotspots",
+        "perf_counter_ratios"
       ],
       "unexecuted_sql": false,
       "units": [
@@ -11221,22 +11284,49 @@
           "id": "perf_counter_hotspots",
           "at": "steps[0].sql",
           "top_level_index": 0,
-          "sha256": "146c14aa553bbbb0ff3189f440021fdb45cd7b08af88036a2f6195418152f5d4",
+          "sha256": "e4d0d6cace855fe82d6c903f1f49415da16859583c36c5899b0552c82a7b67b8",
           "required_columns": [
             "counter_name",
             "process_name",
             "thread_name",
             "sample_count",
-            "total_counter_value",
-            "avg_counter_value"
+            "total_counter_delta",
+            "avg_counter_delta"
           ],
           "has_condition": false,
           "read_only": true,
           "placeholders": [
             "${package|}",
             "${process_name|}",
-            "${start_ts}",
-            "${end_ts}"
+            "${start_ts}"
+          ],
+          "process_scope_valid": null,
+          "forceable": true
+        },
+        {
+          "id": "perf_counter_ratios",
+          "at": "steps[1].sql",
+          "top_level_index": 1,
+          "sha256": "8885851f980dfcfa6480ab0fcf1a0b787824d5073664656589c1e82b60749f97",
+          "required_columns": [
+            "process_name",
+            "upid",
+            "samples",
+            "cycles_share_pct",
+            "cycles_m",
+            "instructions_m",
+            "ipc",
+            "cache_references_m",
+            "cache_misses_m",
+            "cache_miss_pct",
+            "mpki"
+          ],
+          "has_condition": false,
+          "read_only": true,
+          "placeholders": [
+            "${package|}",
+            "${process_name|}",
+            "${start_ts}"
           ],
           "process_scope_valid": null,
           "forceable": true
