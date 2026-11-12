@@ -104,6 +104,5 @@ camera_surface_presents AS (
   SELECT *, display_present_ts - LAG(display_present_ts) OVER (
     PARTITION BY sf_upid, bindable_surface ORDER BY display_present_ts, display_id) AS surface_present_interval_ns
   FROM camera_buffer_links
-  WHERE latch_matches = 1 AND display_matches = 1 AND display_present_ts IS NOT NULL
-    AND latch_ts <= display_present_ts
+  WHERE binding_status = 'sf_commit_display_bound'
 )
