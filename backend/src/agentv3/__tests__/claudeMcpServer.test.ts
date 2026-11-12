@@ -1793,6 +1793,40 @@ describe('createClaudeMcpServer', () => {
         .toEqual([...filler, ...relevant].map(skill => skill.id).sort());
     });
 
+    it.each([false, true])('discovers the real PMU producer in the CPU SDK catalog (lightweight=%s)', async lightweight => {
+      const {SkillRegistry} = jest.requireActual<typeof import('../../services/skillEngine/skillLoader')>(
+        '../../services/skillEngine/skillLoader');
+      const realRegistry = new SkillRegistry();
+      await realRegistry.loadSkills(path.resolve(__dirname, '../../../skills'));
+      const realAdapter = jest.requireActual<typeof import('../../services/skillEngine/skillAnalysisAdapter')>(
+        '../../services/skillEngine/skillAnalysisAdapter');
+      (createSkillAnalysisAdapter as jest.MockedFunction<typeof createSkillAnalysisAdapter>)
+        .mockImplementationOnce((processor, eventHandler) => realAdapter.createSkillAnalysisAdapter(processor,
+          eventHandler, {registry: realRegistry, registryFingerprint: 'real-cpu-discovery'}));
+      (getWorkspaceSkillRegistry as jest.MockedFunction<typeof getWorkspaceSkillRegistry>)
+        .mockResolvedValueOnce({registry: realRegistry, registryFingerprint: 'real-cpu-discovery', enabledPacks: [],
+          getSkillOrigin: realRegistry.getSkillOrigin.bind(realRegistry)} as unknown as
+          Awaited<ReturnType<typeof getWorkspaceSkillRegistry>>);
+      const server = createTestServer({lightweight, userQuery: '应用滑动卡顿，分析CPU热点在哪里',
+        knowledgeScope: {tenantId: 'cpu-discovery', workspaceId: 'real-built-ins'}});
+      const definition = server.toolDefinitions.find(tool => tool.name === 'list_skills')!;
+      const native = createPiAgentCoreToolFromSharedSpec(definition.shared,
+        {allowedToolNames: new Set(['list_skills'])});
+
+      const response = await native.execute('real-cpu-catalog', {category: 'cpu'}, undefined);
+      const outer = JSON.parse((response.content[0] as {text: string}).text);
+      const catalog = JSON.parse(outer.content[0].text);
+      expect(outer.truncated ?? false).toBe(false);
+      const described = lightweight ? catalog.skills : catalog;
+      const pmu = described.find((skill: {id: string}) => skill.id === 'linux_perf_counter_hotspots');
+      expect(pmu).toBeDefined();
+      expect(pmu.description).toBeTruthy();
+      expect(realRegistry.getSkill(pmu.id)!.meta.description).toContain(pmu.description.replace(/…$/, ''));
+      expect(pmu.exactProcessScope.supported).toBe(true);
+      if (lightweight) expect(pmu.matchedByQuery).toBe(true);
+      expect(server.mockTpService.query).not.toHaveBeenCalled();
+    });
+
     it('audits first-wave safe reads as bounded metadata-only handlers', async () => {
       const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
       const runManifestAttributionSink = createNoopAttributionSink(runtimePerformanceRecorder);
@@ -2143,6 +2177,7 @@ describe('createClaudeMcpServer', () => {
       expect(descriptionByName.get('resolve_hypothesis')).toContain('exact immutable statement');
       expect(descriptionByName.get('invoke_skill')).toContain('positive `upid`');
       expect(descriptionByName.get('invoke_skill')).toContain('Never infer an UPID');
+      expect(descriptionByName.get('invoke_skill')).toContain('UPID can still fail');
       expect(descriptionByName.get('invoke_skill')).toContain('raw producer-declared units');
       expect(descriptionByName.get('invoke_skill')).toContain('Missing means unknown');
       // What raw SQL is for, and when a Skill comes first (B.2).
@@ -2150,6 +2185,10 @@ describe('createClaudeMcpServer', () => {
       expect(descriptionByName.get('invoke_skill')).toContain('Use it first for registered metric measurements');
       expect(descriptionByName.get('invoke_skill')).toBe(requirePromptSegment('prompt-invoke-skill-tool-description'));
       expect(descriptionByName.get('invoke_skill')).toContain('required detail Skills');
+      expect(descriptionByName.get('invoke_skill')).toContain('CPU hotspots with observed `perf_counters`');
+      expect(descriptionByName.get('invoke_skill')).toContain('collect event-track deltas via a registered Skill');
+      expect(descriptionByName.get('invoke_skill')).toContain('Counts != deltas');
+      expect(descriptionByName.get('invoke_skill')).toContain('missing callsites only limit symbol attribution');
       expect(descriptionByName.get('invoke_skill')).toContain('columnUnits');
       expect(descriptionByName.get('invoke_skill')).toContain('`fetch_artifact` its tables instead of re-running it');
       const proposePatchDescription = descriptionByName.get('propose_patch') ?? '';

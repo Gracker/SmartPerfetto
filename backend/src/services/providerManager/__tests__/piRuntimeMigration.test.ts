@@ -19,6 +19,7 @@ import {withMigratedAgentRuntime} from '../retiredRuntime';
 import {officialTemplates} from '../templates';
 import type {ProviderConfig, ProviderConnection, ProviderType} from '../types';
 import {installedPiCatalogLoader} from './installedPiCatalog';
+import type {PiAgentCoreModelConfig} from '../../../agentRuntime/engines/pi/piAgentCoreConfig';
 
 type Env = Record<string, string | undefined>;
 
@@ -516,7 +517,7 @@ describe('Pi model resolution against the installed pi-ai catalog', () => {
   });
 });
 
-describe('thinking on an Anthropic-compatible gateway', () => {
+describe('Pi native purpose reasoning', () => {
   const catalog = {builtinProviders: () => [], getBuiltinModels: () => [], getBuiltinModel: () => undefined} as Record<string, unknown>;
   const context = {messages: [], tools: []} as never;
 
@@ -525,7 +526,7 @@ describe('thinking on an Anthropic-compatible gateway', () => {
   afterEach(() => {jest.restoreAllMocks();});
 
   async function gatewayRuntime(modelId: string, catalogModule: Record<string, unknown> = catalog,
-    piAiOverrides: Record<string, unknown> = {}) {
+    piAiOverrides: Record<string, unknown> = {}, configuredModel?: PiAgentCoreModelConfig) {
     const sent: Array<Record<string, any>> = [];
     const piAi = {
       ...piAiOverrides,
@@ -543,7 +544,7 @@ describe('thinking on an Anthropic-compatible gateway', () => {
         : piAi;
     const record = {...templateRecord('kimi', 'claude-agent-sdk'), models: {primary: modelId, light: modelId}};
     const env = piEnvOf(record);
-    const config = parsePiAgentCoreModelConfig(env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON);
+    const config = configuredModel ?? parsePiAgentCoreModelConfig(env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON);
     return {sent, runtime: await createPiAgentCoreProviderRuntime(config, env, loader as never)};
   }
 
@@ -553,6 +554,47 @@ describe('thinking on an Anthropic-compatible gateway', () => {
     await runtime.streamFn(runtime.model, context, {reasoning: 'medium'} as never);
     expect(sent[0].reasoning).toBe('medium');
     expect(runtime.model.compat).toMatchObject({forceAdaptiveThinking: true});
+  });
+
+  const legacyGlm = (overrides: Record<string, unknown> = {}): PiAgentCoreModelConfig => ({model: {
+    id: 'glm-5.3', name: 'legacy GLM', api: 'openai-completions', provider: 'openai',
+    baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4', reasoning: true, input: ['text'],
+    contextWindow: 200_000, maxTokens: 16_384,
+    cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}, ...overrides,
+  }});
+
+  it('selects the minimum legal classification effort for a legacy official GLM model, preserving the main default', async () => {
+    const {runtime, sent} = await gatewayRuntime('unused', catalog, {}, legacyGlm());
+    expect(runtime.model).toMatchObject({compat: {thinkingFormat: 'zai', supportsReasoningEffort: true}});
+    const onExecutionPolicy = jest.fn();
+    await runtime.streamFnForPurpose!('classification', {onExecutionPolicy})(runtime.model, context, {maxTokens: 1024} as never);
+    await runtime.streamFn(runtime.model, context, {maxTokens: 16_384} as never);
+    expect(sent[0]).toMatchObject({reasoning: 'low', maxTokens: 1024});
+    expect(onExecutionPolicy).toHaveBeenCalledWith(expect.objectContaining({outcome: 'candidate_applied',
+      mapped: {mode: 'enabled', effort: 'low'}}));
+    expect(sent[1].reasoning).toBeUndefined();
+    const payload = {thinking: {type: 'disabled'}, max_tokens: 16_384};
+    expect(await sent[1].onPayload(payload, runtime.model)).toEqual({max_tokens: 16_384});
+  });
+
+  it.each([
+    {baseUrl: 'https://gateway.example/api/coding/paas/v4'},
+    {baseUrl: 'https://open.bigmodel.cn/unrecognized'},
+    {id: 'unrecognized-model'},
+    {compat: {thinkingFormat: 'openai'}},
+  ])('does not infer documented GLM SDK controls outside the known contract: %j', async override => {
+    const config = legacyGlm(override);
+    const {runtime} = await gatewayRuntime('unused', catalog, {}, config);
+    expect(runtime.model.compat).toEqual(config.model.compat);
+  });
+
+  it('preserves explicit compatibility and authored effort', async () => {
+    const {runtime, sent} = await gatewayRuntime('unused', catalog, {}, {...legacyGlm({
+      compat: {supportsReasoningEffort: false},
+    }), thinkingLevel: 'high'});
+    expect((runtime.model as any).compat.supportsReasoningEffort).toBe(false);
+    await runtime.streamFnForPurpose!('classification')(runtime.model, context, {maxTokens: 1024} as never);
+    expect(sent[0]).toMatchObject({reasoning: 'high', maxTokens: 1024});
   });
 
   it.each(['classification', 'review'] as const)('disables thinking for a tightly capped %s call', async purpose => {

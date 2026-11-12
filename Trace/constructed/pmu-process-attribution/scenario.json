@@ -1,0 +1,212 @@
+{
+  "schema_version": 1,
+  "clock": {
+    "anchor": "trace-middle",
+    "duration_ns": "200000000"
+  },
+  "actors": {
+    "processes": [
+      {
+        "id": "app",
+        "name": "com.smartperfetto.fixture",
+        "uid": 10999
+      },
+      {
+        "id": "restarted",
+        "name": "com.smartperfetto.fixture",
+        "uid": 10999
+      },
+      {
+        "id": "peer",
+        "name": "com.smartperfetto.pmu.peer",
+        "uid": 11000
+      }
+    ],
+    "threads": [
+      {
+        "id": "main",
+        "process": "app",
+        "name": "main",
+        "is_main": true
+      },
+      {
+        "id": "restarted-main",
+        "process": "restarted",
+        "name": "main",
+        "is_main": true
+      },
+      {
+        "id": "peer-main",
+        "process": "peer",
+        "name": "main",
+        "is_main": true
+      }
+    ]
+  },
+  "signals": [
+    {
+      "type": "atrace-slice",
+      "at_ns": "25000000",
+      "duration_ns": "135000000",
+      "process": "app",
+      "thread": "main",
+      "name": "SmartPerfetto::CASE::pmu-process-attribution"
+    },
+    {
+      "type": "perf-sample",
+      "at_ns": "10000000",
+      "process": "app",
+      "thread": "main",
+      "callstack": false,
+      "sample_count": 5,
+      "sample_interval_ns": "30000000",
+      "cpu": 0,
+      "perf_counters": [
+        {
+          "event": "HW_CPU_CYCLES",
+          "values": [
+            "100",
+            "2200",
+            "4300",
+            "10",
+            "2110"
+          ]
+        },
+        {
+          "event": "HW_INSTRUCTIONS",
+          "values": [
+            "50",
+            "3100",
+            "6150",
+            "5",
+            "3055"
+          ]
+        },
+        {
+          "event": "HW_CACHE_REFERENCES",
+          "values": [
+            "10",
+            "220",
+            "430",
+            "1",
+            "211"
+          ]
+        },
+        {
+          "event": "HW_CACHE_MISSES",
+          "values": [
+            "1",
+            "57",
+            "113",
+            "0",
+            "56"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "perf-sample",
+      "at_ns": "20000000",
+      "process": "restarted",
+      "thread": "restarted-main",
+      "callstack": false,
+      "sample_count": 5,
+      "sample_interval_ns": "30000000",
+      "cpu": 0,
+      "perf_counters": [
+        {
+          "event": "HW_CPU_CYCLES",
+          "values": [
+            "1100",
+            "3200",
+            "5300",
+            "1010",
+            "3110"
+          ]
+        },
+        {
+          "event": "HW_INSTRUCTIONS",
+          "values": [
+            "2050",
+            "5100",
+            "8150",
+            "2005",
+            "5055"
+          ]
+        },
+        {
+          "event": "HW_CACHE_REFERENCES",
+          "values": [
+            "110",
+            "320",
+            "530",
+            "101",
+            "311"
+          ]
+        },
+        {
+          "event": "HW_CACHE_MISSES",
+          "values": [
+            "51",
+            "107",
+            "163",
+            "50",
+            "106"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "perf-sample",
+      "at_ns": "30000000",
+      "process": "peer",
+      "thread": "peer-main",
+      "callstack": false,
+      "sample_count": 5,
+      "sample_interval_ns": "30000000",
+      "cpu": 0,
+      "perf_counters": [
+        {
+          "event": "HW_CPU_CYCLES",
+          "values": [
+            "2100",
+            "4200",
+            "6300",
+            "2010",
+            "4110"
+          ]
+        },
+        {
+          "event": "HW_INSTRUCTIONS",
+          "values": [
+            "3050",
+            "6100",
+            "9150",
+            "3005",
+            "6055"
+          ]
+        },
+        {
+          "event": "HW_CACHE_REFERENCES",
+          "values": [
+            "210",
+            "420",
+            "630",
+            "201",
+            "411"
+          ]
+        },
+        {
+          "event": "HW_CACHE_MISSES",
+          "values": [
+            "56",
+            "112",
+            "168",
+            "55",
+            "111"
+          ]
+        }
+      ]
+    }
+  ]
+}

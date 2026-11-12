@@ -23,6 +23,7 @@ Run `npm run trace:build` to materialize base-plus-overlay traces under `Trace/.
 | [Main-thread work between animation frames](./main-thread-frame-work/) | scrolling | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 1 target(s) |
 | [Media, network, and camera pipeline](./media-network-camera/) | media | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 8 target(s) |
 | [Memory and GC pressure](./memory-gc-pressure/) | memory | Android 16 / API 36 (tested API 35-36) | android-startup-light | 20 target(s) |
+| [Exact process PMU attribution without callstacks](./pmu-process-attribution/) | general | Android 16 / API 36 (tested API 35-36) | android-startup-light | 1 target(s) |
 | [Power and thermal throttling](./power-thermal/) | power | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 19 target(s) |
 | [Process restart: two instances of one package](./process-restart-isolation/) | cpu | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 9 target(s) |
 | [Process scope isolation across same-package and peer processes](./process-scope-isolation/) | cpu | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 16 target(s) |

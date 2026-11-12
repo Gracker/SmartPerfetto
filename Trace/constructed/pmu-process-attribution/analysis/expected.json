@@ -1,0 +1,301 @@
+{
+  "schema_version": 1,
+  "case_id": "pmu-process-attribution",
+  "marker": "SmartPerfetto::CASE::pmu-process-attribution",
+  "expectations": [
+    {
+      "id": "pmu-oldest-exact",
+      "type": "skill",
+      "target": "linux_perf_counter_hotspots",
+      "mode": "semantic",
+      "source_file": "backend/skills/atomic/linux_perf_counter_hotspots.skill.yaml",
+      "parameters": {
+        "start_ts": "${fixture_start}",
+        "end_ts": "${fixture_end}"
+      },
+      "required_steps": [
+        "perf_counter_hotspots",
+        "perf_counter_ratios"
+      ],
+      "required_sql_steps": [
+        "perf_counter_hotspots",
+        "perf_counter_ratios"
+      ],
+      "forced_sql_steps": [],
+      "isolated_sql_probes": [],
+      "expected_condition_skips": [],
+      "semantic_step": "perf_counter_ratios",
+      "required_columns": [
+        "process_name",
+        "upid",
+        "samples",
+        "cycles_share_pct",
+        "cycles_m",
+        "instructions_m",
+        "ipc",
+        "cache_references_m",
+        "cache_misses_m",
+        "cache_miss_pct",
+        "mpki"
+      ],
+      "assertions": [
+        {
+          "column": "process_name",
+          "operator": "eq",
+          "value": "com.smartperfetto.fixture"
+        },
+        {
+          "column": "ipc",
+          "operator": "eq",
+          "value": 0.5
+        },
+        {
+          "column": "cycles_share_pct",
+          "operator": "eq",
+          "value": 3.23
+        },
+        {
+          "column": "cache_miss_pct",
+          "operator": "eq",
+          "value": 10
+        },
+        {
+          "column": "samples",
+          "operator": "eq",
+          "value": 12
+        }
+      ],
+      "required_marker": "SmartPerfetto::CASE::pmu-process-attribution",
+      "exact_scope": {
+        "process_name": "com.smartperfetto.fixture",
+        "instance": "oldest",
+        "units": [
+          {
+            "unit": "perf_counter_hotspots",
+            "mode": "semantic",
+            "min_rows": 4,
+            "max_rows": 4,
+            "required_columns": [
+              "counter_name",
+              "process_name",
+              "thread_name",
+              "sample_count",
+              "total_counter_delta",
+              "avg_counter_delta"
+            ],
+            "assertions": [
+              {
+                "column": "counter_name",
+                "operator": "eq",
+                "value": "cpu-cycles"
+              },
+              {
+                "column": "total_counter_delta",
+                "operator": "eq",
+                "value": 300
+              },
+              {
+                "column": "sample_count",
+                "operator": "eq",
+                "value": 3
+              }
+            ]
+          },
+          {
+            "unit": "perf_counter_ratios",
+            "mode": "semantic",
+            "min_rows": 1,
+            "max_rows": 1,
+            "required_columns": [
+              "process_name",
+              "upid",
+              "samples",
+              "cycles_share_pct",
+              "cycles_m",
+              "instructions_m",
+              "ipc",
+              "cache_references_m",
+              "cache_misses_m",
+              "cache_miss_pct",
+              "mpki"
+            ],
+            "assertions": [
+              {
+                "column": "process_name",
+                "operator": "eq",
+                "value": "com.smartperfetto.fixture"
+              },
+              {
+                "column": "ipc",
+                "operator": "eq",
+                "value": 0.5
+              },
+              {
+                "column": "cycles_share_pct",
+                "operator": "eq",
+                "value": 3.23
+              },
+              {
+                "column": "cache_miss_pct",
+                "operator": "eq",
+                "value": 10
+              },
+              {
+                "column": "samples",
+                "operator": "eq",
+                "value": 12
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "pmu-newest-exact",
+      "type": "skill",
+      "target": "linux_perf_counter_hotspots",
+      "mode": "semantic",
+      "source_file": "backend/skills/atomic/linux_perf_counter_hotspots.skill.yaml",
+      "parameters": {
+        "start_ts": "${fixture_start}",
+        "end_ts": "${fixture_end}"
+      },
+      "required_steps": [
+        "perf_counter_hotspots",
+        "perf_counter_ratios"
+      ],
+      "required_sql_steps": [
+        "perf_counter_hotspots",
+        "perf_counter_ratios"
+      ],
+      "forced_sql_steps": [],
+      "isolated_sql_probes": [],
+      "expected_condition_skips": [],
+      "semantic_step": "perf_counter_ratios",
+      "required_columns": [
+        "process_name",
+        "upid",
+        "samples",
+        "cycles_share_pct",
+        "cycles_m",
+        "instructions_m",
+        "ipc",
+        "cache_references_m",
+        "cache_misses_m",
+        "cache_miss_pct",
+        "mpki"
+      ],
+      "assertions": [
+        {
+          "column": "process_name",
+          "operator": "eq",
+          "value": "com.smartperfetto.fixture"
+        },
+        {
+          "column": "ipc",
+          "operator": "eq",
+          "value": 2
+        },
+        {
+          "column": "cycles_share_pct",
+          "operator": "eq",
+          "value": 43.01
+        },
+        {
+          "column": "cache_miss_pct",
+          "operator": "eq",
+          "value": 50
+        },
+        {
+          "column": "samples",
+          "operator": "eq",
+          "value": 16
+        }
+      ],
+      "required_marker": "SmartPerfetto::CASE::pmu-process-attribution",
+      "exact_scope": {
+        "process_name": "com.smartperfetto.fixture",
+        "instance": "newest",
+        "units": [
+          {
+            "unit": "perf_counter_hotspots",
+            "mode": "semantic",
+            "min_rows": 4,
+            "max_rows": 4,
+            "required_columns": [
+              "counter_name",
+              "process_name",
+              "thread_name",
+              "sample_count",
+              "total_counter_delta",
+              "avg_counter_delta"
+            ],
+            "assertions": [
+              {
+                "column": "counter_name",
+                "operator": "eq",
+                "value": "cpu-cycles"
+              },
+              {
+                "column": "total_counter_delta",
+                "operator": "eq",
+                "value": 4000
+              },
+              {
+                "column": "sample_count",
+                "operator": "eq",
+                "value": 4
+              }
+            ]
+          },
+          {
+            "unit": "perf_counter_ratios",
+            "mode": "semantic",
+            "min_rows": 1,
+            "max_rows": 1,
+            "required_columns": [
+              "process_name",
+              "upid",
+              "samples",
+              "cycles_share_pct",
+              "cycles_m",
+              "instructions_m",
+              "ipc",
+              "cache_references_m",
+              "cache_misses_m",
+              "cache_miss_pct",
+              "mpki"
+            ],
+            "assertions": [
+              {
+                "column": "process_name",
+                "operator": "eq",
+                "value": "com.smartperfetto.fixture"
+              },
+              {
+                "column": "ipc",
+                "operator": "eq",
+                "value": 2
+              },
+              {
+                "column": "cycles_share_pct",
+                "operator": "eq",
+                "value": 43.01
+              },
+              {
+                "column": "cache_miss_pct",
+                "operator": "eq",
+                "value": 50
+              },
+              {
+                "column": "samples",
+                "operator": "eq",
+                "value": 16
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

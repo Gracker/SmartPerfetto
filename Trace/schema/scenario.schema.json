@@ -165,6 +165,18 @@
           "message": {"type": "string", "minLength": 1},
           "sample_count": {"type": "integer", "minimum": 1, "maximum": 1000},
           "sample_interval_ns": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+          "callstack": {"type": "boolean", "description": "perf-sample: defaults to true; false emits counter-only native samples without a fabricated callstack."},
+          "perf_counters": {
+            "type": "array", "minItems": 1, "maxItems": 64,
+            "description": "perf-sample: cumulative native event readings; first event is the timebase, the rest are followers. All perf-sample signals in a sequence retain the same event layout.",
+            "items": {
+              "type": "object", "additionalProperties": false, "required": ["event", "values"],
+              "properties": {
+                "event": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]+$"},
+                "values": {"type": "array", "minItems": 1, "maxItems": 1000, "items": {"type": "string", "pattern": "^[0-9]+$"}}
+              }
+            }
+          },
           "track_name": {"type": "string"},
           "subsystem": {"type": "string"},
           "layer_name": {"type": "string"},
@@ -404,9 +416,11 @@
             "if": {"properties": {"type": {"const": "perf-sample"}}},
             "then": {
               "required": [
-                "process", "thread", "function_name", "module_name",
+                "process", "thread",
                 "sample_count", "sample_interval_ns"
-              ]
+              ],
+              "if": {"properties": {"callstack": {"const": false}}, "required": ["callstack"]},
+              "else": {"required": ["function_name", "module_name"]}
             }
           },
           {

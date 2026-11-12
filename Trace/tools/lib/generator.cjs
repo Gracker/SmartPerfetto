@@ -197,6 +197,25 @@ function nonEmptyString(value, field) {
   return value;
 }
 
+// Cumulative readings, never synthetic slices standing in for PMU packets.
+function perfCounterEvents(signal) {
+  if (signal.perf_counters === undefined) return [];
+  if (!Array.isArray(signal.perf_counters) || signal.perf_counters.length < 1 || signal.perf_counters.length > 64) {
+    throw new Error('perf-sample perf_counters must contain 1..64 native events');
+  }
+  const events = signal.perf_counters.map((counter) => {
+    const event = nonEmptyString(counter.event, 'perf-sample counter event');
+    if (!Array.isArray(counter.values) || counter.values.length !== signal.sample_count) {
+      throw new Error('perf-sample counter values must match sample_count');
+    }
+    return {event, values: counter.values.map(value => nonNegativeInt64String(value, 'perf-sample counter value'))};
+  });
+  if (new Set(events.map(counter => counter.event)).size !== events.length) {
+    throw new Error('perf-sample counter events must be unique');
+  }
+  return events;
+}
+
 function allocatePid(usedPids) {
   let candidate = FIRST_SYNTHETIC_PID;
   while (usedPids.has(candidate)) candidate += 1;
@@ -216,6 +235,7 @@ function validateScenario(scenario) {
     throw new Error('scenario.actors.processes and threads must be arrays');
   }
   if (!Array.isArray(scenario.signals)) throw new Error('scenario.signals must be an array');
+  let perfLayout;
   for (const [index, signal] of scenario.signals.entries()) {
     nonEmptyString(signal.type, `scenario.signals[${index}].type`);
     if (!SUPPORTED_SIGNAL_TYPES.has(signal.type)) {
@@ -238,6 +258,9 @@ function validateScenario(scenario) {
       androidSystemInfo(signal, `scenario.signals[${index}]`);
     }
     if (signal.type === 'perf-sample') {
+      if (signal.callstack !== undefined && typeof signal.callstack !== 'boolean') {
+        throw new Error('perf-sample callstack must be boolean');
+      }
       const sampleCount = positiveSafeInteger(
         signal.sample_count,
         `scenario.signals[${index}].sample_count`,
@@ -252,6 +275,13 @@ function validateScenario(scenario) {
       if (at + interval * BigInt(sampleCount - 1) > clockDuration) {
         throw new Error(`scenario.signals[${index}] perf samples end after scenario.clock.duration_ns`);
       }
+      const layout = perfCounterEvents(signal).map(counter => counter.event).join(',');
+      // An overlay uses one packet sequence/perf session. Changing the event
+      // layout mid-session would re-label earlier samples or their followers.
+      if (perfLayout !== undefined && layout !== perfLayout) {
+        throw new Error('perf-sample counter layout must stay constant within the overlay sequence');
+      }
+      perfLayout = layout;
     }
   }
   if (scenario.signals.filter((signal) => signal.type === 'android-system-info').length > 1) {
@@ -1109,13 +1139,26 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
       ));
     } else if (signal.type === 'perf-sample') {
       const {process, thread} = actorForSignal(signal, identities);
+      const counters = perfCounterEvents(signal);
+      if (counters.length) {
+        const nativeEvents = loadTraceType(repoRoot).root.lookupEnum('perfetto.protos.PerfEvents.Counter').values;
+        for (const {event} of counters) {
+          if (!Object.hasOwn(nativeEvents, event) || nativeEvents[event] === 0) {
+            throw new Error(`unsupported native perf counter event: ${event}`);
+          }
+        }
+        dataPackets.push({timestamp, tracePacketDefaults: {perfSampleDefaults: {
+          timebase: {counter: counters[0].event},
+          followers: counters.slice(1).map(counter => ({counter: counter.event})),
+        }}});
+      }
       const iidBase = (index + 1) * 1000;
       const pathIid = iidBase + 1;
       const functionIid = iidBase + 2;
       const mappingIid = iidBase + 3;
       const frameIid = iidBase + 4;
       const callstackIid = iidBase + 5;
-      dataPackets.push({
+      if (signal.callstack !== false) dataPackets.push({
         timestamp,
         internedData: {
           mappingPaths: [{iid: pathIid, str: Buffer.from(nonEmptyString(signal.module_name, 'perf-sample module_name'))}],
@@ -1142,8 +1185,9 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
             pid: process.pid,
             tid: thread.tid,
             cpuMode: 'MODE_USER',
-            timebaseCount: sampleIndex + 1,
-            callstackIid,
+            timebaseCount: counters.length ? counters[0].values[sampleIndex] : sampleIndex + 1,
+            ...(counters.length > 1 ? {followerCounts: counters.slice(1).map(counter => counter.values[sampleIndex])} : {}),
+            ...(signal.callstack !== false ? {callstackIid} : {}),
           },
         });
       }

@@ -461,6 +461,40 @@ test('materializes ANR and perf callstack evidence for conditional SQL branches'
   fs.rmSync(tempDir, {recursive: true, force: true});
 });
 
+test('encodes native PMU timebase/followers independently of callstacks and rejects invalid layouts', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-generator-pmu-'));
+  const outputPath = path.join(tempDir, 'counter-only.pftrace');
+  const scenario = fixtureScenario();
+  const sample = {type: 'perf-sample', at_ns: '150000000', process: 'app', thread: 'main',
+    callstack: false, sample_count: 3, sample_interval_ns: '1000000', cpu: 0,
+    perf_counters: [
+      {event: 'HW_CPU_CYCLES', values: ['100', '1100', '2100']},
+      {event: 'HW_INSTRUCTIONS', values: ['50', '550', '1050']},
+      {event: 'HW_CACHE_REFERENCES', values: ['20', '120', '220']},
+      {event: 'HW_CACHE_MISSES', values: ['1', '5', '9']},
+    ]};
+  scenario.signals.push(sample);
+  const encode = value => encodeScenarioOverlay(repoRoot, value,
+    {anchorNs: '1000000000', usedPids: new Set(), sequenceId: 444445});
+  try {
+    materializeTrace(Buffer.alloc(0), encode(scenario).buffer, outputPath);
+    const output = queryTrace(outputPath, `INCLUDE PERFETTO MODULE linux.perf.counters;
+      SELECT COUNT(*) AS counter_rows, COUNT(callsite_id) AS stacks, COUNT(DISTINCT track_id) AS events
+      FROM linux_perf_sample_with_counters`);
+    assert.match(output, /\n12,0,4\s*$/);
+    const malformed = structuredClone(scenario);
+    malformed.signals.at(-1).perf_counters[0].values.pop();
+    assert.throws(() => encode(malformed), /values must match sample_count/);
+    malformed.signals.at(-1).perf_counters[0] = {event: 'INVENTED_PMU_EVENT', values: ['1', '2', '3']};
+    assert.throws(() => encode(malformed), /unsupported native perf counter/);
+    const changedLayout = structuredClone(scenario);
+    changedLayout.signals.push({...sample, perf_counters: sample.perf_counters.slice(0, 1)});
+    assert.throws(() => encode(changedLayout), /layout must stay constant/);
+  } finally {
+    fs.rmSync(tempDir, {recursive: true, force: true});
+  }
+});
+
 test('places a GPU work period at its trace time when MONOTONIC_RAW trails BOOTTIME', () => {
   // gpu_work_period carries its own MONOTONIC_RAW bounds. A real base trace
   // records that clock behind BOOTTIME by the time the device slept; an

@@ -18,7 +18,7 @@
 #   linux_perf_samples_summary_tree 为空，但这里仍然有数据。
 
 name: linux_perf_counter_hotspots
-version: "1.1"
+version: "1.2"
 type: atomic
 category: kernel
 tier: B
@@ -27,12 +27,12 @@ meta:
   display_name: "Linux Perf Counter Hotspots"
   description: "按采样周期差值汇总 linux.perf 硬件计数器热点，并按进程给出 IPC、cache miss 比例和 MPKI；无 PMU 数据时返回空"
   icon: "speed"
-  tags: [linux, perf, pmu, counters, cache_miss, branch, atomic]
+  tags: [linux, perf, pmu, cpu, hotspot, counters, cache_miss, branch, atomic]
 
 triggers:
   keywords:
-    zh: [PMU, perf counter, cache miss, branch miss, 缓存未命中, 分支预测, IPC, 指令周期]
-    en: [pmu, perf counter, cache miss, branch miss, branch mispredict, ipc, instructions per cycle]
+    zh: [CPU, CPU热点, 热点, PMU, perf counter, cache miss, branch miss, 缓存未命中, 分支预测, IPC, 指令周期]
+    en: [cpu, cpu hotspot, hotspot, pmu, perf counter, cache miss, branch miss, branch mispredict, ipc, instructions per cycle]
   patterns:
     - ".*(PMU|perf|cache miss|branch).*(热点|统计|分析).*"
     - ".*(pmu|perf|cache|branch).*(hotspot|counter|miss).*"
@@ -44,6 +44,10 @@ prerequisites:
     - linux.perf.counters
 
 inputs:
+  - name: upid
+    type: integer
+    required: false
+    description: "目标进程实例 UPID；优先于进程名，仍须通过身份门禁"
   - name: package
     type: string
     required: false
@@ -65,6 +69,9 @@ steps:
   - id: perf_counter_hotspots
     type: atomic
     name: "Perf Counter 热点"
+    process_scope:
+      role: target
+      binding: native_upid
     display:
       level: detail
       layer: list
@@ -103,6 +110,7 @@ steps:
       WITH
       input AS (
         SELECT
+          COALESCE(${__process_scope.upid}, ${upid}) AS target_upid,
           COALESCE(NULLIF('${package|}', ''), NULLIF('${process_name|}', ''), '') AS target_process,
           COALESCE(${start_ts}, 0) AS start_ts
       )
@@ -119,7 +127,10 @@ steps:
       LEFT JOIN track tr ON d.track_id = tr.id
       CROSS JOIN input i
       WHERE d.ts >= i.start_ts
-        AND (i.target_process = '' OR p.name = i.target_process OR p.name GLOB i.target_process || ':*')
+        AND (
+          (i.target_upid IS NOT NULL AND p.upid = i.target_upid)
+          OR (i.target_upid IS NULL AND (i.target_process = '' OR p.name = i.target_process OR p.name GLOB i.target_process || ':*'))
+        )
       GROUP BY counter_name, process_name, thread_name
       ORDER BY total_counter_delta DESC, sample_count DESC
       LIMIT 100
@@ -128,6 +139,9 @@ steps:
   - id: perf_counter_ratios
     type: atomic
     name: "PMU 派生比值（按进程）"
+    process_scope:
+      role: target
+      binding: native_upid
     display:
       level: summary
       layer: overview
@@ -192,6 +206,7 @@ steps:
       WITH
       input AS (
         SELECT
+          COALESCE(${__process_scope.upid}, ${upid}) AS target_upid,
           COALESCE(NULLIF('${package|}', ''), NULLIF('${process_name|}', ''), '') AS target_process,
           COALESCE(${start_ts}, 0) AS start_ts
       ),
@@ -233,7 +248,10 @@ steps:
       FROM ratios
       CROSS JOIN input i
       WHERE COALESCE(cycles, instructions, cache_references, cache_misses) IS NOT NULL
-        AND (i.target_process = '' OR process_name = i.target_process OR process_name GLOB i.target_process || ':*')
+        AND (
+          (i.target_upid IS NOT NULL AND upid = i.target_upid)
+          OR (i.target_upid IS NULL AND (i.target_process = '' OR process_name = i.target_process OR process_name GLOB i.target_process || ':*'))
+        )
       ORDER BY cycles DESC, samples DESC
       LIMIT 50
     save_as: perf_counter_ratios

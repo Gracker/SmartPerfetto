@@ -11268,7 +11268,7 @@
     },
     "linux_perf_counter_hotspots": {
       "source_file": "backend/skills/atomic/linux_perf_counter_hotspots.skill.yaml",
-      "source_sha256": "f714ec887369f5d3ef4358bbb8033f2196ac55752d0aa8afda0bf8304182c912",
+      "source_sha256": "c86639e8f7f1629839d6b73bc1369754c96e74ca1f44c2557f44df90717faf82",
       "type": "atomic",
       "execution": "steps",
       "declared_modules": [
@@ -11284,7 +11284,7 @@
           "id": "perf_counter_hotspots",
           "at": "steps[0].sql",
           "top_level_index": 0,
-          "sha256": "e4d0d6cace855fe82d6c903f1f49415da16859583c36c5899b0552c82a7b67b8",
+          "sha256": "c14ef81dfb89e34098f689f7404f6ba02b61741b4996b228bcfd13874108764f",
           "required_columns": [
             "counter_name",
             "process_name",
@@ -11296,18 +11296,20 @@
           "has_condition": false,
           "read_only": true,
           "placeholders": [
+            "${__process_scope.upid}",
+            "${upid}",
             "${package|}",
             "${process_name|}",
             "${start_ts}"
           ],
-          "process_scope_valid": null,
+          "process_scope_valid": true,
           "forceable": true
         },
         {
           "id": "perf_counter_ratios",
           "at": "steps[1].sql",
           "top_level_index": 1,
-          "sha256": "8885851f980dfcfa6480ab0fcf1a0b787824d5073664656589c1e82b60749f97",
+          "sha256": "c0d0468903c7fcdc720b1244e6cbdb5aa960107f96e1d312f44e47c8e77b1e12",
           "required_columns": [
             "process_name",
             "upid",
@@ -11324,11 +11326,13 @@
           "has_condition": false,
           "read_only": true,
           "placeholders": [
+            "${__process_scope.upid}",
+            "${upid}",
             "${package|}",
             "${process_name|}",
             "${start_ts}"
           ],
-          "process_scope_valid": null,
+          "process_scope_valid": true,
           "forceable": true
         }
       ]

@@ -77,6 +77,8 @@ const ANTHROPIC_VERTEX_API = 'anthropic-vertex' satisfies PiRouteApi & Supported
 const ANTHROPIC_API_HOST = 'api.anthropic.com';
 const CLAUDE_LINEAGE_APIS: readonly string[] = ['anthropic-messages', 'bedrock-converse-stream'];
 const SCENE_THINKING_LEVELS: readonly ModelThinkingLevel[] = ['low', 'medium', 'high'];
+const PI_NATIVE_SDK_IDENTITY = {packageName: '@earendil-works/pi-ai', version: 'unknown',
+  adapterContractVersion: 'pi-native-purpose@1'} as const;
 /** Below this output cap a gateway model's thinking can use the whole allowance. */
 const PI_MIN_THINKING_OUTPUT_TOKENS = 4_096;
 /**
@@ -731,7 +733,7 @@ export async function createPiAgentCoreProviderRuntime(
   env: EnvLike,
   moduleLoader: (specifier: string) => Promise<unknown> = importEsmModule,
 ): Promise<PiAgentCoreProviderRuntime> {
-  const model = asPiModel(await resolvePiModelRecord(config, moduleLoader));
+  const model = withDocumentedOfficialGlmCompat(asPiModel(await resolvePiModelRecord(config, moduleLoader)));
   const api = model.api as SupportedPiApi;
   const providerId = model.provider;
   if (config.credential && (config.apiKey || config.apiKeyEnv)) {
@@ -850,8 +852,7 @@ export async function createPiAgentCoreProviderRuntime(
           : sentModel.api === 'anthropic-messages' || sentModel.api === ANTHROPIC_VERTEX_API ? 'anthropic_messages' : 'unknown';
         const sdkLevel = (options as SimpleStreamOptions | undefined)?.reasoning ?? authoredLevel ?? (adaptiveGateway ? 'low' : undefined);
         const profileInput: ResolveModelExecutionProfileInput = {runtimeKind: 'pi-agent-core', protocol, modelId: sentModel.id,
-          baseUrl: sentModel.baseUrl, sdk: policy?.sdkIdentity ?? {packageName: '@earendil-works/pi-ai',
-            version: 'unknown', adapterContractVersion: 'pi-native-purpose@1'},
+          baseUrl: sentModel.baseUrl, sdk: policy?.sdkIdentity ?? PI_NATIVE_SDK_IDENTITY,
           sdkCapabilities: {surface: protocol === 'unknown' ? 'none' : 'pi_stream',
             thinking: protocol === 'unknown' ? 'unknown' : !sentModel.reasoning ? 'none' : sentModel.api === 'openai-completions' && !knownThinkingFormat
               ? 'unknown' : levels.includes('off') ? 'optional' : 'required',
@@ -938,4 +939,19 @@ function isOfficialGlmModel(model: Model<Api>): boolean {
   } catch {
     return false;
   }
+}
+
+/** Bridge documented server controls to the installed SDK's native serializer, without replacing authored compat. */
+function withDocumentedOfficialGlmCompat(model: Model<Api>): Model<Api> {
+  if (!isOfficialGlmModel(model)) return model;
+  const {server} = resolveModelExecutionProfile({runtimeKind: 'pi-agent-core', protocol: 'chat_completions',
+    modelId: model.id, baseUrl: model.baseUrl, sdk: PI_NATIVE_SDK_IDENTITY,
+    sdkCapabilities: {surface: 'pi_stream', thinking: 'unknown', reasoningRoundtrip: 'unknown', source: 'installed_sdk'},
+    effective: {}});
+  if (server.thinking.status !== 'supported' || server.efforts.status !== 'supported') return model;
+  const compat = (model as Model<'openai-completions'>).compat;
+  return {...model, compat: {...compat,
+    thinkingFormat: compat?.thinkingFormat ?? 'zai',
+    supportsReasoningEffort: compat?.supportsReasoningEffort ?? true,
+  }} as Model<Api>;
 }

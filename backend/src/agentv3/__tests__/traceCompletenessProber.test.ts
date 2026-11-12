@@ -112,6 +112,7 @@ function expectedAllAvailableLegacy(diagnosedAt: number): TraceCompleteness {
       status: 'available' as const,
       primaryTable: capability.primaryTable,
       rowEstimate: 3,
+      ...(capability.readHint ? {reason: capability.readHint.zh} : {}),
     })),
     missingConfig: [],
     notApplicable: [],
@@ -768,8 +769,73 @@ describe('probeTraceCompleteness', () => {
       'network_packets',
       'thermal_throttling',
       'cpu_freq_limits',
+      'doze_state',
+      'perf_counters',
     ]));
     expect(ids.indexOf('cpu_freq_limits')).toBe(ids.indexOf('thermal_throttling') + 1);
+  });
+
+  it('reports Doze samples independently from screen state and unrelated counters', async () => {
+    const result = await probeTraceCompleteness(makeTraceProcessorMock({
+      counter: 3, android_screen_state: 1, 'cap:doze_state': 3,
+    }), 'trace-doze');
+    expect(result.available.find(cap => cap.id === 'doze_state')).toMatchObject({
+      primaryTable: 'counter', rowEstimate: 3,
+    });
+    expect(result.insufficient.find(cap => cap.id === 'device_state')).toMatchObject({rowEstimate: 1});
+
+    const withoutDoze = await probeTraceCompleteness(makeTraceProcessorMock({
+      counter: 3, android_screen_state: 3, 'cap:doze_state': 0,
+    }), 'trace-screen-only');
+    expect(withoutDoze.available.map(cap => cap.id)).not.toContain('doze_state');
+    expect(withoutDoze.missingConfig.find(cap => cap.id === 'doze_state')).toMatchObject({rowEstimate: 0});
+  });
+
+  it('exposes counter-only perf samples without treating an empty callstack tree as missing profiling', async () => {
+    const result = await probeTraceCompleteness(makeTraceProcessorMock({
+      linux_perf_samples_summary_tree: 0, perf_sample: 3, 'raw:cpu_profiling': 3,
+      linux_perf_sample_with_counters: 3,
+    }), 'trace-counter-only');
+    expect(result.available.find(cap => cap.id === 'cpu_profiling')).toMatchObject({
+      rowSource: 'raw_event_fallback', rowEstimate: 3,
+    });
+    expect(result.available.find(cap => cap.id === 'cpu_profiling')?.reason).toContain('perf_sample');
+    expect(result.available.find(cap => cap.id === 'perf_counters')).toMatchObject({
+      primaryTable: 'linux_perf_sample_with_counters', rowEstimate: 3,
+    });
+  });
+
+  it('does not infer PMU counters from callstack samples alone', async () => {
+    const result = await probeTraceCompleteness(makeTraceProcessorMock({
+      linux_perf_samples_summary_tree: 3, perf_sample: 3, linux_perf_sample_with_counters: 0,
+    }), 'trace-callstacks-only');
+    expect(result.available.map(cap => cap.id)).toContain('cpu_profiling');
+    expect(result.available.map(cap => cap.id)).not.toContain('perf_counters');
+    expect(result.missingConfig.find(cap => cap.id === 'perf_counters')).toMatchObject({rowEstimate: 0});
+  });
+
+  it.each([
+    ['zh-CN', '缺调用栈只限制符号热点，不限制计数器', '硬件或软件计数器'],
+    ['en', 'missing callstacks limit symbol hotspots, not counters', 'hardware or software counters'],
+  ])('keeps counter reading semantics visible without promoting sparse data: %s', async (language, callsiteBoundary, eventBoundary) => {
+    jest.replaceProperty(process, 'env', {...process.env, SMARTPERFETTO_OUTPUT_LANGUAGE: language});
+    for (const rowCount of [3, 1, 0]) {
+      const result = await probeTraceCompleteness(makeTraceProcessorMock({
+        linux_perf_sample_with_counters: rowCount,
+      }), `trace-perf-${rowCount}-${language}`);
+      const bucket = rowCount >= 3 ? result.available : rowCount > 0 ? result.insufficient : result.missingConfig;
+      const capability = bucket.find(cap => cap.id === 'perf_counters');
+      expect(capability).toMatchObject({rowEstimate: rowCount, primaryTable: 'linux_perf_sample_with_counters'});
+      if (rowCount === 0) {
+        expect(capability?.reason).not.toContain('counter_value');
+      } else {
+        expect(capability?.reason).toContain('counter_value');
+        expect(capability?.reason).toContain(callsiteBoundary);
+        expect(capability?.reason).toContain(eventBoundary);
+        expect(capability?.reason).toContain('cycles/instructions/cache');
+      }
+      expect(capability).not.toHaveProperty('readHint');
+    }
   });
 
   it('probes thermal and frequency-limit capabilities through typed counter tracks', () => {
@@ -906,7 +972,7 @@ describe('probeTraceCompleteness', () => {
       .find((sql: string) => sql.includes('UNION ALL')) ?? '';
     expect(batchSql).toContain("SELECT 'cap:thermal_throttling' AS tbl, (SELECT COUNT(*) AS cnt FROM (SELECT 1 FROM counter ");
     expect(batchSql).toContain("SELECT 'cap:cpu_freq_limits' AS tbl, (SELECT COUNT(*) AS cnt FROM (SELECT 1 FROM counter ");
-    // 'counter' is the primary table of two capabilities; it must not also be
+    // 'counter' is shared by multiple capabilities; it must not also be
     // probed as a plain table unit.
     expect(batchSql).not.toContain("SELECT 'counter' AS tbl");
   });
@@ -931,7 +997,7 @@ describe('probeTraceCompleteness', () => {
     const fallbackSql = tps.query.mock.calls
       .map((call: unknown[]) => String(call[1]))
       .filter((sql: string) => sql.startsWith("SELECT 'cap:"));
-    expect(fallbackSql).toHaveLength(2);
+    expect(fallbackSql).toHaveLength(CAPABILITY_REGISTRY.filter(cap => cap.probeSql !== undefined).length);
   });
 
   it('leaves every counted capability unprobed when the batch count throws, without per-unit queries', async () => {

@@ -227,6 +227,8 @@ interface CapabilityDef {
     probeSql: string;
     describe: (count: number, language: OutputLanguage) => string;
   };
+  /** Reading semantics of observed data, appended to its reason without changing availability. */
+  readHint?: {zh: string; en: string};
   /** Priority for reporting: CRITICAL capabilities are flagged prominently when missing */
   priority: 'critical' | 'recommended' | 'optional';
 }
@@ -454,6 +456,27 @@ const CAPABILITY_REGISTRY: CapabilityDef[] = [
     displayName: 'CPU Profiling',
     primaryTable: 'linux_perf_samples_summary_tree',
     requiredModules: ['linux.perf.samples'],
+    // A counter-only capture can have samples without any callstacks.
+    rawEventFallback: {
+      table: 'perf_sample',
+      probeSql: boundedProbeCountSql('SELECT 1 FROM perf_sample'),
+      readHint: {
+        zh: 'perf_sample 中有 CPU 采样；调用栈汇总为空不代表没有 linux.perf 数据，硬件计数器由独立的 perf_counters 能力探测',
+        en: 'perf_sample contains CPU samples; an empty callstack summary does not mean linux.perf data is absent; hardware counters are probed separately as perf_counters',
+      },
+    },
+    priority: 'optional',
+  },
+  {
+    id: 'perf_counters',
+    displayName: 'linux.perf 计数器',
+    primaryTable: 'linux_perf_sample_with_counters',
+    requiredModules: ['linux.perf.counters'],
+    readHint: {
+      zh: 'counter_value 与 track_id 独立于 callsite_id；缺调用栈只限制符号热点，不限制计数器。事件可能是硬件或软件计数器，cycles/instructions/cache 事件是否齐全须以实际轨道为准',
+      en: 'counter_value and track_id are independent of callsite_id; missing callstacks limit symbol hotspots, not counters. Events may be hardware or software counters; actual tracks determine whether cycles/instructions/cache events are present',
+    },
+    captureHint: '需要 linux.perf 采样携带计数器；只有调用栈不代表有计数器事件',
     priority: 'optional',
   },
 
@@ -481,6 +504,17 @@ const CAPABILITY_REGISTRY: CapabilityDef[] = [
     displayName: '设备状态',
     primaryTable: 'android_screen_state',
     requiredModules: ['android.screen_state'],
+    priority: 'optional',
+  },
+  {
+    id: 'doze_state',
+    displayName: 'Doze 状态机（DozeDeepState / DozeLightState）',
+    primaryTable: 'counter',
+    probeSql: boundedProbeCountSql(
+      "SELECT 1 FROM counter JOIN counter_track ON counter.track_id = counter_track.id " +
+      "WHERE counter_track.name IN ('DozeDeepState', 'DozeLightState')",
+    ),
+    captureHint: '需要 power atrace 的 DozeDeepState / DozeLightState 计数器轨道；屏幕/AoD 状态不等于 Doze 状态',
     priority: 'optional',
   },
   {
@@ -1220,6 +1254,7 @@ async function probeTimelessTraceCompleteness(
 
     // Data existence
     const rowCount = dataPresence.get(capabilityProbeKey(cap));
+    const readHint = cap.readHint && localize(probeLanguage(), cap.readHint.zh, cap.readHint.en);
     const fallback = cap.rawEventFallback;
     const rawRowCount = fallback ? dataPresence.get(rawFallbackProbeKey(cap)) : undefined;
     if (rowCount === 0 && fallback && rawRowCount) {
@@ -1261,18 +1296,20 @@ async function probeTimelessTraceCompleteness(
         status: 'insufficient_or_scene_absent',
         primaryTable: cap.primaryTable,
         rowEstimate: rowCount,
-        reason: `仅 ${rowCount} 行数据 — trace 时长可能不够或场景未充分发生`,
+        reason: [`仅 ${rowCount} 行数据 — trace 时长可能不够或场景未充分发生`, readHint].filter(Boolean).join('；'),
       });
     } else {
       const detail = cap.availableDetail;
       const detailCount = detail ? dataPresence.get(availableDetailProbeKey(cap)) : undefined;
+      const reason = [detail && detailCount ? detail.describe(detailCount, probeLanguage()) : undefined, readHint]
+        .filter(Boolean).join('；');
       available.push({
         id: cap.id,
         displayName: cap.displayName,
         status: 'available',
         primaryTable: cap.primaryTable,
         rowEstimate: rowCount,
-        ...(detail && detailCount ? {reason: detail.describe(detailCount, probeLanguage())} : {}),
+        ...(reason ? {reason} : {}),
       });
     }
   }
