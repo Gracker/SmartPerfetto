@@ -12,7 +12,7 @@ Evidence tiers: R1=6, R2=0, R3=31.
 
 Pinned Perfetto SQL source: `1e9c61e9844affd7dccd3d42d9ea9f3a3d10cf6d`. The generated coverage ledger contains 254 Skill SQL source contracts and 2 canonical portable SQL source checks with exact source hashes and upstream module paths.
 
-Skill execution quality: 290 source-column-backed semantic, 33 execution-only composition, 1 expected-empty negative, 11 explicit deferred prerequisite, 32 definition-only.
+Skill execution quality: 296 source-column-backed semantic, 33 execution-only composition, 1 expected-empty negative, 11 explicit deferred prerequisite, 32 definition-only.
 
 Exact-scope unit bindings (each `exact_sql` and each UPID-bound target step): 35 semantic, 127 execution-only.
 

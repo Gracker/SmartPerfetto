@@ -29,6 +29,28 @@ import {buildNativeOutputCompletionPrompt} from '../../agentRuntime/runtimeConcl
 import {buildCandidateProtocolDiagnostic, inspectCandidateProtocol} from '../../services/canonicalAnalysisResult';
 
 describe('typed prompt with real strategy assets', () => {
+  it.each(['zh-CN', 'en'] as const)('reaches camera observations through the real default media detail in %s', outputLanguage => {
+    const registry = buildStrategyRegistrySnapshotFromDefinitions({
+      definitions: getRegisteredScenes(), overlayGeneration: 'camera-media-entry-test',
+    });
+    const parts = buildSystemPromptParts({
+      query: '相机预览卡顿，分析原因', outputLanguage, strategyRegistry: registry,
+      turnIntent: {schemaVersion: 1, status: 'resolved', source: 'semantic', taskKind: 'investigation',
+        sceneId: 'media', scope: 'scene_wide', recommendedComplexity: 'full', deliverable: 'report',
+        evidenceAccess: 'read_new', registryFingerprint: registry.registryFingerprint},
+    });
+    const detail = parts.segments.find(segment => segment.label === 'scene_default_detail')!;
+    expect(detail).toBeDefined();
+    expect(parts.droppedLabels).not.toContain('scene_default_detail');
+    const camera = detail.content.indexOf('invoke_skill("camera_trace_evidence"');
+    const codec = detail.content.indexOf('invoke_skill("media_codec_activity"');
+    expect(camera).toBeGreaterThanOrEqual(0);
+    expect(codec).toBeGreaterThan(camera);
+    expect(detail.content).toContain('camera_display_cadence');
+    expect(detail.content).toContain('camera_buffer_delivery');
+    expect(estimatePromptTokens(parts.fullPrompt)).toBeLessThanOrEqual(MAX_PROMPT_TOKENS);
+  });
+
   it.each((['startup', 'scrolling'] as const).flatMap(sceneType =>
     (['zh-CN', 'en'] as const).map(outputLanguage => ({sceneType, outputLanguage}))))
   ('ignores retired declaration and final-submission fields for real $sceneType $outputLanguage prompts', ({sceneType, outputLanguage}) => {

@@ -1373,24 +1373,37 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
       if (!process) throw new Error(`signal references unknown process ${signal.process}`);
       const end = absoluteTimestamp(timestamp, signal.duration_ns, `scenario.signals[${index}].duration_ns`);
       const cookie = nonNegativeInteger(signal.cookie, 'frame-timeline cookie');
+      const frameKind = signal.frame_kind ?? 'surface';
+      if (!['surface', 'display'].includes(frameKind)) throw new Error('frame-timeline frame_kind must be surface or display');
+      if (signal.present_type !== undefined && ![1, 2, 3, 4, 5].includes(signal.present_type)) {
+        throw new Error('frame-timeline present_type must be a PresentType value from 1 to 5');
+      }
+      if (signal.on_time_finish !== undefined && typeof signal.on_time_finish !== 'boolean') {
+        throw new Error('frame-timeline on_time_finish must be a boolean');
+      }
+      // Native FrameTimelineEvent has distinct ActualDisplayFrameStart and
+      // ActualSurfaceFrameStart messages. Keep the existing surface defaults.
+      const frame = {
+        cookie,
+        token: nonNegativeInteger(signal.token, 'frame-timeline token'),
+        pid: process.pid,
+        presentType: signal.present_type ?? (signal.jank_type ? 2 : 1),
+        onTimeFinish: signal.on_time_finish ?? !signal.jank_type,
+        gpuComposition: false,
+        jankType: nonNegativeInteger(signal.jank_type ?? 1, 'frame-timeline jank_type'),
+        predictionType: 1,
+        jankSeverityType: signal.jank_type ? 3 : 1,
+      };
+      if (frameKind === 'surface') {
+        // -1 marks an OEM-interpolated frame with no display frame of its own.
+        frame.displayFrameToken = signal.display_frame_token === -1
+          ? -1 : nonNegativeInteger(signal.display_frame_token, 'frame-timeline display_frame_token');
+        frame.layerName = nonEmptyString(signal.layer_name, 'frame-timeline layer_name');
+      }
       dataPackets.push({
         timestamp,
         [frameTimelineFieldName]: {
-          actualSurfaceFrameStart: {
-            cookie,
-            token: nonNegativeInteger(signal.token, 'frame-timeline token'),
-            // -1: a frame the device inserted (OEM frame interpolation), with no display frame of its own.
-            displayFrameToken: signal.display_frame_token === -1
-              ? -1 : nonNegativeInteger(signal.display_frame_token, 'frame-timeline display_frame_token'),
-            pid: process.pid,
-            layerName: nonEmptyString(signal.layer_name, 'frame-timeline layer_name'),
-            presentType: signal.jank_type ? 2 : 1,
-            onTimeFinish: !signal.jank_type,
-            gpuComposition: false,
-            jankType: nonNegativeInteger(signal.jank_type ?? 1, 'frame-timeline jank_type'),
-            predictionType: 1,
-            jankSeverityType: signal.jank_type ? 3 : 1,
-          },
+          [frameKind === 'display' ? 'actualDisplayFrameStart' : 'actualSurfaceFrameStart']: frame,
         },
       });
       dataPackets.push({timestamp: end, [frameTimelineFieldName]: {frameEnd: {cookie}}});

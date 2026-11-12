@@ -1827,6 +1827,41 @@ describe('createClaudeMcpServer', () => {
       expect(server.mockTpService.query).not.toHaveBeenCalled();
     });
 
+    it.each([false, true])('discovers the real camera producer in the media SDK catalog (lightweight=%s)', async lightweight => {
+      const {SkillRegistry} = jest.requireActual<typeof import('../../services/skillEngine/skillLoader')>(
+        '../../services/skillEngine/skillLoader');
+      const realRegistry = new SkillRegistry();
+      await realRegistry.loadSkills(path.resolve(__dirname, '../../../skills'));
+      const realAdapter = jest.requireActual<typeof import('../../services/skillEngine/skillAnalysisAdapter')>(
+        '../../services/skillEngine/skillAnalysisAdapter');
+      (createSkillAnalysisAdapter as jest.MockedFunction<typeof createSkillAnalysisAdapter>)
+        .mockImplementationOnce((processor, eventHandler) => realAdapter.createSkillAnalysisAdapter(processor,
+          eventHandler, {registry: realRegistry, registryFingerprint: 'real-camera-discovery'}));
+      (getWorkspaceSkillRegistry as jest.MockedFunction<typeof getWorkspaceSkillRegistry>)
+        .mockResolvedValueOnce({registry: realRegistry, registryFingerprint: 'real-camera-discovery', enabledPacks: [],
+          getSkillOrigin: realRegistry.getSkillOrigin.bind(realRegistry)} as unknown as
+          Awaited<ReturnType<typeof getWorkspaceSkillRegistry>>);
+      const server = createTestServer({lightweight, userQuery: '相机预览卡顿，分析原因',
+        knowledgeScope: {tenantId: 'camera-discovery', workspaceId: 'real-built-ins'}});
+      const definition = server.toolDefinitions.find(tool => tool.name === 'list_skills')!;
+      const native = createPiAgentCoreToolFromSharedSpec(definition.shared,
+        {allowedToolNames: new Set(['list_skills'])});
+      const response = await native.execute('real-media-catalog', {category: 'media'}, undefined);
+      const outer = JSON.parse((response.content[0] as {text: string}).text);
+      const catalog = JSON.parse(outer.content[0].text);
+      expect(outer.truncated ?? false).toBe(false);
+      const described = lightweight ? catalog.skills : catalog;
+      const camera = described.find((item: {id: string}) => item.id === 'camera_trace_evidence');
+      expect(camera).toBeDefined();
+      expect(camera.description).toBeTruthy();
+      // Context can accompany an exact-scoped task; it is not target-filtered evidence.
+      expect(camera.exactProcessScope).toEqual({supported: true, partial: true,
+        limitations: [expect.stringContaining('not filtered to a target UPID')]});
+      expect(described.some((item: {id: string}) => item.id === 'media_codec_activity')).toBe(true);
+      if (lightweight) expect(camera.matchedByQuery).toBe(true);
+      expect(server.mockTpService.query).not.toHaveBeenCalled();
+    });
+
     it('audits first-wave safe reads as bounded metadata-only handlers', async () => {
       const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
       const runManifestAttributionSink = createNoopAttributionSink(runtimePerformanceRecorder);

@@ -7623,6 +7623,112 @@
         ],
         "steps": [
           {
+            "id": "camera_frame_population",
+            "sha256": "9753c13fdc9c4773216ab5de4906c7ca0f6d33123b2a7e3ed904546d18db0937",
+            "required_columns": [
+              "frame_kind",
+              "upid",
+              "process_name",
+              "layer_name",
+              "frame_count",
+              "dropped_frames",
+              "incomplete_frames",
+              "window_excluded_endpoints",
+              "prediction_error_frames",
+              "scope",
+              "limitation"
+            ]
+          },
+          {
+            "id": "camera_callback_cadence",
+            "sha256": "bf030a33219e0d7f520359298581a7d8aab332e81e4d2cf4a03c60ae05a7c3f1",
+            "required_columns": [
+              "source_upid",
+              "source_process",
+              "source_surface",
+              "callback_count",
+              "callback_threads",
+              "observed_intervals",
+              "avg_interval_ns",
+              "p95_interval_ns",
+              "max_interval_ns",
+              "observed_callback_fps",
+              "configured_target_status",
+              "scope",
+              "limitation"
+            ]
+          },
+          {
+            "id": "camera_display_cadence",
+            "sha256": "c65c54ef4262a17af7edf234abe4e5866d4d0faf8c6ac8490c705918d6d9c1ff",
+            "required_columns": [
+              "upid",
+              "process_name",
+              "presented_display_frames",
+              "observed_intervals",
+              "avg_present_interval_ns",
+              "p50_present_interval_ns",
+              "p95_present_interval_ns",
+              "max_present_interval_ns",
+              "scope",
+              "source",
+              "limitation"
+            ]
+          },
+          {
+            "id": "camera_surface_cadence",
+            "sha256": "f7ba7caa7376dd90462613ce5ae264701b9e8befd2e9ae39408422eba0405b15",
+            "required_columns": [
+              "sf_upid",
+              "bindable_surface",
+              "observed_buffer_keys",
+              "presented_buffers",
+              "unavailable_bindings",
+              "observed_intervals",
+              "p95_present_interval_ns",
+              "max_present_interval_ns",
+              "arrival_binding_status",
+              "scope",
+              "limitation"
+            ]
+          },
+          {
+            "id": "camera_buffer_delivery",
+            "sha256": "934eed81f7e8962817d0282d16138542bdedc0559a3b6e18e21c913d71b65caa",
+            "required_columns": [
+              "sf_upid",
+              "bindable_surface",
+              "buffer_number",
+              "latch_id",
+              "commit_id",
+              "display_token",
+              "display_id",
+              "latch_ts",
+              "display_present_ts",
+              "binding_status",
+              "arrival_binding_status",
+              "limitation"
+            ]
+          },
+          {
+            "id": "camera_binder_execution",
+            "sha256": "8801ac09393f8e3483f32967aa6a67b6fa9aefdb238c329ff31ea3c0ab0fd9e1",
+            "required_columns": [
+              "client_upid",
+              "server_upid",
+              "client_process",
+              "server_process",
+              "transactions",
+              "avg_client_wall_ns",
+              "avg_server_wall_ns",
+              "server_state_observed_txns",
+              "avg_server_running_ns",
+              "avg_server_state_observed_ns",
+              "headroom_status",
+              "limitation"
+            ]
+          },
+          {
             "id": "evidence_coverage",
             "sha256": "d3fff49c18b116de3fcc33a877cf9fbfe33736a8a295eea83bd3c7b85d483ccb",
             "required_columns": [

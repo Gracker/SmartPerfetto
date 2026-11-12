@@ -3,16 +3,16 @@
 # This file is part of SmartPerfetto. See LICENSE for details.
 
 name: camera_trace_evidence
-version: "1.0"
+version: "1.1"
 type: composite
 category: rendering
 tier: B
 
 meta:
   display_name: "Camera Trace 证据"
-  description: "枚举 Camera 相关 identity、slice、Binder、系统上下文、DMA-BUF/legacy ION 与可选 Pixel stage 证据"
+  description: "Camera/preview 的独立 callback 节奏、SF layer/DisplayFrame 呈现端关联、Binder wall/Running 与内存证据；不测 app arrival→present 时延"
   icon: "photo_camera"
-  tags: [camera, rendering, evidence, binder, dmabuf, ion, pixel]
+  tags: [camera, media, preview, rendering, frame_cadence, evidence, binder, dmabuf, ion, pixel]
 
 triggers:
   keywords:
@@ -48,8 +48,379 @@ inputs:
     description: "每个明细步骤最大返回行数，限制为 1-100"
 
 steps:
+  - id: camera_frame_population
+    type: atomic
+    process_scope:
+      role: global_context
+      limitations:
+        - "Trace-wide camera/media context grouped by observed identities; not filtered to a target UPID."
+    name: "FrameTimeline 人口（DisplayFrame / SurfaceFrame 分开）"
+    display:
+      layer: overview
+      level: summary
+      title: "FrameTimeline 人口（DisplayFrame / SurfaceFrame 分开）"
+      columns:
+        - {name: frame_kind, label: "帧类型", type: string}
+        - {name: upid, label: "UPID", type: number}
+        - {name: process_name, label: "进程", type: string}
+        - {name: layer_name, label: "Surface layer（DisplayFrame 为空）", type: string}
+        - {name: frame_count, label: "原始条目数", type: number}
+        - {name: dropped_frames, label: "Dropped 条目数", type: number}
+        - {name: incomplete_frames, label: "未完成条目数", type: number}
+        - {name: window_excluded_endpoints, label: "完成但呈现端在窗外的条目数", type: number}
+        - {name: prediction_error_frames, label: "Prediction Error 条目数", type: number}
+        - {name: scope, label: "范围", type: string}
+        - {name: limitation, label: "边界", type: string}
+    sql_fragments: [fragments/camera_frame_observations.sql]
+    sql: |
+      WITH RECURSIVE population AS (
+       SELECT frame_kind, upid, process_name, layer_name, COUNT(*) AS frame_count,
+         SUM(CASE WHEN present_type = 'Dropped Frame' THEN 1 ELSE 0 END) AS dropped_frames,
+         SUM(CASE WHEN dur < 0 OR dur IS NULL THEN 1 ELSE 0 END) AS incomplete_frames,
+         SUM(CASE WHEN completed_display_present_ts IS NOT NULL AND display_present_ts IS NULL THEN 1 ELSE 0 END) AS window_excluded_endpoints,
+         SUM(CASE WHEN jank_type GLOB '*Prediction Error*' THEN 1 ELSE 0 END) AS prediction_error_frames
+       FROM camera_frame_rows, camera_input i WHERE ts >= i.start_ts AND ts < i.end_ts
+       GROUP BY frame_kind, upid, layer_name
+      )
+      SELECT *, 'frame_kind_process_layer_population' AS scope,
+       'Population counts frame starts in [start_ts,end_ts). DisplayFrame is SF context; SurfaceFrame is app completion. Prediction Error is not Dropped. Completed endpoints outside the window are counted separately and excluded from cadence/latency. No rows means no observed population.' AS limitation,
+       COUNT(*) OVER () AS total_groups
+      FROM population ORDER BY frame_kind, upid, layer_name LIMIT (SELECT max_rows FROM camera_input)
+    save_as: camera_frame_population
+    synthesize:
+      role: overview
+      fields:
+        - key: frame_kind
+          label: "帧类型"
+        - key: upid
+          label: "UPID"
+        - key: process_name
+          label: "进程"
+        - key: layer_name
+          label: "Surface layer（DisplayFrame 为空）"
+        - key: frame_count
+          label: "原始条目数"
+        - key: dropped_frames
+          label: "Dropped 条目数"
+        - key: incomplete_frames
+          label: "未完成条目数"
+        - key: window_excluded_endpoints
+          label: "完成但呈现端在窗外的条目数"
+        - key: prediction_error_frames
+          label: "Prediction Error 条目数"
+
+  - id: camera_callback_cadence
+    type: atomic
+    process_scope:
+      role: global_context
+      limitations:
+        - "Trace-wide camera/media context grouped by observed identities; not filtered to a target UPID."
+    name: "App buffer callback 观测节奏（跨线程合并）"
+    display:
+      layer: overview
+      level: summary
+      title: "App buffer callback 观测节奏（跨线程合并）"
+      columns:
+        - {name: source_upid, label: "观测进程 UPID", type: number}
+        - {name: source_process, label: "观测进程", type: string}
+        - {name: source_surface, label: "原始 surface 标识", type: string}
+        - {name: callback_count, label: "Callback 数", type: number}
+        - {name: callback_threads, label: "Callback 线程数", type: number}
+        - {name: observed_intervals, label: "观测间隔数", type: number}
+        - {name: avg_interval_ns, label: "平均到达间隔", type: duration, unit: ns, format: duration_ms}
+        - {name: p95_interval_ns, label: "P95到达间隔", type: duration, unit: ns, format: duration_ms}
+        - {name: max_interval_ns, label: "最大到达间隔", type: duration, unit: ns, format: duration_ms}
+        - {name: observed_callback_fps, label: "观测到达 FPS", type: number}
+        - {name: configured_target_status, label: "配置目标状态", type: string}
+        - {name: scope, label: "范围", type: string}
+        - {name: limitation, label: "边界", type: string}
+    sql_fragments: [fragments/camera_frame_observations.sql]
+    sql: |
+      WITH RECURSIVE source_stats AS (
+       SELECT source_upid, source_process, source_surface, COUNT(*) AS callback_count,
+         COUNT(DISTINCT utid) AS callback_threads, COUNT(callback_interval_ns) AS observed_intervals,
+         AVG(callback_interval_ns) AS avg_interval_ns, PERCENTILE(callback_interval_ns, 95) AS p95_interval_ns,
+         MAX(callback_interval_ns) AS max_interval_ns,
+         (COUNT(*)-1)*1e9/NULLIF(MAX(arrival_ts)-MIN(arrival_ts),0) AS observed_callback_fps
+       FROM camera_callback_intervals GROUP BY source_upid, source_surface
+      )
+      SELECT *, 'not_measured' AS configured_target_status, 'process_surface_callback' AS scope,
+       'Callback arrival is observed app buffer delivery, not sensor completion or configured FPS. Processes and surfaces remain separate; threads of the same source are merged.' AS limitation,
+       COUNT(*) OVER () AS total_groups
+      FROM source_stats ORDER BY callback_count DESC, source_upid, source_surface LIMIT (SELECT max_rows FROM camera_input)
+    save_as: camera_callback_cadence
+    synthesize:
+      role: overview
+      fields:
+        - key: source_upid
+          label: "观测进程 UPID"
+        - key: source_process
+          label: "观测进程"
+        - key: source_surface
+          label: "原始 surface 标识"
+        - key: callback_count
+          label: "Callback 数"
+        - key: callback_threads
+          label: "Callback 线程数"
+        - key: observed_intervals
+          label: "观测间隔数"
+        - key: avg_interval_ns
+          label: "平均到达间隔"
+        - key: p95_interval_ns
+          label: "P95到达间隔"
+
+  - id: camera_display_cadence
+    type: atomic
+    process_scope:
+      role: global_context
+      limitations:
+        - "Trace-wide camera/media context grouped by observed identities; not filtered to a target UPID."
+    name: "SF DisplayFrame 呈现端间隔（SF 上下文）"
+    display:
+      layer: overview
+      level: summary
+      title: "SF DisplayFrame 呈现端间隔（SF 上下文）"
+      columns:
+        - {name: upid, label: "SF UPID", type: number}
+        - {name: process_name, label: "SF 进程", type: string}
+        - {name: presented_display_frames, label: "完成呈现的 DisplayFrame 数", type: number}
+        - {name: observed_intervals, label: "呈现端间隔数", type: number}
+        - {name: avg_present_interval_ns, label: "平均呈现端间隔", type: duration, unit: ns, format: duration_ms}
+        - {name: p50_present_interval_ns, label: "P50呈现端间隔", type: duration, unit: ns, format: duration_ms}
+        - {name: p95_present_interval_ns, label: "P95呈现端间隔", type: duration, unit: ns, format: duration_ms}
+        - {name: max_present_interval_ns, label: "最大呈现端间隔", type: duration, unit: ns, format: duration_ms}
+        - {name: scope, label: "范围", type: string}
+        - {name: source, label: "来源", type: string}
+        - {name: limitation, label: "边界", type: string}
+    sql_fragments: [fragments/camera_frame_observations.sql]
+    sql: |
+      WITH RECURSIVE display_stats AS (
+       SELECT upid, process_name, COUNT(*) AS presented_display_frames, COUNT(display_interval_ns) AS observed_intervals,
+         AVG(display_interval_ns) AS avg_present_interval_ns, PERCENTILE(display_interval_ns,50) AS p50_present_interval_ns,
+         PERCENTILE(display_interval_ns,95) AS p95_present_interval_ns, MAX(display_interval_ns) AS max_present_interval_ns
+       FROM camera_display_intervals GROUP BY upid
+      )
+      SELECT *, 'sf_process_context' AS scope, 'actual_frame_timeline_slice:completed_DisplayFrame.ts+dur' AS source,
+       'Only completed endpoints in [start_ts,end_ts) contribute, including work started before start_ts; intervals require two retained endpoints. SF work start is not presentation. These intervals cover the SF process, not one camera surface or a measured panel clock; neither phase-lock failure nor a mechanism follows from their distribution.' AS limitation,
+       COUNT(*) OVER () AS total_groups
+      FROM display_stats ORDER BY upid LIMIT (SELECT max_rows FROM camera_input)
+    save_as: camera_display_cadence
+    synthesize:
+      role: overview
+      fields:
+        - key: upid
+          label: "SF UPID"
+        - key: process_name
+          label: "SF 进程"
+        - key: presented_display_frames
+          label: "完成呈现的 DisplayFrame 数"
+        - key: observed_intervals
+          label: "呈现端间隔数"
+        - key: avg_present_interval_ns
+          label: "平均呈现端间隔"
+        - key: p50_present_interval_ns
+          label: "P50呈现端间隔"
+        - key: p95_present_interval_ns
+          label: "P95呈现端间隔"
+        - key: max_present_interval_ns
+          label: "最大呈现端间隔"
+
+  - id: camera_surface_cadence
+    type: atomic
+    process_scope:
+      role: global_context
+      limitations:
+        - "Trace-wide camera/media context grouped by observed identities; not filtered to a target UPID."
+    name: "同 surface marker 的呈现节奏与关联覆盖"
+    display:
+      layer: overview
+      level: summary
+      title: "同 surface marker 的呈现节奏与关联覆盖"
+      columns:
+        - {name: sf_upid, label: "SF UPID", type: number}
+        - {name: bindable_surface, label: "Surface marker", type: string}
+        - {name: observed_buffer_keys, label: "观测 buffer 键数", type: number}
+        - {name: presented_buffers, label: "关联到呈现端的 buffer 数", type: number}
+        - {name: unavailable_bindings, label: "缺失或歧义关联数", type: number}
+        - {name: observed_intervals, label: "同 surface 呈现间隔数", type: number}
+        - {name: p95_present_interval_ns, label: "P95同 surface 呈现间隔", type: duration, unit: ns, format: duration_ms}
+        - {name: max_present_interval_ns, label: "最大同 surface 呈现间隔", type: duration, unit: ns, format: duration_ms}
+        - {name: arrival_binding_status, label: "App 到达关联状态", type: string}
+        - {name: scope, label: "范围", type: string}
+        - {name: limitation, label: "边界", type: string}
+    sql_fragments: [fragments/camera_frame_observations.sql]
+    sql: |
+      WITH RECURSIVE surface_stats AS (
+       SELECT l.sf_upid, l.bindable_surface, COUNT(*) AS observed_buffer_keys,
+         COUNT(s.display_id) AS presented_buffers,
+         SUM(CASE WHEN l.binding_status!='sf_commit_display_bound' THEN 1 ELSE 0 END) AS unavailable_bindings,
+         COUNT(s.surface_present_interval_ns) AS observed_intervals,
+         PERCENTILE(s.surface_present_interval_ns,95) AS p95_present_interval_ns,
+         MAX(s.surface_present_interval_ns) AS max_present_interval_ns
+       FROM camera_buffer_links l LEFT JOIN camera_surface_presents s ON s.latch_id=l.latch_id
+       GROUP BY l.sf_upid,l.bindable_surface
+      )
+      SELECT *, 'not_measured' AS arrival_binding_status, 'surface_marker_commit_display_token' AS scope,
+       'Surface cadence uses unique full-instance SF latch/commit/DisplayFrame matches inside [start_ts,end_ts). BLAST queue IDs and SF layer IDs are different domains: no app arrival association or arrival-to-present latency is measured. Missing, ambiguous, incomplete and edge-crossing SF samples remain unavailable.' AS limitation,
+       COUNT(*) OVER () AS total_groups
+      FROM surface_stats ORDER BY sf_upid,bindable_surface LIMIT (SELECT max_rows FROM camera_input)
+    save_as: camera_surface_cadence
+    synthesize:
+      role: overview
+      fields:
+        - key: sf_upid
+          label: "SF UPID"
+        - key: bindable_surface
+          label: "Surface marker"
+        - key: observed_buffer_keys
+          label: "观测 buffer 键数"
+        - key: presented_buffers
+          label: "关联到呈现端的 buffer 数"
+        - key: unavailable_bindings
+          label: "缺失或歧义关联数"
+        - key: observed_intervals
+          label: "同 surface 呈现间隔数"
+        - key: p95_present_interval_ns
+          label: "P95同 surface 呈现间隔"
+        - key: arrival_binding_status
+          label: "App 到达关联状态"
+
+  - id: camera_buffer_delivery
+    type: atomic
+    process_scope:
+      role: global_context
+      limitations:
+        - "Trace-wide camera/media context grouped by observed identities; not filtered to a target UPID."
+    name: "SF buffer latch → commit → DisplayFrame 明细"
+    display:
+      layer: list
+      level: detail
+      title: "SF buffer latch → commit → DisplayFrame 明细"
+      columns:
+        - {name: sf_upid, label: "SF UPID", type: number}
+        - {name: bindable_surface, label: "完整 SF layer marker", type: string}
+        - {name: buffer_number, label: "SF Buffer 编号", type: number}
+        - {name: latch_id, label: "Latch slice ID", type: number}
+        - {name: commit_id, label: "Commit slice ID", type: number}
+        - {name: display_token, label: "Display token", type: number}
+        - {name: display_id, label: "DisplayFrame slice ID", type: number}
+        - {name: latch_ts, label: "Latch", type: timestamp, unit: ns, clickAction: navigate_timeline}
+        - {name: display_present_ts, label: "DisplayFrame 呈现端", type: timestamp, unit: ns, clickAction: navigate_timeline}
+        - {name: binding_status, label: "SF 关联状态", type: string}
+        - {name: arrival_binding_status, label: "App 到达关联状态", type: string}
+        - {name: limitation, label: "边界", type: string}
+    sql_fragments: [fragments/camera_frame_observations.sql]
+    sql: |
+      WITH RECURSIVE bound_rows AS (
+       SELECT sf_upid, bindable_surface, buffer_number, latch_id, commit_id, display_token,
+         display_id, latch_ts, display_present_ts, binding_status
+       FROM camera_buffer_links WHERE binding_status='sf_commit_display_bound'
+      )
+      SELECT *, 'not_measured' AS arrival_binding_status,
+       'SF-only full-instance layer/buffer + native commit parentage/display token inside [start_ts,end_ts). No association to app callbacks or native Camera SurfaceFrames is established; no arrival-to-present latency is measured. The producer endpoint is not an optical measurement or a mechanism.' AS limitation,
+       COUNT(*) OVER () AS total_eligible_rows
+      FROM bound_rows ORDER BY latch_ts LIMIT (SELECT max_rows FROM camera_input)
+    save_as: camera_buffer_delivery
+    synthesize:
+      role: list
+      fields:
+        - key: sf_upid
+          label: "SF UPID"
+        - key: bindable_surface
+          label: "完整 SF layer marker"
+        - key: buffer_number
+          label: "SF Buffer 编号"
+        - key: latch_id
+          label: "Latch slice ID"
+        - key: commit_id
+          label: "Commit slice ID"
+        - key: display_token
+          label: "Display token"
+        - key: display_present_ts
+          label: "DisplayFrame 呈现端"
+        - key: arrival_binding_status
+          label: "App 到达关联状态"
+
+  - id: camera_binder_execution
+    type: atomic
+    process_scope:
+      role: global_context
+      limitations:
+        - "Trace-wide camera/media context grouped by observed identities; not filtered to a target UPID."
+    name: "Camera Binder wall / 线程 Running（不测余量）"
+    display:
+      layer: overview
+      level: summary
+      title: "Camera Binder wall / 线程 Running（不测余量）"
+      columns:
+        - {name: client_upid, label: "Client UPID", type: number}
+        - {name: server_upid, label: "Server UPID", type: number}
+        - {name: client_process, label: "Client 进程", type: string}
+        - {name: server_process, label: "Server 进程", type: string}
+        - {name: transactions, label: "完整同步事务数", type: number}
+        - {name: avg_client_wall_ns, label: "Client 平均 wall", type: duration, unit: ns, format: duration_ms}
+        - {name: avg_server_wall_ns, label: "Server 平均 wall", type: duration, unit: ns, format: duration_ms}
+        - {name: server_state_observed_txns, label: "有 server 线程状态的事务数", type: number}
+        - {name: avg_server_running_ns, label: "对应 server 线程平均 Running", type: duration, unit: ns, format: duration_ms}
+        - {name: avg_server_state_observed_ns, label: "对应 server 线程平均状态覆盖", type: duration, unit: ns, format: duration_ms}
+        - {name: headroom_status, label: "余量测量状态", type: string}
+        - {name: limitation, label: "边界", type: string}
+    sql: |
+      WITH input AS (
+       SELECT MIN(COALESCE(${start_ts},trace_start()),COALESCE(${end_ts},trace_end())) AS start_ts,
+         MAX(COALESCE(${start_ts},trace_start()),COALESCE(${end_ts},trace_end())) AS end_ts,
+         MIN(MAX(COALESCE(${max_rows|20},20),1),100) AS max_rows
+      ), states AS (
+       SELECT binder_txn_id,binder_reply_id,
+         SUM(CASE WHEN thread_state_type='binder_reply' THEN 1 ELSE 0 END) AS server_state_rows,
+         SUM(CASE WHEN thread_state_type='binder_reply' AND thread_state='Running' THEN thread_state_dur ELSE 0 END) AS server_running_ns,
+         SUM(CASE WHEN thread_state_type='binder_reply' THEN thread_state_dur ELSE 0 END) AS server_state_ns
+       FROM android_sync_binder_thread_state_by_txn GROUP BY binder_txn_id,binder_reply_id
+      ), txns AS (
+       SELECT b.*, CASE WHEN s.server_state_rows>0 THEN s.server_running_ns END AS server_running_ns,
+         CASE WHEN s.server_state_rows>0 THEN s.server_state_ns END AS server_state_ns
+       FROM android_binder_txns b LEFT JOIN states s USING (binder_txn_id,binder_reply_id),input i
+       WHERE b.is_sync=1 AND b.client_dur>=0 AND b.server_dur>=0
+         AND b.client_ts>=i.start_ts AND b.client_ts+b.client_dur<=i.end_ts
+         AND (lower(COALESCE(b.client_process,'')) GLOB '*camera*' OR lower(COALESCE(b.server_process,'')) GLOB '*camera*'
+           OR lower(COALESCE(b.client_process,'')) GLOB '*camx*' OR lower(COALESCE(b.server_process,'')) GLOB '*camx*'
+           OR lower(COALESCE(b.client_process,'')) GLOB '*mtkcam*' OR lower(COALESCE(b.server_process,'')) GLOB '*mtkcam*')
+      )
+      SELECT client_upid,server_upid,client_process,server_process,COUNT(*) AS transactions,
+       AVG(client_dur) AS avg_client_wall_ns,AVG(server_dur) AS avg_server_wall_ns,
+       COUNT(server_running_ns) AS server_state_observed_txns,
+       AVG(server_running_ns) AS avg_server_running_ns,AVG(server_state_ns) AS avg_server_state_observed_ns,
+       'not_measured' AS headroom_status,
+       'Complete transactions starting and ending in the window. Wall includes waits; Running covers only the bound server thread. Neither measures sensor budget, pipeline depth, in-flight capacity or headroom. No state rows means unknown Running, not zero.' AS limitation,
+       COUNT(*) OVER () AS total_groups
+      FROM txns GROUP BY client_upid,server_upid ORDER BY transactions DESC LIMIT (SELECT max_rows FROM input)
+    save_as: camera_binder_execution
+    synthesize:
+      role: overview
+      fields:
+        - key: client_upid
+          label: "Client UPID"
+        - key: server_upid
+          label: "Server UPID"
+        - key: client_process
+          label: "Client 进程"
+        - key: server_process
+          label: "Server 进程"
+        - key: transactions
+          label: "完整同步事务数"
+        - key: avg_client_wall_ns
+          label: "Client 平均 wall"
+        - key: avg_server_wall_ns
+          label: "Server 平均 wall"
+        - key: server_state_observed_txns
+          label: "有 server 线程状态的事务数"
+
   - id: evidence_coverage
     type: atomic
+    process_scope:
+      role: global_context
+      limitations:
+        - "Trace-wide camera/media context grouped by observed identities; not filtered to a target UPID."
     name: "Camera 证据覆盖"
     display:
       layer: overview
@@ -244,6 +615,10 @@ steps:
 
   - id: camera_process_candidates
     type: atomic
+    process_scope:
+      role: global_context
+      limitations:
+        - "Trace-wide camera/media context grouped by observed identities; not filtered to a target UPID."
     name: "Camera 进程/线程候选"
     display:
       layer: list
@@ -351,6 +726,10 @@ steps:
 
   - id: camera_slice_candidates
     type: atomic
+    process_scope:
+      role: global_context
+      limitations:
+        - "Trace-wide camera/media context grouped by observed identities; not filtered to a target UPID."
     name: "Camera Slice 候选"
     display:
       layer: list
@@ -456,6 +835,10 @@ steps:
 
   - id: camera_binder_summary
     type: atomic
+    process_scope:
+      role: global_context
+      limitations:
+        - "Trace-wide camera/media context grouped by observed identities; not filtered to a target UPID."
     name: "Camera Binder 事务"
     display:
       layer: list
@@ -565,6 +948,10 @@ steps:
 
   - id: camera_dmabuf_summary
     type: atomic
+    process_scope:
+      role: global_context
+      limitations:
+        - "Trace-wide camera/media context grouped by observed identities; not filtered to a target UPID."
     name: "Camera DMA-BUF/legacy ION window evidence"
     display:
       layer: list
@@ -703,6 +1090,10 @@ steps:
 
   - id: pixel_camera_stage_summary
     type: atomic
+    process_scope:
+      role: global_context
+      limitations:
+        - "Trace-wide camera/media context grouped by observed identities; not filtered to a target UPID."
     name: "Pixel Camera Stage 摘要"
     display:
       layer: list

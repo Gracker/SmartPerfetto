@@ -3955,7 +3955,7 @@
     },
     "camera_trace_evidence": {
       "source_file": "backend/skills/composite/camera_trace_evidence.skill.yaml",
-      "source_sha256": "d2f99680715212f30bafe86e1323d04cb469e5582ac89cad1e8c7b48f92e9c2e",
+      "source_sha256": "51f50653a5676ed9b3c272fc9c6fc7f51b670240aaf0b404b6b7fea9bdb6a994",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -3967,6 +3967,12 @@
         "slices.with_context"
       ],
       "top_level_steps": [
+        "camera_frame_population",
+        "camera_callback_cadence",
+        "camera_display_cadence",
+        "camera_surface_cadence",
+        "camera_buffer_delivery",
+        "camera_binder_execution",
         "evidence_coverage",
         "camera_process_candidates",
         "camera_slice_candidates",
@@ -3977,9 +3983,161 @@
       "unexecuted_sql": false,
       "units": [
         {
-          "id": "evidence_coverage",
+          "id": "camera_frame_population",
           "at": "steps[0].sql",
           "top_level_index": 0,
+          "sha256": "9753c13fdc9c4773216ab5de4906c7ca0f6d33123b2a7e3ed904546d18db0937",
+          "required_columns": [
+            "frame_kind",
+            "upid",
+            "process_name",
+            "layer_name",
+            "frame_count",
+            "dropped_frames",
+            "incomplete_frames",
+            "window_excluded_endpoints",
+            "prediction_error_frames",
+            "scope",
+            "limitation"
+          ],
+          "has_condition": false,
+          "read_only": true,
+          "placeholders": [],
+          "process_scope_valid": true,
+          "forceable": true
+        },
+        {
+          "id": "camera_callback_cadence",
+          "at": "steps[1].sql",
+          "top_level_index": 1,
+          "sha256": "bf030a33219e0d7f520359298581a7d8aab332e81e4d2cf4a03c60ae05a7c3f1",
+          "required_columns": [
+            "source_upid",
+            "source_process",
+            "source_surface",
+            "callback_count",
+            "callback_threads",
+            "observed_intervals",
+            "avg_interval_ns",
+            "p95_interval_ns",
+            "max_interval_ns",
+            "observed_callback_fps",
+            "configured_target_status",
+            "scope",
+            "limitation"
+          ],
+          "has_condition": false,
+          "read_only": true,
+          "placeholders": [],
+          "process_scope_valid": true,
+          "forceable": true
+        },
+        {
+          "id": "camera_display_cadence",
+          "at": "steps[2].sql",
+          "top_level_index": 2,
+          "sha256": "c65c54ef4262a17af7edf234abe4e5866d4d0faf8c6ac8490c705918d6d9c1ff",
+          "required_columns": [
+            "upid",
+            "process_name",
+            "presented_display_frames",
+            "observed_intervals",
+            "avg_present_interval_ns",
+            "p50_present_interval_ns",
+            "p95_present_interval_ns",
+            "max_present_interval_ns",
+            "scope",
+            "source",
+            "limitation"
+          ],
+          "has_condition": false,
+          "read_only": true,
+          "placeholders": [],
+          "process_scope_valid": true,
+          "forceable": true
+        },
+        {
+          "id": "camera_surface_cadence",
+          "at": "steps[3].sql",
+          "top_level_index": 3,
+          "sha256": "f7ba7caa7376dd90462613ce5ae264701b9e8befd2e9ae39408422eba0405b15",
+          "required_columns": [
+            "sf_upid",
+            "bindable_surface",
+            "observed_buffer_keys",
+            "presented_buffers",
+            "unavailable_bindings",
+            "observed_intervals",
+            "p95_present_interval_ns",
+            "max_present_interval_ns",
+            "arrival_binding_status",
+            "scope",
+            "limitation"
+          ],
+          "has_condition": false,
+          "read_only": true,
+          "placeholders": [],
+          "process_scope_valid": true,
+          "forceable": true
+        },
+        {
+          "id": "camera_buffer_delivery",
+          "at": "steps[4].sql",
+          "top_level_index": 4,
+          "sha256": "934eed81f7e8962817d0282d16138542bdedc0559a3b6e18e21c913d71b65caa",
+          "required_columns": [
+            "sf_upid",
+            "bindable_surface",
+            "buffer_number",
+            "latch_id",
+            "commit_id",
+            "display_token",
+            "display_id",
+            "latch_ts",
+            "display_present_ts",
+            "binding_status",
+            "arrival_binding_status",
+            "limitation"
+          ],
+          "has_condition": false,
+          "read_only": true,
+          "placeholders": [],
+          "process_scope_valid": true,
+          "forceable": true
+        },
+        {
+          "id": "camera_binder_execution",
+          "at": "steps[5].sql",
+          "top_level_index": 5,
+          "sha256": "8801ac09393f8e3483f32967aa6a67b6fa9aefdb238c329ff31ea3c0ab0fd9e1",
+          "required_columns": [
+            "client_upid",
+            "server_upid",
+            "client_process",
+            "server_process",
+            "transactions",
+            "avg_client_wall_ns",
+            "avg_server_wall_ns",
+            "server_state_observed_txns",
+            "avg_server_running_ns",
+            "avg_server_state_observed_ns",
+            "headroom_status",
+            "limitation"
+          ],
+          "has_condition": false,
+          "read_only": true,
+          "placeholders": [
+            "${start_ts}",
+            "${end_ts}",
+            "${max_rows|20}"
+          ],
+          "process_scope_valid": true,
+          "forceable": true
+        },
+        {
+          "id": "evidence_coverage",
+          "at": "steps[6].sql",
+          "top_level_index": 6,
           "sha256": "d3fff49c18b116de3fcc33a877cf9fbfe33736a8a295eea83bd3c7b85d483ccb",
           "required_columns": [
             "evidence_family",
@@ -3995,13 +4153,13 @@
             "${end_ts}",
             "${max_rows|20}"
           ],
-          "process_scope_valid": null,
+          "process_scope_valid": true,
           "forceable": true
         },
         {
           "id": "camera_process_candidates",
-          "at": "steps[1].sql",
-          "top_level_index": 1,
+          "at": "steps[7].sql",
+          "top_level_index": 7,
           "sha256": "67a1c443529059c5307745ab214841b944f36f7ee3a0db5a9b3c2a170a649813",
           "required_columns": [
             "identity_kind",
@@ -4021,13 +4179,13 @@
             "${end_ts}",
             "${max_rows|20}"
           ],
-          "process_scope_valid": null,
+          "process_scope_valid": true,
           "forceable": true
         },
         {
           "id": "camera_slice_candidates",
-          "at": "steps[2].sql",
-          "top_level_index": 2,
+          "at": "steps[8].sql",
+          "top_level_index": 8,
           "sha256": "0c076c98119dc6d5d62c9355ea2b8dab8bd63001cb24cfe92091fa48c7655233",
           "required_columns": [
             "ts",
@@ -4047,13 +4205,13 @@
             "${end_ts}",
             "${max_rows|20}"
           ],
-          "process_scope_valid": null,
+          "process_scope_valid": true,
           "forceable": true
         },
         {
           "id": "camera_binder_summary",
-          "at": "steps[3].sql",
-          "top_level_index": 3,
+          "at": "steps[9].sql",
+          "top_level_index": 9,
           "sha256": "dabf48ae00c02172be7ff63d8c049eecc2efc2c646b81907568c69ae6daa33c3",
           "required_columns": [
             "ts",
@@ -4077,13 +4235,13 @@
             "${end_ts}",
             "${max_rows|20}"
           ],
-          "process_scope_valid": null,
+          "process_scope_valid": true,
           "forceable": true
         },
         {
           "id": "camera_dmabuf_summary",
-          "at": "steps[4].sql",
-          "top_level_index": 4,
+          "at": "steps[10].sql",
+          "top_level_index": 10,
           "sha256": "50306a722aadf023f5f7317112f29b859e61731e6540097b2e4f5129476a2ebf",
           "required_columns": [
             "process_name",
@@ -4105,13 +4263,13 @@
             "${end_ts}",
             "${max_rows|20}"
           ],
-          "process_scope_valid": null,
+          "process_scope_valid": true,
           "forceable": true
         },
         {
           "id": "pixel_camera_stage_summary",
-          "at": "steps[5].sql",
-          "top_level_index": 5,
+          "at": "steps[11].sql",
+          "top_level_index": 11,
           "sha256": "4ebb0a67ecee881049665ca5342d3c6279d51c1496a17d14c84fac86e7d82e29",
           "required_columns": [
             "cam_id",
@@ -4130,7 +4288,7 @@
             "${end_ts}",
             "${max_rows|20}"
           ],
-          "process_scope_valid": null,
+          "process_scope_valid": true,
           "forceable": true
         }
       ]

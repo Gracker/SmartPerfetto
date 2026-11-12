@@ -20,6 +20,16 @@
         "id": "sf",
         "name": "/system/bin/surfaceflinger",
         "uid": 1000
+      },
+      {
+        "id": "camera-server",
+        "name": "/system/bin/cameraserver",
+        "uid": 1047
+      },
+      {
+        "id": "camera-provider",
+        "name": "/vendor/bin/hw/camera.provider.fixture",
+        "uid": 1047
       }
     ],
     "threads": [
@@ -64,6 +74,28 @@
         "id": "sf-main",
         "process": "sf",
         "name": "surfaceflinger",
+        "is_main": true
+      },
+      {
+        "id": "camera-callback-a",
+        "process": "app",
+        "name": "CameraCallbackA"
+      },
+      {
+        "id": "camera-callback-b",
+        "process": "app",
+        "name": "CameraCallbackB"
+      },
+      {
+        "id": "camera-request",
+        "process": "camera-server",
+        "name": "C3Dev-Fixture-ReqQueue",
+        "is_main": true
+      },
+      {
+        "id": "camera-worker",
+        "process": "camera-provider",
+        "name": "CameraWorker",
         "is_main": true
       }
     ]
@@ -163,6 +195,321 @@
       "duration_ns": "20000000",
       "thread": "main",
       "cpu": 0,
+      "end_state": "S"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "449950000",
+      "duration_ns": "500000",
+      "process": "app",
+      "thread": "camera-callback-a",
+      "name": "queueBuffer"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "450000000",
+      "duration_ns": "300000",
+      "process": "app",
+      "thread": "camera-callback-a",
+      "name": "onFrameAvailable - fixturecam SurfaceView[com.smartperfetto.fixture/CameraActivity]#1(f:0,a:1)"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "450010000",
+      "duration_ns": "100000",
+      "process": "app",
+      "thread": "camera-callback-a",
+      "name": "acquireNextBufferLocked - fixturecam SurfaceView[com.smartperfetto.fixture/CameraActivity]#1(f:0,a:1)frame=1"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "455000000",
+      "duration_ns": "5000000",
+      "process": "sf",
+      "thread": "sf-main",
+      "name": "commit 100"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "456000000",
+      "duration_ns": "1000",
+      "process": "sf",
+      "thread": "sf-main",
+      "name": "latchBuffer fixturecam SurfaceView[com.smartperfetto.fixture/CameraActivity](BLAST)#17 - 1"
+    },
+    {
+      "type": "frame-timeline",
+      "frame_kind": "display",
+      "at_ns": "454800000",
+      "duration_ns": "10200000",
+      "process": "sf",
+      "cookie": 10001,
+      "token": 100,
+      "jank_type": 4,
+      "present_type": 3,
+      "on_time_finish": true
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "482950000",
+      "duration_ns": "500000",
+      "process": "app",
+      "thread": "camera-callback-b",
+      "name": "queueBuffer"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "483000000",
+      "duration_ns": "300000",
+      "process": "app",
+      "thread": "camera-callback-b",
+      "name": "onFrameAvailable - fixturecam SurfaceView[com.smartperfetto.fixture/CameraActivity]#1(f:0,a:1)"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "483010000",
+      "duration_ns": "100000",
+      "process": "app",
+      "thread": "camera-callback-b",
+      "name": "acquireNextBufferLocked - fixturecam SurfaceView[com.smartperfetto.fixture/CameraActivity]#1(f:0,a:1)frame=2"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "488000000",
+      "duration_ns": "5000000",
+      "process": "sf",
+      "thread": "sf-main",
+      "name": "commit 101"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "489000000",
+      "duration_ns": "1000",
+      "process": "sf",
+      "thread": "sf-main",
+      "name": "latchBuffer fixturecam SurfaceView[com.smartperfetto.fixture/CameraActivity](BLAST)#17 - 2"
+    },
+    {
+      "type": "frame-timeline",
+      "frame_kind": "display",
+      "at_ns": "487800000",
+      "duration_ns": "10200000",
+      "process": "sf",
+      "cookie": 10002,
+      "token": 101,
+      "jank_type": 4,
+      "present_type": 3,
+      "on_time_finish": true
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "515950000",
+      "duration_ns": "500000",
+      "process": "app",
+      "thread": "camera-callback-a",
+      "name": "queueBuffer"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "516000000",
+      "duration_ns": "300000",
+      "process": "app",
+      "thread": "camera-callback-a",
+      "name": "onFrameAvailable - fixturecam SurfaceView[com.smartperfetto.fixture/CameraActivity]#1(f:0,a:1)"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "516010000",
+      "duration_ns": "100000",
+      "process": "app",
+      "thread": "camera-callback-a",
+      "name": "acquireNextBufferLocked - fixturecam SurfaceView[com.smartperfetto.fixture/CameraActivity]#1(f:0,a:1)frame=3"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "521000000",
+      "duration_ns": "5000000",
+      "process": "sf",
+      "thread": "sf-main",
+      "name": "commit 102"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "522000000",
+      "duration_ns": "1000",
+      "process": "sf",
+      "thread": "sf-main",
+      "name": "latchBuffer fixturecam SurfaceView[com.smartperfetto.fixture/CameraActivity](BLAST)#17 - 3"
+    },
+    {
+      "type": "frame-timeline",
+      "frame_kind": "display",
+      "at_ns": "520800000",
+      "duration_ns": "19200000",
+      "process": "sf",
+      "cookie": 10003,
+      "token": 102,
+      "jank_type": 4,
+      "present_type": 3,
+      "on_time_finish": true
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "549950000",
+      "duration_ns": "500000",
+      "process": "app",
+      "thread": "camera-callback-b",
+      "name": "queueBuffer"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "550000000",
+      "duration_ns": "300000",
+      "process": "app",
+      "thread": "camera-callback-b",
+      "name": "onFrameAvailable - fixturecam SurfaceView[com.smartperfetto.fixture/CameraActivity]#1(f:0,a:1)"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "550010000",
+      "duration_ns": "100000",
+      "process": "app",
+      "thread": "camera-callback-b",
+      "name": "acquireNextBufferLocked - fixturecam SurfaceView[com.smartperfetto.fixture/CameraActivity]#1(f:0,a:1)frame=4"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "555000000",
+      "duration_ns": "5000000",
+      "process": "sf",
+      "thread": "sf-main",
+      "name": "commit 103"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "556000000",
+      "duration_ns": "1000",
+      "process": "sf",
+      "thread": "sf-main",
+      "name": "latchBuffer fixturecam SurfaceView[com.smartperfetto.fixture/CameraActivity](BLAST)#17 - 4"
+    },
+    {
+      "type": "frame-timeline",
+      "frame_kind": "display",
+      "at_ns": "554800000",
+      "duration_ns": "10200000",
+      "process": "sf",
+      "cookie": 10004,
+      "token": 103,
+      "jank_type": 4,
+      "present_type": 3,
+      "on_time_finish": true
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "582950000",
+      "duration_ns": "500000",
+      "process": "app",
+      "thread": "camera-callback-a",
+      "name": "queueBuffer"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "583000000",
+      "duration_ns": "300000",
+      "process": "app",
+      "thread": "camera-callback-a",
+      "name": "onFrameAvailable - fixturecam SurfaceView[com.smartperfetto.fixture/CameraActivity]#1(f:0,a:1)"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "583010000",
+      "duration_ns": "100000",
+      "process": "app",
+      "thread": "camera-callback-a",
+      "name": "acquireNextBufferLocked - fixturecam SurfaceView[com.smartperfetto.fixture/CameraActivity]#1(f:0,a:1)frame=5"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "588000000",
+      "duration_ns": "5000000",
+      "process": "sf",
+      "thread": "sf-main",
+      "name": "commit 104"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "589000000",
+      "duration_ns": "1000",
+      "process": "sf",
+      "thread": "sf-main",
+      "name": "latchBuffer fixturecam SurfaceView[com.smartperfetto.fixture/CameraActivity](BLAST)#17 - 5"
+    },
+    {
+      "type": "frame-timeline",
+      "at_ns": "450000000",
+      "duration_ns": "2000000",
+      "process": "system",
+      "cookie": 11000,
+      "token": 2000,
+      "display_frame_token": 100,
+      "layer_name": "FixtureDecor",
+      "jank_type": 4,
+      "present_type": 3,
+      "on_time_finish": true
+    },
+    {
+      "type": "frame-timeline",
+      "at_ns": "470000000",
+      "duration_ns": "2000000",
+      "process": "system",
+      "cookie": 11001,
+      "token": 2001,
+      "display_frame_token": 7777,
+      "layer_name": "FixtureDropped",
+      "jank_type": 1024,
+      "present_type": 4,
+      "on_time_finish": true
+    },
+    {
+      "type": "binder-transaction",
+      "at_ns": "700000000",
+      "duration_ns": "30000000",
+      "thread": "camera-request",
+      "server_thread": "camera-worker",
+      "cpu": 1,
+      "server_cpu": 2
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "699900000",
+      "duration_ns": "200000",
+      "thread": "camera-request",
+      "cpu": 1,
+      "end_state": "S"
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "729900000",
+      "duration_ns": "200000",
+      "thread": "camera-request",
+      "cpu": 1,
+      "end_state": "S"
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "699999000",
+      "duration_ns": "2001000",
+      "thread": "camera-worker",
+      "cpu": 2,
+      "end_state": "S"
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "729000000",
+      "duration_ns": "1100000",
+      "thread": "camera-worker",
+      "cpu": 2,
       "end_state": "S"
     }
   ]

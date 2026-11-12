@@ -7700,7 +7700,7 @@
       "trace": {
         "file": "trace.overlay.pftrace",
         "format": "perfetto-protobuf",
-        "sha256": "223f5c0221de76bfeb98ef4b9b87d4be6f6729d21335b9c70ddf9e9f3c35dc52",
+        "sha256": "07552196135d174c0e332ddaa23b0beddea6f36ec1ea9e037b1e135cad8fbd78",
         "materialization": "base-plus-overlay"
       },
       "android": {
@@ -7762,6 +7762,12 @@
               "max_rows": 20
             },
             "required_steps": [
+              "camera_frame_population",
+              "camera_callback_cadence",
+              "camera_display_cadence",
+              "camera_surface_cadence",
+              "camera_buffer_delivery",
+              "camera_binder_execution",
               "evidence_coverage",
               "camera_process_candidates",
               "camera_slice_candidates",
@@ -7770,6 +7776,12 @@
               "pixel_camera_stage_summary"
             ],
             "required_sql_steps": [
+              "camera_frame_population",
+              "camera_callback_cadence",
+              "camera_display_cadence",
+              "camera_surface_cadence",
+              "camera_buffer_delivery",
+              "camera_binder_execution",
               "evidence_coverage",
               "camera_process_candidates",
               "camera_slice_candidates",
@@ -7985,6 +7997,509 @@
             "query": "网络",
             "expected_strategy": "network",
             "source_file": "backend/strategies/network.strategy.md",
+            "required_marker": "SmartPerfetto::CASE::media-network-camera"
+          },
+          {
+            "id": "semantic-camera_frame_population",
+            "type": "skill",
+            "target": "camera_trace_evidence",
+            "mode": "semantic",
+            "source_file": "backend/skills/composite/camera_trace_evidence.skill.yaml",
+            "parameters": {
+              "max_rows": 20
+            },
+            "required_steps": [
+              "camera_frame_population",
+              "camera_callback_cadence",
+              "camera_display_cadence",
+              "camera_surface_cadence",
+              "camera_buffer_delivery",
+              "camera_binder_execution",
+              "evidence_coverage",
+              "camera_process_candidates",
+              "camera_slice_candidates",
+              "camera_binder_summary",
+              "camera_dmabuf_summary",
+              "pixel_camera_stage_summary"
+            ],
+            "required_sql_steps": [
+              "camera_frame_population",
+              "camera_callback_cadence",
+              "camera_display_cadence",
+              "camera_surface_cadence",
+              "camera_buffer_delivery",
+              "camera_binder_execution",
+              "evidence_coverage",
+              "camera_process_candidates",
+              "camera_slice_candidates",
+              "camera_binder_summary",
+              "camera_dmabuf_summary",
+              "pixel_camera_stage_summary"
+            ],
+            "forced_sql_steps": [],
+            "isolated_sql_probes": [],
+            "expected_condition_skips": [],
+            "semantic_step": "camera_frame_population",
+            "required_columns": [
+              "frame_kind",
+              "upid",
+              "process_name",
+              "layer_name",
+              "frame_count",
+              "dropped_frames",
+              "incomplete_frames",
+              "window_excluded_endpoints",
+              "prediction_error_frames",
+              "scope",
+              "limitation"
+            ],
+            "min_rows": 1,
+            "assertions": [
+              {
+                "column": "layer_name",
+                "operator": "eq",
+                "value": "FixtureDropped"
+              },
+              {
+                "column": "frame_kind",
+                "operator": "eq",
+                "value": "surface_frame"
+              },
+              {
+                "column": "frame_count",
+                "operator": "eq",
+                "value": 1
+              },
+              {
+                "column": "dropped_frames",
+                "operator": "eq",
+                "value": 1
+              }
+            ],
+            "required_marker": "SmartPerfetto::CASE::media-network-camera"
+          },
+          {
+            "id": "semantic-camera_callback_cadence",
+            "type": "skill",
+            "target": "camera_trace_evidence",
+            "mode": "semantic",
+            "source_file": "backend/skills/composite/camera_trace_evidence.skill.yaml",
+            "parameters": {
+              "max_rows": 20
+            },
+            "required_steps": [
+              "camera_frame_population",
+              "camera_callback_cadence",
+              "camera_display_cadence",
+              "camera_surface_cadence",
+              "camera_buffer_delivery",
+              "camera_binder_execution",
+              "evidence_coverage",
+              "camera_process_candidates",
+              "camera_slice_candidates",
+              "camera_binder_summary",
+              "camera_dmabuf_summary",
+              "pixel_camera_stage_summary"
+            ],
+            "required_sql_steps": [
+              "camera_frame_population",
+              "camera_callback_cadence",
+              "camera_display_cadence",
+              "camera_surface_cadence",
+              "camera_buffer_delivery",
+              "camera_binder_execution",
+              "evidence_coverage",
+              "camera_process_candidates",
+              "camera_slice_candidates",
+              "camera_binder_summary",
+              "camera_dmabuf_summary",
+              "pixel_camera_stage_summary"
+            ],
+            "forced_sql_steps": [],
+            "isolated_sql_probes": [],
+            "expected_condition_skips": [],
+            "semantic_step": "camera_callback_cadence",
+            "required_columns": [
+              "source_upid",
+              "source_process",
+              "source_surface",
+              "callback_count",
+              "callback_threads",
+              "observed_intervals",
+              "avg_interval_ns",
+              "p95_interval_ns",
+              "max_interval_ns",
+              "observed_callback_fps",
+              "configured_target_status",
+              "scope",
+              "limitation"
+            ],
+            "min_rows": 1,
+            "assertions": [
+              {
+                "column": "source_process",
+                "operator": "eq",
+                "value": "com.smartperfetto.fixture"
+              },
+              {
+                "column": "callback_count",
+                "operator": "eq",
+                "value": 5
+              },
+              {
+                "column": "callback_threads",
+                "operator": "eq",
+                "value": 2
+              },
+              {
+                "column": "observed_intervals",
+                "operator": "eq",
+                "value": 4
+              },
+              {
+                "column": "max_interval_ns",
+                "operator": "eq",
+                "value": 34000000
+              },
+              {
+                "column": "configured_target_status",
+                "operator": "eq",
+                "value": "not_measured"
+              }
+            ],
+            "required_marker": "SmartPerfetto::CASE::media-network-camera"
+          },
+          {
+            "id": "semantic-camera_display_cadence",
+            "type": "skill",
+            "target": "camera_trace_evidence",
+            "mode": "semantic",
+            "source_file": "backend/skills/composite/camera_trace_evidence.skill.yaml",
+            "parameters": {
+              "max_rows": 20
+            },
+            "required_steps": [
+              "camera_frame_population",
+              "camera_callback_cadence",
+              "camera_display_cadence",
+              "camera_surface_cadence",
+              "camera_buffer_delivery",
+              "camera_binder_execution",
+              "evidence_coverage",
+              "camera_process_candidates",
+              "camera_slice_candidates",
+              "camera_binder_summary",
+              "camera_dmabuf_summary",
+              "pixel_camera_stage_summary"
+            ],
+            "required_sql_steps": [
+              "camera_frame_population",
+              "camera_callback_cadence",
+              "camera_display_cadence",
+              "camera_surface_cadence",
+              "camera_buffer_delivery",
+              "camera_binder_execution",
+              "evidence_coverage",
+              "camera_process_candidates",
+              "camera_slice_candidates",
+              "camera_binder_summary",
+              "camera_dmabuf_summary",
+              "pixel_camera_stage_summary"
+            ],
+            "forced_sql_steps": [],
+            "isolated_sql_probes": [],
+            "expected_condition_skips": [],
+            "semantic_step": "camera_display_cadence",
+            "required_columns": [
+              "upid",
+              "process_name",
+              "presented_display_frames",
+              "observed_intervals",
+              "avg_present_interval_ns",
+              "p50_present_interval_ns",
+              "p95_present_interval_ns",
+              "max_present_interval_ns",
+              "scope",
+              "source",
+              "limitation"
+            ],
+            "min_rows": 1,
+            "assertions": [
+              {
+                "column": "presented_display_frames",
+                "operator": "eq",
+                "value": 4
+              },
+              {
+                "column": "observed_intervals",
+                "operator": "eq",
+                "value": 3
+              },
+              {
+                "column": "max_present_interval_ns",
+                "operator": "eq",
+                "value": 42000000
+              },
+              {
+                "column": "scope",
+                "operator": "eq",
+                "value": "sf_process_context"
+              }
+            ],
+            "required_marker": "SmartPerfetto::CASE::media-network-camera"
+          },
+          {
+            "id": "semantic-camera_surface_cadence",
+            "type": "skill",
+            "target": "camera_trace_evidence",
+            "mode": "semantic",
+            "source_file": "backend/skills/composite/camera_trace_evidence.skill.yaml",
+            "parameters": {
+              "max_rows": 20
+            },
+            "required_steps": [
+              "camera_frame_population",
+              "camera_callback_cadence",
+              "camera_display_cadence",
+              "camera_surface_cadence",
+              "camera_buffer_delivery",
+              "camera_binder_execution",
+              "evidence_coverage",
+              "camera_process_candidates",
+              "camera_slice_candidates",
+              "camera_binder_summary",
+              "camera_dmabuf_summary",
+              "pixel_camera_stage_summary"
+            ],
+            "required_sql_steps": [
+              "camera_frame_population",
+              "camera_callback_cadence",
+              "camera_display_cadence",
+              "camera_surface_cadence",
+              "camera_buffer_delivery",
+              "camera_binder_execution",
+              "evidence_coverage",
+              "camera_process_candidates",
+              "camera_slice_candidates",
+              "camera_binder_summary",
+              "camera_dmabuf_summary",
+              "pixel_camera_stage_summary"
+            ],
+            "forced_sql_steps": [],
+            "isolated_sql_probes": [],
+            "expected_condition_skips": [],
+            "semantic_step": "camera_surface_cadence",
+            "required_columns": [
+              "sf_upid",
+              "bindable_surface",
+              "observed_buffer_keys",
+              "presented_buffers",
+              "unavailable_bindings",
+              "observed_intervals",
+              "p95_present_interval_ns",
+              "max_present_interval_ns",
+              "arrival_binding_status",
+              "scope",
+              "limitation"
+            ],
+            "min_rows": 1,
+            "assertions": [
+              {
+                "column": "observed_buffer_keys",
+                "operator": "eq",
+                "value": 5
+              },
+              {
+                "column": "presented_buffers",
+                "operator": "eq",
+                "value": 4
+              },
+              {
+                "column": "unavailable_bindings",
+                "operator": "eq",
+                "value": 1
+              },
+              {
+                "column": "max_present_interval_ns",
+                "operator": "eq",
+                "value": 42000000
+              },
+              {
+                "column": "arrival_binding_status",
+                "operator": "eq",
+                "value": "not_measured"
+              }
+            ],
+            "required_marker": "SmartPerfetto::CASE::media-network-camera"
+          },
+          {
+            "id": "semantic-camera_buffer_delivery",
+            "type": "skill",
+            "target": "camera_trace_evidence",
+            "mode": "semantic",
+            "source_file": "backend/skills/composite/camera_trace_evidence.skill.yaml",
+            "parameters": {
+              "max_rows": 20
+            },
+            "required_steps": [
+              "camera_frame_population",
+              "camera_callback_cadence",
+              "camera_display_cadence",
+              "camera_surface_cadence",
+              "camera_buffer_delivery",
+              "camera_binder_execution",
+              "evidence_coverage",
+              "camera_process_candidates",
+              "camera_slice_candidates",
+              "camera_binder_summary",
+              "camera_dmabuf_summary",
+              "pixel_camera_stage_summary"
+            ],
+            "required_sql_steps": [
+              "camera_frame_population",
+              "camera_callback_cadence",
+              "camera_display_cadence",
+              "camera_surface_cadence",
+              "camera_buffer_delivery",
+              "camera_binder_execution",
+              "evidence_coverage",
+              "camera_process_candidates",
+              "camera_slice_candidates",
+              "camera_binder_summary",
+              "camera_dmabuf_summary",
+              "pixel_camera_stage_summary"
+            ],
+            "forced_sql_steps": [],
+            "isolated_sql_probes": [],
+            "expected_condition_skips": [],
+            "semantic_step": "camera_buffer_delivery",
+            "required_columns": [
+              "sf_upid",
+              "bindable_surface",
+              "buffer_number",
+              "latch_id",
+              "commit_id",
+              "display_token",
+              "display_id",
+              "latch_ts",
+              "display_present_ts",
+              "binding_status",
+              "arrival_binding_status",
+              "limitation"
+            ],
+            "min_rows": 1,
+            "assertions": [
+              {
+                "column": "buffer_number",
+                "operator": "eq",
+                "value": 3
+              },
+              {
+                "column": "display_token",
+                "operator": "eq",
+                "value": 102
+              },
+              {
+                "column": "binding_status",
+                "operator": "eq",
+                "value": "sf_commit_display_bound"
+              },
+              {
+                "column": "arrival_binding_status",
+                "operator": "eq",
+                "value": "not_measured"
+              }
+            ],
+            "required_marker": "SmartPerfetto::CASE::media-network-camera"
+          },
+          {
+            "id": "semantic-camera_binder_execution",
+            "type": "skill",
+            "target": "camera_trace_evidence",
+            "mode": "semantic",
+            "source_file": "backend/skills/composite/camera_trace_evidence.skill.yaml",
+            "parameters": {
+              "max_rows": 20
+            },
+            "required_steps": [
+              "camera_frame_population",
+              "camera_callback_cadence",
+              "camera_display_cadence",
+              "camera_surface_cadence",
+              "camera_buffer_delivery",
+              "camera_binder_execution",
+              "evidence_coverage",
+              "camera_process_candidates",
+              "camera_slice_candidates",
+              "camera_binder_summary",
+              "camera_dmabuf_summary",
+              "pixel_camera_stage_summary"
+            ],
+            "required_sql_steps": [
+              "camera_frame_population",
+              "camera_callback_cadence",
+              "camera_display_cadence",
+              "camera_surface_cadence",
+              "camera_buffer_delivery",
+              "camera_binder_execution",
+              "evidence_coverage",
+              "camera_process_candidates",
+              "camera_slice_candidates",
+              "camera_binder_summary",
+              "camera_dmabuf_summary",
+              "pixel_camera_stage_summary"
+            ],
+            "forced_sql_steps": [],
+            "isolated_sql_probes": [],
+            "expected_condition_skips": [],
+            "semantic_step": "camera_binder_execution",
+            "required_columns": [
+              "client_upid",
+              "server_upid",
+              "client_process",
+              "server_process",
+              "transactions",
+              "avg_client_wall_ns",
+              "avg_server_wall_ns",
+              "server_state_observed_txns",
+              "avg_server_running_ns",
+              "avg_server_state_observed_ns",
+              "headroom_status",
+              "limitation"
+            ],
+            "min_rows": 1,
+            "assertions": [
+              {
+                "column": "transactions",
+                "operator": "eq",
+                "value": 1
+              },
+              {
+                "column": "avg_server_wall_ns",
+                "operator": "gt",
+                "value": 20000000
+              },
+              {
+                "column": "server_state_observed_txns",
+                "operator": "eq",
+                "value": 1
+              },
+              {
+                "column": "avg_server_running_ns",
+                "operator": "gt",
+                "value": 0
+              },
+              {
+                "column": "avg_server_running_ns",
+                "operator": "lt",
+                "value": 5000000
+              },
+              {
+                "column": "headroom_status",
+                "operator": "eq",
+                "value": "not_measured"
+              }
+            ],
             "required_marker": "SmartPerfetto::CASE::media-network-camera"
           }
         ]

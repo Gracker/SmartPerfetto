@@ -26,6 +26,10 @@ optional_capabilities:
   - gpu_work_period
   - power_rails
 keywords:
+  - 相机
+  - 预览
+  - camera
+  - preview
   - 视频
   - 音频
   - 解码
@@ -44,7 +48,7 @@ keywords:
 
 #### media Core Strategy
 
-**Route card**: 视频 / 音频 / 解码 / 编码 / media / codec / video / audio / decoder / encoder
+**Route card**: 相机 / 预览 / 视频 / 音频 / 解码 / 编码 / camera / preview / media / codec / video / audio
 
 **Capabilities**: required=[cpu_scheduling], optional=[frame_rendering, gpu, gpu_work_period, power_rails]
 
@@ -54,11 +58,11 @@ keywords:
 - detail 是 informational：只指导如何执行，不能替代 invoke_skill / execute_sql / fetch_artifact 的 trace 证据。
 
 **Mandatory aspects**
-- codec_activity: 媒体场景必须检查 codec/buffer 活动或明确说明 trace 缺少媒体信号 (required: invoke_skill(media_codec_activity))
+- media_source_activity: 相机/预览先用 camera_trace_evidence；编解码/播放使用 media_codec_activity。分别检查实际数据源，不能用缺少 codec slices 代替 Camera 取证。
 - render_or_power_context: 媒体卡顿/耗电问题需要补充渲染、GPU 或功耗上下文 (requires one of: invoke_skill(gl_standalone_swap_jank), invoke_skill(android_gpu_work_period_track), invoke_skill(power_consumption_overview))
 
 **Phase reminders**
-- codec_activity: 优先调用 media_codec_activity 检查 codec/buffer 事件。该 skill 基于 slice 信号；缺 codec trace 时必须标注数据不足。 工具: media_codec_activity
+- media_source_activity: 相机/预览先调用 camera_trace_evidence 读取 callback、帧类型、SF 呈现端及SF buffer 关联覆盖；codec 管线调用 media_codec_activity。 工具: camera_trace_evidence, media_codec_activity
 - media_rendering_power: 视频/媒体卡顿需要结合 frame/GL/GPU/power 证据：必要时调用 scrolling_analysis、gl_standalone_swap_jank、android_gpu_work_period_track、power_consumption_overview。 工具: media_codec_activity, gl_standalone_swap_jank, android_gpu_work_period_track, power_consumption_overview
 
 **Final report contract summary**
@@ -72,9 +76,23 @@ keywords:
 <!-- strategy-detail id="full" title="media full strategy detail" keywords="media,视频,音频,解码,编码,media,codec,video,audio,decoder,encoder,mediacodec,codec2,媒体 / Codec 分析,detail,full" default="true" -->
 #### 媒体 / Codec 分析
 
-当前公开 stdlib index 没有稳定的 Android codec 专用表，因此媒体基础分析先基于 `slice` / `thread` 信号识别 MediaCodec、Codec2、OMX、CCodec 和 buffer API。
+按实际媒体管线选择已有的证据生产者；相机预览不依赖 MediaCodec。允许新取证时，优先读取对应 Skill 的全量聚合和覆盖，再对缺口做最小查询。
 
-**Phase 1 — Codec 活动与慢事件：**
+**Phase 1 — 媒体源与呈现取证：**
+
+相机、Camera2 或预览问题先调用：
+
+```
+invoke_skill("camera_trace_evidence", { start_ts: "<start>", end_ts: "<end>" })
+```
+
+- `camera_callback_cadence` 是逐进程、逐 source/surface、跨 callback 线程合并的观测到达节奏，不是传感器配置或硬件完成时刻。
+- `camera_frame_population` 分开 DisplayFrame / SurfaceFrame 与各自的 UPID、layer、Dropped 和未完成条目。`camera_display_cadence` 只报告 SF DisplayFrame 的 `ts+dur` 呈现端间隔，范围是 SF 进程上下文，不能直接称作相机层。
+- `camera_surface_cadence` 和 `camera_buffer_delivery` 只关联完整 SF layer 实例的 latch→commit→DisplayFrame；完整呈现端须在请求窗口内。BLAST queue ID 与 SF layer ID 属于不同域，Skill 不测 app arrival→present；缺少原生 Camera SurfaceFrame 或显式桥接时，不以共同 prefix、相等数字或 nearest timestamp 造逐内容帧关联。编号歧义、跨窗或尾部不完整保持 unavailable。
+- `camera_binder_execution` 分开完整同步事务的 wall 与对应 server 线程 Running/状态覆盖。该 Skill 不测传感器预算、在飞行容量、管线深度或 headroom，不能从约一个帧周期的 wall 推出“零余量”。
+- 先选与问题对象一致的进程和 surface；这个 trace 级上下文 Skill 不宣称对一个包实施了精确过滤。观测到的 FPS、content vote、SF 标签和间隔分布各有来源，均不提供显式 Camera 配置或锁相故障的证明。
+
+编解码/播放问题使用原有 codec 生产者：
 
 ```
 invoke_skill("media_codec_activity", { package: "<包名>", start_ts: "<start>", end_ts: "<end>" })
@@ -90,5 +108,5 @@ invoke_skill("media_codec_activity", { package: "<包名>", start_ts: "<start>",
 | GPU active region 连续或异常 | `invoke_skill("android_gpu_work_period_track")` |
 | 媒体播放耗电 | `invoke_skill("power_consumption_overview")` |
 
-输出时必须标注媒体 trace 信号来源。如果 codec slices 不存在，只能说明当前 trace 不支持媒体归因，并给出采集建议。
+输出时标注实际媒体信号来源与范围。缺 codec slices 只限定 codec 归因；Camera 证据按其独立的 callback、Binder、surface 绑定和显示上下文覆盖判断。缺少某一观测源不等于健康，也不否定其他已观测的节奏变化。
 <!-- /strategy-detail -->

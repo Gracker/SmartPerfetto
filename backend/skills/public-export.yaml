@@ -101,6 +101,9 @@ sql_fragments:
   backend/skills/fragments/buffer_tx_frame_production.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/buffer_tx_frame_production.sql
+  backend/skills/fragments/camera_frame_observations.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/camera_frame_observations.sql
   backend/skills/fragments/flutter_process_identity.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/flutter_process_identity.sql

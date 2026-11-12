@@ -10,8 +10,8 @@
     "skillCount": 254,
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
-    "stepCount": 1393,
-    "explicitColumnCount": 5348
+    "stepCount": 1399,
+    "explicitColumnCount": 5418
   },
   "skills": {
     "ams_module": {
@@ -8489,7 +8489,7 @@
         "en": "Camera Trace Evidence"
       },
       "description": {
-        "zh-CN": "枚举 Camera 相关 identity、slice、Binder、系统上下文、DMA-BUF/legacy ION 与可选 Pixel stage 证据",
+        "zh-CN": "Camera/preview 的独立 callback 节奏、SF layer/DisplayFrame 呈现端关联、Binder wall/Running 与内存证据；不测 app arrival→present 时延",
         "en": "Analyzes Camera Trace Evidence using trace metrics and supporting evidence."
       },
       "type": "composite",
@@ -8501,6 +8501,120 @@
           },
           "columns": {},
           "synthesizeLabels": {}
+        },
+        "camera_binder_execution": {
+          "title": {
+            "zh-CN": "Camera Binder wall / 线程 Running（不测余量）",
+            "en": "Camera Binder Execution"
+          },
+          "columns": {
+            "client_upid": {
+              "label": {
+                "zh-CN": "ClientUPID",
+                "en": "Client UPID"
+              }
+            },
+            "server_upid": {
+              "label": {
+                "zh-CN": "ServerUPID",
+                "en": "Server UPID"
+              }
+            },
+            "client_process": {
+              "label": {
+                "zh-CN": "Client 进程",
+                "en": "Client Process"
+              }
+            },
+            "server_process": {
+              "label": {
+                "zh-CN": "Server 进程",
+                "en": "Server Process"
+              }
+            },
+            "transactions": {
+              "label": {
+                "zh-CN": "完整同步事务数",
+                "en": "Transactions"
+              }
+            },
+            "avg_client_wall_ns": {
+              "label": {
+                "zh-CN": "Client 平均 wall",
+                "en": "Avg Client Wall ns"
+              }
+            },
+            "avg_server_wall_ns": {
+              "label": {
+                "zh-CN": "Server 平均 wall",
+                "en": "Avg Server Wall ns"
+              }
+            },
+            "server_state_observed_txns": {
+              "label": {
+                "zh-CN": "有 server 线程状态的事务数",
+                "en": "Server State Observed Txns"
+              }
+            },
+            "avg_server_running_ns": {
+              "label": {
+                "zh-CN": "对应 server 线程平均 Running",
+                "en": "Avg Server Running ns"
+              }
+            },
+            "avg_server_state_observed_ns": {
+              "label": {
+                "zh-CN": "对应 server 线程平均状态覆盖",
+                "en": "Avg Server State Observed ns"
+              }
+            },
+            "headroom_status": {
+              "label": {
+                "zh-CN": "余量测量状态",
+                "en": "Headroom Status"
+              }
+            },
+            "limitation": {
+              "label": {
+                "zh-CN": "边界",
+                "en": "Limitation"
+              }
+            }
+          },
+          "synthesizeLabels": {
+            "field:client_upid": {
+              "zh-CN": "ClientUPID",
+              "en": "Client UPID"
+            },
+            "field:server_upid": {
+              "zh-CN": "ServerUPID",
+              "en": "Server UPID"
+            },
+            "field:client_process": {
+              "zh-CN": "Client 进程",
+              "en": "Client Process"
+            },
+            "field:server_process": {
+              "zh-CN": "Server 进程",
+              "en": "Server Process"
+            },
+            "field:transactions": {
+              "zh-CN": "完整同步事务数",
+              "en": "Transactions"
+            },
+            "field:avg_client_wall_ns": {
+              "zh-CN": "Client 平均 wall",
+              "en": "Avg Client Wall ns"
+            },
+            "field:avg_server_wall_ns": {
+              "zh-CN": "Server 平均 wall",
+              "en": "Avg Server Wall ns"
+            },
+            "field:server_state_observed_txns": {
+              "zh-CN": "有 server 线程状态的事务数",
+              "en": "Server State Observed Txns"
+            }
+          }
         },
         "camera_binder_summary": {
           "title": {
@@ -8606,6 +8720,348 @@
             }
           }
         },
+        "camera_buffer_delivery": {
+          "title": {
+            "zh-CN": "SF buffer latch → commit → DisplayFrame 明细",
+            "en": "Camera Buffer Delivery"
+          },
+          "columns": {
+            "sf_upid": {
+              "label": {
+                "zh-CN": "SfUPID",
+                "en": "SF UPID"
+              }
+            },
+            "bindable_surface": {
+              "label": {
+                "zh-CN": "完整 SF layer marker",
+                "en": "Bindable Surface"
+              }
+            },
+            "buffer_number": {
+              "label": {
+                "zh-CN": "SF Buffer 编号",
+                "en": "Buffer Number"
+              }
+            },
+            "latch_id": {
+              "label": {
+                "zh-CN": "LatchId",
+                "en": "Latch slice ID"
+              }
+            },
+            "commit_id": {
+              "label": {
+                "zh-CN": "CommitId",
+                "en": "Commit slice ID"
+              }
+            },
+            "display_token": {
+              "label": {
+                "zh-CN": "DisplayToken",
+                "en": "Display token"
+              }
+            },
+            "display_id": {
+              "label": {
+                "zh-CN": "DisplayId",
+                "en": "DisplayFrame slice ID"
+              }
+            },
+            "latch_ts": {
+              "label": {
+                "zh-CN": "LatchTs",
+                "en": "Latch"
+              }
+            },
+            "display_present_ts": {
+              "label": {
+                "zh-CN": "DisplayFrame 呈现端",
+                "en": "Display Present Ts"
+              }
+            },
+            "binding_status": {
+              "label": {
+                "zh-CN": "SF 关联状态",
+                "en": "Binding Status"
+              }
+            },
+            "arrival_binding_status": {
+              "label": {
+                "zh-CN": "App 到达关联状态",
+                "en": "Arrival Binding Status"
+              }
+            },
+            "limitation": {
+              "label": {
+                "zh-CN": "边界",
+                "en": "Limitation"
+              }
+            }
+          },
+          "synthesizeLabels": {
+            "field:sf_upid": {
+              "zh-CN": "SfUPID",
+              "en": "SF UPID"
+            },
+            "field:bindable_surface": {
+              "zh-CN": "完整 SF layer marker",
+              "en": "Bindable Surface"
+            },
+            "field:buffer_number": {
+              "zh-CN": "SF Buffer 编号",
+              "en": "Buffer Number"
+            },
+            "field:latch_id": {
+              "zh-CN": "LatchId",
+              "en": "Latch slice ID"
+            },
+            "field:commit_id": {
+              "zh-CN": "CommitId",
+              "en": "Commit slice ID"
+            },
+            "field:display_token": {
+              "zh-CN": "DisplayToken",
+              "en": "Display token"
+            },
+            "field:display_present_ts": {
+              "zh-CN": "DisplayFrame 呈现端",
+              "en": "Display Present Ts"
+            },
+            "field:arrival_binding_status": {
+              "zh-CN": "App 到达关联状态",
+              "en": "Arrival Binding Status"
+            }
+          }
+        },
+        "camera_callback_cadence": {
+          "title": {
+            "zh-CN": "App buffer callback 观测节奏（跨线程合并）",
+            "en": "Camera Callback Cadence"
+          },
+          "columns": {
+            "source_upid": {
+              "label": {
+                "zh-CN": "观测进程 UPID",
+                "en": "Source UPID"
+              }
+            },
+            "source_process": {
+              "label": {
+                "zh-CN": "观测进程",
+                "en": "Source Process"
+              }
+            },
+            "source_surface": {
+              "label": {
+                "zh-CN": "原始 surface 标识",
+                "en": "Source Surface"
+              }
+            },
+            "callback_count": {
+              "label": {
+                "zh-CN": "Callback 数",
+                "en": "Callback Count"
+              }
+            },
+            "callback_threads": {
+              "label": {
+                "zh-CN": "Callback 线程数",
+                "en": "Callback Threads"
+              }
+            },
+            "observed_intervals": {
+              "label": {
+                "zh-CN": "观测间隔数",
+                "en": "Observed Intervals"
+              }
+            },
+            "avg_interval_ns": {
+              "label": {
+                "zh-CN": "平均到达间隔",
+                "en": "Avg Interval ns"
+              }
+            },
+            "p95_interval_ns": {
+              "label": {
+                "zh-CN": "P95到达间隔",
+                "en": "P95 Interval ns"
+              }
+            },
+            "max_interval_ns": {
+              "label": {
+                "zh-CN": "最大到达间隔",
+                "en": "Max Interval ns"
+              }
+            },
+            "observed_callback_fps": {
+              "label": {
+                "zh-CN": "观测到达 FPS",
+                "en": "Observed Callback FPS"
+              }
+            },
+            "configured_target_status": {
+              "label": {
+                "zh-CN": "配置目标状态",
+                "en": "Configured Target Status"
+              }
+            },
+            "scope": {
+              "label": {
+                "zh-CN": "范围",
+                "en": "Scope"
+              }
+            },
+            "limitation": {
+              "label": {
+                "zh-CN": "边界",
+                "en": "Limitation"
+              }
+            }
+          },
+          "synthesizeLabels": {
+            "field:source_upid": {
+              "zh-CN": "观测进程 UPID",
+              "en": "Source UPID"
+            },
+            "field:source_process": {
+              "zh-CN": "观测进程",
+              "en": "Source Process"
+            },
+            "field:source_surface": {
+              "zh-CN": "原始 surface 标识",
+              "en": "Source Surface"
+            },
+            "field:callback_count": {
+              "zh-CN": "Callback 数",
+              "en": "Callback Count"
+            },
+            "field:callback_threads": {
+              "zh-CN": "Callback 线程数",
+              "en": "Callback Threads"
+            },
+            "field:observed_intervals": {
+              "zh-CN": "观测间隔数",
+              "en": "Observed Intervals"
+            },
+            "field:avg_interval_ns": {
+              "zh-CN": "平均到达间隔",
+              "en": "Avg Interval ns"
+            },
+            "field:p95_interval_ns": {
+              "zh-CN": "P95到达间隔",
+              "en": "P95 Interval ns"
+            }
+          }
+        },
+        "camera_display_cadence": {
+          "title": {
+            "zh-CN": "SF DisplayFrame 呈现端间隔（SF 上下文）",
+            "en": "Camera Display Cadence"
+          },
+          "columns": {
+            "upid": {
+              "label": {
+                "zh-CN": "UPID",
+                "en": "SF UPID"
+              }
+            },
+            "process_name": {
+              "label": {
+                "zh-CN": "SF 进程",
+                "en": "Process Name"
+              }
+            },
+            "presented_display_frames": {
+              "label": {
+                "zh-CN": "完成呈现的 DisplayFrame 数",
+                "en": "Presented Display Frames"
+              }
+            },
+            "observed_intervals": {
+              "label": {
+                "zh-CN": "呈现端间隔数",
+                "en": "Observed Intervals"
+              }
+            },
+            "avg_present_interval_ns": {
+              "label": {
+                "zh-CN": "平均呈现端间隔",
+                "en": "Avg Present Interval ns"
+              }
+            },
+            "p50_present_interval_ns": {
+              "label": {
+                "zh-CN": "P50呈现端间隔",
+                "en": "P50 Present Interval ns"
+              }
+            },
+            "p95_present_interval_ns": {
+              "label": {
+                "zh-CN": "P95呈现端间隔",
+                "en": "P95 Present Interval ns"
+              }
+            },
+            "max_present_interval_ns": {
+              "label": {
+                "zh-CN": "最大呈现端间隔",
+                "en": "Max Present Interval ns"
+              }
+            },
+            "scope": {
+              "label": {
+                "zh-CN": "范围",
+                "en": "Scope"
+              }
+            },
+            "source": {
+              "label": {
+                "zh-CN": "来源",
+                "en": "Source"
+              }
+            },
+            "limitation": {
+              "label": {
+                "zh-CN": "边界",
+                "en": "Limitation"
+              }
+            }
+          },
+          "synthesizeLabels": {
+            "field:upid": {
+              "zh-CN": "UPID",
+              "en": "SF UPID"
+            },
+            "field:process_name": {
+              "zh-CN": "SF 进程",
+              "en": "Process Name"
+            },
+            "field:presented_display_frames": {
+              "zh-CN": "完成呈现的 DisplayFrame 数",
+              "en": "Presented Display Frames"
+            },
+            "field:observed_intervals": {
+              "zh-CN": "呈现端间隔数",
+              "en": "Observed Intervals"
+            },
+            "field:avg_present_interval_ns": {
+              "zh-CN": "平均呈现端间隔",
+              "en": "Avg Present Interval ns"
+            },
+            "field:p50_present_interval_ns": {
+              "zh-CN": "P50呈现端间隔",
+              "en": "P50 Present Interval ns"
+            },
+            "field:p95_present_interval_ns": {
+              "zh-CN": "P95呈现端间隔",
+              "en": "P95 Present Interval ns"
+            },
+            "field:max_present_interval_ns": {
+              "zh-CN": "最大呈现端间隔",
+              "en": "Max Present Interval ns"
+            }
+          }
+        },
         "camera_dmabuf_summary": {
           "title": {
             "zh-CN": "相机Dmabuf摘要",
@@ -8703,6 +9159,118 @@
             "field:limitation": {
               "zh-CN": "限制",
               "en": "Limitation"
+            }
+          }
+        },
+        "camera_frame_population": {
+          "title": {
+            "zh-CN": "FrameTimeline 人口（DisplayFrame / SurfaceFrame 分开）",
+            "en": "Camera Frame Population"
+          },
+          "columns": {
+            "frame_kind": {
+              "label": {
+                "zh-CN": "帧类型",
+                "en": "Frame Kind"
+              }
+            },
+            "upid": {
+              "label": {
+                "zh-CN": "UPID",
+                "en": "UPID"
+              }
+            },
+            "process_name": {
+              "label": {
+                "zh-CN": "进程",
+                "en": "Process Name"
+              }
+            },
+            "layer_name": {
+              "label": {
+                "zh-CN": "Surface layer（DisplayFrame 为空）",
+                "en": "Layer Name"
+              }
+            },
+            "frame_count": {
+              "label": {
+                "zh-CN": "原始条目数",
+                "en": "Frame Count"
+              }
+            },
+            "dropped_frames": {
+              "label": {
+                "zh-CN": "Dropped 条目数",
+                "en": "Dropped Frames"
+              }
+            },
+            "incomplete_frames": {
+              "label": {
+                "zh-CN": "未完成条目数",
+                "en": "Incomplete Frames"
+              }
+            },
+            "window_excluded_endpoints": {
+              "label": {
+                "zh-CN": "完成但呈现端在窗外的条目数",
+                "en": "Window Excluded Endpoints"
+              }
+            },
+            "prediction_error_frames": {
+              "label": {
+                "zh-CN": "Prediction Error 条目数",
+                "en": "Prediction Error Frames"
+              }
+            },
+            "scope": {
+              "label": {
+                "zh-CN": "范围",
+                "en": "Scope"
+              }
+            },
+            "limitation": {
+              "label": {
+                "zh-CN": "边界",
+                "en": "Limitation"
+              }
+            }
+          },
+          "synthesizeLabels": {
+            "field:frame_kind": {
+              "zh-CN": "帧类型",
+              "en": "Frame Kind"
+            },
+            "field:upid": {
+              "zh-CN": "UPID",
+              "en": "UPID"
+            },
+            "field:process_name": {
+              "zh-CN": "进程",
+              "en": "Process Name"
+            },
+            "field:layer_name": {
+              "zh-CN": "Surface layer（DisplayFrame 为空）",
+              "en": "Layer Name"
+            },
+            "field:frame_count": {
+              "zh-CN": "原始条目数",
+              "en": "Frame Count"
+            },
+            "field:dropped_frames": {
+              "zh-CN": "Dropped 条目数",
+              "en": "Dropped Frames"
+            },
+            "field:incomplete_frames": {
+              "zh-CN": "未完成条目数",
+              "en": "Incomplete Frames"
+            },
+            "field:window_excluded_endpoints": {
+              "zh-CN": "完成但呈现端在窗外的条目数",
+              "en": "Window Excluded Endpoints"
+            },
+            "field:prediction_error_frames": {
+              "zh-CN": "Prediction Error 条目数",
+              "en": "Prediction Error Frames"
             }
           }
         },
@@ -8863,6 +9431,114 @@
             "field:source": {
               "zh-CN": "来源",
               "en": "Source"
+            }
+          }
+        },
+        "camera_surface_cadence": {
+          "title": {
+            "zh-CN": "同 surface marker 的呈现节奏与关联覆盖",
+            "en": "Camera Surface Cadence"
+          },
+          "columns": {
+            "sf_upid": {
+              "label": {
+                "zh-CN": "SfUPID",
+                "en": "SF UPID"
+              }
+            },
+            "bindable_surface": {
+              "label": {
+                "zh-CN": "BindableSurface",
+                "en": "Surface marker"
+              }
+            },
+            "observed_buffer_keys": {
+              "label": {
+                "zh-CN": "观测 buffer 键数",
+                "en": "Observed Buffer Keys"
+              }
+            },
+            "presented_buffers": {
+              "label": {
+                "zh-CN": "关联到呈现端的 buffer 数",
+                "en": "Presented Buffers"
+              }
+            },
+            "unavailable_bindings": {
+              "label": {
+                "zh-CN": "缺失或歧义关联数",
+                "en": "Unavailable Bindings"
+              }
+            },
+            "observed_intervals": {
+              "label": {
+                "zh-CN": "同 surface 呈现间隔数",
+                "en": "Observed Intervals"
+              }
+            },
+            "p95_present_interval_ns": {
+              "label": {
+                "zh-CN": "P95同 surface 呈现间隔",
+                "en": "P95 Present Interval ns"
+              }
+            },
+            "max_present_interval_ns": {
+              "label": {
+                "zh-CN": "最大同 surface 呈现间隔",
+                "en": "Max Present Interval ns"
+              }
+            },
+            "arrival_binding_status": {
+              "label": {
+                "zh-CN": "App 到达关联状态",
+                "en": "Arrival Binding Status"
+              }
+            },
+            "scope": {
+              "label": {
+                "zh-CN": "范围",
+                "en": "Scope"
+              }
+            },
+            "limitation": {
+              "label": {
+                "zh-CN": "边界",
+                "en": "Limitation"
+              }
+            }
+          },
+          "synthesizeLabels": {
+            "field:sf_upid": {
+              "zh-CN": "SfUPID",
+              "en": "SF UPID"
+            },
+            "field:bindable_surface": {
+              "zh-CN": "BindableSurface",
+              "en": "Surface marker"
+            },
+            "field:observed_buffer_keys": {
+              "zh-CN": "观测 buffer 键数",
+              "en": "Observed Buffer Keys"
+            },
+            "field:presented_buffers": {
+              "zh-CN": "关联到呈现端的 buffer 数",
+              "en": "Presented Buffers"
+            },
+            "field:unavailable_bindings": {
+              "zh-CN": "缺失或歧义关联数",
+              "en": "Unavailable Bindings"
+            },
+            "field:observed_intervals": {
+              "zh-CN": "同 surface 呈现间隔数",
+              "en": "Observed Intervals"
+            },
+            "field:p95_present_interval_ns": {
+              "zh-CN": "P95同 surface 呈现间隔",
+              "en": "P95 Present Interval ns"
+            },
+            "field:arrival_binding_status": {
+              "zh-CN": "App 到达关联状态",
+              "en": "Arrival Binding Status"
             }
           }
         },

@@ -169,6 +169,40 @@ function fixtureScenario() {
   };
 }
 
+test('encodes native DisplayFrames separately from SurfaceFrames and preserves the surface default', () => {
+  const scenario = fixtureScenario();
+  scenario.actors.processes.push({id: 'sf', name: '/system/bin/surfaceflinger'});
+  const surface = {type: 'frame-timeline', at_ns: '180000000', duration_ns: '5000000',
+    process: 'app', cookie: 900, token: 70, display_frame_token: 80, layer_name: 'FixturePreview'};
+  const options = {anchorNs: '1000000000', usedPids: new Set(), sequenceId: 717171};
+  const baseline = {...scenario, signals: [...scenario.signals, surface]};
+  const explicit = {...scenario, signals: [...scenario.signals, {...surface, frame_kind: 'surface'}]};
+  assert.deepEqual(encodeScenarioOverlay(repoRoot, baseline, options).buffer,
+    encodeScenarioOverlay(repoRoot, explicit, {...options, usedPids: new Set()}).buffer);
+  scenario.signals.push(surface,
+    {type: 'frame-timeline', frame_kind: 'display', at_ns: '200000000', duration_ns: '10000000',
+      process: 'sf', cookie: 901, token: 80, jank_type: 4, present_type: 3, on_time_finish: true},
+    {type: 'frame-timeline', frame_kind: 'display', at_ns: '215000000', duration_ns: '25000000',
+      process: 'sf', cookie: 902, token: 81, jank_type: 4, present_type: 3, on_time_finish: true});
+  const overlay = encodeScenarioOverlay(repoRoot, scenario, {...options, usedPids: new Set()});
+  const output = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'trace-display-frame-')), 'trace.pftrace');
+  materializeTrace(Buffer.alloc(0), overlay.buffer, output);
+  assert.match(queryTrace(output, `
+    WITH d AS (SELECT ts,ts+dur AS pe FROM actual_frame_timeline_slice WHERE surface_frame_token IS NULL)
+    SELECT (SELECT COUNT(*) FROM d) AS display_frames,
+      (SELECT COUNT(*) FROM actual_frame_timeline_slice WHERE surface_frame_token IS NOT NULL) AS surface_frames,
+      (SELECT COUNT(*) FROM flow) AS flows,
+      (SELECT MAX(pe)-MIN(pe) FROM d) AS endpoint_gap,
+      (SELECT MAX(ts)-MIN(ts) FROM d) AS start_gap,
+      (SELECT COUNT(*) FROM actual_frame_timeline_slice WHERE surface_frame_token IS NULL
+        AND present_type='Early Present' AND on_time_finish=1 AND jank_type='Prediction Error') AS early_display
+  `), /\n2,1,1,30000000,15000000,2\s*$/);
+  for (const invalid of [{frame_kind: 'unknown'}, {present_type: 6}, {on_time_finish: 'yes'}]) {
+    assert.throws(() => encodeScenarioOverlay(repoRoot, {...scenario, signals: [{...surface, ...invalid}]},
+      {...options, usedPids: new Set()}), /frame-timeline/);
+  }
+});
+
 function managedHeapSignal() {
   return {
     type: 'managed-heap-graph',

@@ -12,6 +12,12 @@ import {
 
 const TRACE_FILE = 'launch_light.pftrace';
 const STEP_IDS = [
+  'camera_frame_population',
+  'camera_callback_cadence',
+  'camera_display_cadence',
+  'camera_surface_cadence',
+  'camera_buffer_delivery',
+  'camera_binder_execution',
   'evidence_coverage',
   'camera_process_candidates',
   'camera_slice_candidates',
@@ -55,6 +61,11 @@ describeWithTrace('camera_trace_evidence skill', TRACE_FILE, () => {
       expect(result.success).toBe(true);
       expect(result.error).toBeUndefined();
       expect(Array.isArray(result.data)).toBe(true);
+      expect(result.scopeProvenance?.entries).toEqual([
+        expect.objectContaining({role: 'global_context', sourceStepId: result.stepId,
+          scope: expect.objectContaining({mode: 'unscoped'})}),
+      ]);
+      expect(result.scopeProvenance?.entries.some(entry => entry.role === 'target')).toBe(false);
     }
   }, 60000);
 
