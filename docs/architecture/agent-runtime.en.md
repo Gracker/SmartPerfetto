@@ -239,11 +239,23 @@ SmartPerfetto analysis capability is registered through
 execution, Skill invocation, SQL schema lookup, planning/hypothesis tools,
 artifacts, memory, code-aware lookup, baselines, and comparison tools.
 
-The Pi adapter caps each final model-facing tool result at 64 KiB of UTF-8,
-including JSON escaping. Smaller results stay intact; oversized results become
-valid JSON marked `truncated`, with the original size, an incomplete text preview,
-and native execution facts and artifact locators that fit. Original `details`
-and backing evidence stay unchanged. Re-read a cut artifact page from its current
+Where safe, the Pi adapter puts structured tool bodies and execution receipts in
+one JSON object, retaining surrounding guidance in `toolGuidance` without another
+escaped text wrapper. Field conflicts or producer-replaced text keep the original
+MCP wrapper, avoiding overwritten fields or recovered hidden data. Each final
+model-facing result still has a 64 KiB UTF-8 limit. An oversized Skill catalog
+prioritizes every artifact's id, step and evidence locators. Reduced inline
+previews retain numbers, booleans and nulls,
+explicitly list omitted long-string/structured columns, then omit previews if
+needed. Other oversized results remain valid JSON marked `truncated`, with the
+original size, incomplete text preview, and execution facts and locators that fit.
+Original `details` and backing evidence stay unchanged.
+An oversized full `list_skills` catalog retains every id, type and scope
+declaration before descriptive metadata. Omitted fields are explicit; a narrower
+`category` returns full metadata. Discovery executes no Skill and does not verify
+identity. If even those declarations cannot fit, the result remains explicitly
+incomplete rather than claiming every entry is visible.
+Re-read a cut artifact page from its current
 offset with a smaller limit, rather than jumping to its original nextOffset;
 a single oversized row requires fewer query columns or less cell content.
 This bounds one result; accumulated results can still exhaust the context window.

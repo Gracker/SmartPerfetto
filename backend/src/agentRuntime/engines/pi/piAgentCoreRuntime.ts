@@ -102,7 +102,7 @@ import {
   readToolResultFacts,
 } from '../../../agentv3/planToolCallRecorder';
 import {assessRuntimeDraft} from '../../runtimeDraftDiagnostics';
-import {decodeRuntimeToolResult} from '../../runtimeToolResult';
+import {decodeRuntimeToolResult, runtimeToolReceiptMetadata} from '../../runtimeToolResult';
 import type { ClaimVerificationResult } from '../../../types/claimVerification';
 import type {
   RuntimeToolConcurrencyPolicy,
@@ -903,10 +903,88 @@ export function projectPiAgentCoreEventToStreamingUpdate(
   }
 }
 
+/** Keep the producer JSON as JSON, instead of embedding it in an escaped MCP text string. */
+function piToolResultText(result: RuntimeToolResult): string {
+  const body = result.structuredContent;
+  const block = result.content.length === 1 ? result.content[0] : undefined;
+  if (!body || block?.type !== 'text' || typeof block.text !== 'string') return stringifyRuntimeToolResult(result);
+  // These names belong to the transport projection. Keep the original wrapper
+  // if flattening would replace a producer-owned field with transport metadata.
+  if (['_meta', 'toolGuidance', 'isError'].some(key => Object.prototype.hasOwnProperty.call(body, key))) {
+    return stringifyRuntimeToolResult(result);
+  }
+  const json = JSON.stringify(body);
+  const offset = block.text.indexOf(json);
+  if (offset < 0) return stringifyRuntimeToolResult(result);
+  const before = block.text.slice(0, offset);
+  const after = block.text.slice(offset + json.length);
+  return JSON.stringify({...body,
+    _meta: runtimeToolReceiptMetadata(readToolResultFacts(result)),
+    ...(result.isError === true ? {isError: true} : {}),
+    ...(before || after ? {toolGuidance: {before, after}} : {}),
+  });
+}
+
+/**
+ * A text prefix can cut the id-to-step map in half. Preserve every artifact
+ * locator before spending space on first-row previews; backing data is unchanged.
+ */
+function piArtifactCatalogText(text: string): string | undefined {
+  let body: Record<string, unknown>;
+  try {body = JSON.parse(text);} catch {return undefined;}
+  if (!body || !Array.isArray(body.artifacts) || !body.artifacts.every(artifact => artifact
+    && typeof artifact === 'object' && !Array.isArray(artifact)
+    && typeof artifact.id === 'string' && typeof artifact.rowCount === 'number')) return undefined;
+  const artifacts = (body.artifacts as Array<Record<string, unknown>>).map(artifact => {
+    const {preview, ...locator} = artifact;
+    if (!preview || typeof preview !== 'object' || Array.isArray(preview)) return locator;
+    const kept = Object.fromEntries(Object.entries(preview).filter(([, value]) =>
+      value === null || typeof value === 'number' || typeof value === 'boolean'
+      || typeof value === 'string' && Buffer.byteLength(value) <= 160));
+    const omitted = Object.keys(preview).filter(key => !Object.prototype.hasOwnProperty.call(kept, key));
+    return {...locator, preview: kept, ...(omitted.length ? {previewOmittedColumns: omitted} : {})};
+  });
+  const project = (items: typeof artifacts) => JSON.stringify({...body, artifacts: items,
+    inlinePreviewsReduced: true,
+    inlinePreviewHint: 'Artifact locators are preserved. Omitted preview columns are not absent; '
+      + 'fetch only the required artifact summary or targeted rows. Backing evidence is unchanged.',
+  });
+  const withScalars = project(artifacts);
+  if (Buffer.byteLength(withScalars) <= MODEL_ROW_PAGE_MAX_BYTES) return withScalars;
+  const catalogOnly = project(artifacts.map(({preview: _preview, ...locator}) => ({...locator, previewOmitted: true})));
+  return Buffer.byteLength(catalogOnly) <= MODEL_ROW_PAGE_MAX_BYTES ? catalogOnly : undefined;
+}
+
+/** A registry prefix can hide whole Skills; prioritize ids, types and scope over descriptive metadata. */
+function piSkillCatalogText(result: RuntimeToolResult): string | undefined {
+  const block = result.content.length === 1 ? result.content[0] : undefined;
+  if (result.isError === true || block?.type !== 'text' || typeof block.text !== 'string') return undefined;
+  let skills: unknown;
+  try {skills = JSON.parse(block.text);} catch {return undefined;}
+  if (!Array.isArray(skills) || !skills.every(skill => skill && typeof skill === 'object'
+    && !Array.isArray(skill) && typeof skill.id === 'string')) return undefined;
+  const metadata = (skills as Array<Record<string, unknown>>)
+    .map(({description: _description, keywords: _keywords, displayName: _displayName,
+      origin: _origin, localizationStatus: _localizationStatus, ...entry}) => entry);
+  const catalog = {
+    matched: skills.length, skills: metadata, catalogMetadataReduced: true,
+    omittedFields: ['description', 'keywords', 'displayName', 'origin', 'localizationStatus'],
+    hint: 'Every matched Skill id, type and scope declaration is retained. Descriptive metadata was omitted; '
+      + 'call list_skills with a narrower category for full metadata. No Skill has been executed.',
+  };
+  const text = stringifyRuntimeToolResult({...result,
+    content: [{...block, text: JSON.stringify(catalog)}],
+  });
+  return Buffer.byteLength(text) <= MODEL_ROW_PAGE_MAX_BYTES ? text : undefined;
+}
+
 function stringifyPiToolResult(toolName: string, result: RuntimeToolResult): Array<{ type: 'text'; text: string }> {
-  const text = stringifyRuntimeToolResult(result);
+  const text = piToolResultText(result);
   const originalBytes = Buffer.byteLength(text);
   if (originalBytes <= MODEL_ROW_PAGE_MAX_BYTES) return [{type: 'text', text}];
+  const catalog = toolName === 'invoke_skill' ? piArtifactCatalogText(text)
+    : toolName === 'list_skills' ? piSkillCatalogText(result) : undefined;
+  if (catalog) return [{type: 'text', text: catalog}];
 
   const body = decodeRuntimeToolResult(result).body;
   const artifactIds = [...new Set([
@@ -925,7 +1003,8 @@ function stringifyPiToolResult(toolName: string, result: RuntimeToolResult): Arr
     ...(result.isError === true ? {isError: true} : {}),
     truncated: true,
     originalBytes,
-    hint: 'Incomplete text preview, not complete data or independently citable evidence. '
+    hint: (toolName === 'list_skills' ? 'Call list_skills with a narrower category for an incomplete Skill catalog. ' : '')
+      + 'Incomplete text preview, not complete data or independently citable evidence. '
       + 'Use fetch_artifact with smaller offset/limit pages when available. If a fetched page was cut, '
       + 'retry its current offset with a smaller limit; do not skip to its original nextOffset. '
       + 'A single oversized row requires a narrower query or less cell content. Omitted data is not absent.',

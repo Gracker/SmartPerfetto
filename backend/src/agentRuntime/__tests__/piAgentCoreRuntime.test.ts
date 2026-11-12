@@ -30,7 +30,7 @@ import {installedPiAiVersion, parsePiAgentCoreModelConfig, piRuntimeFingerprintI
 import {resolvePiCatalogModel} from '../engines/pi/piAgentCoreProvider';
 import * as analysisRunSpecModule from '../analysisRunSpec';
 import type { RuntimeToolResult, SharedToolSpec } from '../runtimeToolSpec';
-import {createRuntimeToolResult, readRuntimeToolResultFacts} from '../runtimeToolResult';
+import {createRuntimeToolResult, readRuntimeToolResultFacts, runtimeToolReceiptMetadata} from '../runtimeToolResult';
 import {MODEL_ROW_PAGE_MAX_BYTES} from '../runtimeLimits';
 import {projectCodeAwareStreamingUpdate} from '../../services/security/codeAwareStreamingUpdateProjection';
 import {createClaudeMcpServer} from '../../agentv3/claudeMcpServer';
@@ -1780,7 +1780,9 @@ describe('experimental Pi agent-core runtime contract', () => {
       allowedToolNames: new Set(['query_trace']),
     });
     const result = await tool.execute('receipt-pi', {sql: 'select 1'}, undefined);
-    expect(JSON.parse(result.content[0].text)).toEqual({_meta: original._meta, content: original.content, isError: true});
+    expect(JSON.parse(result.content[0].text)).toEqual({...original.structuredContent,
+      _meta: original._meta, isError: true,
+      toolGuidance: {before: '[accuracy] {"success":true}\n', after: ''}});
     expect(readRuntimeToolResultFacts(result.content[0].text)).toEqual({success: false, planPhaseId: 'p1'});
     expect(result.details).toBe(original);
     expect(result.isError).toBe(true);
@@ -1789,6 +1791,118 @@ describe('experimental Pi agent-core runtime contract', () => {
       type: 'tool_execution_end', toolName: 'query_trace', toolCallId: 'receipt-pi', result,
     } as PiAgentCoreEvent);
     expect(event).toMatchObject({type: 'agent_response', content: {isError: true}});
+  });
+
+  it('sends structured results once without escaped MCP wrappers, retaining exact numbers and guidance', async () => {
+    const payload = {success: true, artifactId: 'art-1', columns: ['duration_ns', 'detail'],
+      rows: [[1234567890123, JSON.stringify({nested: '"\\'.repeat(5000)})]]};
+    const original = createRuntimeToolResult(payload, {decorate: text => text + '\nKeep the current scope.'});
+    const tool = createPiAgentCoreToolFromSharedSpec(createSharedSpec(async () => original), {
+      allowedToolNames: new Set(['query_trace']),
+    });
+    const result = await tool.execute('no-duplicate-json', {}, undefined);
+    const projected = JSON.parse(result.content[0].text);
+    expect(projected).toMatchObject(payload);
+    expect(projected.toolGuidance.after).toBe('\nKeep the current scope.');
+    expect(projected).not.toHaveProperty('content');
+    expect(Buffer.byteLength(result.content[0].text)).toBeLessThan(Buffer.byteLength(JSON.stringify({
+      _meta: original._meta, content: original.content})));
+    expect(result.details).toBe(original);
+  });
+
+  it('preserves the full artifact-to-step map when oversized previews would cut off later measurements', async () => {
+    const artifacts = Array.from({length: 30}, (_, index) => ({
+      id: `art-${index + 1}`, stepId: `measurement-${index + 1}`, title: `Measurement ${index + 1}`, rowCount: 32,
+      sourceToolCallId: 'invoke:original', evidenceRefId: `evidence-${index + 1}`,
+      preview: {duration_ns: 1234567890123 + index, optional: null,
+        detail: JSON.stringify({nested: 'x'.repeat(5000)})},
+    }));
+    const original = createRuntimeToolResult({success: true, skillId: 'dynamic-skill', artifacts});
+    const tool = createPiAgentCoreToolFromSharedSpec({...createSharedSpec(async () => original), name: 'invoke_skill'}, {
+      allowedToolNames: new Set(['invoke_skill']),
+    });
+    const result = await tool.execute('complete-catalog', {}, undefined);
+    const projected = JSON.parse(result.content[0].text);
+    expect(Buffer.byteLength(result.content[0].text)).toBeLessThanOrEqual(MODEL_ROW_PAGE_MAX_BYTES);
+    expect(projected.inlinePreviewsReduced).toBe(true);
+    expect(projected.artifacts).toHaveLength(30);
+    for (const [index, artifact] of projected.artifacts.entries()) {
+      expect(artifact).toEqual({...artifacts[index], preview: {duration_ns: 1234567890123 + index, optional: null},
+        previewOmittedColumns: ['detail']});
+    }
+    expect(result.details).toBe(original);
+    expect(original.structuredContent.artifacts).toBe(artifacts);
+  });
+
+  it('retains every registered Skill and its exact scope when the full catalog exceeds the model budget', async () => {
+    const skills = Array.from({length: 80}, (_, index) => ({
+      id: `registered-skill-${index}`, displayName: `Skill ${index}`, type: 'atomic',
+      description: `METADATA_CANARY_${index} ${'中文🙂 description '.repeat(300)}`,
+      keywords: ['cpu', 'camera'], origin: {kind: 'builtin'}, localizationStatus: {state: 'source'},
+      producerQualification: `qualification-${index}`,
+      exactProcessScope: index % 2 ? {supported: false, reason: `unsupported-unit-${index}`}
+        : {supported: true, partial: true, limitations: [`global-context-${index}`]},
+    }));
+    const original: RuntimeToolResult = {_meta: runtimeToolReceiptMetadata({success: true}),
+      content: [{type: 'text', text: JSON.stringify(skills)}]};
+    const tool = createPiAgentCoreToolFromSharedSpec({...createSharedSpec(async () => original), name: 'list_skills'}, {
+      allowedToolNames: new Set(['list_skills']),
+    });
+    const result = await tool.execute('complete-skill-directory', {}, undefined);
+    const envelope = JSON.parse(result.content[0].text);
+    const catalog = JSON.parse(envelope.content[0].text);
+    expect(Buffer.byteLength(result.content[0].text)).toBeLessThanOrEqual(MODEL_ROW_PAGE_MAX_BYTES);
+    expect(catalog).toMatchObject({matched: skills.length, catalogMetadataReduced: true,
+      omittedFields: ['description', 'keywords', 'displayName', 'origin', 'localizationStatus']});
+    expect(catalog.skills.map((skill: {id: string}) => skill.id)).toEqual(skills.map(skill => skill.id));
+    for (const [index, skill] of catalog.skills.entries()) {
+      expect(skill.exactProcessScope).toEqual(skills[index].exactProcessScope);
+      expect(skill.type).toBe(skills[index].type);
+      expect(skill.producerQualification).toBe(skills[index].producerQualification);
+      expect(skill).not.toHaveProperty('description');
+      expect(skill).not.toHaveProperty('keywords');
+      expect(skill).not.toHaveProperty('origin');
+    }
+    expect(envelope).not.toHaveProperty('truncated');
+    expect(result.details).toBe(original);
+    expect(original.content[0]).toMatchObject({text: expect.stringContaining('METADATA_CANARY_79')});
+    expect(readRuntimeToolResultFacts(result)).toEqual({success: true});
+  });
+
+  it('does not treat an oversized Skill refusal as a complete registry', async () => {
+    const original: RuntimeToolResult = {_meta: runtimeToolReceiptMetadata({success: false}), isError: true,
+      content: [{type: 'text', text: JSON.stringify([{id: 'refused', description: 'x'.repeat(100_000)}])}]};
+    const tool = createPiAgentCoreToolFromSharedSpec({...createSharedSpec(async () => original), name: 'list_skills'}, {
+      allowedToolNames: new Set(['list_skills']),
+    });
+    const result = await tool.execute('refused-directory', {}, undefined);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({success: false, isError: true, truncated: true});
+    expect(result.content[0].text).toContain('narrower category');
+    expect(result.details).toBe(original);
+  });
+
+  it('does not recover hidden structured data when the producer replaced its visible text', async () => {
+    const original = createRuntimeToolResult({success: true, value: 'PRIVATE_STRUCTURED_CANARY'}, {
+      decorate: () => 'This value was withheld by the producer.',
+    });
+    const tool = createPiAgentCoreToolFromSharedSpec(createSharedSpec(async () => original), {
+      allowedToolNames: new Set(['query_trace']),
+    });
+    const result = await tool.execute('withheld-body', {}, undefined);
+    expect(result.content[0].text).toContain('This value was withheld by the producer.');
+    expect(result.content[0].text).not.toContain('PRIVATE_STRUCTURED_CANARY');
+    expect(result.details).toBe(original);
+  });
+
+  it.each(['_meta', 'toolGuidance', 'isError'])('preserves a producer-owned %s field rather than overwriting it while flattening', async key => {
+    const payload = {success: true, [key]: 'producer-owned value'};
+    const original = createRuntimeToolResult(payload);
+    const tool = createPiAgentCoreToolFromSharedSpec(createSharedSpec(async () => original), {
+      allowedToolNames: new Set(['query_trace']),
+    });
+    const result = await tool.execute('reserved-producer-field', {}, undefined);
+    expect(JSON.parse(result.content[0].text)).toEqual({_meta: original._meta, content: original.content});
+    expect(result.details).toBe(original);
   });
 
   it('preserves every Pi text block in the shared serialization order', async () => {

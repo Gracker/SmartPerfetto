@@ -195,9 +195,15 @@ SmartPerfetto 的分析能力由 `createClaudeMcpServer()` 实现，并通过 `M
 
 注册表只保存与 SDK 无关的共享工具规格（`agentRuntime/runtimeToolSpec.ts`，结果和注解采用 MCP `CallToolResult` / `ToolAnnotations` 形状）；Claude runtime 在自身 engine 内（`engines/claude/claudeSdkTools.ts`）把它们适配为 in-process MCP server。
 
-Pi adapter 对最终交给模型的每份工具结果施加 64 KiB UTF-8 上限，包含 JSON 转义后的大小；
-小结果原样保留，超限结果返回合法 JSON，明确标记 `truncated`、原始大小和不完整文本预览，
-并保留放得下的原生执行事实与 artifact 定位符。原始 `details` 和证据不变。
+Pi adapter 在可安全合并时将结构化工具正文和执行 receipt 放在同一 JSON 对象中，避免再次转义正文；
+前后指导另存于 `toolGuidance`。字段冲突或正文已被生产者替换时保留原 MCP 包装，避免覆盖或恢复隐藏数据。
+最终每份模型可见结果仍受 64 KiB UTF-8 上限约束。
+超限 Skill 目录优先保留所有 artifact 的编号、步骤和证据定位符，缩减内联预览时保留数值、布尔和 null，
+明确列出省略的长字符串/结构列；仍超限时省略预览。不能放下的其他结果继续返回合法 JSON，
+标记 `truncated`、原始大小和不完整文本预览，并保留放得下的执行事实与定位符。原始 `details` 和证据不变。
+超限的完整 `list_skills` 目录优先保留每个 ID、类型及完整作用域声明，明确省略描述性元数据；
+用较窄的 `category` 可取得完整元数据。该投影不执行 Skill，也不将登记的作用域支持当作身份验证。
+目录连这些元数据也放不下时仍明确返回不完整预览，不能声称所有条目可见。
 截断的 artifact 页应从当前 offset 缩小 limit 重读，不能跳到原页的 nextOffset；
 单行仍超限时需缩小查询列或单元格内容。该上限控制单次膨胀，多次结果累计仍可能耗尽上下文。
 
