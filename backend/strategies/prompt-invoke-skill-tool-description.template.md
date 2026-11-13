@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2024-2026 Gracker (Chris) | SmartPerfetto -->
 
-Run a Skill; IDs via list_skills. Use it first for registered metric measurements. After scene_evidence, `fetch_artifact` its tables instead of re-running it. Use required detail Skills for gaps, not untyped SQL.
+Run a Skill. list_skills is a tool, not a Skill ID. Use it first for registered metric measurements. After scene_evidence, `fetch_artifact` its tables instead of re-running it. Use required detail Skills for gaps.
 
 CPU hotspots with observed `perf_counters`: collect event-track deltas via a registered Skill. Counts != deltas; missing callsites only limit symbol attribution.
 

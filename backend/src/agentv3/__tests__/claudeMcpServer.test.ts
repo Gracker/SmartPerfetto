@@ -4499,6 +4499,7 @@ describe('createClaudeMcpServer', () => {
         partial: false,
         unavailable: true,
         skillId: 'surfaceflinger_display_pipeline',
+        discovery: {tool: 'list_skills', arguments: {}},
       });
       expect(mockSkillExecutor.execute).not.toHaveBeenCalled();
     });
