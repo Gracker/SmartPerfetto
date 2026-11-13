@@ -350,6 +350,8 @@ function sameCapturedTable(left: CapturedEvidenceTable | undefined, right: Captu
 }
 
 export class ArtifactStore {
+  /** Multi-step Skills can emit many artifacts per call; keep a bounded long-run working set. */
+  static readonly DEFAULT_MAX_ARTIFACTS = 256;
   private artifacts: Map<string, StoredArtifact> = new Map();
   private readonly executionCaptures = new Map<string, EvidenceReadRecord>();
   private readonly investigationToolObservations = new Map<string, InvestigationToolObservation & {originRunId?: string}>();
@@ -362,7 +364,7 @@ export class ArtifactStore {
   private retainedEvidenceCells = 0;
   private readonly maxRetainedEvidenceCells: number;
 
-  constructor(maxArtifacts = 50) {
+  constructor(maxArtifacts = ArtifactStore.DEFAULT_MAX_ARTIFACTS) {
     this.maxArtifacts = maxArtifacts;
     this.maxRetainedEvidenceCells = resolveRetainedEvidenceCells();
   }

@@ -48,7 +48,7 @@ describe('ArtifactStore evidence retention', () => {
     // conclusion cited art-2 and art-4, which the cache had already dropped, so
     // the verifier reported those claims as unsupported. Witness retention is a
     // separate budget from the payload cache and must survive that eviction.
-    const store = new ArtifactStore();
+    const store = new ArtifactStore(50);
     const first = storeCaptured(store, 1);
     for (let index = 2; index <= 80; index += 1) storeCaptured(store, index);
 
@@ -56,6 +56,23 @@ describe('ArtifactStore evidence retention', () => {
     const [resolved] = await readView(store).resolveReferences([
       {key: 'k', reference: {artifactId: first}, requiredColumns: []}]);
     expect(resolved).toMatchObject({status: 'resolved'});
+  });
+
+  it('keeps early payloads readable across a long multi-step investigation with the default capacity', () => {
+    const store = new ArtifactStore();
+    const first = storeCaptured(store, 1, 3);
+    for (let index = 2; index <= 180; index += 1) storeCaptured(store, index);
+    expect(store.fetch(first, 'summary')).toMatchObject({id: first, rowCount: 3});
+    expect(store.fetch(first, 'rows', 1, 1)).toMatchObject({rows: [{rowIndex: 1, values: [1]}], totalRows: 3, hasMore: true});
+    expect(store.size).toBe(180);
+  });
+
+  it('still bounds payload retention at the configured capacity independently of witnesses', () => {
+    const store = new ArtifactStore(3);
+    const first = storeCaptured(store, 1);
+    for (let index = 2; index <= 4; index += 1) storeCaptured(store, index);
+    expect(store.size).toBe(3);
+    expect(store.fetch(first, 'summary')).toBeUndefined();
   });
 
   it('retains at least what one conclusion may cite', () => {

@@ -4080,7 +4080,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({
             success: false,
-            error: `Artifact ${artifactId} not found — it may have been evicted (LRU cap: 50) or lost after a backend restart. Use invoke_skill to re-execute the skill if you need this data again.`,
+            error: `Artifact ${artifactId} not found — it may have been evicted from the bounded session cache or lost after a backend restart. Use invoke_skill to re-execute the skill if you need this data again.`,
             sourceToolCallId: producer.sourceToolCallId,
             paramsHash: producer.paramsHash,
             planPhaseId: producer.planPhaseId,
