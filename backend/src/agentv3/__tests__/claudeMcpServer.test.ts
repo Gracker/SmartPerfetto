@@ -7410,6 +7410,19 @@ describe('createClaudeMcpServer', () => {
       expect(result.success).toBe(false);
       expect(result.action_required).toBe('run_expected_calls_before_completing_phase');
       expect(result.missingExpectedCalls).toEqual([{ tool: 'invoke_skill', skillId: 'scrolling_analysis' }]);
+      expect(result.missingCalls).toEqual(result.missingExpectedCalls);
+    });
+
+    it('names all generic and structured requirements and excludes successful evidence from the missing calls', async () => {
+      const {tools, analysisPlan} = createTestServer();
+      await callTool(tools, 'submit_plan', {phases: [{id: 'p', name: 'Collect', goal: 'Collect',
+        expectedTools: ['invoke_skill', 'execute_sql', 'fetch_artifact'],
+        expectedCalls: [{tool: 'invoke_skill', skillId: 'scrolling_analysis'}]}], successCriteria: 'Resolve'});
+      analysisPlan.current!.toolCallLog.push({toolName: 'fetch_artifact', timestamp: 1, success: true, matchedPhaseId: 'p'});
+      const result = await callTool(tools, 'update_plan_phase', {phaseId: 'p', status: 'completed'});
+      expect(result).toMatchObject({success: false, error: 'missing_phase_evidence',
+        missingCalls: [{tool: 'invoke_skill', skillId: 'scrolling_analysis'}, {tool: 'execute_sql'}]});
+      expect(analysisPlan.current!.phases[0].status).toBe('pending');
     });
 
     it.each(['not_applicable', 'evidence_unavailable', 'deferred'] as const)('records %s skips without manufacturing success', async kind => {

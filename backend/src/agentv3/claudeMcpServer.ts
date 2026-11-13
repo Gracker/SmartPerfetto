@@ -6291,12 +6291,20 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           : createRuntimeToolResult({success: false, error: 'closed_phase_immutable', phaseId}, {isError: true});
       }
       const evidence = getPhaseToolEvidenceStatus(plan, phase);
-      if (nextStatus === 'completed' && !evidence.satisfied) return createRuntimeToolResult({
-        success: false, error: 'missing_phase_evidence', action_required: evidence.missingExpectedTools.length > 0
-          ? 'run_expected_tools_before_completing_phase' : 'run_expected_calls_before_completing_phase',
-        phaseId, missingExpectedCalls: evidence.missingExpectedCalls, missingExpectedTools: evidence.missingExpectedTools,
-        ...(evidence.missingExpectedTools.length ? {expectedTools: evidence.missingExpectedTools} : {}),
-      }, {isError: true});
+      if (nextStatus === 'completed' && !evidence.satisfied) {
+        const missingCalls = [...evidence.missingExpectedCalls,
+          ...evidence.missingExpectedTools.map(tool => ({tool}))];
+        return createRuntimeToolResult({
+          success: false, error: 'missing_phase_evidence', action_required: evidence.missingExpectedTools.length > 0
+            ? 'run_expected_tools_before_completing_phase' : 'run_expected_calls_before_completing_phase',
+          missingCalls,
+          message: localize(outputLanguage,
+            '仍缺少成功且归属本阶段的调用；按 missingCalls 补齐后再完成阶段。',
+            'Successful calls attributed to this phase are still missing; satisfy every entry in missingCalls before completing it.'),
+          phaseId, missingExpectedCalls: evidence.missingExpectedCalls, missingExpectedTools: evidence.missingExpectedTools,
+          ...(evidence.missingExpectedTools.length ? {expectedTools: evidence.missingExpectedTools} : {}),
+        }, {isError: true});
+      }
       if (nextStatus === 'skipped' && !hasValidPlanSkipDisposition(plan, {...phase, skipDisposition})) {
         return createRuntimeToolResult({success: false, error: 'invalid_skip_disposition', phaseId}, {isError: true});
       }
