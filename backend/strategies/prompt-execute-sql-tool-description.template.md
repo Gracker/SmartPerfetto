@@ -2,4 +2,4 @@
 <!-- Copyright (C) 2024-2026 Gracker (Chris) | SmartPerfetto -->
 
 Current trace; schema lookup when needed. For what Skills and scene_evidence do not cover; cite their artifacts.
-original_trace: native SELECT only,no rewrite/INCLUDE/JOIN/CTE/fallback; default working.
+original_trace: native SELECT only (prelude columns/units),no rewrite/INCLUDE/JOIN/CTE/fallback; default working; omit executionContext.

@@ -2564,6 +2564,12 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       return policyRefusal('use_authorized_existing_evidence', {
         error: 'original_trace_refused', unsupportedReason: error.reason,
         requestedExecutionContext: 'original_trace', executed: false,
+        ...(error.reason === 'unsupported_query' ? {recovery: {
+          action: 'omit_executionContext_for_working_query',
+          hint: localize(outputLanguage,
+            '该查询不属于 original_trace 支持的原生证明子集，不代表 SELECT 无效。普通探索可去掉 executionContext 参数重发；默认 working 可能含 Skill 创建的表，结果不能作为原始 Trace 证明。需要原始证明时保留上下文并缩小查询。未自动切换或执行查询。',
+            'This query is outside the original_trace native-proof subset; the SELECT may still be valid. For ordinary exploration, omit executionContext and retry in working. Working may contain Skill-created tables and is not original-trace proof. If original proof is required, keep the context and narrow the query. No automatic context switch or query execution occurred.'),
+        }} : {}),
       }, {isError: true});
     }
     return createRuntimeToolResult({success: false, requestedExecutionContext: 'original_trace', execution: 'unknown',

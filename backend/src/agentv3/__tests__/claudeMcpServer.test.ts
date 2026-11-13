@@ -929,6 +929,12 @@ describe('MCP original trace SQL context', () => {
           expect(payload).toMatchObject({success: false, executed: false, unsupportedReason: reason, requestedExecutionContext: 'original_trace'});
           expect(payload).not.toHaveProperty('queryReview');
           expect(payload).not.toHaveProperty('executionContext');
+          if (reason === 'unsupported_query') {
+            expect(payload.recovery).toMatchObject({action: 'omit_executionContext_for_working_query'});
+            expect(payload.recovery.hint).toContain('executionContext');
+          } else {
+            expect(payload).not.toHaveProperty('recovery');
+          }
           const calls = h.mockTpService.queryOriginalTraceEvidence.mock.calls;
           expect(calls[calls.length - 1][1]).toBe(sql);
         }
