@@ -1692,7 +1692,8 @@ describe('createClaudeMcpServer', () => {
       const meta = (name: string) => ({display_name: name, description: name});
       // Plain SQL, no SQL at all, a missing reference and a cycle, whose reason depends on where the walk starts.
       const definitions: SkillDefinition[] = [
-        {name: 'plain_sql', type: 'atomic', version: '1', meta: meta('plain'), sql: 'SELECT 1'},
+        {name: 'plain_sql', type: 'atomic', version: '1', meta: meta('plain'), sql: 'SELECT 1',
+          inputs: [{name: 'timeout_ns', type: 'timestamp', required: true, description: 'Timeout (ns)'}]},
         {name: 'empty_skill', type: 'composite', version: '1', meta: meta('empty'), steps: []},
         {name: 'missing_ref', type: 'composite', version: '1', meta: meta('missing'), steps: [{id: 'ref', skill: 'absent_skill'}]},
         {name: 'cycle_a', type: 'composite', version: '1', meta: meta('a'), steps: [{id: 'b', skill: 'cycle_b'}]},
@@ -1724,6 +1725,12 @@ describe('createClaudeMcpServer', () => {
       const listed = await callTool(server.tools, 'list_skills', {});
       const byName = new Map(definitions.map(definition => [definition.name, definition]));
       const fragments = new Map<string, string>();
+      const detail = await callTool(server.tools, 'list_skills', {skillId: 'plain_sql'});
+      expect(detail).toMatchObject({skillId: 'plain_sql', parameterContract: {
+        requiredParams: ['timeout_ns'], allowedParams: ['timeout_ns'],
+        inputs: [{name: 'timeout_ns', description: 'Timeout (ns)'}],
+      }, exactProcessScope: listed.find((skill: any) => skill.id === 'plain_sql').exactProcessScope});
+      expect(server.mockSkillExecutor.execute).not.toHaveBeenCalled();
       for (const definition of definitions) {
         expect([definition.name, listed.find((skill: any) => skill.id === definition.name)?.exactProcessScope])
           .toEqual([definition.name, getExactProcessScopeSupport(definition, byName, fragments)]);
@@ -3011,6 +3018,8 @@ describe('createClaudeMcpServer', () => {
         success: false,
         skillId: 'blocking_chain_analysis',
         invalidParams: ['thread_name'],
+        parameterContract: {requiredParams: ['process_name', 'start_ts', 'end_ts'],
+          allowedParams: expect.arrayContaining(['process_name', 'start_ts', 'end_ts'])},
         action_required: 'retry_invoke_skill_with_declared_params',
       });
       expect(mockSkillExecutor.execute).not.toHaveBeenCalled();

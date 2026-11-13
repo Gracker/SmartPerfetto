@@ -171,6 +171,7 @@ import {
   isInvocableSkill,
   normalizeSkillRunParams,
   prepareSkillRun,
+  skillRunParameterContract,
   stableSkillEvidenceRefId,
   undeclaredSkillRunParams,
   type EvidenceProducerContext,
@@ -2884,7 +2885,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       planPhaseId: z.string().optional().describe('Optional explicit plan phase ID for this invocation.'),
       skillId: z.string().describe('Skill identifier (e.g. "scrolling_analysis", "jank_frame_detail", "cpu_analysis")'),
       params: z.record(z.string(), z.any()).optional().describe(
-        'Optional parameters to pass to the skill. Common: { process_name, start_ts, end_ts, max_frames_per_session }'
+        'Skill-specific parameters; inspect list_skills({skillId}) for required names, types, units and scope. Parameters are not shared across a Skill family.'
       ),
     },
     async ({ skillId, params, planPhaseId }, extra) => {
@@ -2960,6 +2961,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           {skillId, params, registry: effectiveSkillRegistry, signal});
         if (preparation.status === 'refused') {
           const refusal = preparation.refusal;
+          const definition = effectiveSkillRegistry.getSkill(skillId);
+          const parameterContract = definition ? skillRunParameterContract(definition) : undefined;
           switch (refusal.kind) {
             case 'unavailable':
               return unavailableSkillResult(skillId);
@@ -2979,6 +2982,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             }
             case 'undeclared_params':
               return createRuntimeToolResult({ success: false, skillId,
+                parameterContract,
                 invalidParams: refusal.invalidParams, error: `Undeclared Skill parameters: ${refusal.invalidParams.join(', ')}`,
                 action_required: 'retry_invoke_skill_with_declared_params' });
             case 'process_selector_required':
@@ -2990,6 +2994,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
                 action_required: 'retry_invoke_skill_with_process_selector' });
             case 'identity_gate':
               return createRuntimeToolResult({ success: false, skillId,
+                parameterContract,
                 error: refusal.error, action_required: 'choose_supported_exact_skill_or_correct_process_selector' });
             case 'undeclared_params_after_resolution':
               return {
@@ -3000,6 +3005,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
                     partial: false,
                     skillId,
                     invalidParams: refusal.invalidParams,
+                    parameterContract,
                     error: `Undeclared Skill parameters: ${refusal.invalidParams.join(', ')}`,
                     action_required: 'retry_invoke_skill_with_declared_params',
                   }),
@@ -3077,7 +3083,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         const resultNotes = options.skillResultNotes?.notesFor(skillResultNoteTargets(result.displayResults,
           artifactIdsByDisplayIndex, modelDisplayProjections, id => effectiveSkillRegistry.getSkill(id)));
         const facts = outcome.facts && modelSkillResultFacts(outcome.facts, artifactAccessPolicy.forbidRows);
-        const resultFactFields = {...(resultNotes ? {resultNotes} : {}), ...(facts ? {facts} : {})};
+        const resultFactFields = {...(resultNotes ? {resultNotes} : {}), ...(facts ? {facts} : {}),
+          ...(!result.success ? {parameterContract: skillRunParameterContract(skillDef)} : {})};
 
         // Capture skill SQL errors in this turn's learning window — skill SQL is
         // the most complex and most likely to break across Perfetto versions.
@@ -3336,6 +3343,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     'Use this to discover which skills exist before invoking one. ' +
     'Filter by category to narrow results, or use exact metricId for paged registry-declared evidence producers and their inputs.',
     {
+      skillId: z.string().optional().describe('Exact Skill ID: return its complete input contract and exact-process support, including in fast mode. Metadata only; does not execute it.'),
       category: z.string().optional().describe(
         'Optional filter: only return skills whose keywords or tags match this category'
       ),
@@ -3346,8 +3354,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         'Producer page offset from nextOffset; only valid with metricId. Default 0.'
       ),
     },
-    async ({ category, metricId, offset }) => {
+    async ({ skillId, category, metricId, offset }) => {
       try {
+        if (skillId !== undefined && (metricId !== undefined || offset !== undefined)) {
+          return createRuntimeToolResult({success: false, reason: 'conflicting_skill_lookup_filters'}, {isError: true});
+        }
         if (offset !== undefined && (metricId === undefined || !Number.isSafeInteger(offset) || offset < 0)) {
           return createRuntimeToolResult({success: false, reason: 'invalid_producer_offset'}, {isError: true});
         }
@@ -3359,6 +3370,15 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           {registryFingerprint: pinnedSkillRegistryContentFingerprint});
         const scopeCapability = (id: string) =>
           scopeCatalog.get(id) ?? { supported: false, reason: 'Skill definition is unavailable' };
+        if (skillId !== undefined) {
+          const definition = definitions.get(skillId);
+          if (!definition) return unavailableSkillResult(skillId);
+          return createRuntimeToolResult({skillId, type: definition.type,
+            parameterContract: skillRunParameterContract(definition), exactProcessScope: scopeCapability(skillId),
+            notice: 'Registry metadata only; no Skill has been executed. exactProcessScope.supported=false forbids exact-UPID invocation.'});
+        }
+        const requiredParams = (id: string) => (definitions.get(id)?.inputs ?? [])
+          .filter(input => input.required && input.default === undefined).map(input => input.name);
         const allSkills = await skillAdapter.listSkills(outputLanguage);
         const filtered = category
           ? allSkills.filter(s =>
@@ -3408,6 +3428,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
                   description: firstSentence(s.description, QUICK_SKILL_DESCRIPTION_CHARS),
                   ...(ranksAgainstQuery ? {matchedByQuery: s.matchedByQuery} : {}),
                   exactProcessScope: scopeCapability(s.id),
+                  requiredParams: requiredParams(s.id),
                 })),
                 ...(remainingIds.length > 0
                   ? {
@@ -3434,6 +3455,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
                 origin: s.origin,
                 localizationStatus: s.localizationStatus,
                 exactProcessScope: scopeCapability(s.id),
+                requiredParams: requiredParams(s.id),
               }))
             ),
           }],

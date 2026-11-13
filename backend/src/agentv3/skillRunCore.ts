@@ -228,13 +228,7 @@ export function normalizeSkillRunParams(
   return p;
 }
 
-export function undeclaredSkillRunParams(
-  skill: SkillDefinition,
-  params: Record<string, any> | undefined,
-  beforeEnrichment = false,
-): string[] {
-  if (!params) return [];
-  const reserved = Object.keys(params).filter(key => key === '__process_scope' || key.startsWith('__process_scope.'));
+function allowedSkillRunParams(skill: SkillDefinition, beforeEnrichment: boolean): Set<string> {
   const selectors = getConsumableProcessIdentitySelectors(skill);
   const allowed = new Set([...(skill.inputs || []).map(input => input.name), ...selectors]);
   if (beforeEnrichment) {
@@ -245,6 +239,33 @@ export function undeclaredSkillRunParams(
       }
     }
   }
+  return allowed;
+}
+
+/** Discovery and refusal metadata use the same declaration/selector rules as invocation. */
+export function skillRunParameterContract(skill: SkillDefinition) {
+  const inputs = skill.inputs ?? [];
+  const required = inputs.filter(input => input.required && input.default === undefined);
+  return {
+    inputs,
+    requiredParams: required.map(input => input.name),
+    allowedParams: [...allowedSkillRunParams(skill, true)].sort(),
+    acceptsUndeclaredParams: !skill.inputs,
+    // Placeholders, deliberately not invented trace values or runnable defaults.
+    invocationTemplate: {tool: 'invoke_skill', arguments: {skillId: skill.name,
+      params: Object.fromEntries(required.map(input => [input.name, `<${input.type}: from selected evidence>`]))}},
+    templateNotice: 'Replace placeholders with actual evidence values; preserve units, target and window. This is metadata, not executed evidence.',
+  };
+}
+
+export function undeclaredSkillRunParams(
+  skill: SkillDefinition,
+  params: Record<string, any> | undefined,
+  beforeEnrichment = false,
+): string[] {
+  if (!params) return [];
+  const reserved = Object.keys(params).filter(key => key === '__process_scope' || key.startsWith('__process_scope.'));
+  const allowed = allowedSkillRunParams(skill, beforeEnrichment);
   // Legacy definitions without input schemas remain open for ordinary params,
   // but identity selectors still need a declared consumer.
   return [...new Set([...reserved, ...Object.keys(params).filter(key =>

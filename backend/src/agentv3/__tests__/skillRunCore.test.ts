@@ -33,7 +33,7 @@ jest.mock('../../services/skillEngine/skillLoader', () => {
 
 import {ArtifactStore} from '../artifactStore';
 import {createClaudeMcpServer} from '../claudeMcpServer';
-import {executePreparedSkillRun, prepareSkillRun, type SkillRunDeps} from '../skillRunCore';
+import {executePreparedSkillRun, prepareSkillRun, skillRunParameterContract, undeclaredSkillRunParams, type SkillRunDeps} from '../skillRunCore';
 import {summarizeToolCallInput} from '../toolCallSummary';
 import {SkillExecutor} from '../../services/skillEngine/skillExecutor';
 import type {SkillRegistryView} from '../../services/skillEngine/skillAnalysisAdapter';
@@ -44,6 +44,22 @@ const TRACE = 'trace-core';
 const COLUMNS = ['start', 'end', 'upid', 'utid', 'freq', 'status', 'coverage', 'denominator'];
 const ROW = [10, 110, 42, 43, 1234, 'observed', 100, 100];
 const registry = {getSkill: (id: string) => id === 'entry_fixture' ? fixtureSkill : undefined} as unknown as SkillRegistryView;
+
+it('projects required/defaulted inputs and the same accepted names used by invocation without widening global scope', () => {
+  const skill = {...fixtureSkill, inputs: [
+    {name: 'start_ts', type: 'timestamp', required: true, description: 'Start (ns)'},
+    {name: 'end_ts', type: 'timestamp', required: true},
+    {name: 'limit', type: 'integer', required: true, default: 10},
+  ]} as SkillDefinition;
+  const contract = skillRunParameterContract(skill);
+  expect(contract.requiredParams).toEqual(['start_ts', 'end_ts']);
+  expect(contract.inputs).toEqual(skill.inputs);
+  expect(contract.allowedParams).toEqual(['end_ts', 'limit', 'start_ts']);
+  expect(contract.acceptsUndeclaredParams).toBe(false);
+  expect(contract.invocationTemplate.arguments.params.start_ts).toContain('from selected evidence');
+  for (const name of contract.allowedParams) expect(undeclaredSkillRunParams(skill, {[name]: 1}, true)).toEqual([]);
+  expect(undeclaredSkillRunParams(skill, {process_name: 'do-not-ignore', upid: 42}, true)).toEqual(['process_name', 'upid']);
+});
 const tp = () => ({query: async () => ({columns: COLUMNS, rows: [ROW], durationMs: 1})}) as any;
 
 function executor(): SkillExecutor {
