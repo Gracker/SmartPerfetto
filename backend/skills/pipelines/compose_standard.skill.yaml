@@ -20,7 +20,7 @@ meta:
   description: "Jetpack Compose + HWUI RenderThread, Recomposition driven"
   icon: "android"
   family: hwui
-  doc_path: rendering_pipelines/S02_aosp_standard_type.md
+  doc_path: skills/pipelines/index.yaml#rendering_types.S02_AOSP_STANDARD
   # ----- Article-grounded signature (S02 Compose 章节) -----
   s_article_ref: "S02"   # Compose 走相同 HWUI 路径，仅 main thread 工作形态不同
   four_features:
@@ -68,7 +68,7 @@ detection:
     - thread: CrRendererMain   # WebView
 
 teaching:
-  source: "rendering_pipelines/S02_aosp_standard_type.md"
+  source: "skills/pipelines/index.yaml#rendering_types.S02_AOSP_STANDARD"
 auto_pin:
   instructions:
     - pattern: "^VSYNC-app$"

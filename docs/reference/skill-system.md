@@ -800,10 +800,15 @@ Synthesize 数据随 Artifact 一起存储，agent 可通过 `fetch_artifact` �
 
 Pipeline Skills 用于 Android 渲染管线识别和教学，但“类型”和“检测条目”不是同一层：
 
-- `docs/rendering_pipelines/*.md` 是固定上游 commit 的 Android 17 教学真相；
-- `backend/skills/pipelines/index.yaml` 是具体 rendering type 与检测条目的实时清单；
+- `backend/skills/pipelines/index.yaml` 保存产品自有的精简教学卡片与检测映射；
 - `variant` 可以成为主类型，`feature` 只提供附加证据；
-- 单个 Pipeline Skill 保存信号、auto-pin、分析建议，并通过 `teaching.source` 引用权威文档。
+- 每条 Pipeline Skill 保存信号、auto-pin、分析建议，通过 `teaching.source` 指向 catalog 卡片；
+- 原始参考文章不入库、不打包，也不进入公共投影。
+
+同一信号的版本别名用 `slice_patterns: [旧模式, 新模式]` 表示 OR，组内只计算
+一份权重。同一实际名称被多个模式命中时，事件次数不重复累计；不同实际名称
+仍各自计数。required 以组内命中数判断，exclude 任一别名命中即排除。事件次数
+不代表生产或显示帧数。
 
 目录与单条定义的关系如下：
 
@@ -826,18 +831,20 @@ detection:
   signals:
     - { name: "SurfaceTexture", source: "slice" }
 teaching:
-  source: "rendering_pipelines/S10_flutter_type.md"
+  source: "skills/pipelines/index.yaml#rendering_types.S10_FLUTTER"
 ```
 
-检测结果分别输出主 `rendering type`、具体 pipeline 子路径和 feature 候选，避免把
-ANGLE、PIP、HWC overlay 等特征误报为应用的主出图类型。构建时同步目录会复制到
-`backend/dist/rendering_pipelines/`，所以 Docker、portable 与 npm CLI 使用同一份内容。
+检测结果分别输出主 `rendering type`、具体 pipeline 子路径和 feature 候选。
+`PipelineDocService` 保留教学返回结构，但直接读取结构化卡片，不读取文章文件。
+CLI、Docker 和 portable 随 Skills 使用同一份卡片；构建清除旧文章缓存。
+双出口、前缓冲、捕获和属性动画通过按需 `rendering-outputs` 知识提供分析边界。
+`buffer_transaction_lifecycle` 保留旧字段，没有身份关联时跨进程延迟为 NULL/unsupported；
+BufferTX 只记录 pending 更新，不是显示帧计数。
 
-更新上游内容时运行同步脚本，禁止手工修改同步后的 Markdown：
+修改卡片、检测信号或引用后运行：
 
 ```bash
-npm run sync:rendering-pipelines -- --source /path/to/rendering_pipelines --apply
-npm run check:rendering-pipelines
+npm run verify:rendering-pipelines
 ```
 
 ---
@@ -900,7 +907,7 @@ SmartPerfetto Skills (backend/skills/)
     └─ 产品内确定性 DSL 与运行时真相
         └─ 驱动 DataEnvelope、Artifact、报告和前端投影
 
-backend/strategies + docs/rendering_pipelines
+backend/strategies + backend/skills/pipelines/index.yaml
     └─ 公开投影的方法论与渲染管线来源
 ```
 
@@ -923,7 +930,7 @@ artifact、聚类限制和报告投影是 SmartPerfetto 产品运行时能力，
 Skill 的本地执行契约。聚合结果由 batch run/report 持有，不能复制到每个单 trace
 snapshot；单 trace snapshot 只保留自身的提取指标和证据引用。
 
-修改 `backend/skills/`、`backend/strategies/`、`docs/rendering_pipelines/` 或
+修改 `backend/skills/`、`backend/strategies/` 或
 公开策略后，在已检出 Perfetto-Skills 的环境运行：
 
 ```bash

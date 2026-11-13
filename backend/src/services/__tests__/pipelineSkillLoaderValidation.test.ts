@@ -2,9 +2,11 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { describe, expect, it } from '@jest/globals';
+import { beforeAll, describe, expect, it } from '@jest/globals';
 import {
   getPipelineSkillLoader,
+  renderingTypeSource,
+  type PipelineCatalog,
   type PipelineDefinition,
 } from '../pipelineSkillLoader';
 
@@ -22,7 +24,7 @@ function pipelineWith(detection: unknown): PipelineDefinition {
       family: 'test',
     },
     detection: detection as PipelineDefinition['detection'],
-    teaching: { source: 'rendering_pipelines/S01_rendering_types_overview.md' },
+    teaching: { source: renderingTypeSource('S01_OVERVIEW') },
     auto_pin: { instructions: [] },
   };
 }
@@ -154,10 +156,98 @@ describe('PipelineSkillLoader detection validation', () => {
     })).not.toThrow();
   });
 
+  describe.each(['required_signals', 'scoring_signals', 'exclude_if'])('%s slice aliases', (kind) => {
+    const detectionWith = (selector: Record<string, unknown>): unknown => ({
+      scoring_signals: [{signal: 'valid', slice: 'A', weight: 1}],
+      [kind]: [{...(kind === 'scoring_signals' ? {signal: 'alias', weight: 1} : {}), ...selector}],
+    });
+
+    it.each([
+      [], [''], ['   '], ['A', null], ['A', 1], ['A', 'A'],
+      'Draw*', null, undefined, new Array(1),
+    ].map((patterns) => ({patterns})))('rejects an invalid alias array %#', ({patterns}) => {
+      expect(() => validateDetection(detectionWith({slice_patterns: patterns})))
+        .toThrow('invalid detection config');
+    });
+
+    it.each(['slice', 'slice_pattern', 'thread', 'thread_pattern'])('rejects aliases mixed with %s', (key) => {
+      expect(() => validateDetection(detectionWith({slice_patterns: ['A', 'B'], [key]: 'A'})))
+        .toThrow('exactly one selector');
+    });
+
+    it('accepts a nonempty OR group without treating each alias as a separate selector', () => {
+      expect(() => validateDetection(detectionWith({slice_patterns: ['DrawGL*', 'WebViewFunctor::drawVk']})))
+        .not.toThrow();
+    });
+  });
+
   it('loads all committed pipeline definitions', async () => {
     const loader = getPipelineSkillLoader();
     await loader.reload();
 
     expect(loader.getAllPipelineIds()).toHaveLength(31);
+  });
+});
+
+describe('PipelineSkillLoader product teaching validation', () => {
+  beforeAll(async () => {
+    await getPipelineSkillLoader().reload();
+  });
+
+  const validateCatalog = (catalog: unknown): void =>
+    (getPipelineSkillLoader() as any).validateCatalog(catalog);
+  const catalogCopy = (): PipelineCatalog => structuredClone(getPipelineSkillLoader().getCatalog());
+
+  it.each([
+    ['title', ''],
+    ['summary', '   '],
+    ['title', 42],
+    ['mermaidBlocks', 'flowchart LR'],
+    ['mermaidBlocks', [null]],
+    ['keySlices', undefined],
+    ['keySlices', ['']],
+    ['threadRoles', null],
+    ['threadRoles', [null]],
+    ['threadRoles', [{thread: '', responsibility: 'draw'}]],
+    ['threadRoles', [{thread: 'main', responsibility: 42}]],
+    ['threadRoles', [{thread: 'main', responsibility: 'draw', traceTag: null}]],
+    ['threadRoles', [{thread: 'main', responsibility: 'draw', source: 'unexpected'}]],
+  ])('rejects malformed teaching %s', (field, value) => {
+    const catalog = catalogCopy();
+    (catalog.rendering_types.S02_AOSP_STANDARD.teaching as unknown as Record<string, unknown>)[field] = value;
+    expect(() => validateCatalog(catalog)).toThrow('invalid teaching card');
+  });
+
+  it.each([null, [], 'card'])('rejects a non-object teaching card', (teaching) => {
+    const catalog = catalogCopy();
+    (catalog.rendering_types.S02_AOSP_STANDARD as unknown as Record<string, unknown>).teaching = teaching;
+    expect(() => validateCatalog(catalog)).toThrow('invalid teaching card');
+  });
+
+  it('rejects legacy document/source contracts instead of accepting article payloads', () => {
+    const catalog = catalogCopy();
+    expect(() => validateCatalog({...catalog, documents: []})).toThrow('product teaching v3 contract');
+    expect(() => validateCatalog({...catalog, source: {repository: 'legacy'}})).toThrow('product teaching v3 contract');
+    (catalog.rendering_types.S02_AOSP_STANDARD as unknown as Record<string, unknown>).document = 'legacy.md';
+    expect(() => validateCatalog(catalog)).toThrow('invalid teaching card');
+  });
+
+  it('rejects a missing teaching type and an invalid default type', () => {
+    const catalog = catalogCopy();
+    catalog.pipelines.ANDROID_VIEW_STANDARD_BLAST.teaching_type_id = 'UNKNOWN';
+    expect(() => validateCatalog(catalog)).toThrow('unknown teaching type');
+    const invalidDefault = catalogCopy();
+    invalidDefault.default.rendering_type_id = 'UNKNOWN';
+    expect(() => validateCatalog(invalidDefault)).toThrow('Catalog default is invalid');
+  });
+
+  it('accepts optional thread trace tags and empty optional teaching lists', () => {
+    const catalog = catalogCopy();
+    catalog.rendering_types.S02_AOSP_STANDARD.teaching = {
+      title: 'Product guidance', summary: 'Rendering boundaries',
+      mermaidBlocks: [], keySlices: [],
+      threadRoles: [{thread: 'main', responsibility: 'UI work'}],
+    };
+    expect(() => validateCatalog(catalog)).not.toThrow();
   });
 });

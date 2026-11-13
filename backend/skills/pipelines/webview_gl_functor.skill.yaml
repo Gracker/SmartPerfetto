@@ -5,7 +5,7 @@
 # =============================================================================
 # WebView GL Functor Pipeline
 # =============================================================================
-# Traditional WebView rendering with App RenderThread sync wait.
+# WebView GLES/Vulkan functor rendering inside the host RenderThread.
 # WebView content rendered inline with app UI.
 # =============================================================================
 
@@ -17,22 +17,22 @@ category: rendering
 meta:
   pipeline_id: WEBVIEW_GL_FUNCTOR
   display_name: "WebView GL Functor"
-  description: "传统 WebView 渲染，App RenderThread 同步等待"
+  description: "WebView GLES/Vulkan functor 在宿主 RenderThread 消费网页资源并绘制"
   icon: "web"
   family: webview
-  doc_path: rendering_pipelines/S09_webview_type.md
+  doc_path: skills/pipelines/index.yaml#rendering_types.S09_WEBVIEW
   # ----- Article-grounded signature (S09) -----
   s_article_ref: "S09"
   four_features:
     producer_threads: ["RenderThread", "CrRendererMain", "Compositor", "CompositorTileWorker*"]
-    optional_producer_threads: ["VizCompositorThread"]   # Viz 在 WebView 中不做 swap
+    optional_producer_threads: ["VizCompositorThread"]   # WebView 可在宿主 Viz 编排，输出仍可经 functor 汇入宿主
     expected_layer_count: 0   # Functor 路径下网页内容回宿主窗口，不占独立 layer
-    bufferqueue_path: "CHROMIUM_DDL_TO_HOST_RENDERTHREAD_REPLAY"   # Chromium Viz 生成 DDL → 宿主 RT replay → 宿主 BBQ
+    bufferqueue_path: "CHROMIUM_DDL_TO_HOST_RENDERTHREAD_REPLAY"   # 保留路径标识；实际交接合成描述、资源引用与同步信息
     extra_rhythm_sources: ["chromium_compositor_rhythm"]
   deviation_anchors: "host_rt_replay_anchor_5_at_host_rt"
   # 锚点偏离：① 宿主 vsync-app 仍走；② 宿主 doFrame；
-  # ⑤ 在宿主 RenderThread 上由 AwDrawFnImpl::DrawGL/DrawVk replay Chromium 生成的 DDL，
-  # 这一段叠在宿主 RT 预算里——超 budget 会拖整页掉帧。
+  # ⑤ 在宿主 RenderThread 上调用 functor 消费 Chromium frame/resource。
+  # 此段可包含 CPU 工作、跨线程等待和 GPU 依赖，需按线程状态拆解。
   layer_signature: "宿主 window layer 1 个（网页内容已被宿主吸收）"
   subvariants_note: |
     文章 S09 区分 5 种 WebView 路径：
@@ -42,24 +42,27 @@ meta:
     - WEBVIEW_TEXTUREVIEW_CUSTOM — 第三方内核 TextureView
     - WEBVIEW_IMAGEREADER_PIPELINE — 罕见中转路径
   thread_locations: |
-    Chromium 线程可能在宿主 App 进程或独立 sandboxed_process（com.google.android.webview:sandboxed_process*）。
-    主体 HWUI App 带 :sandboxed_process 子进程时，主进程仍是 ANDROID_VIEW_STANDARD_BLAST，子进程才走 Functor。
+    Blink/renderer 可在独立 sandboxed_process，functor sync/draw 在宿主 App 的 HWUI RenderThread。
+    DrawFn_DrawGL/DrawVk 与 WebViewFunctor::drawGl/drawVk 是不同版本的 draw 名称；
+    sync、postDraw、init 与 reparent 不能当成新内容帧或 physical present。
 
 detection:
   required_signals:
     - thread: RenderThread
       min_count: 1
+    - slice_patterns: &webview_draw_patterns
+        - "DrawGL*"
+        - "*DrawFn_DrawGL*"
+        - "*DrawFn_DrawVk*"
+        - "*DrawFunctor*"
+        - "AwDrawFnImpl::Draw[GV][Llk]*"
+        - "WebViewFunctor::draw[GgVv][LlKk]*"
+      min_count: 1
 
   scoring_signals:
     - signal: has_draw_gl
-      slice_pattern: "*DrawGL*"
+      slice_patterns: *webview_draw_patterns
       weight: 25
-    - signal: has_draw_fn_draw_gl
-      slice_pattern: "*DrawFn_DrawGL*"
-      weight: 20
-    - signal: has_draw_functor
-      slice_pattern: "*DrawFunctor*"
-      weight: 15
     - signal: has_cr_renderer
       thread_pattern: "CrRendererMain*"
       weight: 25
@@ -68,11 +71,10 @@ detection:
       weight: 10
 
   exclude_if:
-    - thread_pattern: "VizCompositorThread*"
     - thread: "1.ui"           # Flutter engine present → use Flutter pipeline
 
 teaching:
-  source: "rendering_pipelines/S09_webview_type.md"
+  source: "skills/pipelines/index.yaml#rendering_types.S09_WEBVIEW"
 auto_pin:
   instructions:
     # Time-ordered pinning (production -> transfer -> consume -> display)
@@ -139,14 +141,14 @@ analysis:
     - id: host_renderthread_overrun_via_functor
       name: "宿主 RT 因 functor replay 段超 budget"
       description: |
-        Chromium 网页内容产出的 DDL 在 AwDrawFnImpl::DrawGL/DrawVk 段 replay 到宿主 RT。
-        网页内容重时这一段独自就能让宿主 RT 超 budget，外部表现是整页掉帧（不是网页"自己"掉帧）。
+        DrawFn_DrawGL/DrawVk 或 WebViewFunctor::drawGl/drawVk 在宿主 RT 消费网页合成描述与资源。
+        外层 wall time 可包含等待与 RunTasks，先区分 Running/Runnable/Sleeping，再追 Viz、资源与 GPU。
       detection_skill: render_thread_slices
 
     - id: chromium_renderer_jank
       name: "Chromium Renderer 卡导致网页更新晚"
       description: |
-        CrRendererMain 上 Blink Layout/Paint 重，或 Compositor 线程卡住，导致下一次 functor replay 拿到的 DDL 是旧内容。
+        CrRendererMain 上 Blink Layout/Paint 重，或 Compositor 工作晚，可能让宿主继续使用旧网页 frame/resource。
         宿主 RT 看不出这一帧"为什么晚了"，要切到 Chromium 线程上找。
       detection_skill: cpu_analysis
 

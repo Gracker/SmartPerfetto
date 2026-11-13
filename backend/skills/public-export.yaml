@@ -1705,6 +1705,10 @@ strategies:
     workflow: rendering-pipeline
     disposition: exported
     destination: references/generated/knowledge/knowledge-rendering-pipeline.template.md
+  backend/strategies/knowledge-rendering-outputs.template.md:
+    workflow: rendering-pipeline
+    disposition: exported
+    destination: references/generated/knowledge/knowledge-rendering-outputs.template.md
   backend/strategies/knowledge-startup-root-causes.template.md:
     workflow: startup
     disposition: exported
@@ -2070,46 +2074,4 @@ strategies:
     workflow: trace-overview
     disposition: exported
     destination: references/generated/strategies/knowledge-perfetto-sql.template.md
-pipeline_docs:
-  docs/rendering_pipelines/S01_rendering_types_overview.md:
-    disposition: exported
-    destination: references/generated/pipelines/docs/S01_rendering_types_overview.md
-  docs/rendering_pipelines/S02_aosp_standard_type.md:
-    disposition: exported
-    destination: references/generated/pipelines/docs/S02_aosp_standard_type.md
-  docs/rendering_pipelines/S03_surfaceview_type.md:
-    disposition: exported
-    destination: references/generated/pipelines/docs/S03_surfaceview_type.md
-  docs/rendering_pipelines/S04_textureview_type.md:
-    disposition: exported
-    destination: references/generated/pipelines/docs/S04_textureview_type.md
-  docs/rendering_pipelines/S05_mixed_rendering_type.md:
-    disposition: exported
-    destination: references/generated/pipelines/docs/S05_mixed_rendering_type.md
-  docs/rendering_pipelines/S06_multi_window_type.md:
-    disposition: exported
-    destination: references/generated/pipelines/docs/S06_multi_window_type.md
-  docs/rendering_pipelines/S07_software_offscreen_type.md:
-    disposition: exported
-    destination: references/generated/pipelines/docs/S07_software_offscreen_type.md
-  docs/rendering_pipelines/S08_native_graphics_type.md:
-    disposition: exported
-    destination: references/generated/pipelines/docs/S08_native_graphics_type.md
-  docs/rendering_pipelines/S09_webview_type.md:
-    disposition: exported
-    destination: references/generated/pipelines/docs/S09_webview_type.md
-  docs/rendering_pipelines/S10_flutter_type.md:
-    disposition: exported
-    destination: references/generated/pipelines/docs/S10_flutter_type.md
-  docs/rendering_pipelines/S11_camera_type.md:
-    disposition: exported
-    destination: references/generated/pipelines/docs/S11_camera_type.md
-  docs/rendering_pipelines/S12_video_overlay_hwc_type.md:
-    disposition: exported
-    destination: references/generated/pipelines/docs/S12_video_overlay_hwc_type.md
-  docs/rendering_pipelines/S13_game_type.md:
-    disposition: exported
-    destination: references/generated/pipelines/docs/S13_game_type.md
-  docs/rendering_pipelines/S14_react_native_type.md:
-    disposition: exported
-    destination: references/generated/pipelines/docs/S14_react_native_type.md
+pipeline_docs: {}

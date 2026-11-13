@@ -9,6 +9,7 @@ import { getPipelineDocService } from './pipelineDocService';
 import {
   ensurePipelineSkillsInitialized,
   pipelineSkillLoader,
+  renderingTypeSource,
   type PinInstruction,
 } from './pipelineSkillLoader';
 import { SkillExecutor } from './skillEngine/skillExecutor';
@@ -274,7 +275,7 @@ function buildDetectionResponse(
     renderingType: {
       id: detection.primaryRenderingTypeId,
       docPath: renderingType
-        ? `rendering_pipelines/${renderingType.document}`
+        ? renderingTypeSource(detection.primaryRenderingTypeId)
         : pipelineSkillLoader.getDefaultSelection().docPath,
     },
     candidates: detection.candidates,
@@ -785,7 +786,7 @@ export class RenderingPipelineTeachingService {
           }
         : event;
     });
-    const dependencies = this.buildDependencies(lanes, eventsWithLanes, criticalTasks);
+    const dependencies = this.buildDependencies(lanes, criticalTasks);
     const missingSignals = this.computeMissingSignals(eventsWithLanes, lanes, bundle, criticalTasks);
     const completenessWarnings = [...queryWarnings];
     completenessWarnings.push(...criticalTaskResult.warnings);
@@ -851,6 +852,9 @@ export class RenderingPipelineTeachingService {
       'vkQueuePresent',
       'DrawGL',
       'DrawFunctor',
+      'DrawFn_',
+      'WebViewFunctor::',
+      'ASurfaceTexture_dequeueBuffer',
       'FrameTimeline',
       'present',
       'HWC',
@@ -864,7 +868,7 @@ export class RenderingPipelineTeachingService {
     const processClause = processName
       ? `AND (
           p.name = ${sqlLiteral(processName)}
-          OR p.name LIKE ${sqlLikeLiteral(processName)} ESCAPE '\\'
+          OR SUBSTR(p.name, 1, ${processName.length + 1}) = ${sqlLiteral(`${processName}:`)}
           OR p.name LIKE '%surfaceflinger%'
           OR p.name = 'system_server'
         )`
@@ -1272,36 +1276,15 @@ export class RenderingPipelineTeachingService {
 
   private buildDependencies(
     lanes: ObservedFlowLane[],
-    events: ObservedFlowEvent[],
     criticalTasks: ObservedFlowCriticalTask[]
   ): ObservedFlowDependency[] {
-    const dependencies: ObservedFlowDependency[] = [];
-    const firstByRole = (role: ObservedFlowLaneRole) => lanes.find((lane) => lane.role === role);
-    const pairs: Array<[ObservedFlowLaneRole, ObservedFlowLaneRole, ObservedFlowDependency['relation']]> = [
-      ['app', 'render_thread', 'produces_to'],
-      ['render_thread', 'producer', 'overlaps_with'],
-      ['producer', 'buffer_queue', 'produces_to'],
-      ['render_thread', 'buffer_queue', 'produces_to'],
-      ['buffer_queue', 'surfaceflinger', 'composes_to'],
-      ['surfaceflinger', 'hwc_present', 'presents_to'],
+    // Temporal proximity between stages does not establish the same frame,
+    // buffer or transaction. Keep only independently observed scheduler links;
+    // the article Mermaid supplies topology without inventing trace causality.
+    const dependencies = [
+      ...this.buildWakeupDependencies(lanes, criticalTasks),
+      ...this.buildCriticalPathDependencies(lanes, criticalTasks),
     ];
-
-    for (const [fromRole, toRole, relation] of pairs) {
-      const from = firstByRole(fromRole);
-      const to = firstByRole(toRole);
-      if (!from || !to || from.id === to.id) continue;
-      if (!this.hasObservedDependencyEvidence(from.id, to.id, events, relation)) continue;
-      dependencies.push({
-        fromLaneId: from.id,
-        toLaneId: to.id,
-        relation,
-        confidence: 0.65,
-        evidenceSource: 'observed_event_order',
-      });
-    }
-
-    dependencies.push(...this.buildWakeupDependencies(lanes, criticalTasks));
-    dependencies.push(...this.buildCriticalPathDependencies(lanes, criticalTasks));
 
     const seen = new Set<string>();
     return dependencies.filter((dependency) => {
@@ -1365,27 +1348,6 @@ export class RenderingPipelineTeachingService {
       });
     }
     return dependencies;
-  }
-
-  private hasObservedDependencyEvidence(
-    fromLaneId: string,
-    toLaneId: string,
-    events: ObservedFlowEvent[],
-    relation: ObservedFlowDependency['relation']
-  ): boolean {
-    const fromEvents = events.filter((event) => event.laneId === fromLaneId);
-    const toEvents = events.filter((event) => event.laneId === toLaneId);
-    if (!fromEvents.length || !toEvents.length) return false;
-
-    return fromEvents.some((from) => {
-      const fromEnd = from.ts + Math.max(from.dur, 0);
-      return toEvents.some((to) => {
-        const toEnd = to.ts + Math.max(to.dur, 0);
-        const overlaps = from.ts < toEnd && to.ts < fromEnd;
-        if (relation === 'overlaps_with') return overlaps;
-        return overlaps || from.ts <= to.ts;
-      });
-    });
   }
 
   private computeMissingSignals(

@@ -347,11 +347,12 @@ invoke_skill("scrolling_analysis", { start_ts: "<trace_start>", end_ts: "<trace_
 - Fence 要拆成 acquire / present / release：acquire 影响 SF latch，present 影响用户可见上屏，release 影响 producer 复用上一帧 buffer。
 - HWC 不是 BufferQueue consumer；SurfaceFlinger 消费 buffer 后，再通过 HWC validate/accept/present 或 RenderEngine 合成。
 - 刷新率/ARR/VRR 会改变帧预算。报告必须基于 `vsync_config`、VSYNC-sf、FrameTimeline 或等价证据，不默认 16.6ms。
-- 当 `performance_summary.fps_source = buffer_tx_rising_edge_fallback` 时，必须引用 `coverage_status`、`frame_timeline_to_buffer_tx_ratio`、`frame_source_track` 和 effective span，并按覆盖模式分层：
-  - `no_frame_timeline_coverage`：只能交付目标包 BufferTX 正向 delta 支持的帧产出数和 FPS；不能从 BufferTX 推出 App/SF 责任、掉帧率、峰值长帧或帧根因；实际主线程任务/等待仍可独立分析。相应小节标记“当前 trace 证据不可用”，不得填 0 或根据 FPS 推断无卡顿。
-  - `partial_frame_timeline_coverage`：overview 帧数/FPS 以 BufferTX 为准；`jank_type_stats` / `batch_frame_root_cause` 仅是 FrameTimeline 覆盖到的 sparse sample。只能表述“已观测样本中的根因”，必须引用 `evidence_scope=partial_sample` 和 coverage ratio，不得写成全量根因分布或用样本比例估算全量帧数。
-  - `frame_timeline_to_buffer_tx_ratio` = FrameTimeline 帧数 / BufferTX 产出帧数，是两个独立来源的比值，**不是有界覆盖率**（字段与标签都已按"帧数比"命名，不要再当成百分比覆盖率读）：`> 1 说明 BufferTX 少计`（track 选择或 rising-edge 判定漏帧），不代表覆盖超过 100%。此时以 FrameTimeline 为准并写明 BufferTX 少计，不要表述成“覆盖率 100.x%”。
-- `jank_type_stats` / `batch_frame_root_cause` 的 `evidence_scope`：只有 `full_frame_timeline` 是经 BufferTX 比对的全量分布；`frame_timeline_only_unbenchmarked`（精确 UPID 或无 BufferTX 候选）写成 FrameTimeline 统计并注明未经 BufferTX 校核；`coverage_unverified`（覆盖探针无结果或状态未知）只能写成“已观测样本中的根因”。
+- `BufferTX` 是 SF 侧 pending buffer transaction 更新计数。正向 delta 只支持 `received_buffer_updates`（接收更新数），不证明 producer 已写完、SF 已 latch 或显示了新帧；轨道按包名匹配且只选一条，不具备精确 UPID 归属。
+- 当 `perf_summary.fps_source = buffer_tx_rising_edge_fallback` 时，该值仅为兼容来源标识。交付 `received_buffer_updates`、`received_update_rate_hz`、`received_update_span_ns` 和 `frame_source_track`；速率按观测时长计算，不按面板刷新率截断，也不能称为 FPS。`total_frames`、`actual_fps` 与掉帧指标为 NULL，表示未测量，不能填 0。
+  - `no_frame_timeline_coverage`：不能从 BufferTX 推出 App/SF 责任、掉帧率、峰值长帧或帧根因；实际主线程任务/等待仍可独立分析。相应小节标记“当前 trace 证据不可用”。
+  - `partial_frame_timeline_coverage`：`jank_type_stats` / `batch_frame_root_cause` 仅分析已观测的 FrameTimeline sparse sample。引用 `evidence_scope=partial_sample`，不得用来源事件数比估计全量帧数或全量根因分布。
+  - `source_event_ratio` = 已观测 FrameTimeline 事件数 / BufferTX 接收更新数；旧字段 `frame_timeline_to_buffer_tx_ratio` 保留同值。两个来源对象和选择范围不同，该比值仅为启发式线索，不是有界覆盖率；大于 1 也不能证明 BufferTX 漏帧。`coverage_status` 的旧 sufficient/partial 命名保留用于路由，不能升级为全量证据。
+- `jank_type_stats` / `batch_frame_root_cause` 的 `evidence_scope`：`frame_timeline_only_unbenchmarked` 只表示 FrameTimeline 已观测统计，BufferTX 不能验证其全量性；`coverage_unverified`（探针无结果或状态未知）与 `partial_sample` 均只能写成“已观测样本中的根因”。任何 BufferTX 比值都不能建立 `full_frame_timeline`。
 - GraphicBuffer/dma-buf 是图形物理内存证据面；BufferQueue/Fence slice 只能证明队列、同步和背压候选，不能单独证明图形内存泄漏或占用峰值。
 
 **Phase 1.8 — 帧内指标 / GPU / CPU 利用率补充（按需执行）：**
@@ -507,7 +508,7 @@ invoke_skill("jank_frame_detail", {
 **输出结构遵循 frontmatter：报告须包含主线程连续执行与任务来源、掉帧与根因分布、代表帧分析、峰值/口径指标；缺失帧源仅限制帧指标，不删除主线程工作结论。**
 
 1. **概览**（必须包含以下数据）：
-   - 先检查 `fps_source` 和 `coverage_status`。如果是 `buffer_tx_rising_edge_fallback + no_frame_timeline_coverage`，本节只交付 BufferTX 帧数/FPS/effective span/证据轨道，下述掉帧、峰值、责任与评级要求改为显式“当前 trace 证据不可用”，不能从 NULL 填 0。如果是 `partial_frame_timeline_coverage`，同样不能输出全量掉帧/峰值/评级；可以附上 sparse root rows，但必须以 coverage ratio 标记为部分样本。
+   - 先检查 `fps_source` 和 `coverage_status`。如果来源为 `buffer_tx_rising_edge_fallback`，本节只交付 BufferTX 接收更新数/速率/观测时长/证据轨道，帧数、FPS、全量掉帧、峰值、责任与评级明确“当前 trace 证据不可用”，不能从 NULL 填 0。存在 sparse root rows 时可独立分析已观测样本，必须标记部分样本，不能按来源事件数比外推全量。
    - 总帧数、**总真实掉帧数 = SUM(所有 jank_type 行的 real_jank_count)**
    - 分类明细：App 侧掉帧 N 帧 + 隐形掉帧 N 帧 + 假阳性 N 帧
    - **峰值体验指标**（仅看掉帧率会掩盖极端长帧对用户感知的影响）：

@@ -824,10 +824,12 @@ describe('typed prompt migration', () => {
     expect(findings).not.toContain('删去未声明指标');
   });
 
-  it('keeps frame-to-buffer ratios explicitly distinct from bounded coverage', () => {
+  it('keeps source-event ratios distinct from frame coverage and FPS', () => {
     const strategy = loadStrategy('scrolling');
     expect(strategy).toContain('不是有界覆盖率');
-    expect(strategy).toContain('> 1 说明 BufferTX 少计');
+    expect(strategy).toContain('大于 1 也不能证明 BufferTX 漏帧');
+    expect(strategy).toContain('不能称为 FPS');
+    expect(strategy).not.toContain('> 1 说明 BufferTX 少计');
   });
 
   it('retains startup report and detail obligations without embedding the legacy execution recipe', () => {

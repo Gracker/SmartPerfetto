@@ -30,7 +30,6 @@ export const TRIGGERS = Object.freeze([
   'backend/data/perfettoStdlibSymbols.json',
   'backend/data/perfettoSqlDocs.json',
   'perfetto',
-  'docs/rendering_pipelines/',
   'scripts/trace-processor-pin.env',
   'scripts/verify-public-skill-export.sh',
   '.claude/rules/skills.md',

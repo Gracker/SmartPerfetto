@@ -20,7 +20,7 @@ meta:
   description: "Android 14+ HBR API，直接 Buffer 渲染"
   icon: "memory"
   family: specialized
-  doc_path: rendering_pipelines/S07_software_offscreen_type.md
+  doc_path: skills/pipelines/index.yaml#rendering_types.S07_SOFTWARE_OFFSCREEN
   # ----- Article-grounded signature (S07 OFFSCREEN_HARDWAREBUFFER 子变种) -----
   s_article_ref: "S07"
   four_features:
@@ -61,7 +61,7 @@ detection:
       weight: 10
 
 teaching:
-  source: "rendering_pipelines/S07_software_offscreen_type.md"
+  source: "skills/pipelines/index.yaml#rendering_types.S07_SOFTWARE_OFFSCREEN"
 auto_pin:
   instructions:
     # Time-ordered pinning (production -> transfer -> consume -> display)

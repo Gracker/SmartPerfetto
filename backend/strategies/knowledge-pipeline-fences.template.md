@@ -3,7 +3,7 @@
 
 # Android 17 Fence 证据边界
 
-Fence 细节以 S01 及所选 S02-S14 类型文章为准。报告必须明确 fence 的对象、
+报告必须明确 fence 的对象、
 方向、粒度和 trace 来源，不能只写“fence 慢”。
 
 | Fence | 典型方向/粒度 | 可以回答 | 不能单独证明 |

@@ -20,7 +20,7 @@ meta:
   description: "HWC 视频层硬件加速叠加"
   icon: "video"
   family: specialized
-  doc_path: rendering_pipelines/S12_video_overlay_hwc_type.md
+  doc_path: skills/pipelines/index.yaml#rendering_types.S12_VIDEO_OVERLAY_HWC
   # ----- Article-grounded signature (S12) -----
   s_article_ref: "S12"
   four_features:
@@ -66,7 +66,7 @@ detection:
       weight: 20
 
 teaching:
-  source: "rendering_pipelines/S12_video_overlay_hwc_type.md"
+  source: "skills/pipelines/index.yaml#rendering_types.S12_VIDEO_OVERLAY_HWC"
 auto_pin:
   instructions:
     # Time-ordered pinning (production -> transfer -> consume -> display)

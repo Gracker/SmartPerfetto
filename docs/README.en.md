@@ -76,9 +76,9 @@ and agent evidence are not maintained as permanent documentation.
 
 ## Runtime-Read Content
 
-`docs/rendering_pipelines/` is Android 17 teaching content synchronized from a pinned upstream
-commit and copied into `backend/dist/rendering_pipelines/` during builds. Moving or changing it
-requires synchronized pipeline catalog and Skill references plus:
+`backend/skills/pipelines/index.yaml` owns concise product teaching cards and detector mappings.
+Strategy templates provide on-demand methodology. Reference articles are not committed or bundled.
+After changing teaching content or references, run:
 
 ```bash
 npm run verify:rendering-pipelines

@@ -21,7 +21,7 @@ meta:
   description: "Android 11+/12+ 常见的 HWUI + 现代 Transaction/BLAST 提交流程"
   icon: "android"
   family: hwui
-  doc_path: rendering_pipelines/S02_aosp_standard_type.md
+  doc_path: skills/pipelines/index.yaml#rendering_types.S02_AOSP_STANDARD
   # ----- Article-grounded signature (S02) -----
   # 文档字段：被 LLM Agent 用于语义化诊断；不参与 detection 评分
   s_article_ref: "S02"
@@ -80,7 +80,7 @@ detection:
 # Teaching Content
 # ==========================================================================
 teaching:
-  source: "rendering_pipelines/S02_aosp_standard_type.md"
+  source: "skills/pipelines/index.yaml#rendering_types.S02_AOSP_STANDARD"
 # ==========================================================================
 # Auto Pin Configuration
 # ==========================================================================

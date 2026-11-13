@@ -20,11 +20,11 @@ meta:
   description: "RN 老架构：JavaScriptCore/Hermes + Bridge JSON 序列化 + Shadow tree + Yoga + 宿主 HWUI"
   icon: "react"
   family: webview   # RN 与 WebView 在 family 上最近（都是嵌入式 UI 框架，回宿主 HWUI）
-  doc_path: rendering_pipelines/S14_react_native_type.md
+  doc_path: skills/pipelines/index.yaml#rendering_types.S14_REACT_NATIVE
   # ----- Article-grounded signature (S14) -----
   s_article_ref: "S14"
   four_features:
-    producer_threads: ["mqt_js", "mqt_native_modules", "mqt_shadow_queue"]
+    producer_threads: ["mqt_js", "mqt_v_js", "mqt_native_modules", "mqt_v_native", "mqt_shadow_queue"]
     consumer_threads: ["main", "RenderThread"]
     expected_layer_count: 1   # 宿主单 layer（RN 内容已被宿主 HWUI 吸收）
     bufferqueue_path: "JS_TO_BRIDGE_TO_SHADOW_TREE_TO_HOST_HWUI"
@@ -35,23 +35,23 @@ meta:
   # JS 异步派发，UI 更新延迟 1-2 帧。
   threads_evolution: |
     线程名（社区版习惯，可能随 RN 版本/fork/定制改名）：
-    - mqt_js: JavaScript 线程（执行 React 业务逻辑）
-    - mqt_native_modules: Native module 调用线程
+    - mqt_js / mqt_v_js: JavaScript 线程；新旧命名本身不能区分架构
+    - mqt_native_modules / mqt_v_native: Native module 调用线程
     - mqt_shadow_queue: Shadow thread / Layout thread（Yoga 计算）
     - main + RenderThread: 标准 Android HWUI
 
 detection:
   required_signals:
-    # mqt_* 线程是 RN Old Arch 决定性标志
-    - thread_pattern: "mqt_*"
+    # JS/native module 名称也出现在 New Architecture；只凭 mqt_* 不能确认 Paper。
+    - thread_pattern: "mqt_shadow*"
       min_count: 1
 
   scoring_signals:
     - signal: has_mqt_js
-      thread_pattern: "mqt_js*"
+      thread_pattern: "mqt_*js*"
       weight: 50
     - signal: has_mqt_native_modules
-      thread_pattern: "mqt_native_modules*"
+      thread_pattern: "mqt_*native*"
       weight: 30
     - signal: has_mqt_shadow
       thread_pattern: "mqt_shadow*"
@@ -74,7 +74,7 @@ detection:
     - slice_pattern: "*FabricUIManager*"
 
 teaching:
-  source: "rendering_pipelines/S14_react_native_type.md"
+  source: "skills/pipelines/index.yaml#rendering_types.S14_REACT_NATIVE"
 analysis:
   common_issues:
     - id: js_thread_blocking

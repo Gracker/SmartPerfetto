@@ -20,7 +20,7 @@ meta:
   description: "画中画和自由窗口模式，特殊窗口管理与合成"
   icon: "pip"
   family: surface
-  doc_path: rendering_pipelines/S06_multi_window_type.md
+  doc_path: skills/pipelines/index.yaml#rendering_types.S06_MULTI_WINDOW
   # ----- Article-grounded signature (S06 多窗口) -----
   s_article_ref: "S06"   # PIP/Freeform 是多窗口子变种
   four_features:
@@ -60,7 +60,7 @@ detection:
       weight: 50
 
 teaching:
-  source: "rendering_pipelines/S06_multi_window_type.md"
+  source: "skills/pipelines/index.yaml#rendering_types.S06_MULTI_WINDOW"
 auto_pin:
   instructions:
     # Time-ordered pinning (production -> transfer -> consume -> display)

@@ -5137,7 +5137,7 @@ describe('SkillExecutor - Pipeline Step', () => {
           'S02_AOSP_STANDARD:0.91',
           'S06_MULTI_WINDOW:0.8',
           'SURFACE_CONTROL_API:0.8',
-          'rendering_pipelines/S02_aosp_standard_type.md',
+          'skills/pipelines/index.yaml#rendering_types.S02_AOSP_STANDARD',
         ]],
       })
       .mockResolvedValueOnce({
@@ -5197,7 +5197,7 @@ describe('SkillExecutor - Pipeline Step', () => {
     expect(bundle.detection.relatedRenderingTypes).toEqual([{
       id: 'S06_MULTI_WINDOW',
       confidence: 0.8,
-      docPath: 'rendering_pipelines/S06_multi_window_type.md',
+      docPath: 'skills/pipelines/index.yaml#rendering_types.S06_MULTI_WINDOW',
     }]);
     expect(bundle.detection.primaryConfidence).toBeGreaterThan(0.8);
     expect(bundle.detection.traceRequirementsMissing).toEqual(

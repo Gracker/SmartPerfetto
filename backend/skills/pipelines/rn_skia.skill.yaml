@@ -20,11 +20,11 @@ meta:
   description: "RN + Skia 自绘渲染，绕过 HWUI 直接用 Skia 在 GPU 上画"
   icon: "react"
   family: webview
-  doc_path: rendering_pipelines/S14_react_native_type.md
+  doc_path: skills/pipelines/index.yaml#rendering_types.S14_REACT_NATIVE
   # ----- Article-grounded signature (S14) -----
   s_article_ref: "S14"
   four_features:
-    producer_threads: ["mqt_js", "Skia render thread"]
+    producer_threads: ["mqt_js", "mqt_v_js", "Skia render thread"]
     expected_layer_count: 1   # 0 (回宿主) 或 1 (独立 Surface)，取决于承载方式
     bufferqueue_path: "JSI_TO_SKIA_DRAW_TO_SURFACE_BBQ"
     # ↑ JS → JSI → Skia draw → Skia surface queueBuffer（绕过 HWUI）
@@ -44,7 +44,7 @@ meta:
 detection:
   scoring_signals:
     - signal: has_mqt_js
-      thread_pattern: "mqt_js*"
+      thread_pattern: "mqt_*js*"
       weight: 30
     - signal: has_skia_renderer
       slice_pattern: "*SkiaRenderer*"
@@ -63,12 +63,11 @@ detection:
       weight: 10
 
   exclude_if:
-    - slice_pattern: "*FabricUIManager*"
     - thread_pattern: "mqt_shadow*"
     - slice_pattern: "*EntityPass*"   # 排除 Flutter Impeller
 
 teaching:
-  source: "rendering_pipelines/S14_react_native_type.md"
+  source: "skills/pipelines/index.yaml#rendering_types.S14_REACT_NATIVE"
 analysis:
   common_issues:
     - id: skia_draw_overhead

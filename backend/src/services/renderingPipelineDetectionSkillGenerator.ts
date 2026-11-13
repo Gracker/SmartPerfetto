@@ -6,6 +6,7 @@ import { SkillDefinition } from './skillEngine/types';
 import {
   ensurePipelineSkillsInitialized,
   pipelineSkillLoader,
+  renderingTypeSource,
   type PipelineCatalog,
   type PipelineCatalogEntry,
   type PipelineDefinition,
@@ -60,6 +61,7 @@ function buildSignalComponents(signal: {
   thread_pattern?: string;
   slice?: string;
   slice_pattern?: string;
+  slice_patterns?: string[];
 }): SignalComponent[] {
   const components: SignalComponent[] = [];
 
@@ -75,6 +77,9 @@ function buildSignalComponents(signal: {
   if (signal.slice_pattern) {
     components.push({ source: 's', op: 'glob', pattern: signal.slice_pattern });
   }
+  for (const pattern of signal.slice_patterns || []) {
+    components.push({ source: 's', op: 'glob', pattern });
+  }
 
   return components;
 }
@@ -84,11 +89,13 @@ function describeSignalKey(signal: {
   thread_pattern?: string;
   slice?: string;
   slice_pattern?: string;
+  slice_patterns?: string[];
 }): string {
   if (signal.thread) return `thread:${signal.thread}`;
   if (signal.thread_pattern) return `thread_pattern:${signal.thread_pattern}`;
   if (signal.slice) return `slice:${signal.slice}`;
   if (signal.slice_pattern) return `slice_pattern:${signal.slice_pattern}`;
+  if (signal.slice_patterns) return `slice_patterns:${signal.slice_patterns.join('|')}`;
   return 'unknown';
 }
 
@@ -108,13 +115,12 @@ function buildPipelineMetadataSql(catalog: PipelineCatalog): string {
       const renderingTypeId = entry.rendering_type_id
         ? sqlStringLiteral(entry.rendering_type_id)
         : 'NULL';
-      const document = catalog.rendering_types[entry.teaching_type_id].document;
       return `(${[
         pipelineId,
         renderingTypeId,
         entry.primary_eligible ? 1 : 0,
         entry.feature_visible ? 1 : 0,
-        `rendering_pipelines/${document}`,
+        renderingTypeSource(entry.teaching_type_id),
       ].map((value) => typeof value === 'string' && (value === 'NULL' || /^'.*'$/.test(value)) ? value : sqlValueLiteral(value as string | number)).join(', ')})`;
     })
     .join(',\n        ');
@@ -154,6 +160,7 @@ function buildSignalDefsSql(
       thread_pattern?: string;
       slice?: string;
       slice_pattern?: string;
+      slice_patterns?: string[];
     }
   ): void => {
     const components = buildSignalComponents(signal);
@@ -314,7 +321,7 @@ function buildPipelineScoresSql(pipelines: PipelineDefinition[], catalog: Pipeli
         VALUES
         ${signalDefsSql}
       ),
-      signal_counts AS (
+      signal_name_matches AS (
         SELECT
           sd.signal_id,
           sd.pipeline_id,
@@ -322,13 +329,16 @@ function buildPipelineScoresSql(pipelines: PipelineDefinition[], catalog: Pipeli
           sd.signal_name,
           sd.weight,
           sd.min_count,
-          SUM(
+          COALESCE(tc.thread_name, sc.slice_name) as source_name,
+          -- Each source count is already grouped by the actual recorded name.
+          -- Multiple alias patterns matching that name must contribute it once.
+          MAX(
             CASE
               WHEN sd.source = 't' THEN CASE WHEN sd.scope = 'g' THEN COALESCE(tc.global_cnt, 0) ELSE COALESCE(tc.app_cnt, 0) END
               WHEN sd.source = 's' THEN CASE WHEN sd.scope = 'g' THEN COALESCE(sc.global_cnt, 0) ELSE COALESCE(sc.app_cnt, 0) END
               ELSE 0
             END
-          ) as cnt
+          ) as source_count
         FROM signal_defs sd
         LEFT JOIN thread_counts tc
           ON sd.source = 't'
@@ -342,7 +352,13 @@ function buildPipelineScoresSql(pipelines: PipelineDefinition[], catalog: Pipeli
            (sd.op = 'eq' AND sc.slice_name = sd.pattern)
            OR (sd.op = 'glob' AND sc.slice_name GLOB sd.pattern)
          )
-        GROUP BY sd.signal_id, sd.pipeline_id, sd.signal_type, sd.signal_name, sd.weight, sd.min_count
+        GROUP BY sd.signal_id, sd.pipeline_id, sd.signal_type, sd.signal_name, sd.weight, sd.min_count, source_name
+      ),
+      signal_counts AS (
+        SELECT signal_id, pipeline_id, signal_type, signal_name, weight, min_count,
+          SUM(source_count) as cnt
+        FROM signal_name_matches
+        GROUP BY signal_id, pipeline_id, signal_type, signal_name, weight, min_count
       ),
       signal_agg AS (
         SELECT
@@ -397,7 +413,6 @@ function buildDeterminePipelineSql(catalog: PipelineCatalog): string {
   const pipelineRelatedRenderingTypesSql = buildPipelineRelatedRenderingTypesSql(catalog);
   const defaultPipelineId = catalog.default.pipeline_id;
   const defaultRenderingTypeId = catalog.default.rendering_type_id;
-  const defaultDocument = catalog.rendering_types[defaultRenderingTypeId].document;
   return `
       WITH
       pipeline_scores AS (
@@ -535,7 +550,7 @@ function buildDeterminePipelineSql(catalog: PipelineCatalog): string {
         r.rendering_type_candidates_list,
         r.related_rendering_type_candidates_list,
         r.features_list,
-        COALESCE((SELECT doc_path FROM pipeline_metadata WHERE pipeline_id = r.primary_pipeline_id), ${sqlStringLiteral(`rendering_pipelines/${defaultDocument}`)}) as doc_path
+        COALESCE((SELECT doc_path FROM pipeline_metadata WHERE pipeline_id = r.primary_pipeline_id), ${sqlStringLiteral(renderingTypeSource(defaultRenderingTypeId))}) as doc_path
       FROM result r
     `;
 }

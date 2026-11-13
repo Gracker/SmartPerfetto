@@ -13978,12 +13978,14 @@
             "required_steps": [
               "apply_transaction_summary",
               "queue_to_transaction_delay",
-              "per_layer_transactions"
+              "per_layer_transactions",
+              "buffer_tx_pending_observations"
             ],
             "required_sql_steps": [
               "apply_transaction_summary",
               "queue_to_transaction_delay",
-              "per_layer_transactions"
+              "per_layer_transactions",
+              "buffer_tx_pending_observations"
             ],
             "forced_sql_steps": [],
             "isolated_sql_probes": [],
@@ -13994,9 +13996,29 @@
               "total_set_transaction_state",
               "total_blast_bq",
               "total_queue_buffer",
-              "avg_apply_to_latch_ms"
+              "avg_apply_to_latch_ms",
+              "pairing_status",
+              "sf_event_scope",
+              "app_event_scope"
             ],
-            "required_marker": "SmartPerfetto::CASE::rendering-jank"
+            "required_marker": "SmartPerfetto::CASE::rendering-jank",
+            "assertions": [
+              {
+                "column": "avg_apply_to_latch_ms",
+                "operator": "eq",
+                "value": null
+              },
+              {
+                "column": "pairing_status",
+                "operator": "eq",
+                "value": "unsupported_missing_identity"
+              },
+              {
+                "column": "sf_event_scope",
+                "operator": "eq",
+                "value": "global_surfaceflinger"
+              }
+            ]
           },
           {
             "id": "execute-choreographer_module",
@@ -15282,7 +15304,10 @@
                     "target_process_status",
                     "frame_timeline_frames",
                     "buffer_tx_frames",
+                    "received_buffer_updates",
                     "frame_timeline_to_buffer_tx_ratio",
+                    "source_event_ratio",
+                    "source_event_ratio_status",
                     "buffer_tx_track_id",
                     "frame_source_track",
                     "buffer_tx_effective_span_ns",
@@ -15309,6 +15334,21 @@
                     },
                     {
                       "column": "buffer_tx_status",
+                      "operator": "eq",
+                      "value": "unavailable_exact_upid"
+                    },
+                    {
+                      "column": "received_buffer_updates",
+                      "operator": "eq",
+                      "value": null
+                    },
+                    {
+                      "column": "source_event_ratio",
+                      "operator": "eq",
+                      "value": null
+                    },
+                    {
+                      "column": "source_event_ratio_status",
                       "operator": "eq",
                       "value": "unavailable_exact_upid"
                     },

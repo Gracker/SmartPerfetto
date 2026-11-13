@@ -20,7 +20,7 @@ meta:
   description: "Android 12 之前的 HWUI + Legacy BufferQueue 渲染管线"
   icon: "android"
   family: hwui
-  doc_path: rendering_pipelines/S02_aosp_standard_type.md
+  doc_path: skills/pipelines/index.yaml#rendering_types.S02_AOSP_STANDARD
   # ----- Article-grounded signature (S02) -----
   s_article_ref: "S02"
   four_features:
@@ -59,7 +59,7 @@ detection:
     - thread: UnityGfx         # Game Engine
 
 teaching:
-  source: "rendering_pipelines/S02_aosp_standard_type.md"
+  source: "skills/pipelines/index.yaml#rendering_types.S02_AOSP_STANDARD"
 auto_pin:
   instructions:
     # Time-ordered pinning (production -> transfer -> consume -> display)

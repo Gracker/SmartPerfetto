@@ -5,8 +5,8 @@
 # =============================================================================
 # WebView Surface Control Pipeline
 # =============================================================================
-# Modern WebView with Viz/OOP-R and SurfaceControl.
-# Independent composition without blocking App RenderThread.
+# WebView media/overlay SurfaceControl output alongside host functor content.
+# Viz/OOP-R presence alone does not prove an independent webpage output.
 # =============================================================================
 
 name: pipeline_webview_surface_control
@@ -17,10 +17,10 @@ category: rendering
 meta:
   pipeline_id: WEBVIEW_SURFACE_CONTROL
   display_name: "WebView Surface Control"
-  description: "现代 WebView + Viz/OOP-R，独立合成"
+  description: "WebView 媒体/overlay 的独立 SurfaceControl，网页主体仍可经宿主 functor"
   icon: "web"
   family: webview
-  doc_path: rendering_pipelines/S09_webview_type.md
+  doc_path: skills/pipelines/index.yaml#rendering_types.S09_WEBVIEW
   # ----- Article-grounded signature (S09) -----
   s_article_ref: "S09"
   four_features:
@@ -29,12 +29,12 @@ meta:
     bufferqueue_path: "CHROMIUM_TO_ASURFACECONTROL_TRANSACTION"   # Chromium overlay candidates → ASurfaceControl 直接提交
     extra_rhythm_sources: ["chromium_compositor_rhythm"]
   deviation_anchors: "independent_overlay_anchor_6_at_chromium_to_sf"
-  # 锚点偏离：网页内容由 Chromium 直接走 ASurfaceControl/ASurfaceTransaction 提交到 SF，
-  # 不经宿主 RT replay，避免阻塞宿主 RenderThread。
+  # 独立 overlay buffer 可经 ASurfaceControl/ASurfaceTransaction 提交到 SF；
+  # 这不能证明整个网页主体绕过宿主 RT，需确认实际 layer owner 与 buffer 路径。
   subvariants_note: "文章 S09 列 5 种 WebView 路径中的 SurfaceControl 模式（参 webview_gl_functor 注释）。"
   hwc_constraint: |
-    overlay candidate 数量过多时 HWC plane 不够 → 部分 candidate 回退到 client composition
-    → SF GPU 合成成本上升。这是 SurfaceControl 模式相对 Functor 的额外风险点。
+    检查媒体/受保护内容的独立 layer、geometry 与 buffer transaction。
+    Viz/OOP-R 或 SurfaceControl 字符串只提供候选线索；实际 DEVICE/CLIENT 需 HWC 证据。
 
 detection:
   scoring_signals:
@@ -52,7 +52,7 @@ detection:
     - thread: "1.ui"           # Flutter engine present → use Flutter pipeline
 
 teaching:
-  source: "rendering_pipelines/S09_webview_type.md"
+  source: "skills/pipelines/index.yaml#rendering_types.S09_WEBVIEW"
 auto_pin:
   instructions:
     # Time-ordered pinning (production -> transfer -> consume -> display)

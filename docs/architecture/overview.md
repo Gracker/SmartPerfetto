@@ -335,18 +335,23 @@ SmartPerfetto 有两类“内容”：
 |---|---|---|
 | Strategy / Prompt template | `backend/strategies/*.strategy.md`, `*.template.md` | 进入系统 Prompt，约束 agent 思考方式 |
 | YAML Skill | `backend/skills/**/*.skill.yaml` | 被 MCP `invoke_skill` 调用，确定性执行 SQL 分析 |
-| Rendering pipeline catalog | `backend/skills/pipelines/index.yaml` | 固定上游 commit 与文档哈希，并把检测条目区分为主类型 variant 或附加 feature |
-| Rendering pipeline docs | `docs/rendering_pipelines/*.md` | 从 `Gracker/rendering_pipelines` 同步的 Android 17 权威教学来源；构建时复制到 `backend/dist/rendering_pipelines/` |
+| Rendering pipeline catalog | `backend/skills/pipelines/index.yaml` | 维护产品精简教学卡片，并把检测条目区分为主类型 variant 或附加 feature |
 | 普通 docs | `docs/` 其他目录 | 面向用户和贡献者 |
 
 不要在 TypeScript 中硬编码 Prompt 内容。TypeScript 只负责加载、变量替换和结构性编排。
 不要在文档或代码中写死 MCP 工具总数、Skill 总数或 scene 总数；这些分别由
 tool registry、`backend/skills/` 文件树和 strategy frontmatter 决定。
 
-渲染管线输出需要同时保留两层身份：教学文档定义 `rendering type`，
+渲染管线输出需要同时保留两层身份：catalog 定义 `rendering type` 与教学卡片，
 catalog 中的 pipeline 条目定义 trace 检测子路径或 feature。只有 catalog 中
 `classification_role: variant` 且 `primary_eligible: true` 的条目能成为主判定；
-同步、哈希和引用完整性由 `npm run check:rendering-pipelines` 校验。
+教学结构与引用完整性由 `npm run check:rendering-pipelines` 校验。
+
+教学仅使用 catalog 内产品自有的精简卡片与按需知识；未发布的参考文章不入库、不进入
+npm/Docker/portable，也不公开投影。`lookup_knowledge(topic="rendering-outputs")`
+说明双出口、前缓冲、捕获和系统动画各自的资源与完成边界。
+教学 observed-flow 仅由直接唤醒与官方 critical-path 证据建立依赖边；时间相邻或
+重叠的 slice 不证明同一 buffer/frame 的交接。静态 Mermaid 保留机制拓扑。
 
 ## 场景还原
 

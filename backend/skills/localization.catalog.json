@@ -10,8 +10,8 @@
     "skillCount": 254,
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
-    "stepCount": 1399,
-    "explicitColumnCount": 5418
+    "stepCount": 1400,
+    "explicitColumnCount": 5442
   },
   "skills": {
     "ams_module": {
@@ -8011,7 +8011,7 @@
         "en": "Buffer Transaction Lifecycle"
       },
       "description": {
-        "zh-CN": "追踪 BLAST Transaction 在 SF 侧的真实计数点（S01 §⑥），区分 queueBuffer 与 Transaction 到达时机",
+        "zh-CN": "观察 SF 全局事务事件、目标进程提交事件与逐轨 BufferTX pending；缺少 buffer/layer/transaction 身份时不计算跨阶段延迟",
         "en": "Analyzes Buffer Transaction Lifecycle using trace metrics and supporting evidence."
       },
       "type": "composite",
@@ -8026,38 +8026,131 @@
         },
         "apply_transaction_summary": {
           "title": {
-            "zh-CN": "SF Transaction 真实计数点",
+            "zh-CN": "SF 全局事件与目标进程提交事件（未关联单个 buffer）",
             "en": "Apply Transaction Summary"
           },
           "columns": {
             "total_apply_transactions": {
               "label": {
-                "zh-CN": "applyTransaction 总次数",
+                "zh-CN": "SF 全局 applyTransaction 事件数",
                 "en": "Total Apply Transactions"
               }
             },
             "total_set_transaction_state": {
               "label": {
-                "zh-CN": "setTransactionState 总次数",
+                "zh-CN": "SF 全局 setTransactionState 事件数",
                 "en": "Total Set Transaction State"
               }
             },
             "total_blast_bq": {
               "label": {
-                "zh-CN": "BLASTBufferQueue slice 总次数",
+                "zh-CN": "所选进程 BLASTBufferQueue 事件数",
                 "en": "Total Blast Bq"
               }
             },
             "total_queue_buffer": {
               "label": {
-                "zh-CN": "queueBuffer 总次数",
+                "zh-CN": "所选进程 queueBuffer 事件数（非显示帧数）",
                 "en": "Total Queue Buffer"
               }
             },
             "avg_apply_to_latch_ms": {
               "label": {
-                "zh-CN": "平均 Transaction→Latch 间隔",
+                "zh-CN": "Transaction→Latch 延迟（缺身份关联，不可用）",
                 "en": "Avg Apply To Latch ms"
+              }
+            },
+            "pairing_status": {
+              "label": {
+                "zh-CN": "跨阶段关联状态",
+                "en": "Pairing Status"
+              }
+            },
+            "sf_event_scope": {
+              "label": {
+                "zh-CN": "SF 事件范围",
+                "en": "Sf Event Scope"
+              }
+            },
+            "app_event_scope": {
+              "label": {
+                "zh-CN": "应用事件范围",
+                "en": "App Event Scope"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "buffer_tx_pending_observations": {
+          "title": {
+            "zh-CN": "SF server pending 增减与水位（不等于 GPU ready 或显示帧）",
+            "en": "Buffer Tx Pending Observations"
+          },
+          "columns": {
+            "track_id": {
+              "label": {
+                "zh-CN": "Counter 轨道 ID",
+                "en": "Track Id"
+              }
+            },
+            "track_name": {
+              "label": {
+                "zh-CN": "BufferTX 轨道名",
+                "en": "Track Name"
+              }
+            },
+            "sample_count": {
+              "label": {
+                "zh-CN": "窗口内样本数",
+                "en": "Sample Count"
+              }
+            },
+            "received_updates": {
+              "label": {
+                "zh-CN": "Pending 上升量（收到 buffer update）",
+                "en": "Received Updates"
+              }
+            },
+            "removed_updates": {
+              "label": {
+                "zh-CN": "Pending 下降量（latch 或 drop）",
+                "en": "Removed Updates"
+              }
+            },
+            "min_pending_updates": {
+              "label": {
+                "zh-CN": "采样最低 pending 水位",
+                "en": "Min Pending Updates"
+              }
+            },
+            "max_pending_updates": {
+              "label": {
+                "zh-CN": "采样最高 pending 水位",
+                "en": "Max Pending Updates"
+              }
+            },
+            "last_pending_updates": {
+              "label": {
+                "zh-CN": "窗口末次采样 pending 水位",
+                "en": "Last Pending Updates"
+              }
+            },
+            "coverage_status": {
+              "label": {
+                "zh-CN": "增量观测覆盖",
+                "en": "Coverage Status"
+              }
+            },
+            "evidence_scope": {
+              "label": {
+                "zh-CN": "归属口径",
+                "en": "Evidence Scope"
+              }
+            },
+            "claim_boundary": {
+              "label": {
+                "zh-CN": "结论边界",
+                "en": "Claim Boundary"
               }
             }
           },
@@ -8065,10 +8158,22 @@
         },
         "per_layer_transactions": {
           "title": {
-            "zh-CN": "Per-layer Transaction 分布",
+            "zh-CN": "完整 FrameTimeline 记录（非 Transaction 或新 buffer 计数）",
             "en": "Per Layer Transactions"
           },
           "columns": {
+            "upid": {
+              "label": {
+                "zh-CN": "进程实例 UPID",
+                "en": "UPID"
+              }
+            },
+            "process_name": {
+              "label": {
+                "zh-CN": "进程名",
+                "en": "Process Name"
+              }
+            },
             "layer_name": {
               "label": {
                 "zh-CN": "Layer 名",
@@ -8077,20 +8182,26 @@
             },
             "frame_count": {
               "label": {
-                "zh-CN": "帧数",
+                "zh-CN": "完整 FrameTimeline 记录数（非去重 App 帧）",
                 "en": "Frame Count"
               }
             },
             "jank_count": {
               "label": {
-                "zh-CN": "Jank 数",
+                "zh-CN": "带 Jank 标记的记录数",
                 "en": "Jank Count"
               }
             },
             "avg_dur_ms": {
               "label": {
-                "zh-CN": "平均帧耗时",
+                "zh-CN": "记录平均时长",
                 "en": "Avg Dur ms"
+              }
+            },
+            "evidence_scope": {
+              "label": {
+                "zh-CN": "证据口径",
+                "en": "Evidence Scope"
               }
             }
           },
@@ -8098,20 +8209,26 @@
         },
         "queue_to_transaction_delay": {
           "title": {
-            "zh-CN": "App queueBuffer 到 SF Transaction 真实到达的延迟",
+            "zh-CN": "缺少 buffer/layer/transaction 身份，跨阶段延迟不可用",
             "en": "Queue To Transaction Delay"
           },
           "columns": {
             "bucket": {
               "label": {
-                "zh-CN": "延迟区间",
+                "zh-CN": "延迟统计可用性",
                 "en": "Bucket"
               }
             },
             "count": {
               "label": {
-                "zh-CN": "次数",
+                "zh-CN": "已关联样本数（不可用）",
                 "en": "Count"
+              }
+            },
+            "pairing_status": {
+              "label": {
+                "zh-CN": "跨阶段关联状态",
+                "en": "Pairing Status"
               }
             }
           },
@@ -8125,20 +8242,26 @@
           "columns": {
             "apply_transaction_summary": {
               "label": {
-                "zh-CN": "Transaction 概览（S01 §⑥ 真实计数点）",
+                "zh-CN": "SF 全局事件与所选进程提交事件",
                 "en": "Apply Transaction Summary"
               }
             },
             "queue_to_transaction_delay": {
               "label": {
-                "zh-CN": "queueBuffer → Transaction 延迟分布",
+                "zh-CN": "queueBuffer→Transaction 关联能力（缺身份时不可用）",
                 "en": "Queue To Transaction Delay"
               }
             },
             "per_layer_transactions": {
               "label": {
-                "zh-CN": "Per-layer Transaction 分布",
+                "zh-CN": "Per-layer FrameTimeline 记录（空结果不证明流畅）",
                 "en": "Per Layer Transactions"
+              }
+            },
+            "buffer_tx_pending_observations": {
+              "label": {
+                "zh-CN": "逐轨 BufferTX pending 增减与水位",
+                "en": "Buffer Tx Pending Observations"
               }
             }
           },
@@ -32148,7 +32271,7 @@
         "en": "WebView GL Functor"
       },
       "description": {
-        "zh-CN": "传统 WebView 渲染，App RenderThread 同步等待",
+        "zh-CN": "WebView GLES/Vulkan functor 在宿主 RenderThread 消费网页资源并绘制",
         "en": "Analyzes Pipeline Webview Gl Functor using trace metrics and supporting evidence."
       },
       "type": "pipeline_definition",
@@ -32177,7 +32300,7 @@
         "en": "WebView Surface Control"
       },
       "description": {
-        "zh-CN": "现代 WebView + Viz/OOP-R，独立合成",
+        "zh-CN": "WebView 媒体/overlay 的独立 SurfaceControl，网页主体仍可经宿主 functor",
         "en": "Analyzes Pipeline Webview Surface Control using trace metrics and supporting evidence."
       },
       "type": "pipeline_definition",
@@ -36214,7 +36337,7 @@
             },
             "frame_timeline_to_buffer_tx_ratio": {
               "label": {
-                "zh-CN": "FrameTimeline/BufferTX 帧数比",
+                "zh-CN": "FrameTimeline事件/BufferTX接收更新比（启发式）",
                 "en": "Frame Timeline To Buffer Tx Ratio"
               }
             },
@@ -36694,7 +36817,7 @@
         },
         "buffer_tx_coverage_probe": {
           "title": {
-            "zh-CN": "BufferTX / FrameTimeline 覆盖探针",
+            "zh-CN": "BufferTX / FrameTimeline 来源事件探针",
             "en": "Buffer Tx Coverage Probe"
           },
           "columns": {},
@@ -36702,19 +36825,37 @@
         },
         "buffer_tx_performance_fallback": {
           "title": {
-            "zh-CN": "滑动帧率概览（BufferTX 回退）",
+            "zh-CN": "BufferTX 接收更新概览（帧指标不可用）",
             "en": "Buffer Tx Performance Fallback"
           },
           "columns": {
+            "received_buffer_updates": {
+              "label": {
+                "zh-CN": "BufferTX 接收更新数",
+                "en": "Received Buffer Updates"
+              }
+            },
+            "received_update_rate_hz": {
+              "label": {
+                "zh-CN": "接收更新速率",
+                "en": "Received Update Rate Hz"
+              }
+            },
+            "received_update_span_ns": {
+              "label": {
+                "zh-CN": "接收更新观测时长",
+                "en": "Received Update Span ns"
+              }
+            },
             "total_frames": {
               "label": {
-                "zh-CN": "BufferTX 产出帧",
+                "zh-CN": "总帧数（未测量）",
                 "en": "Total Frames"
               }
             },
             "actual_fps": {
               "label": {
-                "zh-CN": "实际 FPS",
+                "zh-CN": "实际 FPS（未测量）",
                 "en": "Actual FPS"
               }
             },
@@ -36732,7 +36873,7 @@
             },
             "fps_source": {
               "label": {
-                "zh-CN": "帧率来源",
+                "zh-CN": "兼容来源标识",
                 "en": "FPS Source"
               }
             },
@@ -36750,8 +36891,20 @@
             },
             "frame_timeline_to_buffer_tx_ratio": {
               "label": {
-                "zh-CN": "FrameTimeline/BufferTX 帧数比",
+                "zh-CN": "来源事件数比（兼容字段）",
                 "en": "Frame Timeline To Buffer Tx Ratio"
+              }
+            },
+            "source_event_ratio": {
+              "label": {
+                "zh-CN": "FrameTimeline事件/BufferTX接收更新比（启发式）",
+                "en": "Source Event Ratio"
+              }
+            },
+            "source_event_ratio_status": {
+              "label": {
+                "zh-CN": "来源事件比较范围",
+                "en": "Source Event Ratio Status"
               }
             },
             "coverage_status": {
@@ -36780,16 +36933,16 @@
             }
           },
           "synthesizeLabels": {
-            "field:total_frames": {
-              "zh-CN": "BufferTX 产出帧",
-              "en": "Total Frames"
+            "field:received_buffer_updates": {
+              "zh-CN": "BufferTX 接收更新数",
+              "en": "Received Buffer Updates"
             },
-            "field:actual_fps": {
-              "zh-CN": "平均 FPS",
-              "en": "Actual FPS"
+            "field:received_update_rate_hz": {
+              "zh-CN": "接收更新速率(Hz)",
+              "en": "Received Update Rate Hz"
             },
             "field:fps_source": {
-              "zh-CN": "帧率来源",
+              "zh-CN": "兼容来源标识",
               "en": "FPS Source"
             },
             "field:duration_sec": {
@@ -36804,9 +36957,9 @@
               "zh-CN": "FrameTimeline 覆盖状态",
               "en": "Coverage Status"
             },
-            "field:frame_timeline_to_buffer_tx_ratio": {
-              "zh-CN": "FrameTimeline 覆盖率",
-              "en": "Frame Timeline To Buffer Tx Ratio"
+            "field:source_event_ratio": {
+              "zh-CN": "来源事件数比（启发式）",
+              "en": "Source Event Ratio"
             },
             "field:vsync_source": {
               "zh-CN": "VSync 证据来源",
@@ -37195,7 +37348,7 @@
             },
             "frame_timeline_to_buffer_tx_ratio": {
               "label": {
-                "zh-CN": "FrameTimeline/BufferTX 帧数比",
+                "zh-CN": "FrameTimeline事件/BufferTX接收更新比（启发式）",
                 "en": "Frame Timeline To Buffer Tx Ratio"
               }
             },
@@ -49486,7 +49639,7 @@
         "en": "Webview Drawfunctor Jank Chain"
       },
       "description": {
-        "zh-CN": "关联 WebView/Chromium JS 长任务、GL Functor 绘制和宿主帧掉帧窗口",
+        "zh-CN": "关联 WebView/Chromium JS 工作、GLES/Vulkan functor 阶段与宿主帧重叠；事件次数不等于显示帧数，重叠不单独证明因果",
         "en": "Analyzes Webview Drawfunctor Jank Chain using trace metrics and supporting evidence."
       },
       "type": "composite",
@@ -49600,7 +49753,7 @@
             },
             "slice_count": {
               "label": {
-                "zh-CN": "次数",
+                "zh-CN": "事件次数（非显示帧数）",
                 "en": "Slice Count"
               }
             },

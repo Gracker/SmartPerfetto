@@ -20,7 +20,7 @@ meta:
   description: "通过 ANGLE 将 OpenGL ES 翻译为 Vulkan"
   icon: "translate"
   family: graphics
-  doc_path: rendering_pipelines/S08_native_graphics_type.md
+  doc_path: skills/pipelines/index.yaml#rendering_types.S08_NATIVE_GRAPHICS
   # ----- Article-grounded signature (S08) -----
   s_article_ref: "S08"
   four_features:
@@ -50,7 +50,7 @@ detection:
       weight: 80
 
 teaching:
-  source: "rendering_pipelines/S08_native_graphics_type.md"
+  source: "skills/pipelines/index.yaml#rendering_types.S08_NATIVE_GRAPHICS"
 auto_pin:
   instructions:
     # Time-ordered pinning (production -> transfer -> consume -> display)

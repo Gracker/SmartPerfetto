@@ -105,11 +105,11 @@ invoke_skill('rendering_pipeline_detection', { package: <package hint> })
 
 **3a. 异常关联（教 + 诊）：**
 - 如果用户选中的 Slice/线程存在明显异常 → 先解释正常行为，再指出偏差
-- 例如："DrawFrame 正常耗时 4-8ms，当前帧耗时 35ms，超出帧预算"
+- 用当前 expected timeline、目标 cadence 和线程状态解释耗时；没有证据时不提供固定“正常毫秒范围”。
 
 **3b. 源码位置（按需）：**
 注意：AOSP 源码路径可能因 Android 版本不同而变化。如果引用源码位置，标注
-适用版本。渲染教学以固定上游 S01-S14 为准：平台锚点
+适用版本。渲染教学使用产品 catalog 卡片和按需机制知识：平台参考
 `android-17.0.0_r1`，kernel 锚点 `android17-6.18-2026-06_r6`，并明确
 Android 12—17 差异。框架/engine/provider 版本必须单独记录。
 
@@ -117,7 +117,7 @@ Android 12—17 差异。框架/engine/provider 版本必须单独记录。
 
 | Slice 名称 | AOSP 源码文件 | 关键函数 |
 |-----------|-------------|---------|
-| DrawFrame | android/view/ViewRootImpl.java | performTraversals() |
+| DrawFrame | frameworks/base/libs/hwui/renderthread/DrawFrameTask.cpp | DrawFrameTask::run() |
 | Choreographer#doFrame | android/view/Choreographer.java | doFrame() |
 | RenderThread::draw | libs/hwui/renderthread/RenderThread.cpp | draw() |
 | dequeueBuffer | frameworks/native/libs/gui/Surface.cpp | dequeueBuffer() |
@@ -158,11 +158,11 @@ lookup_sql_schema("<table_or_view_name>")
 
 4. **关键 Slice 说明**：
    ```
-   | Slice 名称 | 说明 | 正常耗时范围 |
+   | Slice 名称 | 说明 | 如何判断 |
    |-----------|------|------------|
-   | Choreographer#doFrame | VSync 触发的帧回调入口 | 2-8ms |
-   | DrawFrame | RenderThread 绘制入口 | 2-6ms |
-   | dequeueBuffer | 从 BufferQueue 获取缓冲区 | <1ms |
+   | Choreographer#doFrame | App 帧回调 | 对齐该帧 expected deadline |
+   | DrawFrame | RenderThread 工作，非 GPU 执行时长 | 拆 Running / Runnable / blocked |
+   | dequeueBuffer | 获得 slot 与复用依赖 | 区分 release 等待、队列额度和主动 pacing |
    ```
 
 5. **AOSP 源码位置**（仅在用户明确问到时提供）：
@@ -174,6 +174,8 @@ lookup_sql_schema("<table_or_view_name>")
    - 没有 selection 时说明使用 visible window、package/process hint 还是 fallback
    - 如有异常，指出偏差并简要说明可能原因
    - 如果缺少 SurfaceFlinger/HWC/present/fence 等采集信号，明确说明不能伪造这一段链路
+   - FrameTimeline 空不等于无卡顿；媒体 cadence、前缓冲局部更新与系统属性动画可能不逐帧更新宿主 buffer
+   - 双出口、捕获、手写与系统转场按需查 `lookup_knowledge(topic="rendering-outputs")`，分别定义完成边界
 
 7. **常见问题**：
    - 该组件相关的常见性能问题（2-3 条）
@@ -197,7 +199,7 @@ invoke_skill('pipeline_key_slices_overlay', {
 **教学原则：**
 - **先教后诊**：先解释正常行为，再指出异常
 - **事实先于模板**：真实 slice/thread/process/layer/ts/dur/present 证据优先；Mermaid 和文档只解释已观测链路
-- **混合链路分开看**：HWUI host 与 WebView/Flutter/RN/GL/TextureView/SurfaceView producer 先分开展示，再在有 dependency/overlap 证据时合并
+- **混合链路分开看**：HWUI host 与 WebView/Flutter/RN/GL/TextureView/SurfaceView producer 先分开展示，再按同一 buffer/frame/transaction 或 sched 依赖关联；仅有时间重叠不能证明内容交接
 - **分层教学**：第一轮给概览，用户追问再深入
 - **关联实践**：始终结合当前 trace 中的实际数据
 - **不假设知识**：首次使用技术术语时用中文解释含义

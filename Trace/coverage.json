@@ -2096,31 +2096,55 @@
         "steps": [
           {
             "id": "apply_transaction_summary",
-            "sha256": "6b0bb3b34dca03d7f10a6031473aadb867689c41c01575062c174469cc9e6c54",
+            "sha256": "bf4556194f70bbc2de66ffe0ea19761b9a7958ee6753df3f3c63e38fb25a2af7",
             "required_columns": [
               "total_apply_transactions",
               "total_set_transaction_state",
               "total_blast_bq",
               "total_queue_buffer",
-              "avg_apply_to_latch_ms"
+              "avg_apply_to_latch_ms",
+              "pairing_status",
+              "sf_event_scope",
+              "app_event_scope"
             ]
           },
           {
             "id": "queue_to_transaction_delay",
-            "sha256": "2e8919fad62ff3d770e9e525ef834bc9aede991935884939738845bd3d2165e6",
+            "sha256": "00b9bd1bf91815117f4a6711dbdc14514b91712fd3612d97b26ea033cf1ad0d8",
             "required_columns": [
               "bucket",
-              "count"
+              "count",
+              "pairing_status"
             ]
           },
           {
             "id": "per_layer_transactions",
-            "sha256": "26b70db8e53204e1f67e2072f4bb54a5067c8e1eda1ae32fd8c7beafaef278de",
+            "sha256": "e323cd6c03cdc3d1cff5505e14205e93cb15cd0abc450e46237f9f389c40a4f8",
             "required_columns": [
+              "upid",
+              "process_name",
               "layer_name",
               "frame_count",
               "jank_count",
-              "avg_dur_ms"
+              "avg_dur_ms",
+              "evidence_scope"
+            ]
+          },
+          {
+            "id": "buffer_tx_pending_observations",
+            "sha256": "9320fd187d0b50c355604655976e8fb38345f79735ddda4a55c2487b36b12e16",
+            "required_columns": [
+              "track_id",
+              "track_name",
+              "sample_count",
+              "received_updates",
+              "removed_updates",
+              "min_pending_updates",
+              "max_pending_updates",
+              "last_pending_updates",
+              "coverage_status",
+              "evidence_scope",
+              "claim_boundary"
             ]
           }
         ]
@@ -4859,12 +4883,12 @@
         "steps": [
           {
             "id": "score_pipelines",
-            "sha256": "d7a4b49cf8593c5f36c23491466b631f531ecaadaca0a00ecaf2dae3a71ab475",
+            "sha256": "90c2f48a7829b297d3799804d67e63ea520477bfec268cdbae461de077be0763",
             "required_columns": []
           },
           {
             "id": "determine_pipeline",
-            "sha256": "fec2f0a3773db4f348e32ef5e2c1ecd57ab119022a2b6dfb4c9024e287295f49",
+            "sha256": "4abb62cb75e437174a3723bf0b5285a00b667e51783a2f238024df6803a5d9b9",
             "required_columns": [
               "primary_pipeline_id",
               "primary_rendering_type_id",
@@ -4966,7 +4990,7 @@
         "steps": [
           {
             "id": "rn_bridge_frame_overlap",
-            "sha256": "d191b04ea8159ecd61ca0f071d2b24ebaaedb60a9a6aef302319c5798e69070c",
+            "sha256": "d97e10dc109d23bf50fc16ebe74ebc1f1b70f56c47272502794eccd4cd627ed3",
             "required_columns": [
               "ts",
               "dur_ns",
@@ -4999,7 +5023,7 @@
         "steps": [
           {
             "id": "fabric_frame_overlap",
-            "sha256": "e9bc507031dd86cbd4b7bb128a0cf071fbd0547e1acee456df0c00dab4e1926c",
+            "sha256": "e7ad5022731339653fa05f7b89a23b214bb40d1ba8f139e44d081f88cfcc6eaf",
             "required_columns": [
               "ts",
               "dur_ns",
@@ -11298,18 +11322,21 @@
           },
           {
             "id": "buffer_tx_coverage_probe",
-            "sha256": "58e3f404a6b66427f1268df714a7a482c6448c0a9b5a0a684a0dcc4e527d5218",
+            "sha256": "671086bfd06e0a499319b64381e7382bcdce17a84601345a42e1eead7cc2eada",
             "required_columns": [
               "target_process_count",
               "target_process_status",
               "frame_timeline_frames",
               "buffer_tx_frames",
+              "received_buffer_updates",
               "frame_timeline_to_buffer_tx_ratio",
+              "source_event_ratio",
               "buffer_tx_track_id",
               "frame_source_track",
               "buffer_tx_effective_span_ns",
               "coverage_status",
               "should_fallback",
+              "source_event_ratio_status",
               "root_cause_evidence_scope"
             ]
           },
@@ -11334,8 +11361,11 @@
           },
           {
             "id": "buffer_tx_performance_fallback",
-            "sha256": "1d167502030d3526b1566496a4238f14526eb5c420e8147ad94e2d5859874c78",
+            "sha256": "770f5d2914a5f3da841c8c5df972e0f3883ae98d92a85d934b9f8a151437dc90",
             "required_columns": [
+              "received_buffer_updates",
+              "received_update_rate_hz",
+              "received_update_span_ns",
               "total_frames",
               "actual_fps",
               "duration_sec",
@@ -11344,6 +11374,8 @@
               "vsync_source",
               "frame_source_track",
               "frame_timeline_to_buffer_tx_ratio",
+              "source_event_ratio",
+              "source_event_ratio_status",
               "coverage_status",
               "evidence_status",
               "present_interval_source",
@@ -11733,7 +11765,7 @@
           },
           {
             "id": "fallback_no_frame_timeline",
-            "sha256": "2b2d963521058e260c0742490de5d54a11b49204824a61e2893622941895a979",
+            "sha256": "7e083b7da4382385a295938986e28ef6c8aecc474199f273cb3dfd64356df837",
             "required_columns": [
               "status",
               "missing_table",
@@ -12655,7 +12687,7 @@
         "steps": [
           {
             "id": "drawfunctor_signal_summary",
-            "sha256": "758c0c826f2e5e3d6fc8e201bc2873a01f23983ed9fafd75b7a47bf36163e385",
+            "sha256": "5348baa53595dcfd4865d774e0faa58b9ba7efdc4aa386e05b263ae7da3a3fa2",
             "required_columns": [
               "phase",
               "process_name",
@@ -12668,7 +12700,7 @@
           },
           {
             "id": "drawfunctor_frame_overlap",
-            "sha256": "595c9f7c6cf348f6dec4675421b13a01d210d7a948ce8ab4be4ada48d5a03913",
+            "sha256": "22ac1b6119a0c6f51c6fc4faf2ed30f5b82789c30cabae73be38f521112f80a6",
             "required_columns": [
               "ts",
               "dur_ns",

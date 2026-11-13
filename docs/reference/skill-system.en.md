@@ -952,14 +952,17 @@ Synthesize data is stored with the Artifact; the agent can read it through
 Pipeline Skills identify and teach Android rendering pipelines, but a "type"
 and a "detector entry" are different layers:
 
-- `docs/rendering_pipelines/*.md` is the Android 17 teaching source of truth,
-  synchronized from a pinned upstream commit;
-- `backend/skills/pipelines/index.yaml` is the live inventory mapping concrete
-  rendering types to detector entries;
+- `backend/skills/pipelines/index.yaml` owns concise product teaching cards and detector mappings;
 - a `variant` may become the primary type; a `feature` only adds evidence;
-- each Pipeline Skill keeps signals, auto-pin guidance, and analysis
-  recommendations, and references the authoritative document through
-  `teaching.source`.
+- each Pipeline Skill keeps signals, auto-pin guidance and analysis recommendations,
+  and points `teaching.source` to its catalog card;
+- original reference articles are not committed, bundled or publicly projected.
+
+Use `slice_patterns: [old_pattern, new_pattern]` for OR aliases of one signal;
+the group contributes its weight once. Overlapping patterns do not count the
+same concrete name twice, while different names retain their event counts.
+Required signals use the group count; any matching exclude alias excludes the
+pipeline. Event counts are not produced or displayed frame counts.
 
 How the catalog and a single definition relate:
 
@@ -982,21 +985,21 @@ detection:
   signals:
     - { name: "SurfaceTexture", source: "slice" }
 teaching:
-  source: "rendering_pipelines/S10_flutter_type.md"
+  source: "skills/pipelines/index.yaml#rendering_types.S10_FLUTTER"
 ```
 
-Detection reports the primary `rendering type`, the concrete pipeline subpath,
-and feature candidates separately, so ANGLE, PIP, HWC overlay and similar
-features are never reported as the app's primary output type. Builds copy the
-synchronized catalog to `backend/dist/rendering_pipelines/`, so Docker,
-portable, and the npm CLI use the same content.
+Detection results keep the primary rendering type, detector subpath and features separate.
+`PipelineDocService` preserves its response shape but reads structured cards rather than
+article files. CLI, Docker and portable consume the same cards with Skills; builds remove
+obsolete article caches. On-demand `rendering-outputs` knowledge covers dual outputs,
+front buffers, capture and property animations. `buffer_transaction_lifecycle` retains
+legacy fields but reports cross-process latency as NULL/unsupported without identity.
+BufferTX counts pending updates, not displayed frames.
 
-Run the sync script to update the upstream import; never edit the synchronized
-Markdown by hand:
+After changing cards, signals or references, run:
 
 ```bash
-npm run sync:rendering-pipelines -- --source /path/to/rendering_pipelines --apply
-npm run check:rendering-pipelines
+npm run verify:rendering-pipelines
 ```
 
 ---
@@ -1060,7 +1063,7 @@ SmartPerfetto Skills (backend/skills/)
     └─ Product-internal deterministic DSL and runtime truth
         └─ Drive DataEnvelope, Artifact, reports, and frontend projection
 
-backend/strategies + docs/rendering_pipelines
+backend/strategies + backend/skills/pipelines/index.yaml
     └─ Methodology and rendering-pipeline sources for the public projection
 ```
 
@@ -1091,7 +1094,7 @@ single-trace snapshot keeps only its own extracted metrics and evidence
 references.
 
 After changing `backend/skills/`, `backend/strategies/`,
-`docs/rendering_pipelines/`, or the public policy, run in an environment with a
+the rendering catalog, or the public policy, run in an environment with a
 Perfetto-Skills checkout:
 
 ```bash

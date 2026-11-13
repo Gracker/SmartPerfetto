@@ -191,12 +191,11 @@ in `backend/strategies/`; deterministic evidence lives in `backend/skills/`.
 Skill inventory, scene lists, and the pipeline catalog are discovered from the
 tree/frontmatter/index rather than copied into code or docs.
 
-Rendering-pipeline teaching content under `docs/rendering_pipelines/` is read at
-runtime through `doc_path`. It is synchronized from a pinned source rather than
-edited manually:
+Rendering teaching is product-owned structured data in `backend/skills/pipelines/index.yaml`.
+`doc_path` identifies its catalog card. Reference articles are not committed or bundled.
+After changing cards or detection references, run:
 
 ```bash
-npm run sync:rendering-pipelines -- --source <checkout> --apply
 npm run check:rendering-pipelines
 ```
 

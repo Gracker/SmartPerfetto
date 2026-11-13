@@ -74,8 +74,8 @@
 
 ## 运行时读取内容
 
-`docs/rendering_pipelines/` 是由固定上游 commit 同步的 Android 17 教学来源，构建会复制到
-`backend/dist/rendering_pipelines/`。移动或修改它需要同步 pipeline catalog/Skill 引用，并运行：
+`backend/skills/pipelines/index.yaml` 保存产品自有的精简教学卡片与管线检测映射。
+策略模板补充按需分析方法；参考文章不入库、不打包。修改教学内容和引用后运行：
 
 ```bash
 npm run verify:rendering-pipelines

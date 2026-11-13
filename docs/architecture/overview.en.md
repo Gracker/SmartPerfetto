@@ -389,8 +389,7 @@ For the Web UI dual trace workspace state machine, see
 |---|---|---|
 | Strategy / prompt template | `backend/strategies/*.strategy.md`, `*.template.md` | Enters the system prompt and constrains agent behavior |
 | YAML Skill | `backend/skills/**/*.skill.yaml` | Invoked through MCP `invoke_skill` for deterministic SQL analysis |
-| Rendering pipeline catalog | `backend/skills/pipelines/index.yaml` | Pins the upstream commit and document hashes, and classifies detector entries as primary variants or supporting features |
-| Rendering pipeline docs | `docs/rendering_pipelines/*.md` | Authoritative Android 17 teaching material synchronized from `Gracker/rendering_pipelines`; copied to `backend/dist/rendering_pipelines/` during builds |
+| Rendering pipeline catalog | `backend/skills/pipelines/index.yaml` | Owns concise product teaching cards and classifies detector entries as primary variants or supporting features |
 | Normal docs | Other files under `docs/` | User and contributor documentation |
 
 Do not hardcode prompt content in TypeScript. TypeScript should load, substitute, and structurally orchestrate prompts and Skills.
@@ -398,12 +397,18 @@ Do not hardcode MCP tool counts, Skill counts, or scene counts in code or
 durable docs; those come from the tool registry, `backend/skills/` tree, and
 strategy frontmatter.
 
-Rendering-pipeline results preserve two identities: the synchronized teaching
-documents define `rendering type`, while catalog entries are trace-detection
+Rendering-pipeline results preserve two identities: the catalog defines `rendering type` and concise teaching cards, while catalog entries are trace-detection
 subpaths or features. Only entries marked `classification_role: variant` and
 `primary_eligible: true` in the catalog may become the primary classification.
-Run `npm run check:rendering-pipelines` to verify the upstream pin, hashes, and
-all active references.
+Run `npm run check:rendering-pipelines` to verify teaching structure and source references.
+
+Teaching uses concise product-owned catalog cards and on-demand knowledge. Unpublished
+reference articles are neither committed nor included in npm/Docker/portable or public
+projections. `lookup_knowledge(topic="rendering-outputs")` explains separate resource and
+completion boundaries for dual outputs, front buffers, capture and system animations.
+Teaching observed-flow edges require direct wakeup
+or official critical-path evidence: adjacent or overlapping slices do not prove a
+handoff of the same buffer/frame. Static Mermaid diagrams retain mechanism topology.
 
 ## Scene Reconstruction
 

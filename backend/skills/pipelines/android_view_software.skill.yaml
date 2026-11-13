@@ -20,7 +20,7 @@ meta:
   description: "CPU Skia 软件渲染，无 RenderThread，用于低端设备或特殊场景"
   icon: "cpu"
   family: hwui
-  doc_path: rendering_pipelines/S07_software_offscreen_type.md
+  doc_path: skills/pipelines/index.yaml#rendering_types.S07_SOFTWARE_OFFSCREEN
   # ----- Article-grounded signature (S07) -----
   s_article_ref: "S07"
   four_features:
@@ -62,7 +62,7 @@ detection:
     - slice_pattern: "DrawFrame*"
 
 teaching:
-  source: "rendering_pipelines/S07_software_offscreen_type.md"
+  source: "skills/pipelines/index.yaml#rendering_types.S07_SOFTWARE_OFFSCREEN"
 auto_pin:
   instructions:
     # Time-ordered pinning (production -> consume -> display)

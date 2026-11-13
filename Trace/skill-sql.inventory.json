@@ -3711,14 +3711,15 @@
     },
     "buffer_transaction_lifecycle": {
       "source_file": "backend/skills/atomic/buffer_transaction_lifecycle.skill.yaml",
-      "source_sha256": "38cb7cb1b6874a31a2da8e82406e81c04fade5230ec56e948f7bfd2539a6a85b",
+      "source_sha256": "977f9ee7b1e356090321193837d29dbd067b40b9ba43929e9c297508292d5421",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [],
       "top_level_steps": [
         "apply_transaction_summary",
         "queue_to_transaction_delay",
-        "per_layer_transactions"
+        "per_layer_transactions",
+        "buffer_tx_pending_observations"
       ],
       "unexecuted_sql": false,
       "units": [
@@ -3726,19 +3727,23 @@
           "id": "apply_transaction_summary",
           "at": "steps[0].sql",
           "top_level_index": 0,
-          "sha256": "6b0bb3b34dca03d7f10a6031473aadb867689c41c01575062c174469cc9e6c54",
+          "sha256": "bf4556194f70bbc2de66ffe0ea19761b9a7958ee6753df3f3c63e38fb25a2af7",
           "required_columns": [
             "total_apply_transactions",
             "total_set_transaction_state",
             "total_blast_bq",
             "total_queue_buffer",
-            "avg_apply_to_latch_ms"
+            "avg_apply_to_latch_ms",
+            "pairing_status",
+            "sf_event_scope",
+            "app_event_scope"
           ],
           "has_condition": false,
           "read_only": true,
           "placeholders": [
             "${start_ts}",
-            "${end_ts}"
+            "${end_ts}",
+            "${package|}"
           ],
           "process_scope_valid": null,
           "forceable": true
@@ -3747,17 +3752,15 @@
           "id": "queue_to_transaction_delay",
           "at": "steps[1].sql",
           "top_level_index": 1,
-          "sha256": "2e8919fad62ff3d770e9e525ef834bc9aede991935884939738845bd3d2165e6",
+          "sha256": "00b9bd1bf91815117f4a6711dbdc14514b91712fd3612d97b26ea033cf1ad0d8",
           "required_columns": [
             "bucket",
-            "count"
+            "count",
+            "pairing_status"
           ],
           "has_condition": false,
           "read_only": true,
-          "placeholders": [
-            "${start_ts}",
-            "${end_ts}"
-          ],
+          "placeholders": [],
           "process_scope_valid": null,
           "forceable": true
         },
@@ -3765,19 +3768,50 @@
           "id": "per_layer_transactions",
           "at": "steps[2].sql",
           "top_level_index": 2,
-          "sha256": "26b70db8e53204e1f67e2072f4bb54a5067c8e1eda1ae32fd8c7beafaef278de",
+          "sha256": "e323cd6c03cdc3d1cff5505e14205e93cb15cd0abc450e46237f9f389c40a4f8",
           "required_columns": [
+            "upid",
+            "process_name",
             "layer_name",
             "frame_count",
             "jank_count",
-            "avg_dur_ms"
+            "avg_dur_ms",
+            "evidence_scope"
           ],
           "has_condition": false,
           "read_only": true,
           "placeholders": [
             "${start_ts}",
             "${end_ts}",
-            "${package}"
+            "${package|}"
+          ],
+          "process_scope_valid": null,
+          "forceable": true
+        },
+        {
+          "id": "buffer_tx_pending_observations",
+          "at": "steps[3].sql",
+          "top_level_index": 3,
+          "sha256": "9320fd187d0b50c355604655976e8fb38345f79735ddda4a55c2487b36b12e16",
+          "required_columns": [
+            "track_id",
+            "track_name",
+            "sample_count",
+            "received_updates",
+            "removed_updates",
+            "min_pending_updates",
+            "max_pending_updates",
+            "last_pending_updates",
+            "coverage_status",
+            "evidence_scope",
+            "claim_boundary"
+          ],
+          "has_condition": false,
+          "read_only": true,
+          "placeholders": [
+            "${end_ts}",
+            "${package|}",
+            "${start_ts}"
           ],
           "process_scope_valid": null,
           "forceable": true
@@ -14489,7 +14523,7 @@
     },
     "pipeline_android_pip_freeform": {
       "source_file": "backend/skills/pipelines/android_pip_freeform.skill.yaml",
-      "source_sha256": "b33f9deea780ee4e15799d96eb4b84b88cec3e3394e25ce1cff31825a767b12a",
+      "source_sha256": "b3c1b0406609c691a5128de11b0bddbfd813087d8ef0f7b7b998ebbd73e75986",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14499,7 +14533,7 @@
     },
     "pipeline_android_view_mixed": {
       "source_file": "backend/skills/pipelines/android_view_mixed.skill.yaml",
-      "source_sha256": "12d5b834172b3c5517f36d3b378d7f9cffebbbfcc60c90c1b027fcf7dd8836c0",
+      "source_sha256": "bd11813a53f0ab65521f6e3b2bc94bf02a8b1543a0f741c533908c529bccea0b",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14509,7 +14543,7 @@
     },
     "pipeline_android_view_multi_window": {
       "source_file": "backend/skills/pipelines/android_view_multi_window.skill.yaml",
-      "source_sha256": "ffbbe1125236b1c0dc17d4f0b0c2221c8aa5ade3a3aeab26dd7056142f39f04f",
+      "source_sha256": "e139ed304f7fd9576a86ab07e4b96e709ca6ea905be5d58bcdf34d82a20e90e9",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14519,7 +14553,7 @@
     },
     "pipeline_android_view_software": {
       "source_file": "backend/skills/pipelines/android_view_software.skill.yaml",
-      "source_sha256": "5de7469c18f360c86b277d6c21f8979afdb2885745cb8dad15682a2469eb44bd",
+      "source_sha256": "c3c39c3bb0a993ea9e8b72fb8c697c2a97ff17a2cd5668994f4ca7af690d12a1",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14529,7 +14563,7 @@
     },
     "pipeline_android_view_standard_blast": {
       "source_file": "backend/skills/pipelines/android_view_standard_blast.skill.yaml",
-      "source_sha256": "78d0c2c42588b16a4a9fd020bd57a3ab3dd13c448ab9e726b3878ae30427e6b0",
+      "source_sha256": "90083492ccbb0d1f041905753b9cef1c896d1d71e6ccf2839551a80620ba61e0",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14539,7 +14573,7 @@
     },
     "pipeline_android_view_standard_legacy": {
       "source_file": "backend/skills/pipelines/android_view_standard_legacy.skill.yaml",
-      "source_sha256": "a1541a7ac62141bec397dc6d281b792fa3119ed2e8fc21f48ceb33d0264494b0",
+      "source_sha256": "d8fe546bae8598f1219b54726508d49b14987a39b00eefea27cc12c606be3310",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14549,7 +14583,7 @@
     },
     "pipeline_angle_gles_vulkan": {
       "source_file": "backend/skills/pipelines/angle_gles_vulkan.skill.yaml",
-      "source_sha256": "6534fbaf27524e1bb36aaa99335afadba617e5be071cd201e34b740930b94b02",
+      "source_sha256": "a1127f4e905b4539ae79e36b96dcabe11f332e3be0713b0267ba2eb8fb94dbb6",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14559,7 +14593,7 @@
     },
     "pipeline_camera_pipeline": {
       "source_file": "backend/skills/pipelines/camera_pipeline.skill.yaml",
-      "source_sha256": "71e8231904220fd671deda7e3eee30333fcfc609394f91dc11f4e400127739af",
+      "source_sha256": "bbc49adbaa0fe539e83eb44f5212389a3865881856cf221571a82003264c777e",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14569,7 +14603,7 @@
     },
     "pipeline_chrome_browser_viz": {
       "source_file": "backend/skills/pipelines/chrome_browser_viz.skill.yaml",
-      "source_sha256": "466d0a5cad5e8f40b35606a938cb63f3e17c75995c13f5df9629200c8d56b37b",
+      "source_sha256": "abe03605f50ff19e64dd57509e1f6154102979fc2dd863465c2a6338b58912d8",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14579,7 +14613,7 @@
     },
     "pipeline_compose_standard": {
       "source_file": "backend/skills/pipelines/compose_standard.skill.yaml",
-      "source_sha256": "331b58f702c25ea53aaae2c93c2f8842525d243ac6dd98d7d0fc8826f7173719",
+      "source_sha256": "180dc9350e5d5388811a4929d7be035ed98364c2a7db912d67c9eb0969750b8c",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14589,7 +14623,7 @@
     },
     "pipeline_flutter_surfaceview_impeller": {
       "source_file": "backend/skills/pipelines/flutter_surfaceview_impeller.skill.yaml",
-      "source_sha256": "fa252f18052f9439a0b1e0b21b8659fc471c9831a4bd1937fe5270d119309c21",
+      "source_sha256": "55204a57d161b214cead6fe6390e2a79e1b2b671528fa98393e250b3255fb284",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14599,7 +14633,7 @@
     },
     "pipeline_flutter_surfaceview_skia": {
       "source_file": "backend/skills/pipelines/flutter_surfaceview_skia.skill.yaml",
-      "source_sha256": "6f73af0a28cf141538bb6f1dbafa4e5873b8ab4b43f8905ef0e55ec0b17c3429",
+      "source_sha256": "0ab6ee64f311eba980f1aee0603a2bab1d74634238cdba6d579edf7faa013b17",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14609,7 +14643,7 @@
     },
     "pipeline_flutter_textureview": {
       "source_file": "backend/skills/pipelines/flutter_textureview.skill.yaml",
-      "source_sha256": "8a914c731bf04e09db6201eeadde573f3db0c3b10197149ae7fddb7e0935985c",
+      "source_sha256": "bc38cb24f2db27ae7221d731985452d31abd9299fa59e5d964c4992692326110",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14619,7 +14653,7 @@
     },
     "pipeline_game_engine": {
       "source_file": "backend/skills/pipelines/game_engine.skill.yaml",
-      "source_sha256": "f757768862f521ac5c841eea741273b89f3bf3b80090a1bf2f18b605d629e7bd",
+      "source_sha256": "b2333b076f73e8443765798cbee48d8624194b502a12a2645ac29a281b66c1be",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14629,7 +14663,7 @@
     },
     "pipeline_hardware_buffer_renderer": {
       "source_file": "backend/skills/pipelines/hardware_buffer_renderer.skill.yaml",
-      "source_sha256": "f5c8504e0f47225e7f38c91e84aab2c8bbba582347aea5ea42e5a0b0d9957d0a",
+      "source_sha256": "c94cd030c7e5b3bc299d2b10213aa3d8bb6a5b8026df7c3cae27ce4dc3b0c6da",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14639,7 +14673,7 @@
     },
     "pipeline_imagereader_pipeline": {
       "source_file": "backend/skills/pipelines/imagereader_pipeline.skill.yaml",
-      "source_sha256": "5b2ccd004a9c5954b77897842a72d4e07412657f67fe7305fd90b0634a2ece8a",
+      "source_sha256": "6bc68439d354010e095a6d527e67a130decb96f051cffaf8476e058c5cdce708",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14690,7 +14724,7 @@
     },
     "pipeline_opengl_es": {
       "source_file": "backend/skills/pipelines/opengl_es.skill.yaml",
-      "source_sha256": "7cb6f71330758b7f1f8984490877f18f7618b5f628145db2cf3a14e1649313b8",
+      "source_sha256": "8c625f6c22a5281f846096159e1058de91a0eb5c6141edd7e5364919893c7671",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14700,7 +14734,7 @@
     },
     "pipeline_rn_new_arch": {
       "source_file": "backend/skills/pipelines/rn_new_arch.skill.yaml",
-      "source_sha256": "b1c2302f08990ed6de113cc0c6df17c823e84e7743529c3018ea18d1663068b3",
+      "source_sha256": "b8e0fdf1bbb8e859161bfbf405074a9ac3c9be4a74c72688cf97c0b0d4ba3857",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14710,7 +14744,7 @@
     },
     "pipeline_rn_old_arch": {
       "source_file": "backend/skills/pipelines/rn_old_arch.skill.yaml",
-      "source_sha256": "8fe98e016f146e01ca6d726872aa432c1de7b609f7b2161b3cf14bf25223cbbd",
+      "source_sha256": "850bbc75c0890fb5d3a6e770a7ae968f2e2dcaa2c669113be0151d5725984fa6",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14720,7 +14754,7 @@
     },
     "pipeline_rn_skia": {
       "source_file": "backend/skills/pipelines/rn_skia.skill.yaml",
-      "source_sha256": "5dcdc8cfea4ac1814a3752847cc411f2a696ddb9595b6a6b7bbfc552c8258486",
+      "source_sha256": "7a3a441f55e72ad32ba0de3b729ce49c7b14febdc575653a5523e7c85c76d2a6",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14730,7 +14764,7 @@
     },
     "pipeline_software_compositing": {
       "source_file": "backend/skills/pipelines/software_compositing.skill.yaml",
-      "source_sha256": "b33f5c40a40d7c5e8b7331bd420c27d8ddd50beb248469018ecfd156b425d78f",
+      "source_sha256": "2cbc45f112ed90c342d6ddbe556f2c55f21240819a1ce09a776c6d669c9bb4bb",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14740,7 +14774,7 @@
     },
     "pipeline_surface_control_api": {
       "source_file": "backend/skills/pipelines/surface_control_api.skill.yaml",
-      "source_sha256": "1266b84034af985d1a068b0c07d116bdae9ac9a81965014efb1ddcb9632912cd",
+      "source_sha256": "d281b535731f419cb2c9e2c5c11d65ed1a3ff15aa078c283a8c325dfec7236af",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14750,7 +14784,7 @@
     },
     "pipeline_surfaceview_blast": {
       "source_file": "backend/skills/pipelines/surfaceview_blast.skill.yaml",
-      "source_sha256": "a2f85c38f862e278be9e101753de3d6cf726e3091f543b20876d6f754a57c6a0",
+      "source_sha256": "f9fe4de787e9e7a05fe436ff30f33fad487a9e45901a061690f9b3fc31dab08c",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14760,7 +14794,7 @@
     },
     "pipeline_textureview_standard": {
       "source_file": "backend/skills/pipelines/textureview_standard.skill.yaml",
-      "source_sha256": "71fbf458f59347c366ca9c96df9bd910bb8297d8ce2b4797e958cbe7e0113c94",
+      "source_sha256": "33b52f28615ab27330e108932b7e6011894ffa48a5d761cb1b9f24829aa99fda",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14770,7 +14804,7 @@
     },
     "pipeline_variable_refresh_rate": {
       "source_file": "backend/skills/pipelines/variable_refresh_rate.skill.yaml",
-      "source_sha256": "edd77a4cea13be86568ffc8a2e5ef058b0b41ed2341850531c2c9cb8a23b2a23",
+      "source_sha256": "3753f0be7b552c19a1d97f078c11e4797217d15755fadb14fff7fcc93afde263",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14780,7 +14814,7 @@
     },
     "pipeline_video_overlay_hwc": {
       "source_file": "backend/skills/pipelines/video_overlay_hwc.skill.yaml",
-      "source_sha256": "39a1bcfe778caa41af3ba3a4846e06d6988f55761e0694cd93efde66f042eabd",
+      "source_sha256": "a2e1f81a3b08c5ad9a10a8bf8975129754d0ad9832c3c58d345da55a5fc21092",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14790,7 +14824,7 @@
     },
     "pipeline_vulkan_native": {
       "source_file": "backend/skills/pipelines/vulkan_native.skill.yaml",
-      "source_sha256": "f2ebbc1d3e8b4454f4ea200f00bca9f606746d70eb395cf18ebfba854d6c4d50",
+      "source_sha256": "bfb78f28b39fe0c32baf230c91848c934c1d8ceba237f400dba2ade254440c61",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14800,7 +14834,7 @@
     },
     "pipeline_webview_gl_functor": {
       "source_file": "backend/skills/pipelines/webview_gl_functor.skill.yaml",
-      "source_sha256": "f3cce36c857d9a7f0230a0fdc774d66920dcf35253596eef8419c18c59497206",
+      "source_sha256": "7191fa7f411863e906bfc4eb3c76abdbd3c95ffd834321cb2f793906d4c168e1",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14810,7 +14844,7 @@
     },
     "pipeline_webview_surface_control": {
       "source_file": "backend/skills/pipelines/webview_surface_control.skill.yaml",
-      "source_sha256": "d6310e6c9cf9ce4049d65ba6c4b213cb0a4c401ca99c1ad81b069a6686cc1ef8",
+      "source_sha256": "3d41717e549ad4fcdb706bffecae961263d8c6be369afc35d5c725bc64355c85",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14820,7 +14854,7 @@
     },
     "pipeline_webview_surfaceview_wrapper": {
       "source_file": "backend/skills/pipelines/webview_surfaceview_wrapper.skill.yaml",
-      "source_sha256": "15a526a010a329ca90a47f84637259669b5a7aa7aa2fa97415db686588282080",
+      "source_sha256": "43a64d174f8353f37a2afce86fd9933c58ad5c44853ae7a0d4e8be08f3a9b41a",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14830,7 +14864,7 @@
     },
     "pipeline_webview_textureview_custom": {
       "source_file": "backend/skills/pipelines/webview_textureview_custom.skill.yaml",
-      "source_sha256": "6c771335298179b05c20755f8c7716f9296836a061b73eab41a3d78467d5e36d",
+      "source_sha256": "7732f2a78f68b2aa4224c8b441c5661c5f59c9fa26087d16b5a979b1cc21eb63",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -15461,7 +15495,7 @@
     },
     "rendering_pipeline_detection": {
       "source_file": "backend/skills/atomic/rendering_pipeline_detection.skill.yaml",
-      "source_sha256": "87f939ac151574036322b3c254144ce82fb5750075efcb49168175f093ad5569",
+      "source_sha256": "bdb32cee14ce0f8f258001d34bdb35cc39cc71fb98757a956e28b913c1064b73",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -15484,7 +15518,7 @@
           "id": "score_pipelines",
           "at": "steps[0].sql",
           "top_level_index": 0,
-          "sha256": "d7a4b49cf8593c5f36c23491466b631f531ecaadaca0a00ecaf2dae3a71ab475",
+          "sha256": "90c2f48a7829b297d3799804d67e63ea520477bfec268cdbae461de077be0763",
           "required_columns": [],
           "has_condition": false,
           "read_only": true,
@@ -15498,7 +15532,7 @@
           "id": "determine_pipeline",
           "at": "steps[1].sql",
           "top_level_index": 1,
-          "sha256": "fec2f0a3773db4f348e32ef5e2c1ecd57ab119022a2b6dfb4c9024e287295f49",
+          "sha256": "4abb62cb75e437174a3723bf0b5285a00b667e51783a2f238024df6803a5d9b9",
           "required_columns": [
             "primary_pipeline_id",
             "primary_rendering_type_id",
@@ -15647,7 +15681,7 @@
     },
     "rn_bridge_to_frame_jank": {
       "source_file": "backend/skills/atomic/rn_bridge_to_frame_jank.skill.yaml",
-      "source_sha256": "84b3c782c3627ecbb0379829518edfd9a119e5d2ad035c3b8ad9c06e5107618e",
+      "source_sha256": "309ae1fd570b17c709ce1c1fbe2d30e362b0f1f368cd0fa80e61fce137be7af7",
       "type": "atomic",
       "execution": "steps",
       "declared_modules": [
@@ -15663,7 +15697,7 @@
           "id": "rn_bridge_frame_overlap",
           "at": "steps[0].sql",
           "top_level_index": 0,
-          "sha256": "d191b04ea8159ecd61ca0f071d2b24ebaaedb60a9a6aef302319c5798e69070c",
+          "sha256": "d97e10dc109d23bf50fc16ebe74ebc1f1b70f56c47272502794eccd4cd627ed3",
           "required_columns": [
             "ts",
             "dur_ns",
@@ -15692,7 +15726,7 @@
     },
     "rn_fabric_render_jank": {
       "source_file": "backend/skills/atomic/rn_fabric_render_jank.skill.yaml",
-      "source_sha256": "3db80f70cb79855ae72bfefc3e8d9937dff93e81daa6b2452aab13391ea03748",
+      "source_sha256": "0b4059ccf173b5a84ad0088eb2307ddccb7221c94c4cfe9c6601cd3aac93f150",
       "type": "atomic",
       "execution": "steps",
       "declared_modules": [
@@ -15708,7 +15742,7 @@
           "id": "fabric_frame_overlap",
           "at": "steps[0].sql",
           "top_level_index": 0,
-          "sha256": "e9bc507031dd86cbd4b7bb128a0cf071fbd0547e1acee456df0c00dab4e1926c",
+          "sha256": "e7ad5022731339653fa05f7b89a23b214bb40d1ba8f139e44d081f88cfcc6eaf",
           "required_columns": [
             "ts",
             "dur_ns",
@@ -16925,7 +16959,7 @@
     },
     "scrolling_analysis": {
       "source_file": "backend/skills/composite/scrolling_analysis.skill.yaml",
-      "source_sha256": "ca7c1326c0ca6eac9e485114bd94fbfd81e9c8db2f3d8c65974d46831f8db084",
+      "source_sha256": "7b6db2bdf39a9b8588e3dbec921991ced81edd6d9a6d7426184f2b1a7d9a3c5a",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -17223,18 +17257,21 @@
           "id": "buffer_tx_coverage_probe",
           "at": "steps[13].sql",
           "top_level_index": 13,
-          "sha256": "58e3f404a6b66427f1268df714a7a482c6448c0a9b5a0a684a0dcc4e527d5218",
+          "sha256": "671086bfd06e0a499319b64381e7382bcdce17a84601345a42e1eead7cc2eada",
           "required_columns": [
             "target_process_count",
             "target_process_status",
             "frame_timeline_frames",
             "buffer_tx_frames",
+            "received_buffer_updates",
             "frame_timeline_to_buffer_tx_ratio",
+            "source_event_ratio",
             "buffer_tx_track_id",
             "frame_source_track",
             "buffer_tx_effective_span_ns",
             "coverage_status",
             "should_fallback",
+            "source_event_ratio_status",
             "root_cause_evidence_scope"
           ],
           "has_condition": true,
@@ -17282,8 +17319,11 @@
           "id": "buffer_tx_performance_fallback",
           "at": "steps[15].sql",
           "top_level_index": 15,
-          "sha256": "1d167502030d3526b1566496a4238f14526eb5c420e8147ad94e2d5859874c78",
+          "sha256": "770f5d2914a5f3da841c8c5df972e0f3883ae98d92a85d934b9f8a151437dc90",
           "required_columns": [
+            "received_buffer_updates",
+            "received_update_rate_hz",
+            "received_update_span_ns",
             "total_frames",
             "actual_fps",
             "duration_sec",
@@ -17292,6 +17332,8 @@
             "vsync_source",
             "frame_source_track",
             "frame_timeline_to_buffer_tx_ratio",
+            "source_event_ratio",
+            "source_event_ratio_status",
             "coverage_status",
             "evidence_status",
             "present_interval_source",
@@ -17887,7 +17929,7 @@
           "id": "fallback_no_frame_timeline",
           "at": "steps[33].sql",
           "top_level_index": 33,
-          "sha256": "2b2d963521058e260c0742490de5d54a11b49204824a61e2893622941895a979",
+          "sha256": "7e083b7da4382385a295938986e28ef6c8aecc474199f273cb3dfd64356df837",
           "required_columns": [
             "status",
             "missing_table",
@@ -22191,7 +22233,7 @@
     },
     "webview_drawfunctor_jank_chain": {
       "source_file": "backend/skills/composite/webview_drawfunctor_jank_chain.skill.yaml",
-      "source_sha256": "23169f041556c7bfe0b33f5a86d7248694d522332bcb1e0db972702d7f68e337",
+      "source_sha256": "f955143f2e4366b68abd38648cac6d652dbd08240aecca385340a151f984ca93",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -22209,7 +22251,7 @@
           "id": "drawfunctor_signal_summary",
           "at": "steps[0].sql",
           "top_level_index": 0,
-          "sha256": "758c0c826f2e5e3d6fc8e201bc2873a01f23983ed9fafd75b7a47bf36163e385",
+          "sha256": "5348baa53595dcfd4865d774e0faa58b9ba7efdc4aa386e05b263ae7da3a3fa2",
           "required_columns": [
             "phase",
             "process_name",
@@ -22234,7 +22276,7 @@
           "id": "drawfunctor_frame_overlap",
           "at": "steps[1].sql",
           "top_level_index": 1,
-          "sha256": "595c9f7c6cf348f6dec4675421b13a01d210d7a948ce8ab4be4ada48d5a03913",
+          "sha256": "22ac1b6119a0c6f51c6fc4faf2ed30f5b82789c30cabae73be38f521112f80a6",
           "required_columns": [
             "ts",
             "dur_ns",

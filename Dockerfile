@@ -8,7 +8,6 @@ COPY backend/package*.json ./
 RUN npm ci
 COPY scripts/trace-processor-pin.env /app/scripts/trace-processor-pin.env
 COPY scripts/perfetto-recording-tools-pin.env /app/scripts/perfetto-recording-tools-pin.env
-COPY docs/rendering_pipelines /app/docs/rendering_pipelines
 COPY backend/ ./
 COPY backend/data/perfettoSqlIndex.light.json backend/data/perfettoSqlDocs.json backend/data/perfettoStdlibSymbols.json ./data/
 RUN npm run build

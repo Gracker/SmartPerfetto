@@ -10,7 +10,8 @@ Discover Skill types/inventory from source, never hardcoded counts.
 - SQL belongs in Skills/shared SQL helpers, not UI. Preserve self-describing
   DataEnvelope columns, producer units, layers/levels, summary fields and
   process/thread/time/source identity. Reports, CLI, snapshots and comparison
-  consume the same contract. `doc_path` targets committed runtime-read docs.
+  consume the same contract. Rendering `doc_path` points to its product teaching
+  card in the catalog; unpublished reference articles are not runtime assets.
 - Parameters use `${param|default}`. Vendor/platform differences are explicit
   inputs/conditions/overrides. Conditions/branch `when`/diagnostic conditions
   use JavaScript `&&`/`||`, not SQL boolean words; iterator filter's rewrite is

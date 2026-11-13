@@ -2,107 +2,258 @@
 # Copyright (C) 2024-2026 Gracker (Chris)
 # This file is part of SmartPerfetto. See LICENSE for details.
 
-version: "2.0"
-description: "Android 17 rendering knowledge catalog and trace-detection mappings"
-
-source:
-  repository: "https://github.com/Gracker/rendering_pipelines"
-  commit: "043074f775d03551b4f9d068b4296e70258b3571"
-  android_tag: "android-17.0.0_r1"
-  kernel_tag: "android17-6.18-2026-06_r6"
-
-documents:
-  - id: S01_OVERVIEW
-    file: S01_rendering_types_overview.md
-    sha256: 9e61960d979bd9d5837bcc0976274a1dcaf191ae5d5b65e2c2207bf1b95eb386
-  - id: S02_AOSP_STANDARD
-    file: S02_aosp_standard_type.md
-    sha256: ea3bcea43c3548a97e11c2f062e93b1e8d1b0954cd9b207287d2abed903e1153
-  - id: S03_SURFACEVIEW
-    file: S03_surfaceview_type.md
-    sha256: bc36006cf53cb28f45d888aa4f9fbf28c4f6a3e0b511be7f8db36857c1e26630
-  - id: S04_TEXTUREVIEW
-    file: S04_textureview_type.md
-    sha256: 2eff31edccc57811d6795c873ec59411e167b8344a538629ee1db77e5a8e4ce5
-  - id: S05_MIXED_RENDERING
-    file: S05_mixed_rendering_type.md
-    sha256: 0df7e009bcbd198f98837a68719d5fa39a04b17fb1b7ef752b700112ae5cdfd2
-  - id: S06_MULTI_WINDOW
-    file: S06_multi_window_type.md
-    sha256: e180be5faeb94832ff4bff9647b9b5a8a24760b2de69a8d0f80729f1d29a9557
-  - id: S07_SOFTWARE_OFFSCREEN
-    file: S07_software_offscreen_type.md
-    sha256: 574e42119ec2f7761dfeb4ca4d46dc07d45f71140d0d0012d13c16e4982a1d94
-  - id: S08_NATIVE_GRAPHICS
-    file: S08_native_graphics_type.md
-    sha256: 2abcf50db6a318723ff2427f3e1299f4ab44c8f82fd7e64f63e1eaa372c280e2
-  - id: S09_WEBVIEW
-    file: S09_webview_type.md
-    sha256: f1e5a808491594eb73e542aea5d6a2709fa3b375f01d72c4620b9181e5f4cdae
-  - id: S10_FLUTTER
-    file: S10_flutter_type.md
-    sha256: 1d342817546f98db9f328f8552f0ab2465db50f4d550b95212ac6b9cc39daacf
-  - id: S11_CAMERA
-    file: S11_camera_type.md
-    sha256: 9b2a89db6cedcca193c8f0a2267dd448ee52be4c8728ac05e77f7d110aa2460e
-  - id: S12_VIDEO_OVERLAY_HWC
-    file: S12_video_overlay_hwc_type.md
-    sha256: d7791d38863dbddf3dd9ca7242ed0f78c5febe53b4c899ce8568dd4b38447e6a
-  - id: S13_GAME
-    file: S13_game_type.md
-    sha256: febe59cdcbfc9f84b238e4f2ea104001c70a1ec9f4aed057f2da5fb9e6ee44b0
-  - id: S14_REACT_NATIVE
-    file: S14_react_native_type.md
-    sha256: 2433ab817a1b7f5864cb6aa1e7ca5f9576efb3ceedbbbbaa921824cf0127e7be
-
+version: '3.0'
+description: Product rendering evidence catalog and concise teaching cards
 rendering_types:
   S01_OVERVIEW:
     kind: overview
-    document: S01_rendering_types_overview.md
+    teaching:
+      title: 渲染路径与证据范围
+      summary: 先定位内容生产者、接收方及输出目标，再判断所选时间窗中的路径。类型候选用于导航，实际交接依赖同一对象与时间证据。
+      mermaidBlocks: []
+      threadRoles:
+      - thread: Producer
+        responsibility: 生成内容并提交资源引用
+      - thread: Consumer
+        responsibility: 遵守输入依赖并使用资源
+      keySlices:
+      - queueBuffer
+      - BLASTBufferQueue
+      - setTransactionState
   S02_AOSP_STANDARD:
     kind: concrete
-    document: S02_aosp_standard_type.md
+    teaching:
+      title: 标准窗口与 HWUI
+      summary: 主线程组织界面状态，RenderThread 执行绘制工作并提交窗口内容。CPU 切片、GPU 完成及显示反馈分别测量，不累加为同一个串行耗时。
+      mermaidBlocks:
+      - "flowchart LR\n UI[UI work] --> RT[Render work]\n RT --> W[Window update]\n W --> SF[Display composition]"
+      threadRoles:
+      - thread: main
+        responsibility: 输入、布局及绘制状态更新
+      - thread: RenderThread
+        responsibility: 绘制执行与 GPU 提交
+      - thread: surfaceflinger
+        responsibility: 处理层更新并组织显示合成
+      keySlices:
+      - Choreographer#doFrame
+      - DrawFrame
+      - syncFrameState
+      - queueBuffer
   S03_SURFACEVIEW:
     kind: concrete
-    document: S03_surfaceview_type.md
+    teaching:
+      title: 独立 Surface 内容
+      summary: 宿主界面与独立内容可以有不同生产节奏。区分容器属性和真正承载 buffer 的子层，沿活动 layer 关联提交及显示。
+      mermaidBlocks:
+      - "flowchart LR\n UI[Host UI] --> H[Host buffer]\n P[Content producer] --> C[Child buffer]\n H --> SF[Composition]\n\
+        \ C --> SF"
+      threadRoles:
+      - thread: main
+        responsibility: 管理宿主界面与 Surface 生命周期
+      - thread: Producer thread
+        responsibility: 向独立输出提交内容
+      - thread: surfaceflinger
+        responsibility: 组合宿主及独立内容层
+      keySlices:
+      - queueBuffer
+      - BLASTBufferQueue
+      - setTransactionState
   S04_TEXTUREVIEW:
     kind: concrete
-    document: S04_textureview_type.md
+    teaching:
+      title: 纹理输入与宿主采样
+      summary: 外部输入先由宿主取用，再写入宿主窗口输出。输入资源与窗口 buffer 各有完成和回收依赖；通知到达不等于已经采样或呈现。
+      mermaidBlocks:
+      - "flowchart LR\n P[Input producer] --> T[Texture input]\n T --> R[Host sampling]\n R --> W[Host window]"
+      threadRoles:
+      - thread: Producer thread
+        responsibility: 生成外部纹理内容
+      - thread: RenderThread
+        responsibility: 获取输入并提交宿主采样工作
+      keySlices:
+      - ASurfaceTexture_dequeueBuffer
+      - updateTexImage
+      - queueBuffer
+      - DrawFrame
   S05_MIXED_RENDERING:
     kind: concrete
-    document: S05_mixed_rendering_type.md
+    teaching:
+      title: 多路内容与同步
+      summary: 逐路说明哪些内容回流到宿主、哪些形成独立层。事务可同步已加入的状态，跨内容业务版本是否一致需要单独的身份映射。
+      mermaidBlocks: []
+      threadRoles:
+      - thread: main
+        responsibility: 协调宿主与参与同步的窗口状态
+      - thread: Producer thread
+        responsibility: 独立推进各路内容
+      keySlices:
+      - SurfaceSyncGroup
+      - BLASTBufferQueue
+      - setTransactionState
+      - queueBuffer
   S06_MULTI_WINDOW:
     kind: concrete
-    document: S06_multi_window_type.md
+    teaching:
+      title: 多窗口的共享与隔离
+      summary: 窗口可以共享执行线程，但输出队列及资源释放分别管理。保留窗口、进程实例与 layer 身份，短绘制仍可能因共享线程排队而迟到。
+      mermaidBlocks: []
+      threadRoles:
+      - thread: main
+        responsibility: 执行所在 Looper 的窗口回调
+      - thread: RenderThread
+        responsibility: 承载同进程窗口的绘制工作
+      keySlices:
+      - Choreographer#doFrame
+      - DrawFrame
+      - queueBuffer
   S07_SOFTWARE_OFFSCREEN:
     kind: concrete
-    document: S07_software_offscreen_type.md
+    teaching:
+      title: 软件生产与离屏结果
+      summary: 区分 CPU Surface 生产、View 软件缓存、GPU 离屏和直接 buffer 提交。离屏结果以消费者可读为完成边界，不要求物理显示反馈。
+      mermaidBlocks: []
+      threadRoles:
+      - thread: Producer thread
+        responsibility: 执行 CPU 或离屏生产并交接结果
+      - thread: RenderThread
+        responsibility: 可能承载宿主绘制或离屏工作
+      keySlices:
+      - lock
+      - unlock
+      - buildDrawingCache/SW Layer
+      - queueBuffer
   S08_NATIVE_GRAPHICS:
     kind: concrete
-    document: S08_native_graphics_type.md
+    teaching:
+      title: 原生图形提交
+      summary: 沿引擎的获取、提交及输出阶段定位等待。长 swap/acquire 可能是资源复用或主动节奏控制；缺少 Vulkan tracing 切片时保留可见性限制。
+      mermaidBlocks: []
+      threadRoles:
+      - thread: Render thread
+        responsibility: 录制并提交原生图形工作
+      - thread: GPU
+        responsibility: 执行已提交的图形命令
+      keySlices:
+      - eglSwapBuffers
+      - vkQueuePresentKHR
+      - queueBuffer
+      - dequeueBuffer
   S09_WEBVIEW:
     kind: concrete
-    document: S09_webview_type.md
+    teaching:
+      title: WebView 宿主绘制
+      summary: 分别观察网页内容生产与宿主 functor 执行。网页资源、functor 调用和宿主窗口帧不是同一计数；视频独立层可与宿主路径并存。
+      mermaidBlocks: []
+      threadRoles:
+      - thread: CrRendererMain
+        responsibility: 执行网页渲染及脚本工作
+      - thread: RenderThread
+        responsibility: 执行宿主 functor 与窗口绘制
+      keySlices:
+      - DrawFn_DrawGL
+      - DrawFn_DrawVk
+      - WebViewFunctor::drawVk
+      - WebViewFunctor::drawGl
+      - WebViewFunctor::sync
+      - WebViewFunctor::postDrawVk
   S10_FLUTTER:
     kind: concrete
-    document: S10_flutter_type.md
+    teaching:
+      title: Flutter 内容与 Android 输出
+      summary: 分别确认引擎工作、根输出承载和嵌入内容。线程职责可能合并；raster 结束不代表 GPU 或显示完成，纹理输出还要追宿主采样。
+      mermaidBlocks: []
+      threadRoles:
+      - thread: UI task runner
+        responsibility: 推进框架及界面工作，线程名随版本变化
+      - thread: Raster task runner
+        responsibility: 执行场景绘制与输出提交
+      keySlices:
+      - Animator::BeginFrame
+      - Rasterizer::Draw
+      - queueBuffer
+      - ASurfaceTexture_dequeueBuffer
   S11_CAMERA:
     kind: concrete
-    document: S11_camera_type.md
+    teaching:
+      title: 相机输入与多路消费
+      summary: 请求、结果元数据和输出 buffer 分别关联。预览、分析及录像可能互相回压；需要资源持有和释放证据才能确认消费端阻塞。
+      mermaidBlocks: []
+      threadRoles:
+      - thread: Camera request thread
+        responsibility: 组织相机请求，名称可能截断
+      - thread: Camera consumer
+        responsibility: 使用并释放各路输出资源
+      keySlices:
+      - Camera
+      - CaptureSession
+      - queueBuffer
   S12_VIDEO_OVERLAY_HWC:
     kind: concrete
-    document: S12_video_overlay_hwc_type.md
+    teaching:
+      title: 视频输出与显示合成
+      summary: 媒体时间、buffer 提交及目标显示分别关联。低于面板频率的内容可以正常复用；是否采用 DEVICE 合成需要目标视频层的逐帧证据。
+      mermaidBlocks: []
+      threadRoles:
+      - thread: Codec thread
+        responsibility: 推进解码输出及资源交接
+      - thread: surfaceflinger
+        responsibility: 组织视频与其他层的显示合成
+      keySlices:
+      - releaseOutputBuffer
+      - queueBuffer
+      - present
   S13_GAME:
     kind: concrete
-    document: S13_game_type.md
+    teaching:
+      title: 引擎流水与帧节奏
+      summary: 保留逻辑帧、渲染帧、GPU 提交及输出图像的映射。流水重叠不能直接相加；空闲图像数或 pending 水位不能证明未来完整画面库存。
+      mermaidBlocks: []
+      threadRoles:
+      - thread: Game thread
+        responsibility: 推进游戏逻辑与场景状态
+      - thread: Render thread
+        responsibility: 准备并提交渲染工作
+      keySlices:
+      - eglSwapBuffers
+      - vkQueuePresentKHR
+      - queueBuffer
   S14_REACT_NATIVE:
     kind: concrete
-    document: S14_react_native_type.md
-
+    teaching:
+      title: React Native 更新与宿主窗口
+      summary: JS、Fabric/Paper 阶段和宿主绘制分别取证。线程别名不能单独证明架构，Commit/Mount 次数也不能替代实际窗口帧数。
+      mermaidBlocks: []
+      threadRoles:
+      - thread: mqt_js / mqt_v_js
+        responsibility: 执行 JS 工作，名字不决定架构
+      - thread: main
+        responsibility: 应用原生界面更新并推进宿主绘制
+      keySlices:
+      - FabricUIManager
+      - FabricCommit
+      - FabricMount
+      - Choreographer#doFrame
+      - DrawFrame
+  S16_CHROMIUM_BROWSER:
+    kind: concrete
+    teaching:
+      title: 浏览器多进程出图
+      summary: 按 Browser、Renderer 与 Viz/GPU 的实际归属建链。内部 category 不可见时保留缺口；输出可能经 BQ/BLAST，也可能直接提交 SurfaceControl。
+      mermaidBlocks: []
+      threadRoles:
+      - thread: CrBrowserMain
+        responsibility: 浏览器控制与界面工作
+      - thread: CrRendererMain
+        responsibility: 网页渲染工作
+      - thread: VizCompositorTh*
+        responsibility: 浏览器合成与输出，线程名可能截断
+      keySlices:
+      - Graphics.Pipeline
+      - queueBuffer
+      - setTransactionState
 default:
   pipeline_id: ANDROID_VIEW_STANDARD_BLAST
   rendering_type_id: S02_AOSP_STANDARD
-
 pipelines:
   ANDROID_VIEW_STANDARD_BLAST:
     file: android_view_standard_blast.skill.yaml
@@ -169,7 +320,8 @@ pipelines:
     family: hwui
     classification_role: feature
     teaching_type_id: S06_MULTI_WINDOW
-    related_rendering_type_ids: [S06_MULTI_WINDOW]
+    related_rendering_type_ids:
+    - S06_MULTI_WINDOW
     architecture_type: STANDARD
     signal_scope: app
     primary_eligible: false
@@ -179,7 +331,8 @@ pipelines:
     family: surface
     classification_role: feature
     teaching_type_id: S06_MULTI_WINDOW
-    related_rendering_type_ids: [S06_MULTI_WINDOW]
+    related_rendering_type_ids:
+    - S06_MULTI_WINDOW
     architecture_type: STANDARD
     signal_scope: global
     primary_eligible: false
@@ -199,7 +352,8 @@ pipelines:
     family: specialized
     classification_role: feature
     teaching_type_id: S07_SOFTWARE_OFFSCREEN
-    related_rendering_type_ids: [S07_SOFTWARE_OFFSCREEN]
+    related_rendering_type_ids:
+    - S07_SOFTWARE_OFFSCREEN
     architecture_type: STANDARD
     signal_scope: app
     primary_eligible: false
@@ -209,7 +363,8 @@ pipelines:
     family: specialized
     classification_role: feature
     teaching_type_id: S07_SOFTWARE_OFFSCREEN
-    related_rendering_type_ids: [S07_SOFTWARE_OFFSCREEN]
+    related_rendering_type_ids:
+    - S07_SOFTWARE_OFFSCREEN
     architecture_type: STANDARD
     signal_scope: app
     primary_eligible: false
@@ -219,7 +374,8 @@ pipelines:
     family: surface
     classification_role: feature
     teaching_type_id: S07_SOFTWARE_OFFSCREEN
-    related_rendering_type_ids: [S07_SOFTWARE_OFFSCREEN]
+    related_rendering_type_ids:
+    - S07_SOFTWARE_OFFSCREEN
     architecture_type: STANDARD
     signal_scope: app
     primary_eligible: false
@@ -249,7 +405,8 @@ pipelines:
     family: graphics
     classification_role: feature
     teaching_type_id: S08_NATIVE_GRAPHICS
-    related_rendering_type_ids: [S08_NATIVE_GRAPHICS]
+    related_rendering_type_ids:
+    - S08_NATIVE_GRAPHICS
     architecture_type: GLSURFACEVIEW
     signal_scope: app
     primary_eligible: false
@@ -298,8 +455,8 @@ pipelines:
     file: chrome_browser_viz.skill.yaml
     family: webview
     classification_role: variant
-    teaching_type_id: S09_WEBVIEW
-    rendering_type_id: S09_WEBVIEW
+    teaching_type_id: S16_CHROMIUM_BROWSER
+    rendering_type_id: S16_CHROMIUM_BROWSER
     architecture_type: WEBVIEW
     signal_scope: app
     primary_eligible: true
@@ -349,7 +506,8 @@ pipelines:
     family: specialized
     classification_role: feature
     teaching_type_id: S12_VIDEO_OVERLAY_HWC
-    related_rendering_type_ids: [S12_VIDEO_OVERLAY_HWC]
+    related_rendering_type_ids:
+    - S12_VIDEO_OVERLAY_HWC
     architecture_type: VIDEO_OVERLAY
     signal_scope: global
     primary_eligible: false

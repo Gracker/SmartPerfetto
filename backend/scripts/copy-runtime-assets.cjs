@@ -5,8 +5,6 @@
 
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
-const yaml = require('js-yaml');
 
 const backendRoot = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(backendRoot, '..');
@@ -30,19 +28,6 @@ copyFileRequired(
   path.join(distRoot, 'perfetto-recording-tools-pin.env'),
 );
 
-const catalog = yaml.load(
-  fs.readFileSync(path.join(backendRoot, 'skills', 'pipelines', 'index.yaml'), 'utf8'),
-);
-const renderingDocsSource = path.join(repoRoot, 'docs', 'rendering_pipelines');
-const renderingDocsTarget = path.join(distRoot, 'rendering_pipelines');
-fs.rmSync(renderingDocsTarget, { recursive: true, force: true });
-
-for (const document of catalog.documents) {
-  const source = path.join(renderingDocsSource, document.file);
-  const content = fs.readFileSync(source);
-  const actualHash = crypto.createHash('sha256').update(content).digest('hex');
-  if (actualHash !== document.sha256) {
-    throw new Error(`Rendering pipeline asset hash mismatch: ${document.file}`);
-  }
-  copyFileRequired(source, path.join(renderingDocsTarget, document.file));
-}
+// Older builds copied unpublished reference articles here. Remove that obsolete
+// tree on every build; teaching now travels with the Skill catalog itself.
+fs.rmSync(path.join(distRoot, 'rendering_pipelines'), { recursive: true, force: true });

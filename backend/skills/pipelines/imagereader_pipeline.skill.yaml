@@ -21,7 +21,7 @@ meta:
   description: "通过 ImageReader API 获取渲染帧的管线，常见于 ML 推理、屏幕录制、自定义相机处理和部分 Chrome 渲染模式"
   icon: "image"
   family: specialized
-  doc_path: rendering_pipelines/S07_software_offscreen_type.md
+  doc_path: skills/pipelines/index.yaml#rendering_types.S07_SOFTWARE_OFFSCREEN
   # ----- Article-grounded signature (S07 + S09 + S11 cross-cutting) -----
   s_article_ref: "S07"   # ImageReader 是离屏消费者；S09 提到 WebView 罕见 ImageReader 路径；S11 提到 Camera 分析路径
   four_features:
@@ -75,7 +75,7 @@ detection:
 # Teaching Content
 # ==========================================================================
 teaching:
-  source: "rendering_pipelines/S07_software_offscreen_type.md"
+  source: "skills/pipelines/index.yaml#rendering_types.S07_SOFTWARE_OFFSCREEN"
 # ==========================================================================
 # Auto Pin Configuration
 # ==========================================================================

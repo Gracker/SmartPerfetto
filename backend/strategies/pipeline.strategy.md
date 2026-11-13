@@ -98,7 +98,7 @@ final_report_contract:
 - pipeline_skill_invocation: 管线识别场景建议包含管线教学内容展示阶段 (pipeline skill invocation) (requires one of: invoke_skill(rendering_pipeline_detection), invoke_skill(render_pipeline_latency), invoke_skill(scene_reconstruction))
 
 **Phase reminders**
-- buffer_fence_lifecycle: BufferQueue/Fence 问题必须拆 producer queue/dequeue、BLAST transaction、SF acquire/latch、HWC present、release fence。queueBuffer 只证明 producer submission；HWC 不是 BufferQueue consumer，SF 才消费 buffer 后再交给 HWC/RenderEngine。 工具: buffer_transaction_lifecycle, fence_wait_decomposition, surfaceflinger_analysis, present_fence_timing
+- buffer_fence_lifecycle: BufferQueue/Fence 问题必须拆 producer queue/dequeue、BLAST transaction、SF acquire/latch、HWC present、release fence。queueBuffer 只证明 producer submission；标准 BLAST 窗口的 BQ Consumer 在 App；SF 接收含 buffer 的 transaction，HWC/RenderEngine 读取其输入。 工具: buffer_transaction_lifecycle, fence_wait_decomposition, surfaceflinger_analysis, present_fence_timing
 - refresh_policy_boundary: 刷新率/ARR/VRR 是 policy/ranking 与设备能力问题。不要默认 16.6ms；先用 vsync_config / vsync_phase_alignment / FrameTimeline 识别实际 VSync 周期，再说明 setFrameRate/View.setRequestedFrameRate 只是 hint/vote。 工具: vsync_config, vsync_phase_alignment, surfaceflinger_analysis
 - graphics_memory_boundary: GraphicBuffer/dma-buf 是图形物理内存证据面，不能和 BufferQueue 槽位、queue depth 或 fence backpressure 混用。只有 meminfo/dma-buf/SurfaceFlinger dumpsys/heap/counter 等证据存在时才能写图形内存占用；Perfetto slice 只能支持队列/同步/背压候选。 工具: memory_analysis
 
@@ -115,18 +115,18 @@ final_report_contract:
 <!-- strategy-detail id="full" title="pipeline full strategy detail" keywords="pipeline,管线识别,pipeline识别,渲染路径,渲染管线检测,管线类型,pipeline detection,rendering pipeline,render path,architecture detection,渲染架构检测,帧渲染路径,frame path,渲染管线识别与教学分析（用户提到 管线识别、pipeline 检测、渲染路径、渲染架构检测）,detail,full" default="true" -->
 #### 渲染管线识别与教学分析（用户提到 管线识别、pipeline 检测、渲染路径、渲染架构检测）
 
-**核心目标：** 先识别 S02-S14 出图类型，再报告细粒度检测子路径与正交
-feature，展示上游 Android 17 文章中的实际对象树，并路由到对应分析策略。
+**核心目标：** 先按 catalog 识别有证据支持的出图类型，再报告细粒度检测子路径与正交
+feature，展示产品教学卡片中的参考拓扑，并路由到对应分析策略。
 
 **证据边界：**
 1. 渲染链路要拆成 Main/UI、RenderThread、BufferQueue、SurfaceFlinger、HWC/display 和 GPU/fence；不要把某一个 slice 当成整条链路结论。
-2. `queueBuffer()` 只说明 producer 提交 buffer；SurfaceFlinger 仍需 acquire/latch、commit/composite、交给 HWC/RenderEngine，并等待 present/release fence。
-3. HWC 不是 BufferQueue consumer。SurfaceFlinger 才消费 buffer，HWC 参与后续 validate/accept/present。
+2. `queueBuffer()` 只说明 producer 提交 buffer；标准窗口先由 App 内 BLAST acquire 引用并提交 transaction；SF 接收、latch、合成后再关联 present。release 另约束被归还的 buffer。
+3. 标准 BLAST 窗口的 BufferQueue Consumer 在 App；SF 消费 buffer transaction，并交给 RenderEngine/HWC。不能把 SF latch 当作对 App BQ 的 acquire。
 4. GraphicBuffer/dma-buf 是图形物理内存证据，不能等同 BufferQueue 槽位、队列深度或 fence backpressure。
 5. refresh rate / ARR / VRR 会改变帧预算；`setFrameRate()` / `View.setRequestedFrameRate()` 是 hint/vote，不是强制命令。报告必须用实际 VSync/FrameTimeline 证据说明预算。
 6. 只有 catalog 中 `classification_role: variant` 的条目能成为主出图类型；
    VRR、PiP、多窗口、Video Overlay、ANGLE 等 feature 只能作为伴随证据。
-7. Producer/layer/提交路径/节奏四轴仅是辅助证据，不能替代 S02-S14 的最小
+7. Producer/layer/提交路径/节奏四轴仅是辅助证据，不能替代当前路径要求的最小
    Producer、Surface/layer、BufferQueue 证据集。
 
 **Phase 1 — 自动检测：**
@@ -285,7 +285,7 @@ ORDER BY slice_cnt DESC
 ### 输出结构必须遵循：
 
 1. **检测结果**：
-   - S02-S14 出图类型 + 置信度
+   - catalog 出图类型 + 置信度 + 对应文章
    - 检测子路径 + 独立列出的正交 feature
    - 如有多管线共存，分别列出
 

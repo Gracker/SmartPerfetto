@@ -99,6 +99,16 @@ describe('scrolling_analysis skill schema', () => {
       .replace(/,\s*$/, '');
   };
 
+  const renderBufferTxCtes = (startTs = 'NULL', endTs = 'NULL') =>
+    extractMarkedCtes(
+      builtInSkillFragment('buffer_tx_frame_production.sql'),
+      '-- BUFFER_TX_FALLBACK_CTES_BEGIN',
+      '-- BUFFER_TX_FALLBACK_CTES_END',
+    )
+      .split('${package}').join('com.example.app')
+      .split('${start_ts}').join(startTs)
+      .split('${end_ts}').join(endTs);
+
   const createConsumerJankFixture = () => {
     const db = createScopedSqlFixture();
     db.function('android_is_app_jank_type', (value: unknown) =>
@@ -263,11 +273,9 @@ describe('scrolling_analysis skill schema', () => {
   });
 
   it('never presents the cross-source frame ratio as a bounded coverage percentage', () => {
-    // frame_timeline_frames / buffer_tx_produced_frames comes from two
-    // independent sources and can exceed 1 (measured 1.0024 and 1.0083 on real
-    // vendor traces). Typed as `percentage` with a 覆盖率 label it rendered as
-    // "100.24% coverage". It must stay a plain ratio; >1 is the signal that
-    // BufferTX undercounted, so it must not be clamped either.
+    // FrameTimeline frame events and SF received pending-buffer updates are
+    // different objects. Their ratio can exceed 1 without proving undercounting
+    // or establishing FrameTimeline coverage, and must never be clamped.
     const rawSkill = fs.readFileSync(skillPath, 'utf-8');
     expect(rawSkill).not.toContain('frame_timeline_coverage_ratio');
 
@@ -1710,29 +1718,13 @@ describe('scrolling_analysis skill schema', () => {
     }
   });
 
-  it('selects one package-scoped BufferTX track by positive frame deltas', () => {
+  it('selects one name-matched BufferTX track by positive received-update deltas', () => {
     const fallback = getStep('buffer_tx_performance_fallback');
     expect(fallback.save_as).toBe('perf_summary');
     expect(String(fallback.condition)).toMatch(/buffer_tx_coverage.*should_fallback/);
     expect(fallback.sql_fragments).toContain('fragments/buffer_tx_frame_production.sql');
     const sql = String(fallback.sql);
-    const fragment = fs.readFileSync(
-      path.join(process.cwd(), 'skills', 'fragments', 'buffer_tx_frame_production.sql'),
-      'utf-8',
-    );
-    const beginMarker = '-- BUFFER_TX_FALLBACK_CTES_BEGIN';
-    const endMarker = '-- BUFFER_TX_FALLBACK_CTES_END';
-    const start = fragment.indexOf(beginMarker);
-    const end = fragment.indexOf(endMarker, start);
-    expect(start).toBeGreaterThanOrEqual(0);
-    expect(end).toBeGreaterThan(start);
-    const productionCtes = fragment
-      .slice(start + beginMarker.length, end)
-      .trim()
-      .replace(/,\s*$/, '')
-      .split('${package}').join('com.example.app')
-      .split('${start_ts}').join('NULL')
-      .split('${end_ts}').join('NULL');
+    const receivedUpdateCtes = renderBufferTxCtes();
 
     const db = createScopedSqlFixture();
     try {
@@ -1762,14 +1754,15 @@ describe('scrolling_analysis skill schema', () => {
       const selectPrimaryTrack = () => db.prepare(`
         WITH
         vsync_config(vsync_period_ns) AS (VALUES (8333333)),
-        ${productionCtes}
-        SELECT track_id, track_name, produced_frames
+        ${receivedUpdateCtes}
+        SELECT track_id, track_name, received_buffer_updates, produced_frames
         FROM selected_buffer_tx_track
-      `).get() as {track_id: number; track_name: string; produced_frames: number};
+      `).get();
 
       expect(selectPrimaryTrack()).toEqual({
         track_id: 1,
         track_name: 'BufferTX - com.example.app/Main#1',
+        received_buffer_updates: 5,
         produced_frames: 5,
       });
 
@@ -1777,6 +1770,7 @@ describe('scrolling_analysis skill schema', () => {
       expect(selectPrimaryTrack()).toEqual({
         track_id: 7,
         track_name: 'BufferTX - com.example.app:renderer/Main#7',
+        received_buffer_updates: 6,
         produced_frames: 6,
       });
     } finally {
@@ -1787,6 +1781,102 @@ describe('scrolling_analysis skill schema', () => {
     expect(sql).toMatch(/NULL\s+as\s+app_janky_frames/i);
     expect(sql).toMatch(/NULL\s+as\s+sf_jank_count/i);
     expect(sql).toContain("'buffer_tx_rising_edge_fallback' as fps_source");
+  });
+
+  it('retains the pre-window baseline and counts received updates at the window start', () => {
+    const db = createScopedSqlFixture();
+    try {
+      db.exec(`
+        CREATE TABLE counter_track(id INTEGER PRIMARY KEY, name TEXT);
+        CREATE TABLE counter(id INTEGER PRIMARY KEY, track_id INTEGER, ts INTEGER, value REAL);
+        INSERT INTO counter_track VALUES (1, 'BufferTX - com.example.app/Main#1');
+        INSERT INTO counter VALUES
+          (1, 1, 40000000, 0),
+          (2, 1, 45000000, 2),
+          (3, 1, 55000000, 0),
+          (4, 1, 65000000, 2),
+          (5, 1, 75000000, 0),
+          (6, 1, 85000000, 2),
+          (7, 1, 95000000, 0),
+          (8, 1, 105000000, 0),
+          (9, 1, 150000000, 20);
+      `);
+      const row = db.prepare(`
+        WITH vsync_config(vsync_period_ns) AS (VALUES (8333333)),
+        ${renderBufferTxCtes('45000000', '150000000')}
+        SELECT received_buffer_updates, first_sample_ts, last_sample_ts, effective_span_ns
+        FROM selected_buffer_tx_track
+      `).get();
+      expect(row).toEqual({
+        received_buffer_updates: 6,
+        first_sample_ts: 45000000,
+        last_sample_ts: 105000000,
+        effective_span_ns: 60000000,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('reports unclamped received-update rates while leaving frame and jank metrics unmeasured', () => {
+    const db = createScopedSqlFixture();
+    try {
+      db.exec(`
+        CREATE TABLE process(upid INTEGER PRIMARY KEY, name TEXT);
+        CREATE TABLE actual_frame_timeline_slice(
+          upid INTEGER, display_frame_token INTEGER, surface_frame_token INTEGER,
+          layer_name TEXT, ts INTEGER, dur INTEGER
+        );
+        CREATE TABLE counter_track(id INTEGER PRIMARY KEY, name TEXT);
+        CREATE TABLE counter(id INTEGER PRIMARY KEY, track_id INTEGER, ts INTEGER, value REAL);
+        INSERT INTO process VALUES (1, 'com.example.app');
+        INSERT INTO counter_track VALUES (1, 'BufferTX - com.example.app/Main#1');
+      `);
+      const insert = db.prepare('INSERT INTO counter VALUES (?, 1, ?, ?)');
+      for (let index = 0; index <= 20; index += 1) {
+        insert.run(index + 1, index * 5000000, index % 2 === 0 ? 0 : 2);
+      }
+      const sql = String(getStep('buffer_tx_performance_fallback').sql)
+        .trim().replace(/^WITH\s+/i, '')
+        .split('${package}').join('com.example.app')
+        .split('${start_ts}').join('NULL')
+        .split('${end_ts}').join('NULL');
+      const readSummary = () => db.prepare(`
+        WITH vsync_config(vsync_period_ns, vsync_source) AS (VALUES (16666667, 'fixture')),
+        ${renderBufferTxCtes()}, ${sql}
+      `).get() as Record<string, unknown>;
+      const absentFrames = readSummary();
+      expect(absentFrames).toMatchObject({
+        total_frames: null,
+        actual_fps: null,
+        perceived_jank_frames: null,
+        jank_rate: null,
+        sf_jank_count: null,
+        received_buffer_updates: 20,
+        received_update_rate_hz: 200,
+        received_update_span_ns: 100000000,
+        duration_sec: 0.1,
+        refresh_rate: 60,
+        buffer_tx_frames: 20,
+        fps_source: 'buffer_tx_rising_edge_fallback',
+        evidence_status: 'received_buffer_updates_only',
+        coverage_status: 'no_frame_timeline_coverage',
+        source_event_ratio: 0,
+        source_event_ratio_status: 'heuristic_not_coverage_name_match_only',
+      });
+
+      db.exec(`INSERT INTO actual_frame_timeline_slice VALUES (1, 1, 1, 'main', 5000000, 100)`);
+      expect(readSummary()).toMatchObject({
+        total_frames: null,
+        actual_fps: null,
+        jank_rate: null,
+        frame_timeline_frames: 1,
+        coverage_status: 'partial_frame_timeline_coverage',
+        source_event_ratio: 0.05,
+      });
+    } finally {
+      db.close();
+    }
   });
 
   it('scopes fallback FrameTimeline coverage to exact and child processes', () => {
@@ -1923,10 +2013,10 @@ describe('scrolling_analysis skill schema', () => {
           insert.run(index, index, index * 1000);
         }
         const selectedCte = bufferTxFrames === null
-          ? `selected_buffer_tx_track(track_id, track_name, produced_frames, effective_span_ns) AS (
+          ? `selected_buffer_tx_track(track_id, track_name, received_buffer_updates, effective_span_ns) AS (
               SELECT NULL, NULL, NULL, NULL WHERE 0
             )`
-          : `selected_buffer_tx_track(track_id, track_name, produced_frames, effective_span_ns) AS (
+          : `selected_buffer_tx_track(track_id, track_name, received_buffer_updates, effective_span_ns) AS (
               VALUES (7, 'BufferTX - com.example.app/Main#7', ${bufferTxFrames}, 1000000000)
             )`;
         return db.prepare(`WITH ${selectedCte}, ${sql}`).get() as {
@@ -1961,7 +2051,15 @@ describe('scrolling_analysis skill schema', () => {
       frame_timeline_to_buffer_tx_ratio: 0.9,
       coverage_status: 'sufficient_frame_timeline_coverage',
 
-      root_cause_evidence_scope: 'full_frame_timeline',
+      root_cause_evidence_scope: 'frame_timeline_only_unbenchmarked',
+      source_event_ratio: 0.9,
+      source_event_ratio_status: 'heuristic_not_coverage_name_match_only',
+      should_fallback: 0,
+    }));
+    expect(runCoverage(120, 100)).toEqual(expect.objectContaining({
+      source_event_ratio: 1.2,
+      root_cause_evidence_scope: 'frame_timeline_only_unbenchmarked',
+      source_event_ratio_status: 'heuristic_not_coverage_name_match_only',
       should_fallback: 0,
     }));
     expect(runCoverage(2, null)).toEqual(expect.objectContaining({
@@ -2034,9 +2132,9 @@ describe('scrolling_analysis skill schema', () => {
     getColumn(getStep('performance_summary'), 'present_interval_source');
   });
 
-  it('calls coverage full only after a sufficient FrameTimeline/BufferTX comparison', () => {
+  it('never promotes a cross-source BufferTX ratio into full FrameTimeline coverage', () => {
     const cases: Array<[string, string]> = [
-      ['sufficient_frame_timeline_coverage', 'full_frame_timeline'],
+      ['sufficient_frame_timeline_coverage', 'frame_timeline_only_unbenchmarked'],
       ['partial_frame_timeline_coverage', 'partial_sample'],
       ['no_buffer_tx_candidate', 'frame_timeline_only_unbenchmarked'],
       ['frame_timeline_only_exact_upid', 'frame_timeline_only_unbenchmarked'],

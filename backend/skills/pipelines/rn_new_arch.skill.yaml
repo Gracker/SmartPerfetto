@@ -20,11 +20,11 @@ meta:
   description: "RN 新架构：JSI 直接 C++ 调用 + Fabric C++ Shadow tree + TurboModules + 宿主 HWUI"
   icon: "react"
   family: webview
-  doc_path: rendering_pipelines/S14_react_native_type.md
+  doc_path: skills/pipelines/index.yaml#rendering_types.S14_REACT_NATIVE
   # ----- Article-grounded signature (S14) -----
   s_article_ref: "S14"
   four_features:
-    producer_threads: ["mqt_js"]   # New Arch 不再有 mqt_shadow_queue
+    producer_threads: ["mqt_js", "mqt_v_js"]   # 随 RN 版本变化；线程名不单独证明 Fabric
     optional_producer_threads: ["Fabric background thread"]
     consumer_threads: ["main", "RenderThread"]
     expected_layer_count: 1
@@ -32,13 +32,13 @@ meta:
     # ↑ JS → JSI（直接 C++ 调用，无 JSON）→ Fabric C++ Shadow tree → Fabric mount → 原生 View → 宿主 HWUI BBQ
     extra_rhythm_sources: ["jsi_synchronous_call"]
   deviation_anchors: "rn_jsi_anchor_2_3_at_js_layer_lower_latency_than_old_arch"
-  # 锚点偏离：与 Old Arch 类似但 JSI 同步调用 + Fabric mount 原子，UI 更新延迟比 Old Arch 低。
+  # Fabric Commit/Mount 与宿主窗口帧分别关联，不能由阶段结束推断已显示。
   fabric_advantages: |
     相比 Old Arch 的优势（来自 S14）：
     - JSI 同步调用：JS ↔ Native 直接 C++ 通信，无 JSON 序列化
-    - Fabric C++ Shadow tree：layout 计算从 mqt_shadow_queue 移到 Fabric background thread
-    - Fabric mount 原子：所有 View 更新在同一帧 commit
-    - UI 更新延迟比 Old Arch 低（典型从 1-2 帧降到 0-1 帧）
+    - Fabric Render/Commit 可在 JS 或高优先级 UI 路径推进，并非固定背景线程
+    - Host View mutation 最终在 UI thread 执行，之后仍需 HWUI 与显示消费
+    - 中间 revision 可合并，commit 次数与实际显示帧数没有一一对应关系
 
 detection:
   required_signals:
@@ -63,15 +63,18 @@ detection:
       slice_pattern: "*TurboModule*"
       weight: 15
     - signal: has_mqt_js
-      thread_pattern: "mqt_js*"
+      thread_pattern: "mqt_*js*"   # mqt_js / mqt_v_js
       weight: 20
+    - signal: has_mqt_v_native
+      thread_pattern: "mqt_v_native*"
+      weight: 10
 
   exclude_if:
     # 排除 Old Arch（mqt_shadow_queue 是 Old Arch 特有）
     - thread_pattern: "mqt_shadow*"
 
 teaching:
-  source: "rendering_pipelines/S14_react_native_type.md"
+  source: "skills/pipelines/index.yaml#rendering_types.S14_REACT_NATIVE"
 analysis:
   common_issues:
     - id: js_thread_blocking

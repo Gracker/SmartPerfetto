@@ -22,9 +22,9 @@ meta:
   description: "Chrome 浏览器 Viz 合成器管线，多进程架构 (Browser/Renderer/GPU)"
   icon: "web"
   family: webview
-  doc_path: rendering_pipelines/S09_webview_type.md
-  # ----- Article-grounded signature (S09) -----
-  s_article_ref: "S09"
+  doc_path: skills/pipelines/index.yaml#rendering_types.S16_CHROMIUM_BROWSER
+  # ----- Article-grounded signature (S16) -----
+  s_article_ref: "S16"
   four_features:
     producer_threads: ["CrBrowserMain", "CrRendererMain", "VizCompositorThread", "CrGpuMain", "CompositorTileWorker*"]
     expected_layer_count: 1   # Chrome 独立 App，输出窗口 layer
@@ -47,14 +47,14 @@ meta:
 # ==========================================================================
 detection:
   required_signals:
-    - thread: VizCompositorThread
+    - thread_pattern: "VizCompositorTh*"
       min_count: 1
     - thread_pattern: "CrBrowserMain*"
       min_count: 1
 
   scoring_signals:
     - signal: has_viz_compositor_thread
-      thread_pattern: "VizCompositorThread"
+      thread_pattern: "VizCompositorTh*"
       weight: 40
     - signal: has_cr_renderer_main
       thread_pattern: "CrRendererMain*"
@@ -84,7 +84,7 @@ detection:
 # Teaching Content
 # ==========================================================================
 teaching:
-  source: "rendering_pipelines/S09_webview_type.md"
+  source: "skills/pipelines/index.yaml#rendering_types.S16_CHROMIUM_BROWSER"
 # ==========================================================================
 # Auto Pin Configuration
 # ==========================================================================
@@ -114,7 +114,7 @@ auto_pin:
         enabled: true
         description: "仅 Pin 活跃渲染的 Renderer 进程"
 
-    - pattern: "VizCompositorThread"
+    - pattern: "VizCompositorTh"
       match_by: name
       priority: 4
       reason: "Viz 合成器 (合成/调度)"
@@ -171,7 +171,7 @@ analysis:
       description: "进程间通信 (Mojo/IPC) 延迟过高"
       detection_skill: binder_analysis
 
-    # ----- Article-grounded issues (S09) -----
+    # ----- Article-grounded issues (S16) -----
     - id: cross_process_compositor_frame_aggregation_late
       name: "Viz 聚合多个 Renderer CompositorFrame 晚"
       description: |
@@ -187,10 +187,11 @@ analysis:
       detection_skill: gpu_render_in_range
 
     - id: chrome_specific_swap_chain_buffers
-      name: "Chrome 特有的 swap chain buffer 数（不是 BLASTBufferQueue）"
+      name: "Chrome 输出分支与 buffer 周转"
       description: |
-        Chrome 直接管理 ANativeWindow/swap chain，不走 Android HWUI 的 BLASTBufferQueue 路径。
-        分析 buffer 周转时不要套用 BLAST 经验——Chrome 自己的 swap chain 深度由 Viz 决定。
+        Chromium 可以经 SurfaceView/BQ/BLAST 输出，也可以直接向 SurfaceControl 提交 buffer。
+        先关联本次活动 layer、buffer 与 transaction，再解释周转；不能从没有 HWUI DrawFrame
+        推断没有 BLAST，也不能把 swapchain image 数当作可显示的未来帧库存。
       detection_skill: render_thread_slices
 
   recommended_skills:

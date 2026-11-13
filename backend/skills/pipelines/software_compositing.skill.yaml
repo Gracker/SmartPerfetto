@@ -20,7 +20,7 @@ meta:
   description: "SurfaceFlinger CPU 软件合成回退，GPU 合成不可用时的降级路径"
   icon: "memory"
   family: surfaceflinger
-  doc_path: rendering_pipelines/S01_rendering_types_overview.md
+  doc_path: skills/pipelines/index.yaml#rendering_types.S01_OVERVIEW
   # ----- Article-grounded signature (S01 + S05/S06 HWC client composition) -----
   s_article_ref: "S01"   # S01 §HWC 决策职责 + 合成路径
   four_features:
@@ -72,7 +72,7 @@ detection:
     - slice_pattern: "*eglSwapBuffers*"
 
 teaching:
-  source: "rendering_pipelines/S01_rendering_types_overview.md"
+  source: "skills/pipelines/index.yaml#rendering_types.S01_OVERVIEW"
 auto_pin:
   instructions:
     - pattern: "^VSYNC-sf$"

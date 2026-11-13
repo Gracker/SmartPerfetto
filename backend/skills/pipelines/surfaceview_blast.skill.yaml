@@ -20,7 +20,7 @@ meta:
   description: "独立 SurfaceView + BLAST 同步，用于自定义 GL 渲染、媒体播放"
   icon: "surface"
   family: surface
-  doc_path: rendering_pipelines/S03_surfaceview_type.md
+  doc_path: skills/pipelines/index.yaml#rendering_types.S03_SURFACEVIEW
   # ----- Article-grounded signature (S03) -----
   s_article_ref: "S03"
   four_features:
@@ -73,7 +73,7 @@ detection:
     - thread: UnityGfx         # Game Engine → GAME_ENGINE
 
 teaching:
-  source: "rendering_pipelines/S03_surfaceview_type.md"
+  source: "skills/pipelines/index.yaml#rendering_types.S03_SURFACEVIEW"
 auto_pin:
   instructions:
     # Time-ordered pinning (production -> transfer -> consume -> display)

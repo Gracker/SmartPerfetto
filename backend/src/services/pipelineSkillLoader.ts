@@ -58,16 +58,21 @@ export interface TeachingReference {
   source: string;
 }
 
-export interface PipelineCatalogDocument {
-  id: string;
-  file: string;
-  sha256: string;
+export interface RenderingTypeTeaching {
+  title: string;
+  summary: string;
+  mermaidBlocks: string[];
+  threadRoles: Array<{thread: string; responsibility: string; traceTag?: string}>;
+  keySlices: string[];
 }
 
 export interface RenderingTypeDefinition {
   kind: 'overview' | 'concrete';
-  document: string;
+  teaching: RenderingTypeTeaching;
 }
+
+export const renderingTypeSource = (renderingTypeId: string): string =>
+  `skills/pipelines/index.yaml#rendering_types.${renderingTypeId}`;
 
 export interface PipelineCatalogEntry {
   file: string;
@@ -85,13 +90,6 @@ export interface PipelineCatalogEntry {
 export interface PipelineCatalog {
   version: string;
   description: string;
-  source: {
-    repository: string;
-    commit: string;
-    android_tag: string;
-    kernel_tag: string;
-  };
-  documents: PipelineCatalogDocument[];
   rendering_types: Record<string, RenderingTypeDefinition>;
   default: {
     pipeline_id: string;
@@ -133,11 +131,13 @@ export interface PipelineDefinition {
       thread_pattern?: string;
       slice?: string;
       slice_pattern?: string;
+      slice_patterns?: string[];
       min_count?: number;
     }>;
     scoring_signals?: Array<{
       signal: string;
       slice_pattern?: string;
+      slice_patterns?: string[];
       thread_pattern?: string;
       weight: number;
       min_count?: number;
@@ -148,6 +148,7 @@ export interface PipelineDefinition {
       thread_pattern?: string;
       slice?: string;
       slice_pattern?: string;
+      slice_patterns?: string[];
     }>;
   };
   teaching: TeachingReference;
@@ -174,34 +175,44 @@ class PipelineSkillLoaderClass {
   }
 
   private validateCatalog(catalog: PipelineCatalog): void {
-    if (!catalog || !Array.isArray(catalog.documents) || catalog.documents.length !== 14) {
-      throw new Error('[PipelineSkillLoader] Catalog must define the S01-S14 document set');
+    const isRecord = (value: unknown): value is Record<string, unknown> =>
+      typeof value === 'object' && value !== null && !Array.isArray(value);
+    const isText = (value: unknown): value is string =>
+      typeof value === 'string' && value.trim().length > 0;
+    const isTextArray = (value: unknown): value is string[] =>
+      Array.isArray(value) && value.every(isText);
+    if (!isRecord(catalog) || catalog.version !== '3.0' || 'source' in catalog || 'documents' in catalog) {
+      throw new Error('[PipelineSkillLoader] Catalog must use the product teaching v3 contract');
     }
-    const documentFiles = new Set(catalog.documents.map((document) => document.file));
-    if (documentFiles.size !== catalog.documents.length) {
-      throw new Error('[PipelineSkillLoader] Catalog contains duplicate documents');
+    if (!isRecord(catalog.rendering_types) || Object.keys(catalog.rendering_types).length === 0) {
+      throw new Error('[PipelineSkillLoader] Catalog must define rendering types');
     }
-    for (let index = 0; index < 14; index += 1) {
-      const prefix = `S${String(index + 1).padStart(2, '0')}_`;
-      if (!catalog.documents[index]?.file.startsWith(prefix)) {
-        throw new Error(`[PipelineSkillLoader] Catalog document order mismatch at ${prefix}`);
-      }
-    }
-    for (const [typeId, renderingType] of Object.entries(catalog.rendering_types || {})) {
-      if (!['overview', 'concrete'].includes(renderingType.kind)) {
+    for (const [typeId, renderingType] of Object.entries(catalog.rendering_types)) {
+      if (!isRecord(renderingType) || !['overview', 'concrete'].includes(renderingType.kind)) {
         throw new Error(`[PipelineSkillLoader] Rendering type ${typeId} has invalid kind`);
       }
-      if (!documentFiles.has(renderingType.document)) {
-        throw new Error(`[PipelineSkillLoader] Rendering type ${typeId} references missing document`);
-      }
-      if (path.basename(renderingType.document) !== renderingType.document) {
-        throw new Error(`[PipelineSkillLoader] Rendering type ${typeId} has unsafe document path`);
+      const card = renderingType.teaching;
+      const cardKeys = ['title', 'summary', 'mermaidBlocks', 'threadRoles', 'keySlices'];
+      if (
+        Object.keys(renderingType).some((key) => !['kind', 'teaching'].includes(key)) ||
+        !isRecord(card) || Object.keys(card).some((key) => !cardKeys.includes(key)) ||
+        !isText(card.title) || !isText(card.summary) ||
+        !isTextArray(card.mermaidBlocks) || !isTextArray(card.keySlices) ||
+        !Array.isArray(card.threadRoles) || card.threadRoles.some((role) =>
+          !isRecord(role) || !isText(role.thread) || !isText(role.responsibility) ||
+          (role.traceTag !== undefined && !isText(role.traceTag)) ||
+          Object.keys(role).some((key) => !['thread', 'responsibility', 'traceTag'].includes(key)))
+      ) {
+        throw new Error(`[PipelineSkillLoader] Rendering type ${typeId} has invalid teaching card`);
       }
     }
 
+    if (!isRecord(catalog.pipelines) || Object.keys(catalog.pipelines).length === 0) {
+      throw new Error('[PipelineSkillLoader] Catalog must define pipelines');
+    }
     const pipelineFiles = new Set<string>();
     for (const [pipelineId, entry] of Object.entries(catalog.pipelines || {})) {
-      if (!entry.file || pipelineFiles.has(entry.file) || path.basename(entry.file) !== entry.file) {
+      if (!isRecord(entry) || !isText(entry.file) || pipelineFiles.has(entry.file) || path.basename(entry.file) !== entry.file) {
         throw new Error(`[PipelineSkillLoader] Pipeline ${pipelineId} has invalid or duplicate file`);
       }
       pipelineFiles.add(entry.file);
@@ -271,9 +282,11 @@ class PipelineSkillLoaderClass {
       throw new Error(`invalid detection config: ${file} (${pipelineId}): detection is missing`);
     }
 
-    const selectorKeys = ['thread', 'thread_pattern', 'slice', 'slice_pattern'] as const;
+    const selectorKeys = ['thread', 'thread_pattern', 'slice', 'slice_pattern', 'slice_patterns'] as const;
     const countSelectors = (obj: Record<string, unknown>): string[] =>
-      selectorKeys.filter((k) => obj[k] !== undefined && obj[k] !== null);
+      selectorKeys.filter((k) => k === 'slice_patterns'
+        ? Object.prototype.hasOwnProperty.call(obj, k)
+        : obj[k] !== undefined && obj[k] !== null);
     const isPositiveInteger = (value: unknown): boolean =>
       value === undefined ||
       (typeof value === 'number' && Number.isInteger(value) && value > 0);
@@ -298,7 +311,13 @@ class PipelineSkillLoaderClass {
         errors.push(`${kind} entry must have exactly one selector, got [${keys.join(', ')}]`);
       }
       for (const key of keys) {
-        if (!isNonEmptyString(item[key])) {
+        if (key === 'slice_patterns') {
+          const patterns = item[key];
+          if (!Array.isArray(patterns) || patterns.length === 0 ||
+            !Array.from(patterns).every(isNonEmptyString) || new Set(patterns).size !== patterns.length) {
+            errors.push(`${kind} entry selector 'slice_patterns' must be a non-empty array of unique non-empty strings`);
+          }
+        } else if (!isNonEmptyString(item[key])) {
           errors.push(`${kind} entry selector '${key}' must be a non-empty string`);
         }
       }
@@ -351,15 +370,7 @@ class PipelineSkillLoaderClass {
       const entry = item as Record<string, unknown>;
       const signal = entry.signal;
       const signalName = isNonEmptyString(signal) ? signal : 'UNKNOWN';
-      const keys = countSelectors(entry);
-      if (keys.length !== 1) {
-        errors.push(`scoring_signals '${signalName}' must have exactly one selector, got [${keys.join(', ')}]`);
-      }
-      for (const key of keys) {
-        if (!isNonEmptyString(entry[key])) {
-          errors.push(`scoring_signals '${signalName}' selector '${key}' must be a non-empty string`);
-        }
-      }
+      validateSelectors(`scoring_signals '${signalName}'`, entry);
       if (!isNonEmptyString(signal)) {
         errors.push("scoring_signals entry missing 'signal' name");
       }
@@ -413,8 +424,7 @@ class PipelineSkillLoaderClass {
         if (!pipeline?.meta?.pipeline_id || pipeline.meta.pipeline_id !== pipelineId) {
           throw new Error(`expected pipeline_id ${pipelineId}, got ${pipeline?.meta?.pipeline_id}`);
         }
-        const document = parsedCatalog.rendering_types[entry.teaching_type_id].document;
-        const expectedSource = `rendering_pipelines/${document}`;
+        const expectedSource = renderingTypeSource(entry.teaching_type_id);
         if (pipeline.meta.doc_path !== expectedSource || pipeline.teaching?.source !== expectedSource) {
           throw new Error(`teaching reference must be ${expectedSource}`);
         }
@@ -474,7 +484,7 @@ class PipelineSkillLoaderClass {
       return renderingType
         ? [{
             ...candidate,
-            docPath: `rendering_pipelines/${renderingType.document}`,
+            docPath: renderingTypeSource(candidate.id),
           }]
         : [];
     });
@@ -482,11 +492,10 @@ class PipelineSkillLoaderClass {
 
   getDefaultSelection(): { pipelineId: string; renderingTypeId: string; docPath: string } {
     const catalog = this.getCatalog();
-    const renderingType = catalog.rendering_types[catalog.default.rendering_type_id];
     return {
       pipelineId: catalog.default.pipeline_id,
       renderingTypeId: catalog.default.rendering_type_id,
-      docPath: `rendering_pipelines/${renderingType.document}`,
+      docPath: renderingTypeSource(catalog.default.rendering_type_id),
     };
   }
 

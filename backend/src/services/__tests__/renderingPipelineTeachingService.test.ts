@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import Database from 'better-sqlite3';
 import { RenderingPipelineTeachingService } from '../renderingPipelineTeachingService';
 
 const mockExecute = jest.fn<(...args: any[]) => any>();
@@ -60,7 +61,7 @@ function buildSkillResult(): any {
             relatedRenderingTypes: [{
               id: 'S06_MULTI_WINDOW',
               confidence: 0.81,
-              docPath: 'rendering_pipelines/S06_multi_window_type.md',
+              docPath: 'skills/pipelines/index.yaml#rendering_types.S06_MULTI_WINDOW',
             }],
             features: [{ name: 'has_draw_frame', detected: true }],
             traceRequirementsMissing: [],
@@ -71,7 +72,7 @@ function buildSkillResult(): any {
             mermaidBlocks: [],
             threadRoles: [],
             keySlices: ['Choreographer#doFrame', 'DrawFrame'],
-            docPath: 'rendering_pipelines/S02_aosp_standard_type.md',
+            docPath: 'skills/pipelines/index.yaml#rendering_types.S02_AOSP_STANDARD',
           },
           pinInstructions: [{
             pattern: '^main',
@@ -85,7 +86,7 @@ function buildSkillResult(): any {
             frameCount: 30,
             renderThreadTid: 1234,
           }],
-          docPath: 'rendering_pipelines/S02_aosp_standard_type.md',
+          docPath: 'skills/pipelines/index.yaml#rendering_types.S02_AOSP_STANDARD',
         },
       },
     },
@@ -94,6 +95,40 @@ function buildSkillResult(): any {
 }
 
 describe('RenderingPipelineTeachingService', () => {
+  it('observes device functor and SurfaceTexture names without including a similar package', async () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(`
+        CREATE TABLE process(upid INTEGER, name TEXT);
+        CREATE TABLE thread(utid INTEGER, upid INTEGER, name TEXT);
+        CREATE TABLE thread_track(id INTEGER, utid INTEGER);
+        CREATE TABLE slice(id INTEGER, track_id INTEGER, ts INTEGER, dur INTEGER, name TEXT);
+        INSERT INTO process VALUES (1,'com.demo'), (2,'com.demo:renderer'), (3,'com.demo.extra');
+        INSERT INTO thread VALUES (11,1,'RenderThread'),(12,2,'RenderThread'),(13,3,'RenderThread');
+        INSERT INTO thread_track VALUES (101,11),(102,12),(103,13);
+        INSERT INTO slice VALUES
+          (1,101,100,10,'WebViewFunctor::drawVk'),
+          (2,102,110,10,'DrawFn_DrawVk'),
+          (3,101,120,10,'ASurfaceTexture_dequeueBuffer'),
+          (4,103,130,10,'WebViewFunctor::drawVk'),
+          (5,101,200,10,'WebViewFunctor::drawVk'),
+          (6,101,140,-1,'WebViewFunctor::drawVk');
+      `);
+      const processor = {query: async (_traceId: string, sql: string) => {
+        const query = db.prepare(sql);
+        return {columns: query.columns().map((column) => column.name), rows: query.raw().all(), durationMs: 0};
+      }};
+      const service = new RenderingPipelineTeachingService(processor as any);
+      const events = await (service as any).queryObservedEventRows('trace', [], 'com.demo',
+        {startTs: 100, endTs: 200});
+      expect(events.map((event: {name: string}) => event.name)).toEqual([
+        'WebViewFunctor::drawVk', 'DrawFn_DrawVk', 'ASurfaceTexture_dequeueBuffer',
+      ]);
+      expect(events.every((event: {upid: number}) => event.upid === 1 || event.upid === 2)).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
   beforeEach(() => {
     jest.clearAllMocks();
     mockExecute.mockResolvedValue(buildSkillResult());
@@ -183,7 +218,7 @@ describe('RenderingPipelineTeachingService', () => {
       primaryRenderingTypeId: 'S02_AOSP_STANDARD',
       renderingType: {
         id: 'S02_AOSP_STANDARD',
-        docPath: 'rendering_pipelines/S02_aosp_standard_type.md',
+        docPath: 'skills/pipelines/index.yaml#rendering_types.S02_AOSP_STANDARD',
       },
       renderingTypeCandidates: [
         { id: 'S02_AOSP_STANDARD', confidence: 0.92 },
@@ -191,7 +226,7 @@ describe('RenderingPipelineTeachingService', () => {
       relatedRenderingTypes: [{
         id: 'S06_MULTI_WINDOW',
         confidence: 0.81,
-        docPath: 'rendering_pipelines/S06_multi_window_type.md',
+        docPath: 'skills/pipelines/index.yaml#rendering_types.S06_MULTI_WINDOW',
       }],
       primary_pipeline: {
         id: 'ANDROID_VIEW_STANDARD_BLAST',
@@ -219,12 +254,6 @@ describe('RenderingPipelineTeachingService', () => {
     }));
     expect(response.observedFlow?.dependencies).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({
-          fromLaneId: expect.stringContaining('app'),
-          toLaneId: expect.stringContaining('render_thread'),
-          relation: 'produces_to',
-          evidenceSource: 'observed_event_order',
-        }),
         expect.objectContaining({
           relation: 'wakes_to',
           evidenceSource: 'thread_state_waker_id',
@@ -301,7 +330,7 @@ describe('RenderingPipelineTeachingService', () => {
     expect(observedSql).toContain('s.ts >= 1000 AND s.ts < 50001000');
   });
 
-  it('does not synthesize producer dependencies without observed producer events', async () => {
+  it('does not infer frame handoffs from overlapping events or candidate pipeline roles', async () => {
     const skillResult = buildSkillResult();
     skillResult.rawResults.pipeline_bundle.data.detection.candidates.push({
       id: 'WEBVIEW_TEXTUREVIEW_CUSTOM',
@@ -349,6 +378,9 @@ describe('RenderingPipelineTeachingService', () => {
       packageName: 'com.demo',
       visibleWindow: { startTs: 0, endTs: 10_000 },
     });
+
+    // Even overlapping main/RT slices do not identify a buffer handoff.
+    expect(response.observedFlow?.dependencies).toEqual([]);
 
     const producerLane = response.observedFlow?.lanes.find((lane) => lane.role === 'producer');
     expect(producerLane).toBeDefined();

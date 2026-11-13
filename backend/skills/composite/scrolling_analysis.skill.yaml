@@ -570,11 +570,11 @@ steps:
           aggregation: trace_wide_all_processes
     condition: "frame_timeline.data[0]?.has_frame_timeline === 1"
 
-  # Compare package-scoped FrameTimeline coverage with one qualified primary
-  # BufferTX producer track before selecting the mutually exclusive overview.
+  # Compare package-scoped FrameTimeline events with one qualified primary
+  # BufferTX received-update track before selecting the mutually exclusive overview.
   - id: buffer_tx_coverage_probe
     type: atomic
-    name: "BufferTX / FrameTimeline 覆盖探针"
+    name: "BufferTX / FrameTimeline 来源事件探针"
     optional: true
     display: false
     sql_fragments:
@@ -605,7 +605,9 @@ steps:
         SELECT target_process_count,
           CASE WHEN target_process_count > 0 THEN 'found' ELSE 'not_found' END AS target_process_status,
           frame_timeline_frames,
-          NULL AS buffer_tx_frames, NULL AS frame_timeline_to_buffer_tx_ratio,
+          NULL AS buffer_tx_frames, NULL AS received_buffer_updates,
+          NULL AS frame_timeline_to_buffer_tx_ratio,
+          NULL AS source_event_ratio,
           NULL AS buffer_tx_track_id, NULL AS frame_source_track,
           NULL AS buffer_tx_effective_span_ns,
           CASE WHEN target_process_count = 0 THEN 'target_process_not_found'
@@ -617,11 +619,13 @@ steps:
         )
         -- Exact-UPID scope never compares against BufferTX.
         SELECT target_process_count, target_process_status, frame_timeline_frames,
-          buffer_tx_frames, frame_timeline_to_buffer_tx_ratio, buffer_tx_track_id,
+          buffer_tx_frames, received_buffer_updates,
+          frame_timeline_to_buffer_tx_ratio, source_event_ratio, buffer_tx_track_id,
           frame_source_track, buffer_tx_effective_span_ns, coverage_status,
           should_fallback, buffer_tx_status,
+          'unavailable_exact_upid' AS source_event_ratio_status,
           CASE coverage_status
-            WHEN 'sufficient_frame_timeline_coverage' THEN 'full_frame_timeline'
+            WHEN 'sufficient_frame_timeline_coverage' THEN 'frame_timeline_only_unbenchmarked'
             WHEN 'partial_frame_timeline_coverage' THEN 'partial_sample'
             WHEN 'no_buffer_tx_candidate' THEN 'frame_timeline_only_unbenchmarked'
             WHEN 'frame_timeline_only_exact_upid' THEN 'frame_timeline_only_unbenchmarked'
@@ -667,10 +671,12 @@ steps:
           ELSE 'found'
         END as target_process_status,
         ft.frame_timeline_frames,
-        COALESCE(bt.produced_frames, 0) as buffer_tx_frames,
+        -- Legacy buffer_tx_frames is a received-update count, not frame count.
+        COALESCE(bt.received_buffer_updates, 0) as buffer_tx_frames,
+        COALESCE(bt.received_buffer_updates, 0) as received_buffer_updates,
         CASE
-          WHEN bt.produced_frames > 0
-            THEN ROUND(ft.frame_timeline_frames * 1.0 / bt.produced_frames, 4)
+          WHEN bt.received_buffer_updates > 0
+            THEN ROUND(ft.frame_timeline_frames * 1.0 / bt.received_buffer_updates, 4)
           ELSE NULL
         END as frame_timeline_to_buffer_tx_ratio,
         bt.track_id as buffer_tx_track_id,
@@ -681,7 +687,7 @@ steps:
             THEN 'target_process_not_found'
           WHEN bt.track_id IS NULL THEN 'no_buffer_tx_candidate'
           WHEN ft.frame_timeline_frames = 0 THEN 'no_frame_timeline_coverage'
-          WHEN ft.frame_timeline_frames * 1.0 / bt.produced_frames < 0.75
+          WHEN ft.frame_timeline_frames * 1.0 / bt.received_buffer_updates < 0.75
             THEN 'partial_frame_timeline_coverage'
           ELSE 'sufficient_frame_timeline_coverage'
         END as coverage_status,
@@ -690,7 +696,7 @@ steps:
           WHEN bt.track_id IS NOT NULL
             AND (
               ft.frame_timeline_frames = 0
-              OR ft.frame_timeline_frames * 1.0 / bt.produced_frames < 0.75
+              OR ft.frame_timeline_frames * 1.0 / bt.received_buffer_updates < 0.75
             )
             THEN 1
           ELSE 0
@@ -699,15 +705,20 @@ steps:
       CROSS JOIN target_process_presence tp
       LEFT JOIN selected_buffer_tx_track bt ON 1 = 1
       )
-      -- The scope the root-cause steps may claim (not a qualifier of this
-      -- probe row): only a measured, sufficient FrameTimeline/BufferTX
-      -- comparison is full coverage; any other status leaves it unverified.
+      -- Keep legacy coverage_status/should_fallback for routing compatibility.
+      -- A cross-source event ratio is only a heuristic; no ratio establishes
+      -- full FrameTimeline coverage or proves BufferTX undercounted frames.
       SELECT target_process_count, target_process_status, frame_timeline_frames,
-        buffer_tx_frames, frame_timeline_to_buffer_tx_ratio, buffer_tx_track_id,
+        buffer_tx_frames, received_buffer_updates,
+        frame_timeline_to_buffer_tx_ratio,
+        frame_timeline_to_buffer_tx_ratio AS source_event_ratio, buffer_tx_track_id,
         frame_source_track, buffer_tx_effective_span_ns, coverage_status,
         should_fallback,
+        CASE WHEN buffer_tx_track_id IS NULL THEN 'unavailable'
+          ELSE 'heuristic_not_coverage_name_match_only'
+        END AS source_event_ratio_status,
         CASE coverage_status
-          WHEN 'sufficient_frame_timeline_coverage' THEN 'full_frame_timeline'
+          WHEN 'sufficient_frame_timeline_coverage' THEN 'frame_timeline_only_unbenchmarked'
           WHEN 'partial_frame_timeline_coverage' THEN 'partial_sample'
           WHEN 'no_buffer_tx_candidate' THEN 'frame_timeline_only_unbenchmarked'
           WHEN 'frame_timeline_only_exact_upid' THEN 'frame_timeline_only_unbenchmarked'
@@ -1173,30 +1184,30 @@ steps:
     condition: "frame_timeline.data[0]?.has_frame_timeline === 1 && environment.data[0]?.has_data === 1 && buffer_tx_coverage.data[0]?.coverage_status !== 'target_process_not_found' && buffer_tx_coverage.data[0]?.should_fallback !== 1"
 
   # FrameTimeline 在部分 SurfaceView/软件渲染/OEM trace 中存在但无目标包行。
-  # 此时只从目标包 BufferTX 正向 delta 恢复帧产出/FPS；不伪造 jank 或根因。
+  # 此时 BufferTX 正向 delta 仅补充 SF 接收更新数/速率，不恢复帧数/FPS。
   - id: buffer_tx_performance_fallback
     type: atomic
-    name: "BufferTX 帧率回退"
+    name: "BufferTX 接收更新观测"
     sql_fragments:
       - fragments/vsync_config.sql
       - fragments/buffer_tx_frame_production.sql
     synthesize:
       role: overview
       fields:
-        - key: total_frames
-          label: BufferTX 产出帧
-        - key: actual_fps
-          label: 平均 FPS
+        - key: received_buffer_updates
+          label: BufferTX 接收更新数
+        - key: received_update_rate_hz
+          label: 接收更新速率(Hz)
         - key: fps_source
-          label: 帧率来源
+          label: 兼容来源标识
         - key: duration_sec
           label: 有效时段
         - key: frame_source_track
           label: BufferTX 证据轨道
         - key: coverage_status
           label: FrameTimeline 覆盖状态
-        - key: frame_timeline_to_buffer_tx_ratio
-          label: FrameTimeline 覆盖率
+        - key: source_event_ratio
+          label: 来源事件数比（启发式）
         - key: vsync_source
           label: VSync 证据来源
         - key: evidence_status
@@ -1204,16 +1215,31 @@ steps:
     display:
       level: summary
       layer: overview
-      title: "滑动帧率概览（BufferTX 回退）"
+      title: "BufferTX 接收更新概览（帧指标不可用）"
       columns:
-        - name: total_frames
-          label: "BufferTX 产出帧"
+        - name: received_buffer_updates
+          label: "BufferTX 接收更新数"
           type: number
           format: compact
+        - name: received_update_rate_hz
+          unit: Hz
+          label: "接收更新速率"
+          type: number
+        - name: received_update_span_ns
+          label: "接收更新观测时长"
+          type: duration
+          unit: ns
+          format: duration_ms
+        - name: total_frames
+          label: "总帧数（未测量）"
+          type: number
+          format: compact
+          hidden: true
         - name: actual_fps
           unit: fps
-          label: "实际 FPS"
+          label: "实际 FPS（未测量）"
           type: number
+          hidden: true
         - name: duration_sec
           label: "有效时段(s)"
           type: number
@@ -1221,7 +1247,7 @@ steps:
           label: "刷新率"
           type: number
         - name: fps_source
-          label: "帧率来源"
+          label: "兼容来源标识"
           type: string
         - name: vsync_source
           label: "VSync 证据来源"
@@ -1230,8 +1256,15 @@ steps:
           label: "BufferTX 证据轨道"
           type: string
         - name: frame_timeline_to_buffer_tx_ratio
-          label: "FrameTimeline/BufferTX 帧数比"
+          label: "来源事件数比（兼容字段）"
           type: number
+          hidden: true
+        - name: source_event_ratio
+          label: "FrameTimeline事件/BufferTX接收更新比（启发式）"
+          type: number
+        - name: source_event_ratio_status
+          label: "来源事件比较范围"
+          type: string
         - name: coverage_status
           label: "FrameTimeline 覆盖状态"
           type: string
@@ -1278,15 +1311,13 @@ steps:
       ),
       fallback_summary AS (
         SELECT
-          bt.produced_frames as total_frames,
+          bt.received_buffer_updates,
+          bt.effective_span_ns as received_update_span_ns,
           ROUND(bt.effective_span_ns / 1e9, 3) as duration_sec,
-          MIN(
-            ROUND(bt.produced_frames * 1e9 / NULLIF(bt.effective_span_ns, 0), 1),
-            CAST(ROUND(1e9 / (SELECT vsync_period_ns FROM vsync_config)) AS INTEGER)
-          ) as actual_fps,
+          bt.received_buffer_updates * 1e9 / NULLIF(bt.effective_span_ns, 0) as received_update_rate_hz,
           bt.track_name as frame_source_track,
           ft.frame_timeline_frames,
-          ROUND(ft.frame_timeline_frames * 1.0 / bt.produced_frames, 4) as frame_timeline_to_buffer_tx_ratio,
+          ROUND(ft.frame_timeline_frames * 1.0 / bt.received_buffer_updates, 4) as frame_timeline_to_buffer_tx_ratio,
           CASE
             WHEN ft.frame_timeline_frames = 0 THEN 'no_frame_timeline_coverage'
             ELSE 'partial_frame_timeline_coverage'
@@ -1295,7 +1326,10 @@ steps:
         CROSS JOIN frame_timeline_coverage ft
       )
       SELECT
-        total_frames,
+        NULL as total_frames,
+        received_buffer_updates,
+        received_update_rate_hz,
+        received_update_span_ns,
         NULL as perceived_jank_frames,
         NULL as jank_rate,
         NULL as buffer_stuffing_frames,
@@ -1311,9 +1345,9 @@ steps:
         NULL as p99_frame_dur,
         'unmeasured_buffer_tx_fallback' as present_interval_source,
         duration_sec,
-        actual_fps,
+        NULL as actual_fps,
         CAST(ROUND(1e9 / (SELECT vsync_period_ns FROM vsync_config)) AS INTEGER) as refresh_rate,
-        '仅帧率（FrameTimeline 根因证据不足）' as rating,
+        '仅接收更新（帧数/FPS/卡顿未测量）' as rating,
         'buffer_tx_rising_edge_fallback' as fps_source,
         NULL as max_vsync_missed,
         NULL as total_vsync_missed,
@@ -1321,10 +1355,12 @@ steps:
         (SELECT vsync_source FROM vsync_config) as vsync_source,
         frame_source_track,
         frame_timeline_frames,
-        total_frames as buffer_tx_frames,
+        received_buffer_updates as buffer_tx_frames,
         frame_timeline_to_buffer_tx_ratio,
+        frame_timeline_to_buffer_tx_ratio as source_event_ratio,
+        'heuristic_not_coverage_name_match_only' as source_event_ratio_status,
         coverage_status,
-        'frame_rate_only' as evidence_status
+        'received_buffer_updates_only' as evidence_status
       FROM fallback_summary
     save_as: perf_summary
     condition: "frame_timeline.data[0]?.has_frame_timeline === 1 && buffer_tx_coverage.data[0]?.should_fallback === 1"
@@ -2072,7 +2108,7 @@ steps:
           hidden: true
         - name: frame_timeline_to_buffer_tx_ratio
           unit: ratio
-          label: "FrameTimeline/BufferTX 帧数比"
+          label: "FrameTimeline事件/BufferTX接收更新比（启发式）"
           type: number
           hidden: true
         - name: evidence_scope
@@ -3315,7 +3351,7 @@ steps:
           hidden: true
         - name: frame_timeline_to_buffer_tx_ratio
           unit: ratio
-          label: "FrameTimeline/BufferTX 帧数比"
+          label: "FrameTimeline事件/BufferTX接收更新比（启发式）"
           type: number
           hidden: true
         - name: evidence_scope
@@ -5730,7 +5766,7 @@ steps:
             THEN 'actual_frame_timeline_slice'
           WHEN '${buffer_tx_coverage.data[0].target_process_status|}' = 'not_found'
             THEN '目标包: ${package}'
-          ELSE '目标包 FrameTimeline / BufferTX 帧产出证据'
+          ELSE '目标包 FrameTimeline 帧证据'
         END as missing_table,
         CASE
           WHEN NOT EXISTS (
@@ -5740,7 +5776,7 @@ steps:
             THEN '请确保 trace 采集时启用了 Frame Timeline (需要 Android 12+ 且开启 Choreographer tracing)'
           WHEN '${buffer_tx_coverage.data[0].target_process_status|}' = 'not_found'
             THEN 'trace 未包含目标包进程；请确认包名，或在目标应用处于前台时重新采集。不能输出该目标的帧指标或任务结论'
-          ELSE '已找到 FrameTimeline 表，但目标包无可用帧行，且 BufferTX 帧产出证据不足；不能输出 FPS、掉帧率或帧根因；仍可读取实际主线程任务与状态证据'
+          ELSE '已找到 FrameTimeline 表，但目标包无可用帧行；BufferTX 仅能观测 SF 接收更新，不能恢复 FPS、掉帧率或帧根因；仍可读取实际主线程任务与状态证据'
         END as suggestion
       UNION ALL
       SELECT

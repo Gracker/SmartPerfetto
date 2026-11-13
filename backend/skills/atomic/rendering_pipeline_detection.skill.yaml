@@ -233,9 +233,9 @@ steps:
               (52, 'CAMERA_PIPELINE', 's', 'has_cam_abbrev_thread', 10, 1, 't', 'glob', '*Cam*', 'a'),
               (53, 'CAMERA_PIPELINE', 's', 'has_camera_slice', 30, 1, 's', 'glob', '*Camera*', 'a'),
               (54, 'CAMERA_PIPELINE', 's', 'has_capture_session', 30, 1, 's', 'glob', '*CaptureSession*', 'a'),
-              (55, 'CHROME_BROWSER_VIZ', 'r', 'thread:VizCompositorThread', 0, 1, 't', 'eq', 'VizCompositorThread', 'a'),
+              (55, 'CHROME_BROWSER_VIZ', 'r', 'thread_pattern:VizCompositorTh*', 0, 1, 't', 'glob', 'VizCompositorTh*', 'a'),
               (56, 'CHROME_BROWSER_VIZ', 'r', 'thread_pattern:CrBrowserMain*', 0, 1, 't', 'glob', 'CrBrowserMain*', 'a'),
-              (57, 'CHROME_BROWSER_VIZ', 's', 'has_viz_compositor_thread', 40, 1, 't', 'glob', 'VizCompositorThread', 'a'),
+              (57, 'CHROME_BROWSER_VIZ', 's', 'has_viz_compositor_thread', 40, 1, 't', 'glob', 'VizCompositorTh*', 'a'),
               (58, 'CHROME_BROWSER_VIZ', 's', 'has_cr_renderer_main', 25, 1, 't', 'glob', 'CrRendererMain*', 'a'),
               (59, 'CHROME_BROWSER_VIZ', 's', 'has_gpu_main', 20, 1, 't', 'glob', 'CrGpuMain*', 'a'),
               (60, 'CHROME_BROWSER_VIZ', 's', 'has_display_scheduler', 15, 1, 's', 'glob', '*DisplayScheduler*', 'a'),
@@ -315,24 +315,24 @@ steps:
               (134, 'RN_NEW_ARCH_HWUI', 's', 'has_fabric_mount', 25, 1, 's', 'glob', '*FabricMount*', 'a'),
               (135, 'RN_NEW_ARCH_HWUI', 's', 'has_jsi_call', 15, 1, 's', 'glob', '*JSI*', 'a'),
               (136, 'RN_NEW_ARCH_HWUI', 's', 'has_turbomodule', 15, 1, 's', 'glob', '*TurboModule*', 'a'),
-              (137, 'RN_NEW_ARCH_HWUI', 's', 'has_mqt_js', 20, 1, 't', 'glob', 'mqt_js*', 'a'),
-              (138, 'RN_NEW_ARCH_HWUI', 'e', 'thread_pattern:mqt_shadow*', 0, 1, 't', 'glob', 'mqt_shadow*', 'a'),
-              (139, 'RN_OLD_ARCH_HWUI', 'r', 'thread_pattern:mqt_*', 0, 1, 't', 'glob', 'mqt_*', 'a'),
-              (140, 'RN_OLD_ARCH_HWUI', 's', 'has_mqt_js', 50, 1, 't', 'glob', 'mqt_js*', 'a'),
-              (141, 'RN_OLD_ARCH_HWUI', 's', 'has_mqt_native_modules', 30, 1, 't', 'glob', 'mqt_native_modules*', 'a'),
-              (142, 'RN_OLD_ARCH_HWUI', 's', 'has_mqt_shadow', 25, 1, 't', 'glob', 'mqt_shadow*', 'a'),
-              (143, 'RN_OLD_ARCH_HWUI', 's', 'has_yoga_layout', 15, 1, 's', 'glob', '*Yoga*', 'a'),
-              (144, 'RN_OLD_ARCH_HWUI', 's', 'has_native_to_js', 10, 1, 's', 'glob', '*NativeToJsBridge*', 'a'),
-              (145, 'RN_OLD_ARCH_HWUI', 's', 'has_js_to_native', 10, 1, 's', 'glob', '*JsToNativeBridge*', 'a'),
-              (146, 'RN_OLD_ARCH_HWUI', 's', 'has_uimanager', 12, 1, 's', 'glob', '*UIManager*dispatchViewUpdates*', 'a'),
-              (147, 'RN_OLD_ARCH_HWUI', 'e', 'slice_pattern:*FabricUIManager*', 0, 1, 's', 'glob', '*FabricUIManager*', 'a'),
-              (148, 'RN_SKIA_RENDERER', 's', 'has_mqt_js', 30, 1, 't', 'glob', 'mqt_js*', 'a'),
-              (149, 'RN_SKIA_RENDERER', 's', 'has_skia_renderer', 25, 1, 's', 'glob', '*SkiaRenderer*', 'a'),
-              (150, 'RN_SKIA_RENDERER', 's', 'has_skia_picture', 20, 1, 's', 'glob', '*SkiaPicture*', 'a'),
-              (151, 'RN_SKIA_RENDERER', 's', 'has_react_native_skia', 25, 1, 's', 'glob', '*react-native-skia*', 'a'),
-              (152, 'RN_SKIA_RENDERER', 's', 'has_skia_paint', 10, 1, 's', 'glob', '*SkPaint*', 'a'),
-              (153, 'RN_SKIA_RENDERER', 's', 'has_skia_canvas', 10, 1, 's', 'glob', '*SkCanvas*', 'a'),
-              (154, 'RN_SKIA_RENDERER', 'e', 'slice_pattern:*FabricUIManager*', 0, 1, 's', 'glob', '*FabricUIManager*', 'a'),
+              (137, 'RN_NEW_ARCH_HWUI', 's', 'has_mqt_js', 20, 1, 't', 'glob', 'mqt_*js*', 'a'),
+              (138, 'RN_NEW_ARCH_HWUI', 's', 'has_mqt_v_native', 10, 1, 't', 'glob', 'mqt_v_native*', 'a'),
+              (139, 'RN_NEW_ARCH_HWUI', 'e', 'thread_pattern:mqt_shadow*', 0, 1, 't', 'glob', 'mqt_shadow*', 'a'),
+              (140, 'RN_OLD_ARCH_HWUI', 'r', 'thread_pattern:mqt_shadow*', 0, 1, 't', 'glob', 'mqt_shadow*', 'a'),
+              (141, 'RN_OLD_ARCH_HWUI', 's', 'has_mqt_js', 50, 1, 't', 'glob', 'mqt_*js*', 'a'),
+              (142, 'RN_OLD_ARCH_HWUI', 's', 'has_mqt_native_modules', 30, 1, 't', 'glob', 'mqt_*native*', 'a'),
+              (143, 'RN_OLD_ARCH_HWUI', 's', 'has_mqt_shadow', 25, 1, 't', 'glob', 'mqt_shadow*', 'a'),
+              (144, 'RN_OLD_ARCH_HWUI', 's', 'has_yoga_layout', 15, 1, 's', 'glob', '*Yoga*', 'a'),
+              (145, 'RN_OLD_ARCH_HWUI', 's', 'has_native_to_js', 10, 1, 's', 'glob', '*NativeToJsBridge*', 'a'),
+              (146, 'RN_OLD_ARCH_HWUI', 's', 'has_js_to_native', 10, 1, 's', 'glob', '*JsToNativeBridge*', 'a'),
+              (147, 'RN_OLD_ARCH_HWUI', 's', 'has_uimanager', 12, 1, 's', 'glob', '*UIManager*dispatchViewUpdates*', 'a'),
+              (148, 'RN_OLD_ARCH_HWUI', 'e', 'slice_pattern:*FabricUIManager*', 0, 1, 's', 'glob', '*FabricUIManager*', 'a'),
+              (149, 'RN_SKIA_RENDERER', 's', 'has_mqt_js', 30, 1, 't', 'glob', 'mqt_*js*', 'a'),
+              (150, 'RN_SKIA_RENDERER', 's', 'has_skia_renderer', 25, 1, 's', 'glob', '*SkiaRenderer*', 'a'),
+              (151, 'RN_SKIA_RENDERER', 's', 'has_skia_picture', 20, 1, 's', 'glob', '*SkiaPicture*', 'a'),
+              (152, 'RN_SKIA_RENDERER', 's', 'has_react_native_skia', 25, 1, 's', 'glob', '*react-native-skia*', 'a'),
+              (153, 'RN_SKIA_RENDERER', 's', 'has_skia_paint', 10, 1, 's', 'glob', '*SkPaint*', 'a'),
+              (154, 'RN_SKIA_RENDERER', 's', 'has_skia_canvas', 10, 1, 's', 'glob', '*SkCanvas*', 'a'),
               (155, 'RN_SKIA_RENDERER', 'e', 'thread_pattern:mqt_shadow*', 0, 1, 't', 'glob', 'mqt_shadow*', 'a'),
               (156, 'RN_SKIA_RENDERER', 'e', 'slice_pattern:*EntityPass*', 0, 1, 's', 'glob', '*EntityPass*', 'a'),
               (157, 'SOFTWARE_COMPOSITING', 'r', 'thread:SurfaceFlinger', 0, 1, 't', 'eq', 'SurfaceFlinger', 'g'),
@@ -387,30 +387,38 @@ steps:
               (206, 'VULKAN_NATIVE', 's', 'has_vkqueue_thread', 4, 1, 't', 'glob', '*VkQueue*', 'a'),
               (207, 'VULKAN_NATIVE', 's', 'has_vk_acquire', 5, 1, 's', 'glob', '*vkAcquireNextImage*', 'a'),
               (208, 'WEBVIEW_GL_FUNCTOR', 'r', 'thread:RenderThread', 0, 1, 't', 'eq', 'RenderThread', 'a'),
-              (209, 'WEBVIEW_GL_FUNCTOR', 's', 'has_draw_gl', 25, 1, 's', 'glob', '*DrawGL*', 'a'),
-              (210, 'WEBVIEW_GL_FUNCTOR', 's', 'has_draw_fn_draw_gl', 20, 1, 's', 'glob', '*DrawFn_DrawGL*', 'a'),
-              (211, 'WEBVIEW_GL_FUNCTOR', 's', 'has_draw_functor', 15, 1, 's', 'glob', '*DrawFunctor*', 'a'),
-              (212, 'WEBVIEW_GL_FUNCTOR', 's', 'has_cr_renderer', 25, 1, 't', 'glob', 'CrRendererMain*', 'a'),
-              (213, 'WEBVIEW_GL_FUNCTOR', 's', 'has_render_thread', 10, 1, 't', 'glob', 'RenderThread*', 'a'),
-              (214, 'WEBVIEW_GL_FUNCTOR', 'e', 'thread_pattern:VizCompositorThread*', 0, 1, 't', 'glob', 'VizCompositorThread*', 'a'),
-              (215, 'WEBVIEW_GL_FUNCTOR', 'e', 'thread:1.ui', 0, 1, 't', 'eq', '1.ui', 'a'),
-              (216, 'WEBVIEW_SURFACE_CONTROL', 's', 'has_viz_compositor', 55, 1, 't', 'glob', 'VizCompositorThread*', 'a'),
-              (217, 'WEBVIEW_SURFACE_CONTROL', 's', 'has_cr_renderer', 12, 1, 't', 'glob', 'CrRendererMain*', 'a'),
-              (218, 'WEBVIEW_SURFACE_CONTROL', 's', 'has_surface_control', 15, 1, 's', 'glob', '*SurfaceControl*', 'a'),
-              (219, 'WEBVIEW_SURFACE_CONTROL', 'e', 'thread:1.ui', 0, 1, 't', 'eq', '1.ui', 'a'),
-              (220, 'WEBVIEW_SURFACEVIEW_WRAPPER', 's', 'has_webview', 30, 1, 's', 'glob', '*WebView*', 'a'),
-              (221, 'WEBVIEW_SURFACEVIEW_WRAPPER', 's', 'has_webview_core', 10, 1, 't', 'glob', 'WebViewCore*', 'a'),
-              (222, 'WEBVIEW_SURFACEVIEW_WRAPPER', 's', 'has_cr_renderer', 10, 1, 't', 'glob', 'CrRendererMain*', 'a'),
-              (223, 'WEBVIEW_SURFACEVIEW_WRAPPER', 's', 'has_surfaceview', 25, 1, 's', 'glob', '*SurfaceView*', 'a'),
-              (224, 'WEBVIEW_SURFACEVIEW_WRAPPER', 's', 'has_video', 12, 1, 's', 'glob', '*Video*', 'a'),
-              (225, 'WEBVIEW_SURFACEVIEW_WRAPPER', 's', 'has_mediacodec', 13, 1, 's', 'glob', '*MediaCodec*', 'a'),
-              (226, 'WEBVIEW_SURFACEVIEW_WRAPPER', 'e', 'thread:1.ui', 0, 1, 't', 'eq', '1.ui', 'a'),
-              (227, 'WEBVIEW_TEXTUREVIEW_CUSTOM', 's', 'has_tbs', 30, 1, 's', 'glob', '*TBS*', 'a'),
-              (228, 'WEBVIEW_TEXTUREVIEW_CUSTOM', 's', 'has_x5', 30, 1, 's', 'glob', '*X5*', 'a'),
-              (229, 'WEBVIEW_TEXTUREVIEW_CUSTOM', 's', 'has_uccore', 20, 1, 's', 'glob', '*UCCore*', 'a'),
-              (230, 'WEBVIEW_TEXTUREVIEW_CUSTOM', 'e', 'thread:1.ui', 0, 1, 't', 'eq', '1.ui', 'a')
+              (209, 'WEBVIEW_GL_FUNCTOR', 'r', 'slice_patterns:DrawGL*|*DrawFn_DrawGL*|*DrawFn_DrawVk*|*DrawFunctor*|AwDrawFnImpl::Draw[GV][Llk]*|WebViewFunctor::draw[GgVv][LlKk]*', 0, 1, 's', 'glob', 'DrawGL*', 'a'),
+              (209, 'WEBVIEW_GL_FUNCTOR', 'r', 'slice_patterns:DrawGL*|*DrawFn_DrawGL*|*DrawFn_DrawVk*|*DrawFunctor*|AwDrawFnImpl::Draw[GV][Llk]*|WebViewFunctor::draw[GgVv][LlKk]*', 0, 1, 's', 'glob', '*DrawFn_DrawGL*', 'a'),
+              (209, 'WEBVIEW_GL_FUNCTOR', 'r', 'slice_patterns:DrawGL*|*DrawFn_DrawGL*|*DrawFn_DrawVk*|*DrawFunctor*|AwDrawFnImpl::Draw[GV][Llk]*|WebViewFunctor::draw[GgVv][LlKk]*', 0, 1, 's', 'glob', '*DrawFn_DrawVk*', 'a'),
+              (209, 'WEBVIEW_GL_FUNCTOR', 'r', 'slice_patterns:DrawGL*|*DrawFn_DrawGL*|*DrawFn_DrawVk*|*DrawFunctor*|AwDrawFnImpl::Draw[GV][Llk]*|WebViewFunctor::draw[GgVv][LlKk]*', 0, 1, 's', 'glob', '*DrawFunctor*', 'a'),
+              (209, 'WEBVIEW_GL_FUNCTOR', 'r', 'slice_patterns:DrawGL*|*DrawFn_DrawGL*|*DrawFn_DrawVk*|*DrawFunctor*|AwDrawFnImpl::Draw[GV][Llk]*|WebViewFunctor::draw[GgVv][LlKk]*', 0, 1, 's', 'glob', 'AwDrawFnImpl::Draw[GV][Llk]*', 'a'),
+              (209, 'WEBVIEW_GL_FUNCTOR', 'r', 'slice_patterns:DrawGL*|*DrawFn_DrawGL*|*DrawFn_DrawVk*|*DrawFunctor*|AwDrawFnImpl::Draw[GV][Llk]*|WebViewFunctor::draw[GgVv][LlKk]*', 0, 1, 's', 'glob', 'WebViewFunctor::draw[GgVv][LlKk]*', 'a'),
+              (210, 'WEBVIEW_GL_FUNCTOR', 's', 'has_draw_gl', 25, 1, 's', 'glob', 'DrawGL*', 'a'),
+              (210, 'WEBVIEW_GL_FUNCTOR', 's', 'has_draw_gl', 25, 1, 's', 'glob', '*DrawFn_DrawGL*', 'a'),
+              (210, 'WEBVIEW_GL_FUNCTOR', 's', 'has_draw_gl', 25, 1, 's', 'glob', '*DrawFn_DrawVk*', 'a'),
+              (210, 'WEBVIEW_GL_FUNCTOR', 's', 'has_draw_gl', 25, 1, 's', 'glob', '*DrawFunctor*', 'a'),
+              (210, 'WEBVIEW_GL_FUNCTOR', 's', 'has_draw_gl', 25, 1, 's', 'glob', 'AwDrawFnImpl::Draw[GV][Llk]*', 'a'),
+              (210, 'WEBVIEW_GL_FUNCTOR', 's', 'has_draw_gl', 25, 1, 's', 'glob', 'WebViewFunctor::draw[GgVv][LlKk]*', 'a'),
+              (211, 'WEBVIEW_GL_FUNCTOR', 's', 'has_cr_renderer', 25, 1, 't', 'glob', 'CrRendererMain*', 'a'),
+              (212, 'WEBVIEW_GL_FUNCTOR', 's', 'has_render_thread', 10, 1, 't', 'glob', 'RenderThread*', 'a'),
+              (213, 'WEBVIEW_GL_FUNCTOR', 'e', 'thread:1.ui', 0, 1, 't', 'eq', '1.ui', 'a'),
+              (214, 'WEBVIEW_SURFACE_CONTROL', 's', 'has_viz_compositor', 55, 1, 't', 'glob', 'VizCompositorThread*', 'a'),
+              (215, 'WEBVIEW_SURFACE_CONTROL', 's', 'has_cr_renderer', 12, 1, 't', 'glob', 'CrRendererMain*', 'a'),
+              (216, 'WEBVIEW_SURFACE_CONTROL', 's', 'has_surface_control', 15, 1, 's', 'glob', '*SurfaceControl*', 'a'),
+              (217, 'WEBVIEW_SURFACE_CONTROL', 'e', 'thread:1.ui', 0, 1, 't', 'eq', '1.ui', 'a'),
+              (218, 'WEBVIEW_SURFACEVIEW_WRAPPER', 's', 'has_webview', 30, 1, 's', 'glob', '*WebView*', 'a'),
+              (219, 'WEBVIEW_SURFACEVIEW_WRAPPER', 's', 'has_webview_core', 10, 1, 't', 'glob', 'WebViewCore*', 'a'),
+              (220, 'WEBVIEW_SURFACEVIEW_WRAPPER', 's', 'has_cr_renderer', 10, 1, 't', 'glob', 'CrRendererMain*', 'a'),
+              (221, 'WEBVIEW_SURFACEVIEW_WRAPPER', 's', 'has_surfaceview', 25, 1, 's', 'glob', '*SurfaceView*', 'a'),
+              (222, 'WEBVIEW_SURFACEVIEW_WRAPPER', 's', 'has_video', 12, 1, 's', 'glob', '*Video*', 'a'),
+              (223, 'WEBVIEW_SURFACEVIEW_WRAPPER', 's', 'has_mediacodec', 13, 1, 's', 'glob', '*MediaCodec*', 'a'),
+              (224, 'WEBVIEW_SURFACEVIEW_WRAPPER', 'e', 'thread:1.ui', 0, 1, 't', 'eq', '1.ui', 'a'),
+              (225, 'WEBVIEW_TEXTUREVIEW_CUSTOM', 's', 'has_tbs', 30, 1, 's', 'glob', '*TBS*', 'a'),
+              (226, 'WEBVIEW_TEXTUREVIEW_CUSTOM', 's', 'has_x5', 30, 1, 's', 'glob', '*X5*', 'a'),
+              (227, 'WEBVIEW_TEXTUREVIEW_CUSTOM', 's', 'has_uccore', 20, 1, 's', 'glob', '*UCCore*', 'a'),
+              (228, 'WEBVIEW_TEXTUREVIEW_CUSTOM', 'e', 'thread:1.ui', 0, 1, 't', 'eq', '1.ui', 'a')
             ),
-            signal_counts AS (
+            signal_name_matches AS (
               SELECT
                 sd.signal_id,
                 sd.pipeline_id,
@@ -418,13 +426,16 @@ steps:
                 sd.signal_name,
                 sd.weight,
                 sd.min_count,
-                SUM(
+                COALESCE(tc.thread_name, sc.slice_name) as source_name,
+                -- Each source count is already grouped by the actual recorded name.
+                -- Multiple alias patterns matching that name must contribute it once.
+                MAX(
                   CASE
                     WHEN sd.source = 't' THEN CASE WHEN sd.scope = 'g' THEN COALESCE(tc.global_cnt, 0) ELSE COALESCE(tc.app_cnt, 0) END
                     WHEN sd.source = 's' THEN CASE WHEN sd.scope = 'g' THEN COALESCE(sc.global_cnt, 0) ELSE COALESCE(sc.app_cnt, 0) END
                     ELSE 0
                   END
-                ) as cnt
+                ) as source_count
               FROM signal_defs sd
               LEFT JOIN thread_counts tc
                 ON sd.source = 't'
@@ -438,7 +449,13 @@ steps:
                  (sd.op = 'eq' AND sc.slice_name = sd.pattern)
                  OR (sd.op = 'glob' AND sc.slice_name GLOB sd.pattern)
                )
-              GROUP BY sd.signal_id, sd.pipeline_id, sd.signal_type, sd.signal_name, sd.weight, sd.min_count
+              GROUP BY sd.signal_id, sd.pipeline_id, sd.signal_type, sd.signal_name, sd.weight, sd.min_count, source_name
+            ),
+            signal_counts AS (
+              SELECT signal_id, pipeline_id, signal_type, signal_name, weight, min_count,
+                SUM(source_count) as cnt
+              FROM signal_name_matches
+              GROUP BY signal_id, pipeline_id, signal_type, signal_name, weight, min_count
             ),
             signal_agg AS (
               SELECT
@@ -507,37 +524,37 @@ steps:
               doc_path
             ) AS (
               VALUES
-              ('ANDROID_PIP_FREEFORM', NULL, 0, 1, 'rendering_pipelines/S06_multi_window_type.md'),
-              ('ANDROID_VIEW_MIXED', 'S05_MIXED_RENDERING', 1, 0, 'rendering_pipelines/S05_mixed_rendering_type.md'),
-              ('ANDROID_VIEW_MULTI_WINDOW', NULL, 0, 1, 'rendering_pipelines/S06_multi_window_type.md'),
-              ('ANDROID_VIEW_SOFTWARE', 'S07_SOFTWARE_OFFSCREEN', 1, 0, 'rendering_pipelines/S07_software_offscreen_type.md'),
-              ('ANDROID_VIEW_STANDARD_BLAST', 'S02_AOSP_STANDARD', 1, 0, 'rendering_pipelines/S02_aosp_standard_type.md'),
-              ('ANDROID_VIEW_STANDARD_LEGACY', 'S02_AOSP_STANDARD', 1, 0, 'rendering_pipelines/S02_aosp_standard_type.md'),
-              ('ANGLE_GLES_VULKAN', NULL, 0, 1, 'rendering_pipelines/S08_native_graphics_type.md'),
-              ('CAMERA_PIPELINE', 'S11_CAMERA', 1, 0, 'rendering_pipelines/S11_camera_type.md'),
-              ('CHROME_BROWSER_VIZ', 'S09_WEBVIEW', 1, 0, 'rendering_pipelines/S09_webview_type.md'),
-              ('COMPOSE_STANDARD', 'S02_AOSP_STANDARD', 1, 0, 'rendering_pipelines/S02_aosp_standard_type.md'),
-              ('FLUTTER_SURFACEVIEW_IMPELLER', 'S10_FLUTTER', 1, 0, 'rendering_pipelines/S10_flutter_type.md'),
-              ('FLUTTER_SURFACEVIEW_SKIA', 'S10_FLUTTER', 1, 0, 'rendering_pipelines/S10_flutter_type.md'),
-              ('FLUTTER_TEXTUREVIEW', 'S10_FLUTTER', 1, 0, 'rendering_pipelines/S10_flutter_type.md'),
-              ('GAME_ENGINE', 'S13_GAME', 1, 0, 'rendering_pipelines/S13_game_type.md'),
-              ('HARDWARE_BUFFER_RENDERER', NULL, 0, 1, 'rendering_pipelines/S07_software_offscreen_type.md'),
-              ('IMAGEREADER_PIPELINE', NULL, 0, 1, 'rendering_pipelines/S07_software_offscreen_type.md'),
-              ('OPENGL_ES', 'S08_NATIVE_GRAPHICS', 1, 0, 'rendering_pipelines/S08_native_graphics_type.md'),
-              ('RN_NEW_ARCH_HWUI', 'S14_REACT_NATIVE', 1, 0, 'rendering_pipelines/S14_react_native_type.md'),
-              ('RN_OLD_ARCH_HWUI', 'S14_REACT_NATIVE', 1, 0, 'rendering_pipelines/S14_react_native_type.md'),
-              ('RN_SKIA_RENDERER', 'S14_REACT_NATIVE', 1, 0, 'rendering_pipelines/S14_react_native_type.md'),
-              ('SOFTWARE_COMPOSITING', NULL, 0, 1, 'rendering_pipelines/S01_rendering_types_overview.md'),
-              ('SURFACE_CONTROL_API', NULL, 0, 1, 'rendering_pipelines/S07_software_offscreen_type.md'),
-              ('SURFACEVIEW_BLAST', 'S03_SURFACEVIEW', 1, 0, 'rendering_pipelines/S03_surfaceview_type.md'),
-              ('TEXTUREVIEW_STANDARD', 'S04_TEXTUREVIEW', 1, 0, 'rendering_pipelines/S04_textureview_type.md'),
-              ('VARIABLE_REFRESH_RATE', NULL, 0, 1, 'rendering_pipelines/S01_rendering_types_overview.md'),
-              ('VIDEO_OVERLAY_HWC', NULL, 0, 1, 'rendering_pipelines/S12_video_overlay_hwc_type.md'),
-              ('VULKAN_NATIVE', 'S08_NATIVE_GRAPHICS', 1, 0, 'rendering_pipelines/S08_native_graphics_type.md'),
-              ('WEBVIEW_GL_FUNCTOR', 'S09_WEBVIEW', 1, 0, 'rendering_pipelines/S09_webview_type.md'),
-              ('WEBVIEW_SURFACE_CONTROL', 'S09_WEBVIEW', 1, 0, 'rendering_pipelines/S09_webview_type.md'),
-              ('WEBVIEW_SURFACEVIEW_WRAPPER', 'S09_WEBVIEW', 1, 0, 'rendering_pipelines/S09_webview_type.md'),
-              ('WEBVIEW_TEXTUREVIEW_CUSTOM', 'S09_WEBVIEW', 1, 0, 'rendering_pipelines/S09_webview_type.md')
+              ('ANDROID_PIP_FREEFORM', NULL, 0, 1, 'skills/pipelines/index.yaml#rendering_types.S06_MULTI_WINDOW'),
+              ('ANDROID_VIEW_MIXED', 'S05_MIXED_RENDERING', 1, 0, 'skills/pipelines/index.yaml#rendering_types.S05_MIXED_RENDERING'),
+              ('ANDROID_VIEW_MULTI_WINDOW', NULL, 0, 1, 'skills/pipelines/index.yaml#rendering_types.S06_MULTI_WINDOW'),
+              ('ANDROID_VIEW_SOFTWARE', 'S07_SOFTWARE_OFFSCREEN', 1, 0, 'skills/pipelines/index.yaml#rendering_types.S07_SOFTWARE_OFFSCREEN'),
+              ('ANDROID_VIEW_STANDARD_BLAST', 'S02_AOSP_STANDARD', 1, 0, 'skills/pipelines/index.yaml#rendering_types.S02_AOSP_STANDARD'),
+              ('ANDROID_VIEW_STANDARD_LEGACY', 'S02_AOSP_STANDARD', 1, 0, 'skills/pipelines/index.yaml#rendering_types.S02_AOSP_STANDARD'),
+              ('ANGLE_GLES_VULKAN', NULL, 0, 1, 'skills/pipelines/index.yaml#rendering_types.S08_NATIVE_GRAPHICS'),
+              ('CAMERA_PIPELINE', 'S11_CAMERA', 1, 0, 'skills/pipelines/index.yaml#rendering_types.S11_CAMERA'),
+              ('CHROME_BROWSER_VIZ', 'S16_CHROMIUM_BROWSER', 1, 0, 'skills/pipelines/index.yaml#rendering_types.S16_CHROMIUM_BROWSER'),
+              ('COMPOSE_STANDARD', 'S02_AOSP_STANDARD', 1, 0, 'skills/pipelines/index.yaml#rendering_types.S02_AOSP_STANDARD'),
+              ('FLUTTER_SURFACEVIEW_IMPELLER', 'S10_FLUTTER', 1, 0, 'skills/pipelines/index.yaml#rendering_types.S10_FLUTTER'),
+              ('FLUTTER_SURFACEVIEW_SKIA', 'S10_FLUTTER', 1, 0, 'skills/pipelines/index.yaml#rendering_types.S10_FLUTTER'),
+              ('FLUTTER_TEXTUREVIEW', 'S10_FLUTTER', 1, 0, 'skills/pipelines/index.yaml#rendering_types.S10_FLUTTER'),
+              ('GAME_ENGINE', 'S13_GAME', 1, 0, 'skills/pipelines/index.yaml#rendering_types.S13_GAME'),
+              ('HARDWARE_BUFFER_RENDERER', NULL, 0, 1, 'skills/pipelines/index.yaml#rendering_types.S07_SOFTWARE_OFFSCREEN'),
+              ('IMAGEREADER_PIPELINE', NULL, 0, 1, 'skills/pipelines/index.yaml#rendering_types.S07_SOFTWARE_OFFSCREEN'),
+              ('OPENGL_ES', 'S08_NATIVE_GRAPHICS', 1, 0, 'skills/pipelines/index.yaml#rendering_types.S08_NATIVE_GRAPHICS'),
+              ('RN_NEW_ARCH_HWUI', 'S14_REACT_NATIVE', 1, 0, 'skills/pipelines/index.yaml#rendering_types.S14_REACT_NATIVE'),
+              ('RN_OLD_ARCH_HWUI', 'S14_REACT_NATIVE', 1, 0, 'skills/pipelines/index.yaml#rendering_types.S14_REACT_NATIVE'),
+              ('RN_SKIA_RENDERER', 'S14_REACT_NATIVE', 1, 0, 'skills/pipelines/index.yaml#rendering_types.S14_REACT_NATIVE'),
+              ('SOFTWARE_COMPOSITING', NULL, 0, 1, 'skills/pipelines/index.yaml#rendering_types.S01_OVERVIEW'),
+              ('SURFACE_CONTROL_API', NULL, 0, 1, 'skills/pipelines/index.yaml#rendering_types.S07_SOFTWARE_OFFSCREEN'),
+              ('SURFACEVIEW_BLAST', 'S03_SURFACEVIEW', 1, 0, 'skills/pipelines/index.yaml#rendering_types.S03_SURFACEVIEW'),
+              ('TEXTUREVIEW_STANDARD', 'S04_TEXTUREVIEW', 1, 0, 'skills/pipelines/index.yaml#rendering_types.S04_TEXTUREVIEW'),
+              ('VARIABLE_REFRESH_RATE', NULL, 0, 1, 'skills/pipelines/index.yaml#rendering_types.S01_OVERVIEW'),
+              ('VIDEO_OVERLAY_HWC', NULL, 0, 1, 'skills/pipelines/index.yaml#rendering_types.S12_VIDEO_OVERLAY_HWC'),
+              ('VULKAN_NATIVE', 'S08_NATIVE_GRAPHICS', 1, 0, 'skills/pipelines/index.yaml#rendering_types.S08_NATIVE_GRAPHICS'),
+              ('WEBVIEW_GL_FUNCTOR', 'S09_WEBVIEW', 1, 0, 'skills/pipelines/index.yaml#rendering_types.S09_WEBVIEW'),
+              ('WEBVIEW_SURFACE_CONTROL', 'S09_WEBVIEW', 1, 0, 'skills/pipelines/index.yaml#rendering_types.S09_WEBVIEW'),
+              ('WEBVIEW_SURFACEVIEW_WRAPPER', 'S09_WEBVIEW', 1, 0, 'skills/pipelines/index.yaml#rendering_types.S09_WEBVIEW'),
+              ('WEBVIEW_TEXTUREVIEW_CUSTOM', 'S09_WEBVIEW', 1, 0, 'skills/pipelines/index.yaml#rendering_types.S09_WEBVIEW')
             ),
             pipeline_related_rendering_types(
               pipeline_id,
@@ -667,7 +684,7 @@ steps:
               r.rendering_type_candidates_list,
               r.related_rendering_type_candidates_list,
               r.features_list,
-              COALESCE((SELECT doc_path FROM pipeline_metadata WHERE pipeline_id = r.primary_pipeline_id), 'rendering_pipelines/S02_aosp_standard_type.md') as doc_path
+              COALESCE((SELECT doc_path FROM pipeline_metadata WHERE pipeline_id = r.primary_pipeline_id), 'skills/pipelines/index.yaml#rendering_types.S02_AOSP_STANDARD') as doc_path
             FROM result r
 
     save_as: pipeline_result

@@ -170,11 +170,10 @@ YAML Skill
 新增确定性证据修改 `backend/skills/`。Skill 数量、场景列表和 pipeline catalog 都从
 文件树/frontmatter/index 发现，不能在代码或文档中固定复制。
 
-渲染管线教学内容位于 `docs/rendering_pipelines/`，运行时通过 `doc_path` 读取。
-这些文件由同步工具从固定来源更新，不手工编辑：
+渲染教学使用 `backend/skills/pipelines/index.yaml` 中产品自有的结构化卡片。
+`doc_path` 标识对应卡片；原始参考文章不入库、不打包。修改卡片或检测引用后运行：
 
 ```bash
-npm run sync:rendering-pipelines -- --source <checkout> --apply
 npm run check:rendering-pipelines
 ```
 
