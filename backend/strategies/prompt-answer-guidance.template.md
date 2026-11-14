@@ -20,6 +20,12 @@ window total already handles clipping at the window edges and unfinished rows,
 so quote it as the total; per-row sums are supporting detail, and when they
 disagree report the Skill total rather than both.
 
+Time display: reuse previewTimeSeconds/sampleTimeSeconds/rowTimeSeconds (seconds,
+same clock origin). Otherwise compute ns / 1e9 = s in SQL once; keep raw ns for
+inputs. Label absolute trace-clock vs relative origin. Compute bucket bounds and
+duration together: end_s - start_s must match the bin (10s, not 0.010s).
+trace_bounds span is separate from slice/data coverage.
+
 Distinguish FrameTimeline SurfaceFrames from SF ActualDisplayFrames. For a
 completed SF ActualDisplayFrame (`surface_frame_token IS NULL`, `dur >= 0`),
 `ts` is the SF work start; `ts + dur` is the display-stack producer's

@@ -304,7 +304,17 @@ describe('formatToolResultNarration', () => {
       toolName: 'execute_sql',
       result: mcpResult({success: false, error: 'no such table: foo'}),
     });
-    expect(text).toBe('execute_sql 失败：no such table: foo');
+    expect(text).toContain('execute_sql 失败：domain=trace_processor code=missing_table message=no such table: foo');
+    expect(text).toMatch(/sha256=[a-f0-9]{16}/);
+  });
+
+  it.each(['execute_sql', 'execute_sql_on'])('does not expose native SQL excerpts through %s narration', toolName => {
+    const text = formatToolResultNarration({toolName,
+      result: mcpResult({success: false, error: " --> query:1:8\n1 | SELECT 'PRIVATE_SQL_CANARY', sched.is_idle\nerror: no such column: sched.is_idle"})});
+    expect(text).toContain('message=no such column: sched.is_idle');
+    expect(text).not.toMatch(/PRIVATE_SQL_CANARY|SELECT|query:|\n/);
+    expect(formatToolResultNarration({toolName,
+      result: mcpResult({success: false, error: 'invalid_sql_execution_context'})})).toContain('invalid_sql_execution_context');
   });
 
   it('narrates a runtime-reported failure even when the body looks fine', () => {

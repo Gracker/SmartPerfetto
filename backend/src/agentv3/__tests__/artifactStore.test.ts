@@ -260,6 +260,46 @@ describe('ArtifactStore', () => {
     expect(store.fetch(small, 'full')).not.toHaveProperty('truncated');
   });
 
+  it('formats large issued ns values exactly once on the visible sample and requested page', () => {
+    const store = new ArtifactStore();
+    const origin = {kind: 'skill_literal' as const, definitionFingerprint: 'thermal-window-v1', skillId: 'thermal'};
+    const columns = ['start_ts', 'end_ts', 'dur_ns', 'unknown_ts', 'unfinished'];
+    const rows = [[394346114098058, 394356114098058, 10_000_000_000, 394346114098058, -1],
+      [394356114098058, 394366114098058, 10_000_000_000, 394356114098058, null]];
+    const id = store.store({skillId: 'thermal', data: {columns, rows}});
+    store.registerEvidenceCapture(id, captureEvidenceTable({columns, rows}, {
+      start_ts: {origin, unit: 'ns'}, end_ts: {origin, unit: 'ns'}, dur_ns: {origin, unit: 'ns'}, unfinished: {origin, unit: 'ns'},
+    }), {evidenceRefId: 'thermal-window'});
+    const expected = {start_ts: '394346.114098058', end_ts: '394356.114098058', dur_ns: '10'};
+    expect(store.generateSummary(id)?.sampleTimeSeconds).toEqual(expected);
+    expect(store.generateCompactSummary(id)?.previewTimeSeconds).toEqual(expected);
+    const page = store.fetch(id, 'rows', 1, 1);
+    expect(page.rowTimeSeconds).toEqual([{rowIndex: 1, seconds: {
+      start_ts: '394356.114098058', end_ts: '394366.114098058', dur_ns: '10'}}]);
+    expect(Number(page.rowTimeSeconds[0].seconds.end_ts) - Number(page.rowTimeSeconds[0].seconds.start_ts)).toBe(10);
+    expect(page.rows[0].values).toEqual(rows[1]);
+    expect(store.fetch(id, 'full').rowTimeSeconds[0].seconds).toEqual(expected);
+    expect(store.fetch(id, 'rows', 10, 1)).not.toHaveProperty('rowTimeSeconds');
+    const snapshot = JSON.parse(JSON.stringify(store.serialize()));
+    expect(JSON.stringify(snapshot)).not.toMatch(/TimeSeconds/);
+    expect(ArtifactStore.fromSnapshot(snapshot).generateSummary(id)).not.toHaveProperty('sampleTimeSeconds');
+    expect(rows[0][0]).toBe(394346114098058);
+  });
+
+  it('does not format unknown units, unsafe integers or changed cells as authoritative times', () => {
+    const store = new ArtifactStore();
+    const data = {columns: ['ts', 'value'], rows: [[Number.MAX_SAFE_INTEGER + 1, 0.5]]};
+    const id = store.store({skillId: 'fixture', data});
+    const origin = {kind: 'skill_literal' as const, definitionFingerprint: 'fixture'};
+    store.registerEvidenceCapture(id, captureEvidenceTable(data, {ts: {origin, unit: 'ns'}, value: {origin, unit: 'ns'}}),
+      {evidenceRefId: 'unsafe'});
+    expect(store.fetch(id, 'rows')).not.toHaveProperty('rowTimeSeconds');
+    const other = store.store({skillId: 'fixture', data: {columns: ['ts'], rows: [[1]]}});
+    store.registerEvidenceCapture(other, captureEvidenceTable({columns: ['ts'], rows: [[2]]}, {ts: {origin, unit: 'ns'}}),
+      {evidenceRefId: 'changed'});
+    expect(store.generateSummary(other)).not.toHaveProperty('sampleTimeSeconds');
+  });
+
   it('projects live producer units on every fetch surface without persisting them', () => {
     const store = new ArtifactStore();
     const origin = {kind: 'skill_literal' as const, definitionFingerprint: 'artifact-v1', skillId: 'fixture'};

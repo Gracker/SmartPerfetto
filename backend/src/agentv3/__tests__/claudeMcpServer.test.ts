@@ -2197,17 +2197,17 @@ describe('createClaudeMcpServer', () => {
         expect(description).toContain('is_main_thread');
         expect(description).toContain('Frames=count logical IDs/process');
         expect(description).toContain('MIN(ts+dur,end)-MAX(ts,start)');
-        expect(description).toContain('Negative/unfinished dur first');
+        expect(description).toContain('Handle dur<0 first');
         expect(description).toContain('Thread-state sum<=window');
         expect(description).toContain('ts<end AND ts+dur>start');
-        expect(description).toContain('Sched has idle; busy=is_idle=0; NULL=unknown');
+        expect(description).toContain('JOIN thread USING(utid), busy=thread.is_idle=0; NULL=unknown');
         expect(description).toContain('Zero dur!=zero count');
         expect(description).toContain('parallel CPU!=wall');
         expect(description).toContain('Counters=time-weighted holds+predecessor');
-        expect(description).toContain('Numerator/denominator+unrounded REAL ratio');
+        expect(description).toContain('Unrounded REAL numerator/denominator');
         expect(description).toContain('CAST/ROUND=display');
         expect(description).toContain('aliases/formats!=authority');
-        expect(description).toContain('columnUnits=issued; else stdlibColumnDocs unit=documented; else unknown');
+        expect(description).toContain('columnUnits=issued;else stdlibColumnDocs=documented;else unknown');
         expect(description).toContain('modelEvidence=availability, not proof');
         expect(description).toContain('empty/unknown!=zero/absence');
         expect(description).toContain('list_skills');
@@ -2366,6 +2366,20 @@ describe('createClaudeMcpServer', () => {
   });
 
   describe('fetch_artifact', () => {
+    it('omits formatted row values together with raw previews when rows are forbidden', async () => {
+      const {tools, artifactStore} = createTestServer({userQuery: 'Do not fetch any raw rows for this request.'});
+      artifactStore.generateCompactSummary.mockReturnValueOnce({id: 'art-1', rowCount: 1,
+        preview: {ts: 394346114098058}, previewTimeSeconds: {ts: '394346.114098058'}});
+      const invoked = await callTool(tools, 'invoke_skill', {skillId: 'scrolling_analysis'});
+      expect(invoked.artifacts[0]).not.toHaveProperty('preview');
+      expect(invoked.artifacts[0]).not.toHaveProperty('previewTimeSeconds');
+      artifactStore.fetch.mockReturnValueOnce({id: 'art-1', rowCount: 1, columns: ['ts'],
+        sampleRow: [394346114098058], sampleTimeSeconds: {ts: '394346.114098058'},
+        preview: {ts: 394346114098058}, previewTimeSeconds: {ts: '394346.114098058'}});
+      const fetched = await callTool(tools, 'fetch_artifact', {artifactId: 'art-1', detail: 'summary'});
+      expect(JSON.stringify(fetched)).not.toMatch(/394346|TimeSeconds/);
+    });
+
     it('guides ordinary full runs to summary-first while keeping targeted rows available', async () => {
       const {tools} = createTestServer();
       await callTool(tools, 'submit_plan', {
@@ -2799,7 +2813,11 @@ describe('createClaudeMcpServer', () => {
 
     it('gives overview steps the lightweight inline previews before later detail steps', async () => {
       // sfb_doubao: scrolling_analysis's smoothness verdict was the 12th artifact and lost its preview.
-      const {tools, mockSkillExecutor} = createTestServer({lightweight: true});
+      const {tools, mockSkillExecutor, artifactStore} = createTestServer({lightweight: true});
+      const summarize = artifactStore.generateCompactSummary.getMockImplementation()!;
+      artifactStore.generateCompactSummary.mockImplementation(function(this: any, id: string) {
+        return {...summarize.call(this, id), previewTimeSeconds: {value: '394346.114098058'}};
+      });
       const displayResults = Array.from({length: 13}, (_, index) => ({
         stepId: `step_${index}`, title: `Finding ${index}`, layer: index === 11 ? 'overview' : 'list', format: 'table',
         data: {columns: ['value'], rows: [[index]]},
@@ -2808,6 +2826,9 @@ describe('createClaudeMcpServer', () => {
         skillId: 'scrolling_analysis', success: true, displayResults, diagnostics: [], executionTimeMs: 5,
       } as any);
       const result = await callTool(tools, 'invoke_skill', {skillId: 'scrolling_analysis'});
+      for (const artifact of result.artifacts.filter((item: any) => !item.preview)) {
+        expect(artifact).not.toHaveProperty('previewTimeSeconds');
+      }
       const previewed = result.artifacts.filter((artifact: any) => artifact.preview).map((artifact: any) => artifact.stepId);
       expect(previewed).toEqual(['step_0', 'step_1', 'step_2', 'step_3', 'step_4', 'step_5', 'step_6', 'step_7',
         'step_8', 'step_11']);
@@ -3023,6 +3044,25 @@ describe('createClaudeMcpServer', () => {
         action_required: 'retry_invoke_skill_with_declared_params',
       });
       expect(mockSkillExecutor.execute).not.toHaveBeenCalled();
+    });
+
+    it.each(['status=unresolved, confidence=0', 'resolver failed (resolver unavailable)'])
+    ('puts the complete identity refusal before the parameter contract: %s', detail => {
+      // The stream keeps only the first 1200 characters. The failure must fit
+      // before a contract, whose size grows with a Skill's declared inputs.
+      const {tools, mockSkillExecutor} = createTestServer();
+      const error = `Process identity could not be verified for skill "blocking_chain_analysis": ${detail}`;
+      mockSkillExecutor.prepareInvocation.mockResolvedValueOnce({
+        allowed: false, error, params: {}, inherited: {}, config: {policy: 'none'},
+      } as never);
+      return callTool(tools, 'invoke_skill', {skillId: 'blocking_chain_analysis',
+        params: {process_name: 'com.example', start_ts: 100, end_ts: 200}}).then(result => {
+        const text = JSON.stringify(result);
+        expect(result.success).toBe(false);
+        expect(text.indexOf('"error"')).toBeLessThan(text.indexOf('"parameterContract"'));
+        expect(text.slice(0, 1200)).toContain(error.replace(/"/g, '\\"'));
+        expect(mockSkillExecutor.execute).not.toHaveBeenCalled();
+      });
     });
 
     it('admits UPID and PID for process identity while rejecting an undeclared thread filter', async () => {
@@ -6477,6 +6517,44 @@ describe('createClaudeMcpServer', () => {
       expect(analysisPlan.current?.successCriteria).toBe('Identify jank root cause');
     });
 
+    it('accepts structured expectedTools while retaining every generic and skill-scoped obligation', async () => {
+      const {tools, analysisPlan} = createTestServer();
+      const phases = [{id: 'p', name: 'Collect', goal: 'Read evidence',
+        expectedTools: ['execute_sql', {tool: 'invoke_skill', skillId: 'scrolling_analysis'}],
+        expectedCalls: [{tool: 'fetch_artifact'}]}];
+      expect(tools.get('submit_plan')?.schema?.phases?.safeParse(phases).success).toBe(true);
+      expect((await callTool(tools, 'submit_plan', {phases, successCriteria: 'Resolve'})).success).toBe(true);
+      expect(analysisPlan.current?.phases[0]).toMatchObject({expectedTools: ['execute_sql'],
+        expectedCalls: [{tool: 'fetch_artifact'}, {tool: 'invoke_skill', skillId: 'scrolling_analysis'}]});
+      const blocked = await callTool(tools, 'update_plan_phase', {phaseId: 'p', status: 'completed'});
+      expect(blocked).toMatchObject({success: false, error: 'missing_phase_evidence',
+        missingCalls: [{tool: 'fetch_artifact'}, {tool: 'invoke_skill', skillId: 'scrolling_analysis'}, {tool: 'execute_sql'}]});
+    });
+
+    it.each([
+      {tool: 'invoke_skill'},
+      {tool: 'fetch_artifact', skillId: 'scrolling_analysis'},
+      {tool: 'lookup_strategy_detail'},
+      {},
+    ])('rejects invalid structured expectedTools without dropping their requirements: %j', async call => {
+      const {tools, analysisPlan} = createTestServer();
+      const result = await callTool(tools, 'submit_plan', {phases: [{id: 'p', name: 'Collect', goal: 'Read', expectedTools: [call]}],
+        successCriteria: 'Resolve'});
+      expect(result.success).toBe(false);
+      expect(analysisPlan.current).toBeNull();
+    });
+
+    it('normalizes structured expectedTools during revision without weakening existing calls', async () => {
+      const {tools, analysisPlan} = createTestServer();
+      const phase = {id: 'p', name: 'Collect', goal: 'Read', expectedCalls: [{tool: 'invoke_skill', skillId: 'scrolling_analysis'}]};
+      await callTool(tools, 'submit_plan', {phases: [phase], successCriteria: 'Resolve'});
+      const {expectedCalls, ...rest} = phase;
+      const revised = await callTool(tools, 'revise_plan', {reason: 'Retain obligation in compatible input shape',
+        updatedPhases: [{...rest, expectedTools: expectedCalls}]});
+      expect(revised.success).toBe(true);
+      expect(analysisPlan.current?.phases[0].expectedCalls).toEqual(expectedCalls);
+    });
+
     it('accepts JSON-string phases from OpenAI-compatible tool callers', async () => {
       const { tools, analysisPlan } = createTestServer();
       const result = await callTool(tools, 'submit_plan', {
@@ -6827,6 +6905,17 @@ describe('createClaudeMcpServer', () => {
       expect(result.unavailableExpectedSkills).toEqual([
         'p1.expectedCalls[0] references unavailable analysis skill "surfaceflinger_display_pipeline"',
       ]);
+      expect(analysisPlan.current).toBeNull();
+    });
+
+    it('applies the same unavailable-skill check to structured expectedTools', async () => {
+      const {tools, analysisPlan} = createTestServer();
+      (skillRegistry.getSkill as jest.MockedFunction<typeof skillRegistry.getSkill>).mockImplementationOnce(() => undefined);
+      const result = await callTool(tools, 'submit_plan', {phases: [{id: 'p', name: 'Collect', goal: 'Read',
+        expectedTools: [{tool: 'invoke_skill', skillId: 'surfaceflinger_display_pipeline'}]}], successCriteria: 'Resolve'});
+      expect(result.success).toBe(false);
+      expect(result.unavailableExpectedSkills).toEqual([
+        'p.expectedCalls[0] references unavailable analysis skill "surfaceflinger_display_pipeline"']);
       expect(analysisPlan.current).toBeNull();
     });
 
@@ -7423,6 +7512,31 @@ describe('createClaudeMcpServer', () => {
       expect(result).toMatchObject({success: false, error: 'missing_phase_evidence',
         missingCalls: [{tool: 'invoke_skill', skillId: 'scrolling_analysis'}, {tool: 'execute_sql'}]});
       expect(analysisPlan.current!.phases[0].status).toBe('pending');
+    });
+
+    it('lists only successful evidence calls from this phase without substituting them for missing obligations', async () => {
+      const {tools, analysisPlan} = createTestServer();
+      await callTool(tools, 'submit_plan', {phases: [{id: 'p', name: 'Collect', goal: 'Read',
+        expectedCalls: [{tool: 'invoke_skill', skillId: 'scrolling_analysis'}]}], successCriteria: 'Resolve'});
+      analysisPlan.current!.toolCallLog.push(
+        {toolName: 'execute_sql', toolCallId: 'ok', timestamp: 1, success: true, matchedPhaseId: 'p', inputSummary: 'PRIVATE_SQL'},
+        {toolName: 'execute_sql', toolCallId: 'failed', timestamp: 2, success: false, matchedPhaseId: 'p'},
+        {toolName: 'execute_sql', toolCallId: 'unknown', timestamp: 3, matchedPhaseId: 'p'},
+        {toolName: 'execute_sql', toolCallId: 'other', timestamp: 4, success: true, matchedPhaseId: 'other'},
+        {toolName: 'lookup_strategy_detail', toolCallId: 'info', timestamp: 5, success: true, matchedPhaseId: 'p'},
+      );
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const blocked = await callTool(tools, 'update_plan_phase', {phaseId: 'p', status: 'completed'});
+        expect(blocked).toMatchObject({success: false, error: 'missing_phase_evidence',
+          missingCalls: [{tool: 'invoke_skill', skillId: 'scrolling_analysis'}],
+          successfulPhaseCalls: [{tool: 'execute_sql', toolCallId: 'ok'}],
+          failedPhaseCalls: [{tool: 'execute_sql', toolCallId: 'failed'}]});
+        expect(JSON.stringify(blocked)).not.toContain('PRIVATE_SQL');
+        expect(analysisPlan.current?.phases[0].status).toBe('pending');
+      }
+      analysisPlan.current!.toolCallLog.push({toolName: 'invoke_skill', skillId: 'scrolling_analysis',
+        toolCallId: 'required', timestamp: 6, success: true, matchedPhaseId: 'p'});
+      expect((await callTool(tools, 'update_plan_phase', {phaseId: 'p', status: 'completed'})).success).toBe(true);
     });
 
     it.each(['not_applicable', 'evidence_unavailable', 'deferred'] as const)('records %s skips without manufacturing success', async kind => {

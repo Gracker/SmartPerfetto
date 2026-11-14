@@ -10,8 +10,24 @@ import {
   _getSymbolIndexForTesting,
 } from '../sqlIncludeInjector';
 import {analyzeSqlStdlibDependencies} from '../../services/sqlStdlibDependencyAnalyzer';
+import {loadPerfettoSqlDocsAsset} from '../../services/perfettoSqlDocs';
 
 describe('sqlIncludeInjector - happy paths', () => {
+  it('keeps every core schema card column grounded in the bundled processor docs', () => {
+    const guidance = fs.readFileSync(path.resolve(__dirname, '../../../strategies/knowledge-perfetto-sql.template.md'), 'utf8');
+    const docs = loadPerfettoSqlDocsAsset()!;
+    const relations = [...guidance.matchAll(/^\| ([a-z_]+) \| ([a-z_, ]+) \|$/gm)];
+    expect(relations.length).toBeGreaterThanOrEqual(8);
+    for (const [, relation, columns] of relations) {
+      const entry = docs.entries.find(item => item.name === relation && (item.type === 'table' || item.type === 'view'));
+      expect(entry).toBeDefined();
+      for (const column of columns.split(', ')) expect(entry?.columns?.map(item => item.name)).toContain(column);
+    }
+    const toolGuidance = fs.readFileSync(path.resolve(__dirname, '../../../strategies/prompt-sql-evidence-guidance.template.md'), 'utf8');
+    expect(toolGuidance).toContain('JOIN thread USING(utid), busy=thread.is_idle=0');
+    expect(guidance).toContain('s.track_id=tt.id JOIN thread t ON tt.utid=t.utid');
+  });
+
   it('injects slices.self_dur when SQL references slice_self_dur', () => {
     const { sql, injected } = injectStdlibIncludes(
       'SELECT id, self_dur FROM slice_self_dur ORDER BY self_dur DESC LIMIT 10'

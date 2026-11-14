@@ -5,6 +5,27 @@
 import { createRenderer, parseOutputFormat, parseTextJsonFormat } from '../renderer';
 
 describe('CLI renderer', () => {
+  test('prints the projected tool failure reason in default text mode without raw payloads', () => {
+    const reason = 'invoke_skill failed: Process identity could not be verified: status=unresolved, confidence=0';
+    const output = captureStdout(() => {
+      createRenderer({verbose: false, useColor: false, format: 'text'}).onEvent({
+        type: 'agent_response', timestamp: 1,
+        content: {isError: true, resultNarration: reason, result: 'PRIVATE_RAW_PAYLOAD'},
+      });
+    });
+    expect(output).toContain(reason);
+    expect(output).not.toContain('PRIVATE_RAW_PAYLOAD');
+  });
+
+  test('retains the explicitly requested verbose result preview after a failure summary', () => {
+    const output = captureStdout(() => {
+      createRenderer({verbose: true, useColor: false, format: 'text'}).onEvent({type: 'agent_response', timestamp: 1,
+        content: {isError: true, taskId: 'failed-call', resultNarration: 'tool failed', result: 'verbose result preview'}});
+    });
+    expect(output).toContain('tool failed');
+    expect(output).toContain('verbose result preview');
+  });
+
   test.each(['json', 'ndjson'] as const)('preserves scene report references in %s completion', format => {
     const sceneReport = {schemaVersion: 'scene_report_ref@1' as const, reportId: 'scene-v3-cli', sessionId: 'session',
       traceId: 'trace', runId: 'run', revision: 2, expiresAt: Date.now() + 60_000, manifestSha256: 'a'.repeat(64)};

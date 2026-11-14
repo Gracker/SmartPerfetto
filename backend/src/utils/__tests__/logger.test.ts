@@ -53,4 +53,33 @@ describe('privacy-safe SQL logging', () => {
     expect(diagnostic).toContain('code=process_exit');
     expect(diagnostic).not.toContain('query_error');
   });
+
+  it.each([
+    ['column', 'sched.is_idle', 'missing_column'],
+    ['table', 'surface_frame_timeline_slice', 'missing_table'],
+    ['function', 'APPROX_PERCENTILE', 'missing_function'],
+  ])('retains the missing %s identifier and hash without echoed SQL', (kind, identifier, code) => {
+    const message = ` --> query:1:8\n1 | SELECT 'PRIVATE_SQL_CANARY', ${identifier}\nerror: no such ${kind}: ${identifier}`;
+    const diagnostic = diagnosticLogIdentity(message, {domain: 'trace_processor', classifier: 'sql'});
+    expect(diagnostic).toContain(`code=${code} message=no such ${kind}: ${identifier}`);
+    expect(diagnostic).toMatch(/sha256=[a-f0-9]{16} bytes=\d+/);
+    expect(diagnostic).not.toMatch(/PRIVATE_SQL_CANARY|SELECT|query:|\n/);
+  });
+
+  it('retains a legacy normalized diagnosis while omitting the position suffix', () => {
+    const diagnostic = diagnosticLogIdentity('no such column: sched.is_idle (line 2, col 41)', {classifier: 'sql'});
+    expect(diagnostic).toContain('code=missing_column message=no such column: sched.is_idle');
+    expect(diagnostic).not.toContain('(line');
+    expect(diagnosticLogIdentity(`no such column: ${'x'.repeat(300)}`, {classifier: 'sql'})).not.toContain('message=');
+  });
+
+  it.each([
+    "no such column: 'PRIVATE_LITERAL'",
+    'no such column: name; PRIVATE_LITERAL',
+    'no such column: /PRIVATE_PATH',
+    'no such column: name\u001b[31mPRIVATE_LITERAL',
+    "syntax error near 'PRIVATE_LITERAL'",
+  ])('keeps non-identifier diagnosis text behind the hash: %s', message => {
+    expect(diagnosticLogIdentity(message, {classifier: 'sql'})).not.toMatch(/message=|PRIVATE/);
+  });
 });

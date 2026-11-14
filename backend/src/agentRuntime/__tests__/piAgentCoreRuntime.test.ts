@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals
 import { z } from 'zod';
 import type { StreamingUpdate } from '../../agent/types';
 import type { SessionStateSnapshot } from '../../agentv3/sessionStateSnapshot';
+import type {AnalysisPlanV3} from '../../agentv3/types';
+import type {SkillDefinition} from '../../services/skillEngine/types';
 import { sessionContextManager } from '../../agent/context/enhancedSessionContext';
 import {
   createPiAgentCoreToolFromSharedSpec,
@@ -906,6 +908,48 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(repaired).not.toHaveProperty('goal');
   });
 
+  it('keeps structured expectedTools through the real Pi adapter and shared phase gate', async () => {
+    const expected = {tool: 'invoke_skill', skillId: 'thread_system_summary_in_range'};
+    const skill = {name: expected.skillId, type: 'atomic', meta: {display_name: 'Fixture', description: 'Fixture'},
+      sql: 'SELECT 1'} as SkillDefinition;
+    const baseSnapshot = createEffectiveRuntimeRegistrySnapshot();
+    const snapshot = {...baseSnapshot, skillRegistry: {...baseSnapshot.skillRegistry,
+      getSkill: (id: string) => id === skill.name ? skill : undefined, getAllSkills: () => [skill]}};
+    await withEffectiveRuntimeRegistrySnapshot(snapshot, async () => {
+      const analysisPlan = {current: null as AnalysisPlanV3 | null};
+      const mcp = createClaudeMcpServer({traceId: 'trace-pi', traceProcessorService: createFakeTraceProcessorService(),
+        skillExecutor: {setRunManifestAttributionSink: jest.fn(), replaceRegisteredSkills: jest.fn(),
+          setFragmentRegistry: jest.fn()} as never, analysisPlan});
+      const adapt = (name: string) => createPiAgentCoreToolFromSharedSpec(
+        mcp.toolDefinitions.find(definition => definition.name === name)!.shared,
+        {allowedToolNames: new Set(mcp.toolDefinitions.map(definition => definition.name)), analysisPlan});
+      const submitted = await adapt('submit_plan').execute('submit', {phases: [{id: 'p', name: 'Probe', goal: 'Retain obligations',
+        expectedTools: [expected, 'execute_sql']}], successCriteria: 'Only actual successful calls count'}, undefined);
+      expect(readRuntimeToolResultFacts(submitted).success).toBe(true);
+      expect(analysisPlan.current?.phases[0]).toMatchObject({expectedTools: ['execute_sql'], expectedCalls: [expected]});
+      analysisPlan.current!.toolCallLog.push(
+        {toolName: 'execute_sql', toolCallId: 'sql-ok', timestamp: 1, success: true, matchedPhaseId: 'p'},
+        {toolName: 'invoke_skill', skillId: expected.skillId, toolCallId: 'identity-failed', timestamp: 2, success: false, matchedPhaseId: 'p'},
+      );
+      const result = await adapt('update_plan_phase').execute('complete', {phaseId: 'p', status: 'completed'}, undefined);
+      expect(JSON.parse(result.content[0].text)).toMatchObject({success: false, error: 'missing_phase_evidence',
+        missingCalls: [expected], successfulPhaseCalls: [{tool: 'execute_sql', toolCallId: 'sql-ok'}],
+        failedPhaseCalls: [{...expected, toolCallId: 'identity-failed'}]});
+      expect(analysisPlan.current?.phases[0].status).not.toBe('completed');
+      const skipped = await adapt('update_plan_phase').execute('skip', {phaseId: 'p', status: 'skipped',
+        skipDisposition: {kind: 'evidence_unavailable', failureToolCallIds: ['identity-failed']}}, undefined);
+      expect(JSON.parse(skipped.content[0].text)).toMatchObject({success: true, unresolvedExpectations: [
+        {phaseId: 'p', missingExpectedCalls: [expected]},
+      ]});
+    });
+  });
+
+  it('retains invalid structured plan entries for shared validation rather than silently dropping them', () => {
+    const invalid = {tool: 'invoke_skill', skillId: {invalid: true}};
+    const repaired = repairPiAgentCoreSubmitPlanArgs({expectedTools: [invalid], phases: [{id: 'p'}]});
+    expect((repaired.phases as Array<{expectedTools: unknown[]}>)[0].expectedTools).toEqual([invalid]);
+  });
+
   it('fails closed when a shared tool is not request-allowed', () => {
     expect(() => createPiAgentCoreToolFromSharedSpec(createSharedSpec(), {
       allowedToolNames: new Set(['other_tool']),
@@ -953,6 +997,19 @@ describe('experimental Pi agent-core runtime contract', () => {
       taskId: 'call-1',
       result: 'ok',
     });
+  });
+
+  it('retains identity status and confidence in the bounded stream and shared narration', () => {
+    const error = 'Process identity could not be verified for skill "thread_system_summary_in_range": status=unresolved, confidence=0';
+    const update = projectPiAgentCoreEventToStreamingUpdate({type: 'tool_execution_end',
+      toolName: 'invoke_skill', toolCallId: 'identity-refusal',
+      result: createRuntimeToolResult({success: false, skillId: 'thread_system_summary_in_range', error,
+        parameterContract: {description: 'x'.repeat(3000)}})});
+    const content = update?.content as {result: string; resultNarration: string; isError: boolean};
+    expect(content.isError).toBe(true);
+    expect(content.result).toContain('status=unresolved, confidence=0');
+    expect(content.result.length).toBeLessThanOrEqual(1203);
+    expect(content.resultNarration).toContain(error);
   });
 
   it('projects recoverable Pi tool failures as agent responses instead of top-level SSE errors', () => {

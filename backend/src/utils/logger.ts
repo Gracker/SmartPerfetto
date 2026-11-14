@@ -81,12 +81,25 @@ export function diagnosticLogIdentity(
         ? 'missing_table'
         : normalized.includes('no such column')
           ? 'missing_column'
+          : normalized.includes('no such function')
+            ? 'missing_function'
           : normalized.includes('syntax') || normalized.includes('parse')
             ? 'syntax'
             : 'query_error';
   }
   const domain = stableDiagnosticToken(context.domain, context.classifier === 'sql' ? 'sql' : 'generic');
-  return `domain=${domain} code=${code} sha256=${hash} bytes=${Buffer.byteLength(message, 'utf8')}`;
+  // Only an anchored schema diagnosis with a bare SQL identifier is safe to
+  // retain. SQL excerpts, quoted literals, paths and arbitrary native errors
+  // stay behind the hash; the first line often contains the query itself.
+  const diagnosisLines = message.trim().split(/\r?\n/);
+  const diagnosis = diagnosisLines[diagnosisLines.length - 1] ?? '';
+  const schemaError = context.classifier === 'sql' && diagnosis.length <= 256
+    ? /^(?:error:\s*)?no such (column|table|function):\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)(?: \(line \d+, col \d+\))?$/i
+      .exec(diagnosis)
+    : null;
+  if (schemaError && context.code === undefined) code = `missing_${schemaError[1].toLowerCase()}`;
+  const detail = schemaError ? ` message=no such ${schemaError[1].toLowerCase()}: ${schemaError[2]}` : '';
+  return `domain=${domain} code=${code}${detail} sha256=${hash} bytes=${Buffer.byteLength(message, 'utf8')}`;
 }
 
 export const logger = {

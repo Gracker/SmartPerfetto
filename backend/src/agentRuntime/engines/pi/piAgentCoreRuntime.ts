@@ -1117,11 +1117,11 @@ interface PiRunWorkControl {
   checkpoint(factory: () => AnalysisResult): void;
 }
 
-function normalizeStringArray(value: unknown): string[] | undefined {
+function normalizePlanExpectedTools(value: unknown): unknown[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const items = value
-    .map(item => typeof item === 'string' ? item.trim() : '')
-    .filter(Boolean);
+    .map(item => typeof item === 'string' ? item.trim() : item)
+    .filter(item => typeof item !== 'string' || item.length > 0);
   return items.length > 0 ? items : undefined;
 }
 
@@ -1129,7 +1129,7 @@ export function repairPiAgentCoreSubmitPlanArgs(args: Record<string, unknown>): 
   if (!Array.isArray(args.phases)) return args;
 
   const rootGoal = typeof args.goal === 'string' ? args.goal.trim() : undefined;
-  const rootExpectedTools = normalizeStringArray(args.expectedTools);
+  const rootExpectedTools = normalizePlanExpectedTools(args.expectedTools);
   const phases = args.phases.map((phase, index) => {
     const source = phase && typeof phase === 'object' && !Array.isArray(phase)
       ? phase as Record<string, unknown>
@@ -1149,7 +1149,9 @@ export function repairPiAgentCoreSubmitPlanArgs(args: Record<string, unknown>): 
       id,
       name,
       goal: goal || name,
-      expectedTools: normalizeStringArray(source.expectedTools) ?? rootExpectedTools ?? [],
+      // Preserve structured/invalid entries for the shared plan validator;
+      // filtering to strings would silently erase skill-scoped obligations.
+      expectedTools: normalizePlanExpectedTools(source.expectedTools) ?? rootExpectedTools ?? [],
       ...(source.expectedCalls !== undefined || args.expectedCalls !== undefined
         ? { expectedCalls: source.expectedCalls ?? args.expectedCalls }
         : {}),

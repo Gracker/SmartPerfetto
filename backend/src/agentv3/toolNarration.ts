@@ -7,6 +7,7 @@ import { normalizeWaitChainSelectors } from '../services/criticalPathSelectors';
 import { waitClassText } from '../services/criticalPathText';
 import { KNOWLEDGE_REFUSAL_ACTIONS, KNOWLEDGE_TOOL_NAMES, knowledgeResultShape } from '../services/knowledge/knowledgeTools';
 import { DEFAULT_OUTPUT_LANGUAGE, localize, type OutputLanguage } from './outputLanguage';
+import {diagnosticLogIdentity} from '../utils/logger';
 import type { TracePaneSide, TracePairContext, TraceSource } from './types';
 
 const MCP_PREFIX = 'mcp__smartperfetto__';
@@ -1086,7 +1087,13 @@ function narrateToolFailure(
   body: Record<string, unknown>,
   language: OutputLanguage,
 ): string {
-  const detail = readErrorText(body);
+  const rawDetail = readErrorText(body);
+  // The default CLI now shows failed outcomes. Native SQL errors may echo
+  // literals or source snippets; use the same bounded diagnosis as the log.
+  // Typed policy actions and machine codes keep their existing repair text.
+  const sqlDiagnostic = (toolName === 'execute_sql' || toolName === 'execute_sql_on') && rawDetail &&
+    !readString(body.action_required) && !/^[a-z][a-z0-9_]*$/.test(rawDetail);
+  const detail = sqlDiagnostic ? diagnosticLogIdentity(rawDetail, {domain: 'trace_processor', classifier: 'sql'}) : rawDetail;
   return shorten(detail
     ? localize(language, `${toolName} 失败：${detail}`, `${toolName} failed: ${detail}`)
     : localize(language, `${toolName} 失败`, `${toolName} failed`));

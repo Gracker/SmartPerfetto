@@ -80,6 +80,8 @@ export interface ArtifactSummary extends EvidenceScopeMetadata {
   rowCount: number;
   columns: string[];
   sampleRow?: any[];
+  /** Exact seconds for the same sample row, only from live issued ns units. */
+  sampleTimeSeconds?: Record<string, string>;
   diagnosticCount: number;
   planPhaseId?: string;
   planPhaseTitle?: string;
@@ -285,6 +287,7 @@ export interface CompactArtifactSummary extends EvidenceScopeMetadata {
   rowCount: number;
   /** First row as {column: value} object — self-describing, no separate columns array needed. */
   preview?: Record<string, any>;
+  previewTimeSeconds?: Record<string, string>;
   /** Only present when diagnostics exist (> 0). */
   diagnosticCount?: number;
   /** Origin phase for explaining why this artifact/table exists. */
@@ -306,6 +309,28 @@ export interface CompactArtifactSummary extends EvidenceScopeMetadata {
 const captureOriginRuns = new WeakMap<EvidenceTableWitness, string | undefined>();
 
 export const EVIDENCE_RETENTION_CELLS_ENV = 'SMARTPERFETTO_EVIDENCE_RETENTION_CELLS';
+
+/** Display only: preserve raw cells, their clock basis, and unfinished dur=-1. */
+function timeSecondsForRow(columns: readonly string[], row: readonly unknown[],
+  units: Readonly<Record<string, string>> | undefined): Record<string, string> | undefined {
+  if (!units) return undefined;
+  const entries = columns.flatMap((column, index) => {
+    const value = row[index];
+    if (units[column] !== 'ns' || typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) return [];
+    const ns = BigInt(value);
+    const fraction = (ns % 1_000_000_000n).toString().padStart(9, '0').replace(/0+$/, '');
+    return [[column, `${ns / 1_000_000_000n}${fraction ? `.${fraction}` : ''}`]];
+  });
+  return entries.length ? Object.fromEntries(entries) : undefined;
+}
+
+function timeSecondsForRows(columns: readonly string[], rows: readonly (readonly unknown[])[],
+  units: Readonly<Record<string, string>> | undefined, offset = 0) {
+  return rows.flatMap((row, index) => {
+    const seconds = timeSecondsForRow(columns, row, units);
+    return seconds ? [{rowIndex: offset + index, seconds}] : [];
+  });
+}
 
 /**
  * Retained witnesses are bounded by cells — columns x rows — because a witness
@@ -565,6 +590,7 @@ export class ArtifactStore {
     const columns: string[] = data?.columns || [];
     const rows: any[][] = data?.rows || [];
     const evidenceMetadata = projectModelEvidenceMetadata(data, this.executionCaptures.get(id)?.witness);
+    const sampleTimeSeconds = rows[0] && timeSecondsForRow(columns, rows[0], evidenceMetadata.columnUnits);
 
     return {
       id: artifact.id,
@@ -575,6 +601,7 @@ export class ArtifactStore {
       rowCount: rows.length,
       columns,
       sampleRow: rows.length > 0 ? rows[0] : undefined,
+      ...(sampleTimeSeconds ? {sampleTimeSeconds} : {}),
       diagnosticCount: Array.isArray(artifact.diagnostics) ? artifact.diagnostics.length : 0,
       planPhaseId: artifact.planPhaseId,
       planPhaseTitle: artifact.planPhaseTitle,
@@ -820,6 +847,7 @@ export class ArtifactStore {
       title: full.title,
       rowCount: full.rowCount,
       ...(preview ? { preview } : {}),
+      ...(full.sampleTimeSeconds ? {previewTimeSeconds: full.sampleTimeSeconds} : {}),
       ...(full.diagnosticCount > 0 ? { diagnosticCount: full.diagnosticCount } : {}),
       ...(full.planPhaseId ? { planPhaseId: full.planPhaseId } : {}),
       ...(full.planPhaseTitle ? { planPhaseTitle: full.planPhaseTitle } : {}),
@@ -858,11 +886,14 @@ export class ArtifactStore {
           MODEL_ROW_PAGE_MAX_BYTES);
         const nextOffset = effectiveOffset + pagedRows.length;
         const hasMore = nextOffset < totalRows;
+        const rowTimeSeconds = timeSecondsForRows(artifact.data?.columns || [], pagedRows,
+          evidenceMetadata.columnUnits, effectiveOffset);
         return {
           id: artifact.id,
           columns: artifact.data?.columns || [],
           rowShape: INDEXED_ROW_SHAPE,
           rows: indexEvidenceRows(pagedRows, effectiveOffset),
+          ...(rowTimeSeconds.length ? {rowTimeSeconds} : {}),
           totalRows,
           offset: effectiveOffset,
           limit: effectiveLimit,
@@ -896,6 +927,7 @@ export class ArtifactStore {
         const fullRows: any[][] = artifact.data?.rows || [];
         const returnedRows = rowsWithinByteBudget(fullRows.slice(0, ArtifactStore.MAX_FULL_ROWS), MODEL_ROW_PAGE_MAX_BYTES);
         const truncatedFull = returnedRows.length < fullRows.length;
+        const rowTimeSeconds = timeSecondsForRows(artifact.data?.columns || [], returnedRows, evidenceMetadata.columnUnits);
         const cappedData = truncatedFull
           ? { ...artifact.data, rows: returnedRows }
           : artifact.data;
@@ -906,6 +938,7 @@ export class ArtifactStore {
           layer: artifact.layer,
           title: artifact.title,
           data: cappedData,
+          ...(rowTimeSeconds.length ? {rowTimeSeconds} : {}),
           diagnostics: artifact.diagnostics,
           planPhaseId: artifact.planPhaseId,
           planPhaseTitle: artifact.planPhaseTitle,

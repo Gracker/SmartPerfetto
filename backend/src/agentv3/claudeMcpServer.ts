@@ -674,7 +674,6 @@ type NormalizedPlanPhaseToolInput = Omit<PlanPhase, 'status'> & {
   status?: PlanPhase['status'];
 };
 
-const PLAN_STRING_ARRAY_OR_STRING_SCHEMA = z.array(z.union([z.string(), z.number()]));
 const PLAN_SKILL_SCOPED_EXPECTED_CALL_TOOL_NAMES = ['invoke_skill', 'compare_skill'] as const;
 const PLAN_EXPECTED_CALL_ARG_SCHEMA = z.union([
   z.string(),
@@ -691,7 +690,8 @@ const PLAN_PHASE_ARG_SCHEMA = z.object({
   id: z.union([z.string(), z.number()]),
   name: z.union([z.string(), z.number()]),
   goal: z.union([z.string(), z.number()]),
-  expectedTools: PLAN_STRING_ARRAY_OR_STRING_SCHEMA.optional(),
+  expectedTools: z.array(z.union([PLAN_EXPECTED_CALL_ARG_SCHEMA, z.number()])).optional()
+    .describe('Tool names; structured objects are accepted and normalized to expectedCalls. Prefer expectedCalls for skillId-scoped requirements.'),
   expectedCalls: PLAN_EXPECTED_CALLS_ARG_SCHEMA.optional(),
   status: z.string().optional(),
 }).strict();
@@ -904,7 +904,15 @@ function parseExpectedCallsInput(input: unknown): unknown[] | null {
 }
 
 function readExpectedCallsInput(input: PlanPhaseToolInput): unknown {
-  return collectMeaningfulAliasedValues(input, EXPECTED_CALLS_FIELD_ALIASES)[0];
+  const calls = collectMeaningfulAliasedValues(input, EXPECTED_CALLS_FIELD_ALIASES)[0];
+  const toolCalls = readExpectedToolCalls(input);
+  return toolCalls.length > 0 ? [...(parseExpectedCallsInput(calls) ?? []), ...toolCalls] : calls;
+}
+
+/** Keep every structured obligation, including malformed ones for validation. */
+function readExpectedToolCalls(input: PlanPhaseToolInput): unknown[] {
+  const tools = parseToolArrayInput<unknown>(readAliasedField(input, ['expectedTools', 'expected_tools'])) ?? [];
+  return tools.filter(value => value !== null && typeof value === 'object');
 }
 
 function collectExpectedCallShapeErrors(input: PlanPhaseToolInput, phaseIndex: number): string[] {
@@ -963,7 +971,10 @@ function collectExpectedCallShapeErrors(input: PlanPhaseToolInput, phaseIndex: n
 }
 
 function collectPlanExpectedCallShapeErrors(inputs: PlanPhaseToolInput[]): string[] {
-  return inputs.flatMap((input, index) => collectExpectedCallShapeErrors(input, index));
+  return inputs.flatMap((input, index) => [
+    ...collectExpectedCallShapeErrors(input, index),
+    ...collectExpectedCallShapeErrors({...input, expectedCalls: readExpectedToolCalls(input), expected_calls: undefined}, index),
+  ]);
 }
 
 function normalizeExpectedCallsInput(input: unknown): PlanPhase['expectedCalls'] | undefined {
@@ -1256,6 +1267,15 @@ function sqlSchemaEntryView(entry: Record<string, unknown>, source: SqlSchemaSou
   return {...(full ? entry : {name: entry.name, type: entry.type, module: entry.module,
     description: entry.description, include: entry.include, requiredMetric: entry.requiredMetric}),
     source, locator, detail: full ? 'full' : 'catalog', detailAvailable: true};
+}
+
+/** Derived display cells have the same row-access boundary as their preview. */
+function omitArtifactRowPreview<T extends {
+  sampleRow?: unknown; preview?: unknown; sampleTimeSeconds?: unknown; previewTimeSeconds?: unknown;
+}>(value: T) {
+  const {sampleRow: _row, preview: _preview, sampleTimeSeconds: _sampleSeconds,
+    previewTimeSeconds: _previewSeconds, ...withoutRows} = value;
+  return withoutRows;
 }
 
 function previewFromColumnarData(data: any): Record<string, any> | undefined {
@@ -2994,8 +3014,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
                 action_required: 'retry_invoke_skill_with_process_selector' });
             case 'identity_gate':
               return createRuntimeToolResult({ success: false, skillId,
-                parameterContract,
-                error: refusal.error, action_required: 'choose_supported_exact_skill_or_correct_process_selector' });
+                error: refusal.error, action_required: 'choose_supported_exact_skill_or_correct_process_selector',
+                parameterContract });
             case 'undeclared_params_after_resolution':
               return {
                 content: [{
@@ -3061,7 +3081,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           onDisplayArtifactStored: ({artifactId: artId, evidenceRefId, modelProjection}) => {
             const storedSummary = artifactStore!.generateCompactSummary(artId);
             const summary = storedSummary && artifactAccessPolicy.forbidRows
-              ? (({preview: _preview, ...rowFreeSummary}) => rowFreeSummary)(storedSummary)
+              ? omitArtifactRowPreview(storedSummary)
               : storedSummary;
             const preview = artifactAccessPolicy.forbidRows
               ? undefined
@@ -3196,8 +3216,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           const lightweightArtifacts = previewIndexes
             ? artifacts?.map((summary, index) => {
                 if (previewIndexes.has(index)) return summary;
-                const {preview: _preview, ...locator} = summary;
-                return {...locator, previewOmitted: true};
+                return {...omitArtifactRowPreview(summary), previewOmitted: true};
               })
             : artifacts;
           return createRuntimeToolResult({
@@ -4123,7 +4142,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         ? buildActivePhaseReminder(analysisPlanRef?.current, options.sceneType, strategyRegistry)
         : '';
       const responseResult = result && effectiveDetail === 'summary' && artifactAccessPolicy.forbidRows
-        ? (({sampleRow: _sampleRow, preview: _preview, ...rowFreeResult}) => rowFreeResult)(result)
+        ? omitArtifactRowPreview(result)
         : result;
       const resultNotes = options.skillResultNotes?.notesForArtifact(artifactId, fetchedArtifactColumns(result));
       const payload = {
@@ -6294,13 +6313,23 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       if (nextStatus === 'completed' && !evidence.satisfied) {
         const missingCalls = [...evidence.missingExpectedCalls,
           ...evidence.missingExpectedTools.map(tool => ({tool}))];
+        // Observed calls are context, never substitutes for a declared call.
+        // Omit arguments and model-authored summaries from this repair hint.
+        const phaseCalls = plan.toolCallLog
+          .filter(call => call.matchedPhaseId === phaseId && isEvidenceCapableToolName(call.toolName));
+        const callHint = (call: ToolCallRecord) => ({tool: shortExpectedToolName(call.toolName),
+          ...(call.skillId ? {skillId: call.skillId} : {}), ...(call.toolCallId ? {toolCallId: call.toolCallId} : {})});
+        const successfulPhaseCalls = phaseCalls.filter(call => call.success === true).map(callHint);
+        const failedPhaseCalls = phaseCalls.filter(call => call.success === false && call.toolCallId).map(callHint);
         return createRuntimeToolResult({
           success: false, error: 'missing_phase_evidence', action_required: evidence.missingExpectedTools.length > 0
             ? 'run_expected_tools_before_completing_phase' : 'run_expected_calls_before_completing_phase',
           missingCalls,
+          successfulPhaseCalls,
+          failedPhaseCalls,
           message: localize(outputLanguage,
-            '仍缺少成功且归属本阶段的调用；按 missingCalls 补齐后再完成阶段。',
-            'Successful calls attributed to this phase are still missing; satisfy every entry in missingCalls before completing it.'),
+            '按 missingCalls 补齐。successfulPhaseCalls 不自动替代缺失项；若证据确实不可用，可用 failedPhaseCalls 中对应失败的 toolCallId 作 evidence_unavailable 跳过凭证，保留未解决义务。',
+            'Satisfy missingCalls. successfulPhaseCalls does not replace missing requirements. If evidence is unavailable, use the corresponding failedPhaseCalls toolCallId for an evidence_unavailable skip; unresolved obligations remain.'),
           phaseId, missingExpectedCalls: evidence.missingExpectedCalls, missingExpectedTools: evidence.missingExpectedTools,
           ...(evidence.missingExpectedTools.length ? {expectedTools: evidence.missingExpectedTools} : {}),
         }, {isError: true});

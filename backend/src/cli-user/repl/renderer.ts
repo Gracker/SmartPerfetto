@@ -148,6 +148,12 @@ export function createRenderer(opts: RendererOptions): Renderer {
         return;
       }
       case 'agent_response': {
+        // Use the shared, privacy-projected outcome rather than parsing the
+        // transport preview (which can end halfway through JSON).
+        if (content.isError === true && typeof content.resultNarration === 'string' && content.resultNarration.trim()) {
+          console.log(`${yellow('!')} ${content.resultNarration}`);
+          if (!opts.verbose) return;
+        }
         if (!opts.verbose) return;
         const taskId = String(content.taskId || '');
         const resStr = typeof content.result === 'string'
