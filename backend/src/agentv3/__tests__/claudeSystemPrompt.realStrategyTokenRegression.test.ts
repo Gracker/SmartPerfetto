@@ -197,6 +197,10 @@ describe('typed prompt with real strategy assets', () => {
       'trace_context', 'trace_completeness', 'focus_app_guidance']) {
       expect(parts.segments.some(segment => segment.label === label)).toBe(true);
     }
+    // The SQL quick card must not evict comparison/pattern context retained before it grew.
+    for (const label of ['comparison_details', 'pattern_context']) {
+      expect(parts.segments.some(segment => segment.label === label)).toBe(true);
+    }
     expect(parts.droppedLabels).not.toContain('knowledge_use');
     expect(parts.droppedLabels).not.toContain('knowledge_authorization');
     for (const label of ['knowledge_authorization', 'knowledge_use']) {

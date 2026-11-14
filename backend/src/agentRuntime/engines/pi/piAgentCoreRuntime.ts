@@ -504,6 +504,12 @@ function buildPiTimeoutResult(input: {
   };
 }
 
+class PiProviderIdleTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`Pi Agent Core provider stream idle timeout after ${timeoutMs}ms`);
+  }
+}
+
 function createPiProviderIdleSupervisor(input: {
   sessionId: string;
   timeoutMs: number;
@@ -511,8 +517,8 @@ function createPiProviderIdleSupervisor(input: {
   abort: () => void;
 }): {
   readonly promise: Promise<never>;
+  readonly timeoutError: PiProviderIdleTimeoutError | undefined;
   start(): void;
-  pause(): void;
   clear(): void;
   onEvent(event: PiAgentCoreEvent): void;
 } {
@@ -520,6 +526,7 @@ function createPiProviderIdleSupervisor(input: {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let rejectTimeout: ((error: Error) => void) | undefined;
   let settled = false;
+  let timeoutError: PiProviderIdleTimeoutError | undefined;
   const promise = new Promise<never>((_, reject) => {
     rejectTimeout = reject;
   });
@@ -535,19 +542,17 @@ function createPiProviderIdleSupervisor(input: {
       if (settled) return;
       settled = true;
       timer = undefined;
+      timeoutError = new PiProviderIdleTimeoutError(input.timeoutMs);
       input.markTimeout('stream_idle', input.timeoutMs);
+      // Publish the cause before abort can synchronously settle the SDK prompt.
+      rejectTimeout?.(timeoutError);
       input.abort();
-      rejectTimeout?.(new Error(
-        `Pi Agent Core provider stream idle timeout after ${input.timeoutMs}ms`,
-      ));
     }, input.timeoutMs);
   };
   return {
     promise,
+    get timeoutError() { return timeoutError; },
     start: schedule,
-    pause: () => {
-      clearTimer();
-    },
     clear: () => {
       settled = true;
       clearTimer();
@@ -1097,15 +1102,21 @@ async function runPiProviderPromptWithSupervision(input: {
   void abort.promise.catch(() => undefined);
   try {
     await Promise.race([promptPromise, input.providerIdle.promise, abort.promise]);
-    input.providerIdle.pause();
+    if (input.providerIdle.timeoutError) throw input.providerIdle.timeoutError;
   } catch (error) {
     input.agent.abort();
-    input.providerIdle.pause();
+    input.providerIdle.clear();
+    if (error instanceof PiProviderIdleTimeoutError && !workSignal.aborted) {
+      const cleanedUp = await joinPiPromptCleanup(promptPromise, input.abortJoinTimeoutMs);
+      // Never overlap a retry/successor with a provider that ignored abort.
+      if (!cleanedUp) input.executionLease.abort(error);
+    }
     if (workSignal.aborted) {
       await promptPromise.catch(() => undefined);
     }
     throw error;
   } finally {
+    input.providerIdle.clear();
     abort.clear();
   }
 }
@@ -1467,6 +1478,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         : result.success === false ? 'error' : 'ok';
       return result;
     } catch (error) {
+      if (error instanceof PiProviderIdleTimeoutError) markTimeout('stream_idle', error.timeoutMs);
       runtimePerformanceOutcome = runtimeOutcomeFromError(
         error,
         executionLease.signal,
@@ -1947,57 +1959,74 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     this.activeAgents.set(sessionId, agent);
     work.setAgent(agent);
     supplements?.bindAgent(agent);
-    const providerIdle = createPiProviderIdleSupervisor({
-      sessionId, timeoutMs: streamIdleTimeoutMs, markTimeout,
-      abort: () => {
-        void this.executionGuard.abortSession(sessionId,
-          new Error(`Pi Agent Core provider stream idle timeout after ${streamIdleTimeoutMs}ms`)).catch(() => undefined);
-        agent.abort();
-      },
-    });
-    void providerIdle.promise.catch(() => undefined);
+    let providerIdle: ReturnType<typeof createPiProviderIdleSupervisor> | undefined;
     const runProviderPrompt = async (prompt: string, turnLimit = turnBudget.acquisitionTurns) => {
       work.assertActive();
       if (rounds >= turnLimit) { budgetStop = 'turn_limit'; return undefined; }
       providerTurnLimit = turnLimit;
       const boundary = agent.state.messages?.length ?? 0;
       const attemptId = `${++attempt}`;
-      const beforeRounds = rounds;
       // A correction is delivered whole by the final conclusion, never as a draft.
       draftController.beginAttempt(correctionInProgress ? SILENT_ANSWER_DRAFT : createProjectedAnswerDraft(answerDraft,
         privateAnalysisContext ? createCodeAwareStreamingTextProjection(sessionId, `pi-answer-${attemptId}`, 'owner') : undefined));
-      try {
-        for (let resume = false; ; resume = true) {
+      for (let resume = false; ; resume = true) {
+        const beforeTurn = rounds;
+        let idleFailure: PiProviderIdleTimeoutError | undefined;
+        providerIdle = createPiProviderIdleSupervisor({sessionId, timeoutMs: streamIdleTimeoutMs,
+          // An idle attempt is not a run timeout until retries are ruled out.
+          markTimeout: () => undefined, abort: () => agent.abort()});
+        void providerIdle.promise.catch(() => undefined);
+        try {
           await runPiProviderPromptWithSupervision({agent, prompt, resume, providerIdle, executionLease,
             workSignal: work.signal, abortJoinTimeoutMs});
-          const held = heldTransientErrors;
-          heldTransientErrors = [];
-          const messages = agent.state.messages ?? [];
-          const failure = messages.length > boundary ? classifyFailedTurn(messages[messages.length - 1]) : undefined;
-          // A failed request can still be billed. Neither a retry nor a
-          // context-overflow closeout may spend beyond the remaining cost cap.
-          if (failure && maxBudgetUsd > 0 && spentUsd >= maxBudgetUsd) { budgetStop = 'budget_limit'; break; }
-          // A request past the window is the context budget running out, closed out like one.
-          if (failure === 'context_overflow') { budgetStop = 'context_limit'; break; }
-          const backoffMs = PI_TRANSIENT_TURN_RETRY_BASE_MS * 2 ** transientTurnRetries;
-          if (!agent.continue || failure !== 'transient' || transientTurnRetries >= PI_MAX_TRANSIENT_TURN_RETRIES
-            || budgetStop || rounds >= turnLimit || Date.now() + backoffMs >= getRunDeadlineMs()) {
-            for (const update of held) this.emit('update', update);
-            break;
-          }
-          transientTurnRetries++;
-          // Drop the failed reply: the next request re-sends the transcript that preceded it.
-          agent.state.messages = messages.slice(0, -1);
-          logger.warn('PiAgentCoreRuntime', `Provider turn failed in transport; re-sending it (${transientTurnRetries}/${PI_MAX_TRANSIENT_TURN_RETRIES}) in ${backoffMs}ms`);
-          this.emit('update', {type: 'progress', content: {module: 'pi-agent-core', message: localize(outputLanguage,
-            `模型服务连接中断，${Math.round(backoffMs / 1000)}s 后重发本轮 (${transientTurnRetries}/${PI_MAX_TRANSIENT_TURN_RETRIES})...`,
-            `The model provider connection dropped. Re-sending this turn in ${Math.round(backoffMs / 1000)}s (${transientTurnRetries}/${PI_MAX_TRANSIENT_TURN_RETRIES})...`)},
-          timestamp: Date.now()});
-          await delay(backoffMs, undefined, {signal: work.signal});
+        } catch (error) {
+          if (!(error instanceof PiProviderIdleTimeoutError)) throw error;
+          idleFailure = error;
+        } finally {
+          providerIdle.clear();
+          providerIdle = undefined;
+          // Every attempted provider turn consumes budget, even without turn_end.
+          if (rounds === beforeTurn) rounds++;
         }
-      } finally {
-        // An attempted provider turn consumes budget even if it fails.
-        if (rounds === beforeRounds) rounds++;
+        executionLease.throwIfAborted();
+        work.signal.throwIfAborted();
+        const held = heldTransientErrors;
+        heldTransientErrors = [];
+        const messages = agent.state.messages ?? [];
+        const last = messages.length > boundary ? messages[messages.length - 1] as
+          {role?: string; stopReason?: string} : undefined;
+        const failure = idleFailure ? 'transient' : classifyFailedTurn(last);
+        // A failed request can still be billed; retries cannot reset the cost cap.
+        if (failure && maxBudgetUsd > 0 && spentUsd >= maxBudgetUsd && !idleFailure) { budgetStop = 'budget_limit'; break; }
+        if (failure === 'context_overflow') { budgetStop = 'context_limit'; break; }
+        // A local abort may leave no terminal message. Retain completed tool/user turns;
+        // remove only an aborted/error assistant, never an executed tool-call turn.
+        const dropFailedReply = last?.role === 'assistant'
+          && (last.stopReason === 'error' || last.stopReason === 'aborted');
+        const resumeMessages = dropFailedReply ? messages.slice(0, -1) : messages;
+        const resumeLast = resumeMessages[resumeMessages.length - 1] as {role?: string} | undefined;
+        const canResume = !idleFailure || resumeLast?.role === 'user' || resumeLast?.role === 'toolResult';
+        const backoffMs = PI_TRANSIENT_TURN_RETRY_BASE_MS * 2 ** transientTurnRetries;
+        if (!agent.continue || failure !== 'transient' || !canResume
+          || transientTurnRetries >= PI_MAX_TRANSIENT_TURN_RETRIES || budgetStop || rounds >= turnLimit
+          || maxBudgetUsd > 0 && spentUsd >= maxBudgetUsd || Date.now() + backoffMs >= getRunDeadlineMs()) {
+          for (const update of held) this.emit('update', update);
+          if (idleFailure) {
+            markTimeout('stream_idle', idleFailure.timeoutMs);
+            executionLease.abort(idleFailure);
+            throw idleFailure;
+          }
+          break;
+        }
+        transientTurnRetries++;
+        if (dropFailedReply) agent.state.messages = resumeMessages;
+        draftController.boundary();
+        logger.warn('PiAgentCoreRuntime', `Provider turn failed in ${idleFailure ? 'stream idle' : 'transport'}; re-sending it (${transientTurnRetries}/${PI_MAX_TRANSIENT_TURN_RETRIES}) in ${backoffMs}ms`);
+        this.emit('update', {type: 'progress', content: {module: 'pi-agent-core', message: localize(outputLanguage,
+          `模型服务连接中断，${Math.round(backoffMs / 1000)}s 后重发本轮 (${transientTurnRetries}/${PI_MAX_TRANSIENT_TURN_RETRIES})...`,
+          `The model provider connection dropped. Re-sending this turn in ${Math.round(backoffMs / 1000)}s (${transientTurnRetries}/${PI_MAX_TRANSIENT_TURN_RETRIES})...`)},
+        timestamp: Date.now()});
+        await delay(backoffMs, undefined, {signal: work.signal});
       }
       executionLease.throwIfAborted();
       work.signal.throwIfAborted();
@@ -2017,7 +2046,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       isActive: () => acceptingProviderEvents && !work.signal.aborted});
     const unsubscribe = agent.subscribe(event => {
       if (!acceptingProviderEvents || work.signal.aborted) return;
-      providerIdle.onEvent(event);
+      providerIdle?.onEvent(event);
       supplements?.onEvent(event);
       draftController.onEvent(event);
       if (event.type === 'turn_end') rounds++;
@@ -2027,7 +2056,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       const update = projectPiAgentCoreEventToStreamingUpdate(event, Date.now(), outputLanguage);
       if (correctionInProgress && update?.type === 'error') return;
       // Held until the run decides: a re-sent or overflowed turn is not a run error.
-      if (update?.type === 'error' && classifyFailedTurn((event as {message?: unknown}).message)) {
+      if (update?.type === 'error' && (providerIdle?.timeoutError || classifyFailedTurn((event as {message?: unknown}).message))) {
         heldTransientErrors.push(update);
         return;
       }
@@ -2192,7 +2221,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       draftController.dispose();
       toolAdmissionsOpen = false;
       investigation.dispose();
-      providerIdle.clear();
+      providerIdle?.clear();
       unsubscribe();
       if (this.activeAgents.get(sessionId) === agent) this.activeAgents.delete(sessionId);
     }

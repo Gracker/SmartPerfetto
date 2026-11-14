@@ -401,6 +401,11 @@ SDK 的重试一致，并遵守 `Retry-After` 上限；显式指定次数的单�
 每次计入轮次，并受原轮次预算和截止时间约束；失败回合若已计费并耗尽费用预算，不再重发或收尾。
 这一轮的错误事件先暂存，不重发时才推送。整体截止时间已到的运行不重试。
 
+provider 流连续无事件的 idle 超时与整体请求截止时间分开：默认 300000ms，可通过
+`SMARTPERFETTO_PI_AGENT_CORE_STREAM_IDLE_TIMEOUT_MS`（回退 `AGENT_STREAM_IDLE_TIMEOUT_MS`）配置。
+idle 只中止当前 SDK 请求；确认其退出后，保留已完成工具结果，使用上述同一重发额度与预算。
+工具执行期间暂停 idle 计时。清理未完成、预算不足或重发耗尽时仍明确返回部分/超时；取消与整体截止时间不重试。
+
 收尾和续写调用在派发前通过 `services/runtimeCallStats.ts` 估计所需时长，
 按 provider origin、model、purpose 和输入大小档使用成功调用的 p75；样本不足时采用
 当前提供方默认值（GLM 180 s、DeepSeek 120 s、其他 90 s）。剩余时间不足时跳过调用并

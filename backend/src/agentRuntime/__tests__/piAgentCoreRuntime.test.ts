@@ -2414,7 +2414,11 @@ describe('experimental Pi agent-core runtime contract', () => {
     const sessionId = 'session-pi-idle-timeout';
     const traceId = 'trace-pi';
     const never = createDeferred<unknown[]>();
-    FakePiAgent.promptHandler = async () => never.promise;
+    FakePiAgent.promptHandler = async agent => {
+      // This compatibility fixture cannot continue; retry-capable providers are covered below.
+      (agent as any).continue = undefined;
+      return never.promise;
+    };
     FakePiAgent.abortHandler = () => {
       never.resolve([{
         role: 'assistant',
@@ -4040,6 +4044,175 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(updates.some(update => update.type === 'progress' && JSON.stringify(update.content).includes('1/2'))).toBe(true);
   }, 20_000);
 
+  it('retries an injected provider stream idle after 300s and retains completed tools', async () => {
+    jest.useFakeTimers({now: 1000, doNotFake: ['nextTick', 'setImmediate']});
+    passVerification();
+    const opened = createDeferred<void>();
+    const idleDone = createDeferred<any>();
+    const trace = createFakeTraceProcessorService();
+    const requests: any[] = [];
+    const backoffs: number[] = [];
+    const sleep = jest.spyOn(require('node:timers/promises'), 'setTimeout').mockImplementation(
+      ((ms: number) => {backoffs.push(ms); return new Promise(resolve => setTimeout(resolve, ms));}) as any);
+    let sdk: any;
+    let toolExecutions = 0;
+    // Consume the injected stream with Pi's transcript/abort lifecycle. No real network or wall-clock wait.
+    class ObservedAgent extends FakePiAgent {
+      private current: AbortController | undefined;
+      constructor(options: any) {super(options); sdk = this;}
+      async prompt(input: string): Promise<void> {
+        this.lastPrompt = input;
+        this.state.messages.push({role: 'user', content: [{type: 'text', text: input}]});
+        await this.runStream();
+      }
+      async continue(): Promise<void> {
+        expect(this.current).toBeUndefined();
+        expect((this.state.messages[this.state.messages.length - 1] as any)?.role).not.toBe('assistant');
+        this.continueCount++;
+        await this.runStream();
+      }
+      abort(): void {this.current?.abort();}
+      private async runStream(): Promise<void> {
+        expect(this.current).toBeUndefined();
+        this.current = new AbortController();
+        try {
+          for (;;) {
+            const stream = await (this.options!.streamFn as any)(this.state.model,
+              {messages: [...this.state.messages]}, {signal: this.current.signal});
+            for await (const event of stream) {
+              if (event.type === 'start') this.emitForTest({type: 'message_start', message: event.partial});
+            }
+            const message = await stream.result();
+            this.state.messages.push(message);
+            this.emitForTest({type: 'message_end', message});
+            await (this.options!.finishTurn as any)({message});
+            this.emitForTest({type: 'turn_end', message});
+            if (message.stopReason !== 'toolUse') return;
+            for (const call of message.content) {
+              const tool = this.state.tools.find((item: any) => item.name === call.name) as any;
+              this.emitForTest({type: 'tool_execution_start', toolCallId: call.id, toolName: call.name});
+              toolExecutions++;
+              const result = await tool.execute(call.id, call.arguments);
+              expect(result.isError).not.toBe(true);
+              this.state.messages.push({role: 'toolResult', toolCallId: call.id, content: result.content});
+              this.emitForTest({type: 'tool_execution_end', toolCallId: call.id, toolName: call.name, result});
+            }
+          }
+        } finally {this.current = undefined;}
+      }
+    }
+    const runtime = new PiAgentCoreRuntime(trace, {kind: 'pi-agent-core', source: 'env'}, {
+      env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON, AGENT_QUICK_MAX_TURNS: '50'},
+      moduleLoader: async () => ({Agent: ObservedAgent as any}),
+      providerRuntimeLoader: async config => {
+        const provider = await loadFakePiProviderRuntime(config);
+        return {...provider, streamFnForPurpose: (purpose: string) => purpose === 'classification' ? provider.streamFn :
+          ((model: any, context: any, options: any) => {
+            requests.push(context.messages);
+            const index = requests.length;
+            const message = {role: 'assistant', api: model.api, provider: model.provider, model: model.id,
+              timestamp: Date.now(), usage: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+                cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0}},
+              stopReason: index === 1 ? 'toolUse' : 'stop', content: index === 1
+                ? [{type: 'toolCall', id: 'before-idle', name: 'lookup_sql_schema', arguments: {keyword: 'slice'}}]
+                : [{type: 'text', text: 'Recovered after provider idle'}]};
+            if (index === 2) {
+              options.signal.addEventListener('abort', () => idleDone.resolve({...message,
+                stopReason: 'aborted', errorMessage: 'Aborted', content: []}), {once: true});
+              opened.resolve();
+            }
+            const result = index === 2 ? idleDone.promise : Promise.resolve(message);
+            return {result: () => result, async *[Symbol.asyncIterator]() {
+              yield {type: 'start', partial: {...message, content: []}};
+              const final = await result;
+              yield final.stopReason === 'aborted' ? {type: 'error', reason: 'aborted', error: final}
+                : {type: 'done', reason: final.stopReason, message: final};
+            }};
+          }) as any};
+      },
+    });
+    const updates: StreamingUpdate[] = [];
+    runtime.on('update', update => updates.push(update));
+    try {
+      const pending = runtime.analyze('inspect current trace', 'native-pi-idle-retry', 'trace-pi', {analysisMode: 'fast'});
+      await opened.promise;
+      await jest.advanceTimersByTimeAsync(299999);
+      expect(requests).toHaveLength(2);
+      expect(backoffs).toEqual([]);
+      await jest.advanceTimersByTimeAsync(2001);
+      expect(await pending).toMatchObject({success: true, conclusion: 'Recovered after provider idle', rounds: 3,
+        completion: {status: 'completed'}, outputOrigin: 'sdk_final'});
+      expect(backoffs).toEqual([2000]);
+      expect(requests).toHaveLength(3);
+      expect(requests[2].filter((message: any) => message.role === 'user')).toHaveLength(1);
+      expect(requests[2].filter((message: any) => message.role === 'toolResult')).toHaveLength(1);
+      expect(sdk.state.messages.some((message: any) => message.stopReason === 'aborted')).toBe(false);
+      expect(toolExecutions).toBe(1);
+      expect(updates.filter(update => update.type === 'error')).toEqual([]);
+    } finally {sleep.mockRestore(); sessionContextManager.remove('native-pi-idle-retry');}
+  });
+
+  it.each(['retry_cap', 'mixed_cap', 'turn_cap', 'cost_cap', 'deadline', 'cancel', 'cancel_backoff', 'deadline_backoff', 'stuck_cleanup'] as const)
+  ('keeps provider idle recovery bounded by %s', async scenario => {
+    jest.useFakeTimers({now: 1000, doNotFake: ['nextTick', 'setImmediate']});
+    passVerification();
+    const entered = createDeferred<void>();
+    let pending = createDeferred<unknown[]>();
+    const backoffs: number[] = [];
+    const sleep = jest.spyOn(require('node:timers/promises'), 'setTimeout').mockImplementation(
+      ((ms: number, _value: unknown, options: {signal: AbortSignal}) => {
+        backoffs.push(ms);
+        return scenario.endsWith('_backoff') ? new Promise((_resolve, reject) => {
+          options.signal.addEventListener('abort', () => reject(options.signal.reason), {once: true});
+        }) : Promise.resolve();
+      }) as any);
+    FakePiAgent.promptHandler = async (agent, _prompt, index) => {
+      if (index === 1) agent.state.messages.push({role: 'user', content: 'one user prompt'});
+      if (scenario === 'mixed_cap' && index === 2) {
+        piFailedTurnClass = () => 'transient';
+        return [{role: 'assistant', stopReason: 'error', errorMessage: 'Stream interrupted', content: []}];
+      }
+      pending = createDeferred<unknown[]>();
+      entered.resolve();
+      const messages = await pending.promise;
+      await (agent.options?.finishTurn as any)({message: messages[messages.length - 1]});
+      return messages;
+    };
+    FakePiAgent.abortHandler = () => {
+      if (scenario !== 'stuck_cleanup') pending.resolve([{role: 'assistant', stopReason: 'aborted', content: [],
+        errorMessage: 'Aborted', usage: {cost: {total: scenario === 'cost_cap' ? 2 : 0}}}]);
+    };
+    const sessionId = `typed-pi-idle-${scenario}`;
+    const runtime = typedRuntime({env: {AGENT_QUICK_MAX_TURNS: scenario === 'turn_cap' ? '1' : '50',
+      [PI_AGENT_CORE_STREAM_IDLE_TIMEOUT_MS_ENV]: '25', [PI_AGENT_CORE_ABORT_JOIN_TIMEOUT_MS_ENV]: '10',
+      ...(scenario === 'cost_cap' ? {SMARTPERFETTO_PI_MAX_BUDGET_USD: '1'} : {}),
+      ...(scenario === 'deadline' ? {[PI_AGENT_CORE_REQUEST_TIMEOUT_MS_ENV]: '1000'} : {}),
+      ...(scenario === 'deadline_backoff' ? {[PI_AGENT_CORE_REQUEST_TIMEOUT_MS_ENV]: '2050'} : {}),
+    }});
+    try {
+      const analysis = runtime.analyze('bounded recovery', sessionId, 'trace-pi', {analysisMode: 'fast'});
+      await entered.promise;
+      if (scenario === 'cancel') await runtime.abortSession(sessionId);
+      await jest.advanceTimersByTimeAsync(100);
+      if (scenario === 'cancel_backoff') await runtime.abortSession(sessionId);
+      if (scenario === 'deadline_backoff') await jest.advanceTimersByTimeAsync(2000);
+      const result = await analysis;
+      expect(result).toMatchObject({success: false, outputOrigin: 'runtime_fallback',
+        completion: {status: scenario.startsWith('cancel') ? 'cancelled' : 'incomplete',
+          reason: scenario.startsWith('cancel') ? 'cancelled' : 'timeout'}});
+      expect(FakePiAgent.instances[0].continueCount).toBe(['retry_cap', 'mixed_cap'].includes(scenario) ? 2 : 0);
+      expect(backoffs).toEqual(['retry_cap', 'mixed_cap'].includes(scenario) ? [2000, 4000] : scenario.endsWith('_backoff') ? [2000] : []);
+      expect(sessionContextManager.getOrCreate(sessionId, 'trace-pi').getAllTurns()).toHaveLength(0);
+      if (scenario === 'stuck_cleanup') {
+        await expect(runtime.analyze('must not overlap', sessionId, 'trace-pi')).rejects.toThrow('already in progress');
+        pending.resolve([{role: 'assistant', stopReason: 'aborted', content: []}]);
+        await jest.advanceTimersByTimeAsync(0);
+        FakePiAgent.promptHandler = async () => [{role: 'assistant', content: [{type: 'text', text: 'successor'}]}];
+        await expect(runtime.analyze('clean successor', sessionId, 'trace-pi')).resolves.toMatchObject({success: true});
+      }
+    } finally {sleep.mockRestore(); sessionContextManager.remove(sessionId);}
+  });
+
   it('does not re-send a provider failure pi-ai reads as permanent and still reports it', async () => {
     piFailedTurnClass = () => 'other';
     const {result, agent, errors} = await runWithFailedFirstTurn('typed-pi-auth-failure',
@@ -5580,6 +5753,15 @@ describe('resolvePiRuntimeTimeouts', () => {
     expect(resolvePiRuntimeTimeouts({AGENT_FULL_PER_TURN_MS: '1000', AGENT_MAX_TURNS: '20'}).requestTimeoutMs).toBe(20_000);
     expect(resolvePiRuntimeTimeouts({AGENT_FULL_PER_TURN_MS: '120000', AGENT_FULL_REQUEST_TIMEOUT_MS: '3600000'}).requestTimeoutMs).toBe(3_600_000);
     expect(resolvePiRuntimeTimeouts({AGENT_FULL_PER_TURN_MS: '120000'}).requestTimeoutMs).toBe(20 * 60_000);
+  });
+
+  it('configures stream idle independently from the overall request deadline', () => {
+    expect(resolvePiRuntimeTimeouts({})).toMatchObject({streamIdleTimeoutMs: 300_000, requestTimeoutMs: 1_200_000});
+    expect(resolvePiRuntimeTimeouts({[PI_AGENT_CORE_STREAM_IDLE_TIMEOUT_MS_ENV]: '450000',
+      AGENT_STREAM_IDLE_TIMEOUT_MS: '600000', [PI_AGENT_CORE_REQUEST_TIMEOUT_MS_ENV]: '900000'}))
+      .toMatchObject({streamIdleTimeoutMs: 450_000, requestTimeoutMs: 900_000});
+    expect(resolvePiRuntimeTimeouts({[PI_AGENT_CORE_STREAM_IDLE_TIMEOUT_MS_ENV]: '-1', AGENT_STREAM_IDLE_TIMEOUT_MS: '600000'}))
+      .toMatchObject({streamIdleTimeoutMs: 600_000, requestTimeoutMs: 1_200_000});
   });
 
   it('keeps the operator deadline without a per-turn estimate', () => {

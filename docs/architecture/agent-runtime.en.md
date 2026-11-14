@@ -633,6 +633,13 @@ original turn budget and deadline. A billed failed turn that exhausts the cost
 budget buys neither a re-send nor a closeout. That turn's error events are held and emitted
 only if it is not re-sent. A run whose overall deadline has passed is not retried.
 
+Provider stream idle (no events) is distinct from the overall request deadline:
+its default is 300000ms, configured by `SMARTPERFETTO_PI_AGENT_CORE_STREAM_IDLE_TIMEOUT_MS`
+(fallback `AGENT_STREAM_IDLE_TIMEOUT_MS`). Idle aborts only the current SDK request;
+after it settles, completed tool results are retained and the same retry allowance
+and budgets apply. Tools pause the idle timer. Unsettled cleanup, insufficient budget
+or exhausted retries still returns a partial timeout; cancellation and the overall deadline never retry.
+
 Before dispatch, closeout and continuation calls use
 `services/runtimeCallStats.ts` to estimate duration from successful calls' p75
 for the same provider origin, model, purpose and input-size bucket. Insufficient

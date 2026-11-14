@@ -4,6 +4,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import Database from 'better-sqlite3';
 
 import {
   injectStdlibIncludes,
@@ -21,11 +22,37 @@ describe('sqlIncludeInjector - happy paths', () => {
     for (const [, relation, columns] of relations) {
       const entry = docs.entries.find(item => item.name === relation && (item.type === 'table' || item.type === 'view'));
       expect(entry).toBeDefined();
-      for (const column of columns.split(', ')) expect(entry?.columns?.map(item => item.name)).toContain(column);
+      for (const column of columns.split(/,\s*/)) expect(entry?.columns?.map(item => item.name)).toContain(column);
     }
     const toolGuidance = fs.readFileSync(path.resolve(__dirname, '../../../strategies/prompt-sql-evidence-guidance.template.md'), 'utf8');
     expect(toolGuidance).toContain('JOIN thread USING(utid), busy=thread.is_idle=0');
     expect(guidance).toContain('s.track_id=tt.id JOIN thread t ON tt.utid=t.utid');
+  });
+
+  it('executes the window guidance with bundled-doc columns before filtering and aggregation', () => {
+    const guidance = fs.readFileSync(path.resolve(__dirname, '../../../strategies/knowledge-perfetto-sql.template.md'), 'utf8');
+    const example = guidance.match(/`(WITH w AS\s*\([^`]+)`/)?.[1];
+    expect(example).toBeDefined();
+    const docs = loadPerfettoSqlDocsAsset()!;
+    const counter = docs.entries.find(entry => entry.name === 'counter' && (entry.type === 'table' || entry.type === 'view'))!;
+    for (const match of example!.matchAll(/c\.([a-z_]+)/g)) {
+      expect(counter.columns?.map(column => column.name)).toContain(match[1]);
+    }
+    const slice = docs.entries.find(entry => entry.name === 'slice' && (entry.type === 'table' || entry.type === 'view'))!;
+    expect(slice.columns?.map(column => column.name)).not.toContain('upid');
+    expect(slice.columns?.map(column => column.name)).not.toContain('utid');
+    const db = new Database(':memory:');
+    try {
+      db.exec('CREATE TABLE counter(ts INTEGER, track_id INTEGER); INSERT INTO counter VALUES (10,1),(20,1),(40,1),(1000,2),(1010,2)');
+      expect(db.prepare(example!).get()).toEqual({'AVG(w.gap)': 40 / 3});
+      expect(() => db.prepare('SELECT AVG(LAG(c.ts) OVER (ORDER BY c.ts)) FROM counter c')).toThrow(/misuse of window/);
+      expect(() => db.prepare('SELECT c.ts FROM counter c WHERE LAG(c.ts) OVER (ORDER BY c.ts) IS NOT NULL')).toThrow(/misuse of window/);
+      expect(() => db.prepare('SELECT * FROM counter c JOIN (SELECT 1 AS upid) p USING(upid)')).toThrow(/cannot join using column/);
+      expect(() => db.prepare('SELECT ts FROM counter a JOIN counter b USING(track_id)')).toThrow(/ambiguous column/);
+      expect(() => db.prepare('SELECT c.ts FROM counter c JOIN counter c ON c.ts=c.ts')).toThrow(/ambiguous column/);
+      expect(db.prepare('SELECT a.ts AS left_ts, b.ts AS right_ts FROM counter a JOIN counter b ON a.ts=b.ts ORDER BY a.ts LIMIT 1').get())
+        .toEqual({left_ts: 10, right_ts: 10});
+    } finally {db.close();}
   });
 
   it('injects slices.self_dur when SQL references slice_self_dur', () => {
