@@ -11,7 +11,7 @@
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
     "stepCount": 1400,
-    "explicitColumnCount": 5442
+    "explicitColumnCount": 5456
   },
   "skills": {
     "ams_module": {
@@ -39498,8 +39498,50 @@
             },
             "original_type": {
               "label": {
-                "zh-CN": "原始类型",
-                "en": "Original Type"
+                "zh-CN": "Stdlib 类型",
+                "en": "Stdlib type"
+              }
+            },
+            "stdlib_platform_marker": {
+              "label": {
+                "zh-CN": "匹配的平台启动类型标记",
+                "en": "Matched platform startup type marker"
+              }
+            },
+            "classification_basis": {
+              "label": {
+                "zh-CN": "Skill 分类依据",
+                "en": "Skill classification basis"
+              }
+            },
+            "bind_app_start_ts": {
+              "label": {
+                "zh-CN": "bindApplication 开始",
+                "en": "bindApplication start"
+              }
+            },
+            "bind_app_end_ts": {
+              "label": {
+                "zh-CN": "bindApplication 结束",
+                "en": "bindApplication end"
+              }
+            },
+            "process_start_ts": {
+              "label": {
+                "zh-CN": "进程创建时间",
+                "en": "Process creation time"
+              }
+            },
+            "process_first_state_ts": {
+              "label": {
+                "zh-CN": "进程首个线程状态观测",
+                "en": "First observed process thread state"
+              }
+            },
+            "first_state_before_start_ms": {
+              "label": {
+                "zh-CN": "首个状态早于启动",
+                "en": "First state before startup"
               }
             },
             "type_reclassified": {
@@ -42895,8 +42937,50 @@
             },
             "original_type": {
               "label": {
-                "zh-CN": "原始类型",
-                "en": "Original Type"
+                "zh-CN": "Stdlib 类型",
+                "en": "Stdlib type"
+              }
+            },
+            "stdlib_platform_marker": {
+              "label": {
+                "zh-CN": "匹配的平台启动类型标记",
+                "en": "Matched platform startup type marker"
+              }
+            },
+            "classification_basis": {
+              "label": {
+                "zh-CN": "Skill 分类依据",
+                "en": "Skill classification basis"
+              }
+            },
+            "bind_app_start_ts": {
+              "label": {
+                "zh-CN": "bindApplication 开始",
+                "en": "bindApplication start"
+              }
+            },
+            "bind_app_end_ts": {
+              "label": {
+                "zh-CN": "bindApplication 结束",
+                "en": "bindApplication end"
+              }
+            },
+            "process_start_ts": {
+              "label": {
+                "zh-CN": "进程创建时间",
+                "en": "Process creation time"
+              }
+            },
+            "process_first_state_ts": {
+              "label": {
+                "zh-CN": "进程首个线程状态观测",
+                "en": "First observed process thread state"
+              }
+            },
+            "first_state_before_start_ms": {
+              "label": {
+                "zh-CN": "首个状态早于启动",
+                "en": "First state before startup"
               }
             },
             "type_reclassified": {

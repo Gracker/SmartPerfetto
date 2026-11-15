@@ -506,6 +506,13 @@
           "ttfd_ms",
           "rating",
           "original_type",
+          "stdlib_platform_marker",
+          "classification_basis",
+          "bind_app_start_ts",
+          "bind_app_end_ts",
+          "process_start_ts",
+          "process_first_state_ts",
+          "first_state_before_start_ms",
           "type_reclassified",
           "type_confidence"
         ],

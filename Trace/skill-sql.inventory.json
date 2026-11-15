@@ -18229,7 +18229,7 @@
     },
     "startup_analysis": {
       "source_file": "backend/skills/composite/startup_analysis.skill.yaml",
-      "source_sha256": "c04d04c381b7112ebe215f07da517fabf6e7d25f71f0e18e3173af2eece326c2",
+      "source_sha256": "fbb6a5c9ba8f80708711920c0134c884175668348635915fa66f38d462d44d93",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -18863,7 +18863,7 @@
     },
     "startup_events_in_range": {
       "source_file": "backend/skills/atomic/startup_events_in_range.skill.yaml",
-      "source_sha256": "038e6baef3bea018d57ff5db83ee6b30d4f089f339989e7aeaac6cd804ee108d",
+      "source_sha256": "84b7f55d58f5678da0404e8beb352a6d2fef99d23643891c09f5cc09abbf735d",
       "type": "atomic",
       "execution": "root",
       "declared_modules": [
@@ -18878,7 +18878,7 @@
           "id": "root",
           "at": "sql",
           "top_level_index": null,
-          "sha256": "f7cfe06fd429333f498d6f9538127394939c805a29802db0c82778526559ed81",
+          "sha256": "0da7d5e3a0fd13e1d6bb1d777b900b43e3842d0cbab6580c27639e321ddf8f52",
           "required_columns": [
             "startup_id",
             "upid",
@@ -18894,6 +18894,13 @@
             "ttfd_ms",
             "rating",
             "original_type",
+            "stdlib_platform_marker",
+            "classification_basis",
+            "bind_app_start_ts",
+            "bind_app_end_ts",
+            "process_start_ts",
+            "process_first_state_ts",
+            "first_state_before_start_ms",
             "type_reclassified",
             "type_confidence"
           ],

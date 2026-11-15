@@ -5569,7 +5569,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "f7cfe06fd429333f498d6f9538127394939c805a29802db0c82778526559ed81",
+            "sha256": "0da7d5e3a0fd13e1d6bb1d777b900b43e3842d0cbab6580c27639e321ddf8f52",
             "required_columns": [
               "startup_id",
               "upid",
@@ -5585,6 +5585,13 @@
               "ttfd_ms",
               "rating",
               "original_type",
+              "stdlib_platform_marker",
+              "classification_basis",
+              "bind_app_start_ts",
+              "bind_app_end_ts",
+              "process_start_ts",
+              "process_first_state_ts",
+              "first_state_before_start_ms",
               "type_reclassified",
               "type_confidence"
             ]

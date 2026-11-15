@@ -29,6 +29,19 @@ import {buildNativeOutputCompletionPrompt} from '../../agentRuntime/runtimeConcl
 import {buildCandidateProtocolDiagnostic, inspectCandidateProtocol} from '../../services/canonicalAnalysisResult';
 
 describe('typed prompt with real strategy assets', () => {
+  it.each(['zh-CN', 'en'] as const)('keeps startup classification criteria in the default %s report contract', outputLanguage => {
+    const parts = buildSystemPromptParts({...makeWorstCaseContext('startup'), outputLanguage});
+    const report = parts.segments.find(segment => segment.label === 'report_requirements')!;
+    expect(report).toMatchObject({droppable: false, truncatable: false});
+    for (const criterion of ['Skill/stdlib original_type', 'classification_basis', 'first_state_before_start_ms', 'stdlib_platform_marker',
+      'stdlib 优先平台 completed-type 标记', '窗口内 activity 信号', '首次状态不是 stdlib 分类输入',
+      '保留具体分支未知', '首次状态不证明进程新建']) {
+      expect(report.content).toContain(criterion);
+    }
+    expect(parts.droppedLabels).not.toContain('report_requirements');
+    expect(estimatePromptTokens(parts.fullPrompt)).toBeLessThanOrEqual(MAX_PROMPT_TOKENS);
+  });
+
   it.each(['zh-CN', 'en'] as const)('reaches camera observations through the real default media detail in %s', outputLanguage => {
     const registry = buildStrategyRegistrySnapshotFromDefinitions({
       definitions: getRegisteredScenes(), overlayGeneration: 'camera-media-entry-test',

@@ -30,6 +30,30 @@ describe('startup display unit contracts', () => {
     return column;
   };
 
+  const startupOverviewSql = () => loadYaml('skills/atomic/startup_events_in_range.skill.yaml').sql
+    .replaceAll('${package}', '')
+    .replaceAll('${startup_id}', 'NULL')
+    .replaceAll('${startup_type}', '')
+    .replaceAll('${start_ts}', 'NULL')
+    .replaceAll('${end_ts}', 'NULL');
+
+  const createStartupOverviewDb = () => {
+    const db = new Database(':memory:');
+    db.exec(`
+      CREATE TABLE android_startups(startup_id INTEGER, package TEXT, startup_type TEXT, ts INTEGER, ts_end INTEGER, dur INTEGER);
+      CREATE TABLE _startup_events(ts INTEGER, dur INTEGER, ts_end INTEGER, package_name TEXT);
+      CREATE TABLE android_startup_time_to_display(startup_id INTEGER, time_to_initial_display INTEGER, time_to_full_display INTEGER);
+      CREATE TABLE android_startup_threads(startup_id INTEGER, utid INTEGER, is_main_thread INTEGER, ts INTEGER, dur INTEGER);
+      CREATE TABLE thread_track(id INTEGER, utid INTEGER);
+      CREATE TABLE slice(track_id INTEGER, name TEXT, ts INTEGER, dur INTEGER);
+      CREATE TABLE android_startup_processes(startup_id INTEGER, upid INTEGER);
+      CREATE TABLE process(upid INTEGER, start_ts INTEGER);
+      CREATE TABLE thread(utid INTEGER, upid INTEGER);
+      CREATE TABLE thread_state(utid INTEGER, ts INTEGER);
+    `);
+    return db;
+  };
+
   it('keeps startup display tails on native half-open clipped methodology', () => {
     const strategy = fs.readFileSync(path.join(process.cwd(), 'strategies/startup.strategy.md'), 'utf8');
     expect(strategy).not.toContain('ts BETWEEN <end_ts>');
@@ -79,27 +103,12 @@ describe('startup display unit contracts', () => {
   });
 
   it('emits an exact launch UPID only when the startup process is unambiguous', () => {
-    const skill = loadYaml('skills/atomic/startup_events_in_range.skill.yaml');
     const parent = loadYaml('skills/composite/startup_analysis.skill.yaml').steps
       .find((step: any) => step.id === 'get_startups');
     expect(getColumn(parent.display.columns, 'upid')).toMatchObject({type: 'number', hidden: true});
-    const sql = skill.sql
-      .replaceAll('${package}', '')
-      .replaceAll('${startup_id}', 'NULL')
-      .replaceAll('${startup_type}', '')
-      .replaceAll('${start_ts}', 'NULL')
-      .replaceAll('${end_ts}', 'NULL');
-    const db = new Database(':memory:');
+    const db = createStartupOverviewDb();
     try {
       db.exec(`
-        CREATE TABLE android_startups(startup_id INTEGER, package TEXT, startup_type TEXT, ts INTEGER, ts_end INTEGER, dur INTEGER);
-        CREATE TABLE _startup_events(ts INTEGER, dur INTEGER, ts_end INTEGER, package_name TEXT);
-        CREATE TABLE android_startup_time_to_display(startup_id INTEGER, time_to_initial_display INTEGER, time_to_full_display INTEGER);
-        CREATE TABLE android_startup_threads(startup_id INTEGER, utid INTEGER, is_main_thread INTEGER, ts INTEGER, dur INTEGER);
-        CREATE TABLE thread_track(id INTEGER, utid INTEGER);
-        CREATE TABLE slice(track_id INTEGER, name TEXT, ts INTEGER, dur INTEGER);
-        CREATE TABLE android_startup_processes(startup_id INTEGER, upid INTEGER);
-        CREATE TABLE process(upid INTEGER, start_ts INTEGER);
         INSERT INTO android_startups VALUES
           (1, 'com.example', 'cold', 100, 1100, 1000),
           (2, 'com.example', 'warm', 200, 2200, 2000),
@@ -112,7 +121,7 @@ describe('startup display unit contracts', () => {
         INSERT INTO android_startup_processes VALUES (1, 42), (1, 42), (2, 43), (2, 44), (3, NULL);
         INSERT INTO process VALUES (42, 100), (43, 200), (44, 200);
       `);
-      const rows = db.prepare(sql).all() as Array<{
+      const rows = db.prepare(startupOverviewSql()).all() as Array<{
         startup_id: number; upid: number | null; dur_without_trampoline_ms: number; trampoline_ms: number;
       }>;
       expect(Object.fromEntries(rows.map(row => [row.startup_id, row.upid]))).toEqual({1: 42, 2: null, 3: null});
@@ -123,6 +132,103 @@ describe('startup display unit contracts', () => {
         .toEqual({1: [900, 100], 2: [2000, 0], 3: [3000, 0]});
     } finally {
       db.close();
+    }
+  });
+
+  it('discloses overlap classification and process observations without inferring a fork from first state', () => {
+    const db = createStartupOverviewDb();
+    try {
+      db.exec(`
+        INSERT INTO android_startups VALUES
+          (1, 'new.process', 'warm', 10000000000, 11000000000, 1000000000),
+          (2, 'activity.recreated', 'warm', 10000000000, 11000000000, 1000000000),
+          (3, 'unknown.birth', 'warm', 10000000000, 11000000000, 1000000000),
+          (4, 'ambiguous.process', 'hot', 10000000000, 11000000000, 1000000000),
+          (5, 'missing.process', 'warm', 10000000000, 11000000000, 1000000000),
+          (6, 'process.start.fallback', 'hot', 10000000000, 11000000000, 1000000000),
+          (7, 'activity.relaunch', 'hot', 10000000000, 11000000000, 1000000000),
+          (8, 'no.process.identity', 'hot', 10000000000, 11000000000, 1000000000),
+          (9, 'new.process', 'warm', 11000000000, 12000000000, 1000000000);
+        INSERT INTO android_startup_processes VALUES
+          (1,42), (2,43), (3,44), (4,45), (4,46), (5,47), (6,48), (7,49), (9,42);
+        INSERT INTO process VALUES
+          (42,9889000000), (43,9900000000), (44,NULL), (45,1000000000),
+          (46,2000000000), (48,9900000000), (49,1000000000);
+        INSERT INTO thread VALUES (142,42), (143,43), (144,44), (145,45), (146,46), (149,49);
+        INSERT INTO thread_state VALUES
+          (142,9889200000), (142,9890000000), (144,9890000000), (145,5000000000), (146,6000000000);
+        INSERT INTO android_startup_threads VALUES
+          (1,142,1,10000000000,1000000000), (2,143,1,10000000000,1000000000),
+          (4,145,1,10000000000,1000000000), (7,149,1,10000000000,1000000000);
+        INSERT INTO thread_track VALUES (242,142), (243,143), (245,145), (249,149);
+        INSERT INTO slice VALUES
+          (242,'bindApplication',9902000000,500000000),
+          (242,'bindApplication',9950000000,700000000),
+          (242,'performCreate:MainActivity',10100000000,100000000),
+          (243,'performCreate:MainActivity',10100000000,100000000),
+          (245,'bindApplication',9900000000,500000000),
+          (249,'handleRelaunchActivity',10100000000,100000000),
+          -- Completed instants can follow the async end, as on real API 33+ traces.
+          (0,'launchingActivity#1:completed-warm:new.process',11000009000,0),
+          (0,'launchingActivity#1:completed-warm:new.process',11000010000,0),
+          (0,'launchingActivity#2:completed-warm:other.package',11000009000,0),
+          (0,'launchingActivity#3:completed-cold:unknown.birth',11000009000,0);
+      `);
+      const rows = db.prepare(startupOverviewSql()).all() as Array<Record<string, any>>;
+      const byId = new Map(rows.map(row => [row.startup_id, row]));
+      expect(rows).toHaveLength(9);
+      expect(byId.get(1)).toMatchObject({
+        startup_type: 'cold', original_type: 'warm', classification_basis: 'bindApplication overlap',
+        stdlib_platform_marker: 'launchingActivity#1:completed-warm:new.process',
+        bind_app_start_ts: '9902000000', bind_app_end_ts: '10402000000',
+        process_start_ts: '9889000000', process_first_state_ts: '9889200000',
+        first_state_before_start_ms: 110.8,
+      });
+      expect(byId.get(2)).toMatchObject({
+        startup_type: 'warm', original_type: 'warm', classification_basis: 'performCreate without bindApplication',
+        bind_app_start_ts: null, bind_app_end_ts: null, process_first_state_ts: null,
+        first_state_before_start_ms: null,
+        stdlib_platform_marker: null,
+      });
+      // A first state only 110ms before launch cannot itself change warm to cold.
+      expect(byId.get(3)).toMatchObject({
+        startup_type: 'warm', original_type: 'warm', classification_basis: 'stdlib type retained',
+        process_start_ts: null, process_first_state_ts: '9890000000', first_state_before_start_ms: 110,
+        stdlib_platform_marker: null,
+      });
+      for (const id of [4, 5, 8]) {
+        expect(byId.get(id)).toMatchObject({
+          bind_app_start_ts: null, bind_app_end_ts: null,
+          process_start_ts: null, process_first_state_ts: null, first_state_before_start_ms: null,
+        });
+      }
+      expect(byId.get(4)).toMatchObject({upid: null, startup_type: 'cold', classification_basis: 'bindApplication overlap'});
+      expect(byId.get(6)).toMatchObject({startup_type: 'cold', classification_basis: 'process.start_ts near startup'});
+      expect(byId.get(7)).toMatchObject({startup_type: 'warm', classification_basis: 'activity relaunch'});
+      expect(byId.get(8)).toMatchObject({startup_type: 'hot', classification_basis: 'stdlib type retained'});
+      // Separate launches on the same UPID retain the same first observation;
+      // their launch-relative delta is computed for each startup window.
+      expect(byId.get(9)).toMatchObject({
+        upid: 42, process_start_ts: '9889000000', process_first_state_ts: '9889200000',
+        first_state_before_start_ms: 1110.8,
+        stdlib_platform_marker: null,
+      });
+    } finally {db.close();}
+  });
+
+  it('exposes classification provenance in both atomic and composite overview displays', () => {
+    const atomic = loadYaml('skills/atomic/startup_events_in_range.skill.yaml');
+    const parent = loadYaml('skills/composite/startup_analysis.skill.yaml').steps
+      .find((step: any) => step.id === 'get_startups');
+    for (const columns of [atomic.display.columns, parent.display.columns]) {
+      for (const name of ['original_type', 'stdlib_platform_marker', 'classification_basis']) {
+        expect(getColumn(columns, name).type).toBe('string');
+        expect(getColumn(columns, name).hidden).not.toBe(true);
+      }
+      for (const name of ['bind_app_start_ts', 'bind_app_end_ts', 'process_start_ts', 'process_first_state_ts']) {
+        expect(getColumn(columns, name)).toMatchObject({type: 'timestamp', unit: 'ns', hidden: true});
+      }
+      expect(getColumn(columns, 'first_state_before_start_ms')).toMatchObject({type: 'number', unit: 'ms'});
     }
   });
 

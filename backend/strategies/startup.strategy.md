@@ -65,7 +65,7 @@ final_report_contract:
   required_sections:
     - id: startup_type_and_metrics
       label: 启动类型与 TTID/TTFD
-      description: '明确 cold/warm/hot 判定，并给出 TTID/TTFD 或对应不可用原因；numeric.cell 优先引用带单位的原始 Skill 字段。'
+      description: '报告 cold/warm/hot、TTID/TTFD 及缺口。分类分歧须列 Skill/stdlib original_type、classification_basis、bindApplication 区间和 first_state_before_start_ms，并引用 stdlib_platform_marker 解释平台类型。stdlib 优先平台 completed-type 标记，否则使用窗口内 activity 信号；首次状态不是 stdlib 分类输入，不能归因为 warm。标记为空时只说明规则、保留具体分支未知。首次状态不证明进程新建，不猜 LMK，引用带单位原始字段。'
       pattern_groups:
         - ['启动类型', '冷启动', '温启动', '热启动', 'cold\s*start', 'warm\s*start', 'hot\s*start']
         - ['TTID', 'TTFD', 'Time\s+to\s+initial\s+display', 'Time\s+to\s+full\s+display']
@@ -177,7 +177,7 @@ final_report_contract:
 
 ### 启动类型判定规则
 
-启动类型（cold/warm/hot）决定了分析策略和性能基线，必须在分析初期验证。Perfetto `android_startups` 表的 `startup_type` 可能不准确（尤其是 LMK 回收后的重启），需基于以下信号重分类：
+启动类型（cold/warm/hot）决定了分析策略和性能基线，必须在分析初期验证。stdlib 优先采用平台 `launchingActivity#*:completed-{type}:*` 标记；无平台类型时使用窗口内 activity 信号。Skill 使用下列信号，口径可能不同：
 
 | 类型 | 判定信号 | Android 框架路径 |
 |------|---------|-----------------|
@@ -190,7 +190,7 @@ final_report_contract:
 2. 否则检查 trace 信号：`bindApplication` 存在 → cold；仅 `performCreate:*` 存在 → warm；均无 → hot
 3. 热启动无正向信号（没有专属的 trace slice），仅靠排除法判定——这是合理的，因为热启动不触发 Activity 重建
 
-**⚠️ LMK 边界场景：** 进程被 LMK 回收后重启时，ActivityManager 可能仍持有 Activity 记录，导致 Perfetto 报告 `warm`。但 `bindApplication` slice 存在说明进程经历了完整初始化（Zygote fork → handleBindApplication），实为 cold start。此时**必须以 `bindApplication` 信号为准**，覆盖 Perfetto 原始分类。
+**分类分歧必须披露：** `startup_type != original_type` 时同时报告 Skill 与 stdlib 类型、`classification_basis` 和同一启动/进程的时间证据。重叠的 `bindApplication` 支持进程初始化口径的 cold；stdlib warm 可来自平台标记，不能仅凭分类分歧猜测 LMK 或 Activity 状态恢复。`first_state_before_start_ms` 只是首次观测线程状态到窗口起点的差值，不证明进程刚创建；`process_start_ts` 缺失时保留未知。
 
 **⚠️ 验证口径陷阱：** `bindApplication` 可能早于 `android_startups.ts` 约几十到数百毫秒开始。用 `thread_slice.ts BETWEEN start_ts AND end_ts` 的窄窗口查询返回 0 行，不能证明 `bindApplication` 不存在。若要自行验证，必须使用 `android_startup_threads` 与 `slice` 的 overlap 条件（`sl.ts + sl.dur > st.ts AND sl.ts < st.ts + st.dur`），或至少把起点扩展到 `start_ts - 500ms`。当 `startup_analysis` 已给出 `type_display=冷启动`、`type_reclassified=1`、`startup_breakdown.reason=bind_application` 或 `R009_TYPE_RECLASSIFIED` 时，结论必须按冷启动写，不得输出“R009 误判/维持温启动”。
 

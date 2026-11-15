@@ -105,9 +105,46 @@ display:
       label: "评级"
       type: string
     - name: original_type
-      label: "原始类型"
+      label: "Stdlib 类型"
+      label_i18n: {en: "Stdlib type"}
       type: string
+    - name: stdlib_platform_marker
+      label: "匹配的平台启动类型标记"
+      label_i18n: {en: "Matched platform startup type marker"}
+      type: string
+    - name: classification_basis
+      label: "Skill 分类依据"
+      label_i18n: {en: "Skill classification basis"}
+      type: string
+    - name: bind_app_start_ts
+      label: "bindApplication 开始"
+      label_i18n: {en: "bindApplication start"}
+      type: timestamp
+      unit: ns
       hidden: true
+    - name: bind_app_end_ts
+      label: "bindApplication 结束"
+      label_i18n: {en: "bindApplication end"}
+      type: timestamp
+      unit: ns
+      hidden: true
+    - name: process_start_ts
+      label: "进程创建时间"
+      label_i18n: {en: "Process creation time"}
+      type: timestamp
+      unit: ns
+      hidden: true
+    - name: process_first_state_ts
+      label: "进程首个线程状态观测"
+      label_i18n: {en: "First observed process thread state"}
+      type: timestamp
+      unit: ns
+      hidden: true
+    - name: first_state_before_start_ms
+      label: "首个状态早于启动"
+      label_i18n: {en: "First state before startup"}
+      type: number
+      unit: ms
     - name: type_reclassified
       label: "类型已修正"
       type: number
@@ -207,12 +244,58 @@ sql: |
     WHERE upid IS NOT NULL
     GROUP BY startup_id
   ),
+  -- Lifecycle observations belong to one resolved process. First observed
+  -- thread_state is not proof of process creation; process.start_ts may be NULL.
+  startup_process_first_states AS MATERIALIZED (
+    SELECT t.upid, MIN(state.ts) AS process_first_state_ts
+    FROM (
+      SELECT DISTINCT upid FROM startup_process_identity WHERE upid IS NOT NULL
+    ) startup_process
+    JOIN thread t ON t.upid = startup_process.upid
+    JOIN thread_state state ON state.utid = t.utid
+    GROUP BY t.upid
+  ),
+  startup_process_observations AS (
+    SELECT
+      spi.startup_id,
+      p.start_ts AS process_start_ts,
+      first_state.process_first_state_ts
+    FROM startup_process_identity spi
+    LEFT JOIN process p ON p.upid = spi.upid
+    LEFT JOIN startup_process_first_states first_state ON first_state.upid = spi.upid
+  ),
+  -- Keep the endpoints of the same first overlapping bindApplication slice.
+  startup_bind_application AS (
+    SELECT startup_id, ts AS bind_app_start_ts, ts + dur AS bind_app_end_ts
+    FROM (
+      SELECT
+        st.startup_id, sl.ts, sl.dur,
+        ROW_NUMBER() OVER (PARTITION BY st.startup_id ORDER BY sl.ts, sl.dur DESC) AS ordinal
+      FROM android_startup_threads st
+      JOIN startup_process_identity spi USING (startup_id)
+      JOIN thread t ON t.utid = st.utid AND t.upid = spi.upid
+      JOIN thread_track tt ON tt.utid = st.utid
+      JOIN slice sl ON sl.track_id = tt.id
+      WHERE st.is_main_thread = 1 AND sl.name = 'bindApplication'
+        AND sl.ts + sl.dur > st.ts AND sl.ts < st.ts + st.dur
+    )
+    WHERE ordinal = 1
+  ),
+  -- The API 33+ stdlib parser matches completed markers by startup ID,
+  -- package and type, without clipping their instant to the async window.
+  -- DISTINCT keeps repeated raw markers from multiplying startup rows.
+  startup_platform_markers AS MATERIALIZED (
+    SELECT DISTINCT name
+    FROM slice
+    WHERE dur = 0 AND name GLOB 'launchingActivity#*:completed-*:*'
+  ),
   validated AS (
     SELECT
       s.startup_id,
       spi.upid,
       s.package,
       s.startup_type as original_type,
+      pm.name AS stdlib_platform_marker,
       CASE
         -- Rule 1: bindApplication → cold (strongest signal)
         WHEN COALESCE(sts.has_bind_app, 0) = 1 THEN 'cold'
@@ -225,6 +308,17 @@ sql: |
         -- Rule 5: keep platform classification
         ELSE s.startup_type
       END as startup_type,
+      CASE
+        WHEN COALESCE(sts.has_bind_app, 0) = 1 THEN 'bindApplication overlap'
+        WHEN COALESCE(sts.has_perform_create, 0) = 1 THEN 'performCreate without bindApplication'
+        WHEN COALESCE(sts.has_relaunch, 0) = 1 THEN 'activity relaunch'
+        WHEN COALESCE(pa.process_created_during_startup, 0) = 1 THEN 'process.start_ts near startup'
+        ELSE 'stdlib type retained'
+      END AS classification_basis,
+      ba.bind_app_start_ts,
+      ba.bind_app_end_ts,
+      po.process_start_ts,
+      po.process_first_state_ts,
       s.ts,
       s.dur,
       tr.dur_without_trampoline,
@@ -248,10 +342,14 @@ sql: |
         ELSE 'medium'
       END as type_confidence
     FROM android_startups s
+    LEFT JOIN startup_platform_markers pm
+      ON pm.name = 'launchingActivity#' || s.startup_id || ':completed-' || s.startup_type || ':' || s.package
     LEFT JOIN android_startup_time_to_display ttd USING (startup_id)
     LEFT JOIN startup_type_signals sts USING (startup_id)
     LEFT JOIN process_age pa USING (startup_id)
     LEFT JOIN startup_process_identity spi USING (startup_id)
+    LEFT JOIN startup_process_observations po USING (startup_id)
+    LEFT JOIN startup_bind_application ba USING (startup_id)
     LEFT JOIN startup_trampoline tr USING (startup_id)
     WHERE (('${package}' = '' OR s.package = '${package}' OR s.package GLOB '${package}:*') OR '${package}' = '')
       AND (${startup_id} IS NULL OR s.startup_id = ${startup_id})
@@ -264,6 +362,13 @@ sql: |
     package,
     startup_type,
     original_type,
+    stdlib_platform_marker,
+    classification_basis,
+    CASE WHEN bind_app_start_ts IS NOT NULL THEN printf('%d', bind_app_start_ts) END AS bind_app_start_ts,
+    CASE WHEN bind_app_end_ts IS NOT NULL THEN printf('%d', bind_app_end_ts) END AS bind_app_end_ts,
+    CASE WHEN process_start_ts IS NOT NULL THEN printf('%d', process_start_ts) END AS process_start_ts,
+    CASE WHEN process_first_state_ts IS NOT NULL THEN printf('%d', process_first_state_ts) END AS process_first_state_ts,
+    (ts - process_first_state_ts) / 1e6 AS first_state_before_start_ms,
     dur / 1e6 as dur_ms,
     printf('%d', ts) as start_ts,
     printf('%d', ts + dur) as end_ts,
