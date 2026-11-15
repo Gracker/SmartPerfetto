@@ -31,7 +31,7 @@ function fixture(input: {runId?: string; result?: QueryResult} = {}) {
   bindings.push(binding);
   const options = binding.bindOptions({runId: scope.runId, packageName: 'example.app'});
   const store = resolveRuntimeEvidenceStore(options, scope, () => {throw new Error('unexpected_fallback');});
-  const query = jest.fn(async (_traceId: string, _sql: string, _options?: unknown) => input.result ?? bounds);
+  const query = jest.fn(async (_traceId: string, _sql: string, _options?: {signal?: AbortSignal; timeoutMs?: number}) => input.result ?? bounds);
   const actual = {...scope, artifactStore: store, traceProcessorService: {query}, deadlineMs: Date.now() + 60000,
     signal: controller.signal, canInvokeTool: () => acquisition};
   return {scope, controller, binding, options, store, query, actual,
@@ -127,6 +127,13 @@ describe('scene dispatch capability and runtime evidence binding', () => {
     expect(result.segments![0].evidence[0].source.originRunId).toBe(f.scope.runId);
     expect(result.segments![0].checks.slice(0, 3).every(check => check.status === 'passed')).toBe(true);
     await expect(activateSceneRuntime(f.options, f.actual)).rejects.toThrow('scene_runtime_already_activated');
+  });
+  it('activates a run without a total deadline using the processor query default', async () => {
+    const f = fixture();
+    const context = (await activateSceneRuntime(f.options, {...f.actual, deadlineMs: Number.MAX_SAFE_INTEGER}))!;
+    expect(sceneRunState(context).options.deadlineMs).toBe(Number.MAX_SAFE_INTEGER);
+    expect(f.query.mock.calls[0][2]).not.toHaveProperty('timeoutMs');
+    expect(f.query.mock.calls[0][2]?.signal?.aborted).toBe(false);
   });
   it.each([
     {...bounds, rows: []}, {...bounds, rows: [...bounds.rows, ...bounds.rows]},

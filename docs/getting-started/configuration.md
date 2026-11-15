@@ -468,6 +468,8 @@ SMARTPERFETTO_AI_ENABLED=false
 
 慢模型或本地模型通常需要更长的 per-turn timeout：
 
+Pi 默认不限制整次分析总耗时；总时长及每轮耗时限制均未配置时，可持续分析大 trace。下例是主动设置上限的示例，轮次、费用、上下文限制与 provider 流 idle 恢复仍生效。可用**总结现有结果**提前结束取证并总结已有证据；**停止**则取消运行。
+
 ```bash
 AGENT_FULL_REQUEST_TIMEOUT_MS=1200000
 AGENT_STREAM_IDLE_TIMEOUT_MS=300000
@@ -490,10 +492,7 @@ OPENAI_CLASSIFIER_TIMEOUT_MS=30000
 ```
 
 共享的 `AGENT_*` 安全上限适用于激活的 Provider profile；runtime-specific 值可在
-直接 env provider 路径中覆盖。`*_FULL_REQUEST_TIMEOUT_MS` 是 full 分析的绝对墙钟上限，默认 20 分钟；即使
-`maxTurns × per-turn timeout` 更大也不会超过它。`*_STREAM_IDLE_TIMEOUT_MS`
-限制 provider 连续无流事件的时间，默认 5 分钟；触发时后端会取消 SDK 与当前
-工具调用，并把已收集证据作为 `partial` 结果正常走完终态事件。
+直接 env provider 路径中覆盖。Pi 的 `*_FULL_REQUEST_TIMEOUT_MS` 仅在显式配置时限制总时长，默认无总时长上限；显式的 `maxTurns × per-turn timeout` 估算不能超过已配置总上限。`*_STREAM_IDLE_TIMEOUT_MS` 限制 provider 连续无流事件的时间，默认 5 分钟；Pi 会仅中止本次 SDK 请求，等待清理后在同一 transcript 上有界恢复，不重复已完成的工具调用；额度耗尽才以部分结果结束。以下 OpenAI/Claude 旧 runtime 的 20 分钟默认上限、延期与历史回放约束仍保留。
 OpenAI runtime 的 `maxTurns × per-turn timeout`（full 模式再受上面的绝对上限约束）只是初始截止时间：
 每返回一次工具结果，截止时间按最近几轮中最慢的一轮向后顺延；到点时若 provider 仍在输出正文、推理或工具参数，
 则按一个 per-turn 步长有界延期。`AGENT_MAX_RUN_TIMEOUT_MS` / `OPENAI_MAX_RUN_TIMEOUT_MS`（默认 60 分钟）限制延期后的

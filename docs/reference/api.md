@@ -410,6 +410,7 @@ Base path: `/api/agent/v1`
 | `POST` | `/:sessionId/respond` | 继续或终止 awaiting_user 会话 |
 | `POST` | `/sessions/:sessionId/respond` | `respond` 的 session-scoped alias |
 | `POST` | `/:sessionId/cancel` | 按精确 `runId` 取消分析 |
+| `POST` | `/:sessionId/summarize` | 按精确活动 `runId` 提前总结已有证据 |
 | `POST` | `/:sessionId/interaction` | 记录 UI 交互 |
 | `GET` | `/:sessionId/focus` | 查询 focus 状态 |
 | `GET` | `/:sessionId/report` | 获取分析报告 |
@@ -567,6 +568,8 @@ curl -X POST http://127.0.0.1:3000/api/agent/v1/<sessionId>/cancel \
   -H "Content-Type: application/json" \
   -d '{"runId":"<runId>"}'
 ```
+
+`POST /:sessionId/summarize` 使用同样的 `{runId}` 请求体，要求 `agent:run` 及会话访问权限。接受时返回 `{success:true,sessionId,runId,outcome:"accepted"}`，这只是请求回执，不是终态；缺 ID 为 400，未知 run 为 404，非活动、已进入收尾或不支持的 run 为 409。继续消费 SSE 直到匹配终态。runtime 关闭新取证、等待当前工作清理，再用原预留的无工具交付额度总结；completion 保持 `incomplete/user_requested`。原取消接口仍执行完整停止。
 
 取消终态可以先返回给客户端，但同一 session 的下一轮会在被取消的 runtime 真正退出前返回
 `409 CANCELLATION_IN_PROGRESS`，避免旧 run 的清理或会话状态污染新 run。

@@ -130,6 +130,81 @@ afterEach(async () => {
   restoreEnvironment();
 });
 
+describe('POST summarize current analysis', () => {
+  const sessionId = 'summary-session';
+  const runId = 'summary-run';
+  beforeEach(() => {
+    delete process.env.SMARTPERFETTO_API_KEY;
+    process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+    process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'false';
+  });
+  afterEach(() => {agentRoutesCancellationTestSeam.deleteSession(sessionId);});
+
+  function fixture() {
+    const requestSummary = jest.fn((_sessionId: string, _runId: string) => true);
+    const abortSession = jest.fn();
+    const run = {runId, requestId: 'summary-request', sequence: 1, query: 'current evidence',
+      startedAt: Date.now(), status: 'running', privateContext: NO_PRIVATE_CONTEXT};
+    const session = {sessionId, status: 'running', traceId: 'summary-trace',
+      createdAt: Date.now(), lastActivityAt: Date.now(), activeRun: run, lastRun: run,
+      runSequence: 1, runRegistry: {[runId]: run}, sseClients: [], sseEventSeq: 0, sseEventBuffer: [],
+      tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'analyst-user',
+      orchestrator: {requestSummary, abortSession}, logger: {info: jest.fn(), warn: jest.fn(), error: jest.fn()},
+    } as any;
+    agentRoutesCancellationTestSeam.setSession(sessionId, session);
+    return {session, run, requestSummary, abortSession};
+  }
+
+  it('accepts repeated summary requests without cancelling or completing the active run', async () => {
+    const f = fixture(); const app = await makeApp();
+    for (let i = 0; i < 2; i++) {
+      const response = await analystHeaders(request(app).post(`/api/agent/v1/${sessionId}/summarize`)).send({runId});
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({success: true, sessionId, runId, outcome: 'accepted'});
+    }
+    expect(f.requestSummary).toHaveBeenCalledTimes(2);
+    expect(f.requestSummary).toHaveBeenLastCalledWith(sessionId, runId);
+    expect(f.abortSession).not.toHaveBeenCalled();
+    expect(f.session.status).toBe('running');
+    expect(f.session.sseEventBuffer).toEqual([]);
+  });
+
+  it.each([
+    ['missing', 400, 'RUN_ID_REQUIRED'], ['unknown', 404, 'RUN_NOT_FOUND'],
+    ['superseded', 409, 'RUN_NOT_ACTIVE'], ['completed', 409, 'RUN_NOT_SUMMARIZABLE'],
+    ['cancel_pending', 409, 'RUN_NOT_SUMMARIZABLE'], ['unsupported', 409, 'SUMMARY_UNSUPPORTED'],
+    ['closeout', 409, 'RUN_NOT_SUMMARIZABLE'],
+  ] as const)('rejects %s without touching another run or cancelling', async (scenario, status, code) => {
+    const f = fixture(); const app = await makeApp();
+    if (scenario === 'superseded') f.session.activeRun = {...f.run, runId: 'successor'};
+    if (scenario === 'completed') f.run.status = 'completed';
+    if (scenario === 'cancel_pending') f.session.cancellationInFlightRunId = runId;
+    if (scenario === 'unsupported') delete f.session.orchestrator.requestSummary;
+    if (scenario === 'closeout') f.requestSummary.mockReturnValue(false);
+    const response = await analystHeaders(request(app).post(`/api/agent/v1/${sessionId}/summarize`))
+      .send(scenario === 'missing' ? {} : {runId: scenario === 'unknown' ? 'foreign-run' : runId});
+    expect(response.status).toBe(status);
+    expect(response.body.code).toBe(code);
+    expect(f.requestSummary).toHaveBeenCalledTimes(scenario === 'closeout' ? 1 : 0);
+    expect(f.abortSession).not.toHaveBeenCalled();
+    expect(f.session.sseEventBuffer).toEqual([]);
+  });
+
+  it.each(['user', 'tenant', 'workspace', 'permission'] as const)('enforces %s access before runtime control', async boundary => {
+    const f = fixture(); const app = await makeApp();
+    let call = analystHeaders(request(app).post(`/api/agent/v1/${sessionId}/summarize`));
+    if (boundary === 'user') call = call.set('X-SmartPerfetto-SSO-User-Id', 'other-user');
+    if (boundary === 'tenant') call = call.set('X-SmartPerfetto-SSO-Tenant-Id', 'other-tenant');
+    if (boundary === 'workspace') call = call.set('X-SmartPerfetto-SSO-Workspace-Id', 'other-workspace');
+    if (boundary === 'permission') call = call.set('X-SmartPerfetto-SSO-Roles', 'viewer')
+      .set('X-SmartPerfetto-SSO-Scopes', 'trace:read,report:read');
+    const response = await call.send({runId});
+    expect(response.status).toBe(boundary === 'permission' ? 403 : 404);
+    expect(f.requestSummary).not.toHaveBeenCalled();
+    expect(f.abortSession).not.toHaveBeenCalled();
+  });
+});
+
 describe('agent analyze cancellation races', () => {
   it.each([false, true])('persists local admitted parents and final history without enterprise journaling (rejectParents=%s)', async rejectParents => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-local-history-'));

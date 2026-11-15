@@ -48,6 +48,7 @@ const SAFE_TERMINATION_REASONS = new Set([
   'quality_gate_failed',
   'plan_incomplete',
   'review_not_finished',
+  'user_requested',
 ]);
 const MAX_PRIVATE_PROVENANCE_IDS = 100;
 const MAX_PRIVATE_DISPLAY_NAME = 120;

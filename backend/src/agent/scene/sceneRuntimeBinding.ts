@@ -13,6 +13,7 @@ import {assertSceneRunActive, createSceneRunContext, revokeSceneRunContext, scen
 import {sceneNanosecondsSchema, type SceneScope, type SceneTimelineSnapshot} from './sceneTimelineContract';
 import {initializeSceneCoveragePlan, type SceneCoverageRegistrySnapshot} from './sceneCoveragePlan';
 import type {ScenePacingInputs} from './sceneProposalPacing';
+import {createDeadlineRuntimeTimeout} from '../../agentRuntime/runtimeLimits';
 
 const dispatchKey = Symbol('scene product dispatch');
 const dispatches = new WeakMap<object, DispatchState>();
@@ -137,10 +138,17 @@ export async function activateSceneRuntime(options: AnalysisOptions, actual: {
   };
   state.activation = (async () => {
     assertAcquisition();
-    const timeoutMs = Math.max(1, actual.deadlineMs - Date.now());
-    const signal = AbortSignal.any([state.signal, ...(actual.signal ? [actual.signal] : []), AbortSignal.timeout(timeoutMs)]);
+    const timeoutMs = actual.deadlineMs === Number.MAX_SAFE_INTEGER ? undefined : Math.max(1, actual.deadlineMs - Date.now());
+    const deadlineController = new AbortController();
+    const deadline = timeoutMs === undefined ? undefined : createDeadlineRuntimeTimeout({
+      deadlineAt: () => actual.deadlineMs, message: () => 'scene_run_deadline_exhausted',
+      onTimeout: () => deadlineController.abort(new Error('scene_run_deadline_exhausted')),
+    });
+    void deadline?.promise.catch(() => undefined);
+    const signal = AbortSignal.any([state.signal, ...(actual.signal ? [actual.signal] : []), deadlineController.signal]);
     const result = await actual.traceProcessorService.query(actual.traceId,
-      'SELECT CAST(start_ts AS TEXT) AS start_ns, CAST(end_ts AS TEXT) AS end_ns FROM trace_bounds', {signal, timeoutMs});
+      'SELECT CAST(start_ts AS TEXT) AS start_ns, CAST(end_ts AS TEXT) AS end_ns FROM trace_bounds',
+      {signal, ...(timeoutMs === undefined ? {} : {timeoutMs})}).finally(() => deadline?.clear());
     assertAcquisition();
     if (result.error || result.columns.length !== 2 || result.columns[0] !== 'start_ns' || result.columns[1] !== 'end_ns' ||
         result.rows.length !== 1 || result.rows[0].length !== 2) throw new Error('scene_trace_bounds_unavailable');

@@ -456,6 +456,7 @@ Base path: `/api/agent/v1`
 | `POST` | `/:sessionId/respond` | Continue an awaiting-user session |
 | `POST` | `/sessions/:sessionId/respond` | Session-scoped alias for `respond` |
 | `POST` | `/:sessionId/cancel` | Cancel the exact `runId` |
+| `POST` | `/:sessionId/summarize` | Summarize returned evidence for the exact live `runId` |
 | `POST` | `/:sessionId/interaction` | Record UI interaction |
 | `GET` | `/:sessionId/focus` | Query focus state |
 | `GET` | `/:sessionId/report` | Fetch generated report |
@@ -659,6 +660,8 @@ curl -X POST http://127.0.0.1:3000/api/agent/v1/<sessionId>/cancel \
   -H "Content-Type: application/json" \
   -d '{"runId":"<runId>"}'
 ```
+
+`POST /:sessionId/summarize` uses the same `{runId}` body and requires `agent:run` plus session access. Accepted requests return `{success:true,sessionId,runId,outcome:"accepted"}`; this is an acknowledgement, not a terminal result. Missing IDs return 400, unknown runs 404, and inactive/closing/unsupported runs 409. Keep consuming SSE until the matching terminal event. The runtime closes new acquisition, waits for current work to settle, and uses its reserved tool-free call; completion stays `incomplete/user_requested`. The existing cancellation endpoint retains its full-stop behavior.
 
 The cancellation terminal may return before the runtime has fully settled. A
 new run in the same session receives `409 CANCELLATION_IN_PROGRESS` until the

@@ -20,6 +20,7 @@ export function budgetTerminationReason(
     case 'context_limit': return 'max_context_tokens';
     case 'budget_limit': return 'max_budget_usd';
     case 'timeout': return 'timeout';
+    case 'user_requested': return 'user_requested';
     default: return undefined;
   }
 }

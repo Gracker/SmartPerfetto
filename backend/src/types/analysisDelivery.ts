@@ -25,7 +25,7 @@ export interface AnalysisCandidateIdentity {
 
 /** Why a native run did not complete; projections admit exactly these. */
 export const ANALYSIS_COMPLETION_REASONS = [
-  'output_limit', 'turn_limit', 'context_limit', 'timeout', 'budget_limit', 'provider_error', 'cancelled',
+  'output_limit', 'turn_limit', 'context_limit', 'timeout', 'budget_limit', 'provider_error', 'cancelled', 'user_requested',
 ] as const;
 
 export interface AnalysisCompletion extends AnalysisCandidateIdentity {

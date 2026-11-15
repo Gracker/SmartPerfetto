@@ -134,7 +134,16 @@ describe('runtime closeout returned-data tape', () => {
     expect(tape.hasReturnedData()).toBe(true);
     expect(tape.buildPrompt({...question, budgetExhausted: 'timeout'})).toContain('(timeout: turn_limit is the turn cap');
     expect(tape.buildPrompt(question)).toContain('(turn_limit: turn_limit is the turn cap');
-    expect(tape.buildPrompt({...question, outputLanguage: 'zh-CN', budgetExhausted: 'timeout'})).toContain('本轮调查已耗尽预算（timeout：');
+    expect(tape.buildPrompt({...question, outputLanguage: 'zh-CN', budgetExhausted: 'timeout'})).toContain('本轮调查已停止（timeout：');
+  });
+
+  it.each(['en', 'zh-CN'] as const)('labels an early user summary without claiming budget exhaustion in %s', outputLanguage => {
+    const tape = createRuntimeTurnCloseoutTape();
+    const prompt = tape.buildPrompt({...question, outputLanguage, budgetExhausted: 'user_requested'})!;
+    expect(prompt).toContain('user_requested');
+    expect(prompt).toContain(outputLanguage === 'en' ? 'the user requested an early summary' : '用户要求提前总结');
+    expect(prompt).toContain(outputLanguage === 'en' ? 'The investigation remains incomplete' : '调查状态仍是不完整');
+    expect(readPromptData(prompt).entries).toEqual([]);
   });
 
   it('does not count a returned result that could not be projected as deliverable data', async () => {

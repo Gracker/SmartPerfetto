@@ -733,6 +733,14 @@ describe('investigation request receipt', () => {
     evidence: 'read' as const, turns: {used: 0, limit: 6, total: 8}, elapsedMs: 12, remainingMs: 9_000,
     decision: 'no_change' as const};
 
+  it('retains a long or unlimited remaining-time observation without widening closed receipt fields', () => {
+    const recorder = createRuntimePerformanceRecorder();
+    const run = createRuntimePerformanceRun({runtimePerformanceRecorder: recorder});
+    run.recordInvestigationRequest({...observed, remainingMs: Number.MAX_SAFE_INTEGER});
+    expect(recorder.seal().investigationRequests?.[0]).toMatchObject({remainingMs: Number.MAX_SAFE_INTEGER,
+      status: 'observed', requirements: observed.requirements});
+  });
+
   it('records closed per-request facts and joins the model call that answered it', () => {
     let now = 0;
     const recorder = createRuntimePerformanceRecorder({now: () => now});

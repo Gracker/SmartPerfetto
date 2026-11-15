@@ -554,6 +554,8 @@ unavailable; see [Critical Path And Flamegraph](critical-path-and-flamegraph.en.
 
 Slow or local models usually need longer per-turn timeouts:
 
+Pi has no default total elapsed-time limit. Leave total/per-turn limits unset to allow long analyses. The examples below opt into explicit caps; turn/cost/context limits and provider stream-idle recovery remain active. Use **Summarize current results** to stop acquisition and summarize returned evidence; **Stop** cancels the run.
+
 ```bash
 AGENT_FULL_REQUEST_TIMEOUT_MS=1200000
 AGENT_STREAM_IDLE_TIMEOUT_MS=300000
@@ -575,13 +577,7 @@ OPENAI_QUICK_PER_TURN_MS=40000
 OPENAI_CLASSIFIER_TIMEOUT_MS=30000
 ```
 
-The shared `AGENT_*` safety limits apply to active Provider profiles;
-runtime-specific values can override them on direct environment-provider paths.
-`*_FULL_REQUEST_TIMEOUT_MS` is the absolute wall-clock cap for a full analysis
-(20 minutes by default), even when `maxTurns × per-turn timeout` is larger.
-`*_STREAM_IDLE_TIMEOUT_MS` limits how long a provider may emit no stream events
-(5 minutes by default); on expiry the backend cancels the SDK and active tool
-work, then completes the normal terminal event path with a `partial` result.
+The shared `AGENT_*` limits apply to active Provider profiles; runtime-specific values can override them on the direct env-provider path. Pi imposes a total `*_FULL_REQUEST_TIMEOUT_MS` cap only when explicitly configured; its default has no total elapsed-time limit. Explicit `maxTurns × per-turn timeout` estimates cannot exceed a configured total cap. `*_STREAM_IDLE_TIMEOUT_MS` defaults to five minutes without provider events: Pi aborts only the active SDK request, joins cleanup, and resumes the same transcript within bounded retry/turn/cost allowances, retaining completed tool results. Exhausted recovery returns a partial result. The following OpenAI/Claude legacy-runtime limits retain their original 20-minute default and extension/history semantics.
 In the OpenAI runtime, `maxTurns × per-turn timeout` (capped by the full-mode limit above)
 is only the initial deadline: each returned tool result moves it forward by the
 slowest of the recent rounds, and a deadline that arrives while the provider is

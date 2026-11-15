@@ -4044,7 +4044,52 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(updates.some(update => update.type === 'progress' && JSON.stringify(update.content).includes('1/2'))).toBe(true);
   }, 20_000);
 
-  it('retries an injected provider stream idle after 300s and retains completed tools', async () => {
+  it('lets a progressing default run finish after the former 1200s total deadline', async () => {
+    jest.useFakeTimers({now: 1000, doNotFake: ['nextTick', 'setImmediate']});
+    passVerification();
+    const entered = createDeferred<void>();
+    const completed = createDeferred<unknown[]>();
+    FakePiAgent.promptHandler = async agent => {
+      entered.resolve();
+      const timer = setInterval(() => agent.emitForTest(piTextDelta('still progressing')), 200_000);
+      try {return await completed.promise;} finally {clearInterval(timer);}
+    };
+    const runtime = typedRuntime();
+    const pending = runtime.analyze('large trace', 'typed-pi-long-default', 'trace-pi', {analysisMode: 'fast'});
+    await entered.promise;
+    await jest.advanceTimersByTimeAsync(1_400_000);
+    expect(FakePiAgent.instances[0].aborted).toBe(false);
+    expect(FakePiAgent.instances[0].continueCount).toBe(0);
+    completed.resolve([{role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: 'Large trace finished'}]}]);
+    expect(await pending).toMatchObject({success: true, conclusion: 'Large trace finished', completion: {status: 'completed'}});
+    sessionContextManager.remove('typed-pi-long-default');
+  });
+
+  it.each([
+    {cap: undefined, deadlineMs: 200},
+    {cap: '75', deadlineMs: 75},
+  ])('honors an explicit quick estimate and a tighter operator cap ($cap)', async ({cap, deadlineMs}) => {
+    jest.useFakeTimers({now: 1000, doNotFake: ['nextTick', 'setImmediate']});
+    const entered = createDeferred<void>();
+    const completed = createDeferred<unknown[]>();
+    FakePiAgent.promptHandler = async () => {entered.resolve(); return completed.promise;};
+    FakePiAgent.abortHandler = () => completed.resolve([]);
+    const sessionId = `typed-pi-explicit-quick-${cap ?? 'estimate'}`;
+    const runtime = typedRuntime({env: {AGENT_QUICK_MAX_TURNS: '2', AGENT_QUICK_PER_TURN_MS: '100',
+      ...(cap ? {[PI_AGENT_CORE_REQUEST_TIMEOUT_MS_ENV]: cap} : {})}});
+    const pending = runtime.analyze('bounded', sessionId, 'trace-pi', {analysisMode: 'fast'});
+    await entered.promise;
+    await jest.advanceTimersByTimeAsync(deadlineMs - 1);
+    expect(FakePiAgent.instances[0].aborted).toBe(false);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(await pending).toMatchObject({success: false, completion: {status: 'incomplete', reason: 'timeout'}});
+    sessionContextManager.remove(sessionId);
+  });
+
+  it.each(['stream_idle', 'request_timeout'] as const)('retries an injected provider %s and retains completed tools', async failureKind => {
+    const timeoutMs = failureKind === 'stream_idle' ? 300_000 : 1_200_000;
+    const sessionId = `native-pi-retry-${failureKind}`;
+    piFailedTurnClass = message => (message as any)?.errorMessage === 'Provider request timeout after 1200000ms' ? 'transient' : 'other';
     jest.useFakeTimers({now: 1000, doNotFake: ['nextTick', 'setImmediate']});
     passVerification();
     const opened = createDeferred<void>();
@@ -4102,7 +4147,8 @@ describe('experimental Pi agent-core runtime contract', () => {
       }
     }
     const runtime = new PiAgentCoreRuntime(trace, {kind: 'pi-agent-core', source: 'env'}, {
-      env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON, AGENT_QUICK_MAX_TURNS: '50'},
+      env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON, AGENT_QUICK_MAX_TURNS: '50',
+        ...(failureKind === 'request_timeout' ? {[PI_AGENT_CORE_STREAM_IDLE_TIMEOUT_MS_ENV]: '1500000'} : {})},
       moduleLoader: async () => ({Agent: ObservedAgent as any}),
       providerRuntimeLoader: async config => {
         const provider = await loadFakePiProviderRuntime(config);
@@ -4119,6 +4165,8 @@ describe('experimental Pi agent-core runtime contract', () => {
             if (index === 2) {
               options.signal.addEventListener('abort', () => idleDone.resolve({...message,
                 stopReason: 'aborted', errorMessage: 'Aborted', content: []}), {once: true});
+              if (failureKind === 'request_timeout') setTimeout(() => idleDone.resolve({...message,
+                stopReason: 'error', errorMessage: 'Provider request timeout after 1200000ms', content: []}), timeoutMs);
               opened.resolve();
             }
             const result = index === 2 ? idleDone.promise : Promise.resolve(message);
@@ -4134,9 +4182,9 @@ describe('experimental Pi agent-core runtime contract', () => {
     const updates: StreamingUpdate[] = [];
     runtime.on('update', update => updates.push(update));
     try {
-      const pending = runtime.analyze('inspect current trace', 'native-pi-idle-retry', 'trace-pi', {analysisMode: 'fast'});
+      const pending = runtime.analyze('inspect current trace', sessionId, 'trace-pi', {analysisMode: 'fast'});
       await opened.promise;
-      await jest.advanceTimersByTimeAsync(299999);
+      await jest.advanceTimersByTimeAsync(timeoutMs - 1);
       expect(requests).toHaveLength(2);
       expect(backoffs).toEqual([]);
       await jest.advanceTimersByTimeAsync(2001);
@@ -4146,10 +4194,229 @@ describe('experimental Pi agent-core runtime contract', () => {
       expect(requests).toHaveLength(3);
       expect(requests[2].filter((message: any) => message.role === 'user')).toHaveLength(1);
       expect(requests[2].filter((message: any) => message.role === 'toolResult')).toHaveLength(1);
-      expect(sdk.state.messages.some((message: any) => message.stopReason === 'aborted')).toBe(false);
+      expect(sdk.state.messages.some((message: any) => message.stopReason === 'aborted' || message.stopReason === 'error')).toBe(false);
       expect(toolExecutions).toBe(1);
       expect(updates.filter(update => update.type === 'error')).toEqual([]);
-    } finally {sleep.mockRestore(); sessionContextManager.remove('native-pi-idle-retry');}
+    } finally {sleep.mockRestore(); sessionContextManager.remove(sessionId);}
+  });
+
+  async function beginSummaryFixture(input: {
+    name: string; maxTurns?: number; billedUsd?: number; stuck?: boolean; holdTool?: boolean; holdCloseout?: boolean;
+    closeoutFailure?: boolean; naturalStop?: boolean;
+    env?: Record<string, string>;
+  }) {
+    passVerification();
+    const sessionId = `typed-pi-summary-${input.name}`;
+    const runId = `${sessionId}-run`;
+    const entered = createDeferred<void>();
+    const promptDone = createDeferred<unknown[]>();
+    const toolEntered = createDeferred<void>();
+    const toolDone = createDeferred<void>();
+    const closeoutEntered = createDeferred<void>();
+    const closeoutDone = createDeferred<Record<string, unknown>>();
+    const trace = createFakeTraceProcessorService();
+    trace.query.mockImplementation(async (...args: unknown[]) => {
+      if (input.holdTool && args.some(arg => typeof arg === 'string' && arg.includes('SELECT 23 AS duration_ms'))) {
+        toolEntered.resolve();
+        await toolDone.promise;
+      }
+      return {columns: ['duration_ms'], rows: [{duration_ms: 23}], durationMs: 1};
+    });
+    piClassifierResponses.push(
+      {role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: JSON.stringify(piClassifierDecision)}]},
+      input.closeoutFailure ? new Error('Summary provider unavailable')
+        : {role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: 'Observed 23 ms; other causes remain unresolved.'}]});
+    FakePiAgent.promptHandler = async agent => {
+      const tool = agent.state.tools.find((item: any) => item.name === 'execute_sql') as any;
+      agent.emitForTest({type: 'tool_execution_start', toolCallId: 'summary-evidence', toolName: 'execute_sql'});
+      const result = await tool.execute('summary-evidence', {sql: 'SELECT 23 AS duration_ms'});
+      agent.emitForTest({type: 'tool_execution_end', toolCallId: 'summary-evidence', toolName: 'execute_sql', result});
+      entered.resolve();
+      if (input.naturalStop) {
+        const message = {role: 'assistant', stopReason: 'toolUse', content: [{type: 'text', text: 'Partial evidence'}]};
+        expect(await (agent.options!.finishTurn as any)({message})).toEqual({action: 'end'});
+        return [message];
+      }
+      const messages = await promptDone.promise;
+      await (agent.options!.finishTurn as any)({message: messages[messages.length - 1]});
+      return messages;
+    };
+    FakePiAgent.abortHandler = () => {
+      if (!input.stuck) promptDone.resolve([{role: 'assistant', stopReason: 'aborted', errorMessage: 'Aborted', content: [],
+        usage: {cost: {total: input.billedUsd ?? 0}}}]);
+    };
+    const runtime = new PiAgentCoreRuntime(trace, {kind: 'pi-agent-core', source: 'env'}, {
+      env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON, AGENT_QUICK_MAX_TURNS: String(input.maxTurns ?? 50),
+        [PI_AGENT_CORE_ABORT_JOIN_TIMEOUT_MS_ENV]: '10', ...input.env},
+      moduleLoader: async () => ({Agent: FakePiAgent}),
+      providerRuntimeLoader: async config => {
+        const provider = await loadFakePiProviderRuntime(config);
+        return {...provider, streamFn: ((...args: Parameters<typeof provider.streamFn>) => {
+          const stream = provider.streamFn(...args);
+          if (piClassifierCalls.length !== 2) return stream;
+          closeoutEntered.resolve();
+          return input.holdCloseout ? {result: () => closeoutDone.promise} : stream;
+        }) as any};
+      },
+    });
+    const updates: StreamingUpdate[] = [];
+    runtime.on('update', update => updates.push(update));
+    const pending = runtime.analyze('inspect trace', sessionId, 'trace-pi', {analysisMode: 'fast', runId});
+    await (input.holdTool ? toolEntered.promise : entered.promise);
+    return {runtime, pending, sessionId, runId, promptDone, toolDone, closeoutEntered, closeoutDone, updates, trace};
+  }
+
+  it('summarizes the exact live run from returned evidence without retrying or claiming completion', async () => {
+    jest.useFakeTimers({now: 1000, doNotFake: ['nextTick', 'setImmediate']});
+    const fixture = await beginSummaryFixture({name: 'live', holdCloseout: true});
+    const {runtime, pending, sessionId, runId, closeoutEntered, closeoutDone, updates} = fixture;
+    expect(runtime.requestSummary(sessionId, 'stale-run')).toBe(false);
+    expect(runtime.requestSummary('other-session', runId)).toBe(false);
+    expect(runtime.requestSummary(sessionId, runId)).toBe(true);
+    expect(runtime.requestSummary(sessionId, runId)).toBe(true);
+    const agent = FakePiAgent.instances[0];
+    expect(await (agent.options!.beforeToolCall as any)({toolCall: {name: 'execute_sql'}})).toMatchObject({block: true});
+    await closeoutEntered.promise;
+    // Acquisition has closed: another click cannot reserve another delivery call.
+    expect(runtime.requestSummary(sessionId, runId)).toBe(false);
+    expect(piClassifierCalls[1].context.tools).toEqual([]);
+    expect(piClassifierCalls[1].context.messages[0].content).toContain('user_requested');
+    expect(piClassifierCalls[1].context.messages[0].content).toContain('duration_ms');
+    expect(piClassifierCalls[1].context.messages[0].content).toContain('23');
+    expect(piClassifierCalls[1].options.timeoutMs).toBe(300_000);
+    closeoutDone.resolve({role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: 'Observed 23 ms; cause remains unresolved.'}]});
+    expect(await pending).toMatchObject({success: true, partial: true, rounds: 2,
+      conclusion: 'Observed 23 ms; cause remains unresolved.', outputOrigin: 'sdk_final', terminationReason: 'user_requested',
+      completion: {status: 'incomplete', reason: 'user_requested', attemptId: 'closeout-2'}});
+    expect(agent.continueCount).toBe(0);
+    expect(piClassifierCalls).toHaveLength(2);
+    expect(updates.filter(update => update.type === 'error')).toEqual([]);
+    expect(runtime.requestSummary(sessionId, runId)).toBe(false);
+    sessionContextManager.remove(sessionId);
+  });
+
+  it('waits for an in-flight tool to settle before summary delivery and executes it once', async () => {
+    jest.useFakeTimers({now: 1000, doNotFake: ['nextTick', 'setImmediate']});
+    const {runtime, pending, sessionId, runId, toolDone, trace} = await beginSummaryFixture({name: 'tool', holdTool: true});
+    expect(runtime.requestSummary(sessionId, runId)).toBe(true);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(piClassifierCalls).toHaveLength(1);
+    toolDone.resolve();
+    expect(await pending).toMatchObject({partial: true, completion: {status: 'incomplete', reason: 'user_requested'}});
+    expect(trace.query.mock.calls.filter((args: unknown[]) => args.some(arg => typeof arg === 'string' && arg.includes('SELECT 23 AS duration_ms')))).toHaveLength(1);
+    expect(FakePiAgent.instances[0].continueCount).toBe(0);
+    expect(piClassifierCalls).toHaveLength(2);
+    sessionContextManager.remove(sessionId);
+  });
+
+  it('does not reserve another delivery call when natural closeout already started', async () => {
+    const {runtime, pending, sessionId, runId, closeoutEntered, closeoutDone} = await beginSummaryFixture({
+      name: 'natural-closeout', maxTurns: 2, naturalStop: true, holdCloseout: true});
+    await closeoutEntered.promise;
+    expect(runtime.requestSummary(sessionId, runId)).toBe(false);
+    closeoutDone.resolve({role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: 'Observed 23 ms; other causes remain unresolved.'}]});
+    expect(await pending).toMatchObject({partial: true, completion: {status: 'incomplete', reason: 'turn_limit'}});
+    expect(piClassifierCalls).toHaveLength(2);
+    sessionContextManager.remove(sessionId);
+  });
+
+  it('retains an honest user-requested partial result when summary delivery fails', async () => {
+    const {runtime, pending, sessionId, runId, updates} = await beginSummaryFixture({name: 'closeout-failed', closeoutFailure: true});
+    expect(runtime.requestSummary(sessionId, runId)).toBe(true);
+    expect(await pending).toMatchObject({partial: true, terminationReason: 'user_requested',
+      completion: {status: 'incomplete', reason: 'user_requested', attemptId: '1'}});
+    expect(FakePiAgent.instances[0].continueCount).toBe(0);
+    expect(piClassifierCalls).toHaveLength(2);
+    expect(updates.filter(update => update.type === 'error')).toEqual([]);
+    sessionContextManager.remove(sessionId);
+  });
+
+  it.each(['turn_cap', 'cost_cap', 'cancel', 'deadline', 'stuck_cleanup'] as const)
+  ('keeps early summary bounded by %s', async scenario => {
+    jest.useFakeTimers({now: 1000, doNotFake: ['nextTick', 'setImmediate']});
+    const fixture = await beginSummaryFixture({name: scenario,
+      maxTurns: scenario === 'turn_cap' ? 1 : 50, billedUsd: scenario === 'cost_cap' ? 2 : 0,
+      stuck: scenario === 'stuck_cleanup', holdTool: scenario === 'deadline',
+      env: {...(scenario === 'cost_cap' ? {SMARTPERFETTO_PI_MAX_BUDGET_USD: '1'} : {}),
+        ...(scenario === 'deadline' ? {[PI_AGENT_CORE_REQUEST_TIMEOUT_MS_ENV]: '25',
+          [PI_AGENT_CORE_ABORT_JOIN_TIMEOUT_MS_ENV]: '100'} : {})}});
+    const {runtime, pending, sessionId, runId, promptDone} = fixture;
+    expect(runtime.requestSummary(sessionId, runId)).toBe(true);
+    if (scenario === 'cancel') runtime.abortSession(sessionId);
+    if (scenario === 'deadline') {
+      await jest.advanceTimersByTimeAsync(25);
+      fixture.toolDone.resolve();
+    }
+    if (scenario === 'stuck_cleanup') await jest.advanceTimersByTimeAsync(100);
+    const result = await pending;
+    if (scenario === 'turn_cap') expect(result).toMatchObject({partial: true, rounds: 1,
+      completion: {status: 'incomplete', reason: 'user_requested'}});
+    if (scenario === 'cost_cap') expect(result).toMatchObject({partial: true,
+      completion: {status: 'incomplete', reason: 'budget_limit'}});
+    if (scenario === 'cancel' || scenario === 'stuck_cleanup') expect(result).toMatchObject({success: false,
+      completion: {status: 'cancelled', reason: 'cancelled'}});
+    if (scenario === 'deadline') expect(result).toMatchObject({success: false,
+      completion: {status: 'incomplete', reason: 'timeout'}});
+    if (scenario !== 'deadline') expect(piClassifierCalls).toHaveLength(1);
+    expect(FakePiAgent.instances[0].continueCount).toBe(0);
+    if (scenario === 'stuck_cleanup') {
+      await expect(runtime.analyze('must not overlap', sessionId, 'trace-pi')).rejects.toThrow('already in progress');
+      promptDone.resolve([{role: 'assistant', stopReason: 'aborted', content: []}]);
+      await jest.advanceTimersByTimeAsync(0);
+    }
+    expect(runtime.requestSummary(sessionId, runId)).toBe(false);
+    sessionContextManager.remove(sessionId);
+  });
+
+  it.each([1, 50])('counts only dispatched calls when summary arrives during preparation (maxTurns=%s)', async maxTurns => {
+    passVerification();
+    const moduleReady = createDeferred<any>();
+    const requested = createDeferred<void>();
+    const sessionId = `typed-pi-summary-before-sdk-${maxTurns}`;
+    const runId = `${sessionId}-run`;
+    const runtime = typedRuntime({env: {AGENT_QUICK_MAX_TURNS: String(maxTurns)},
+      loader: async () => {requested.resolve(); return moduleReady.promise;}});
+    piClassifierResponses.push(
+      {role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: JSON.stringify(piClassifierDecision)}]},
+      {role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: 'No evidence was acquired; investigation remains unresolved.'}]});
+    const pending = runtime.analyze('inspect trace', sessionId, 'trace-pi', {analysisMode: 'fast', runId});
+    await requested.promise;
+    expect(runtime.requestSummary(sessionId, runId)).toBe(true);
+    moduleReady.resolve({Agent: FakePiAgent});
+    expect(await pending).toMatchObject({partial: true, rounds: maxTurns === 1 ? 0 : 1,
+      outputOrigin: maxTurns === 1 ? 'runtime_fallback' : 'sdk_final',
+      completion: {status: 'incomplete', reason: 'user_requested', attemptId: maxTurns === 1 ? '0' : 'closeout-1'}});
+    expect(FakePiAgent.instances[0].promptCount).toBe(0);
+    expect(FakePiAgent.instances[0].continueCount).toBe(0);
+    expect(piClassifierCalls).toHaveLength(maxTurns === 1 ? 1 : 2);
+    sessionContextManager.remove(sessionId);
+  });
+
+  it('does not retry a transient failure when summary arrives during backoff', async () => {
+    jest.useFakeTimers({now: 1000, doNotFake: ['nextTick', 'setImmediate']});
+    const backingOff = createDeferred<void>();
+    const sleep = jest.spyOn(require('node:timers/promises'), 'setTimeout').mockImplementation(
+      ((_ms: number, _value: unknown, options: {signal: AbortSignal}) => {
+        backingOff.resolve();
+        return new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), {once: true}));
+      }) as any);
+    passVerification();
+    piFailedTurnClass = () => 'transient';
+    FakePiAgent.promptHandler = async () => [{role: 'assistant', stopReason: 'error', errorMessage: 'transient connection error', content: []}];
+    piClassifierResponses.push(
+      {role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: JSON.stringify(piClassifierDecision)}]},
+      {role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: 'No returned evidence; cause remains unresolved.'}]});
+    const runtime = typedRuntime();
+    const sessionId = 'typed-pi-summary-backoff';
+    const runId = `${sessionId}-run`;
+    try {
+      const pending = runtime.analyze('inspect trace', sessionId, 'trace-pi', {analysisMode: 'fast', runId});
+      await backingOff.promise;
+      expect(runtime.requestSummary(sessionId, runId)).toBe(true);
+      expect(await pending).toMatchObject({partial: true, completion: {status: 'incomplete', reason: 'user_requested'}});
+      expect(FakePiAgent.instances[0].continueCount).toBe(0);
+      expect(piClassifierCalls).toHaveLength(2);
+    } finally {sleep.mockRestore(); sessionContextManager.remove(sessionId);}
   });
 
   it.each(['retry_cap', 'mixed_cap', 'turn_cap', 'cost_cap', 'deadline', 'cancel', 'cancel_backoff', 'deadline_backoff', 'stuck_cleanup'] as const)
@@ -4349,6 +4616,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       const eligible = ['complete', 'length', 'invalid', 'no-declaration'].includes(outcome);
       try {
         const result = await typedRuntime({env: {AGENT_QUICK_MAX_TURNS: outcome === 'no-reserve' ? '1' : '2',
+          ...(outcome === 'expired' ? {[PI_AGENT_CORE_REQUEST_TIMEOUT_MS_ENV]: '60000'} : {}),
           AGENT_QUICK_TIMEOUT_SECONDS: '1'}}).analyze('query', `pi-output-limit-${outcome}`, 'trace-pi', {analysisMode: 'fast'});
         expect(FakePiAgent.instances[0].promptCount).toBe(eligible ? 2 : 1);
         if (outcome === 'complete' || outcome === 'invalid' || outcome === 'no-declaration') {
@@ -5752,16 +6020,16 @@ describe('resolvePiRuntimeTimeouts', () => {
   it('multiplies the per-turn estimate by the effective turn limit, under the operator cap', () => {
     expect(resolvePiRuntimeTimeouts({AGENT_FULL_PER_TURN_MS: '1000', AGENT_MAX_TURNS: '20'}).requestTimeoutMs).toBe(20_000);
     expect(resolvePiRuntimeTimeouts({AGENT_FULL_PER_TURN_MS: '120000', AGENT_FULL_REQUEST_TIMEOUT_MS: '3600000'}).requestTimeoutMs).toBe(3_600_000);
-    expect(resolvePiRuntimeTimeouts({AGENT_FULL_PER_TURN_MS: '120000'}).requestTimeoutMs).toBe(20 * 60_000);
+    expect(resolvePiRuntimeTimeouts({AGENT_FULL_PER_TURN_MS: '120000'}).requestTimeoutMs).toBe(100 * 120_000);
   });
 
   it('configures stream idle independently from the overall request deadline', () => {
-    expect(resolvePiRuntimeTimeouts({})).toMatchObject({streamIdleTimeoutMs: 300_000, requestTimeoutMs: 1_200_000});
+    expect(resolvePiRuntimeTimeouts({})).toMatchObject({streamIdleTimeoutMs: 300_000, requestTimeoutMs: 0});
     expect(resolvePiRuntimeTimeouts({[PI_AGENT_CORE_STREAM_IDLE_TIMEOUT_MS_ENV]: '450000',
       AGENT_STREAM_IDLE_TIMEOUT_MS: '600000', [PI_AGENT_CORE_REQUEST_TIMEOUT_MS_ENV]: '900000'}))
       .toMatchObject({streamIdleTimeoutMs: 450_000, requestTimeoutMs: 900_000});
     expect(resolvePiRuntimeTimeouts({[PI_AGENT_CORE_STREAM_IDLE_TIMEOUT_MS_ENV]: '-1', AGENT_STREAM_IDLE_TIMEOUT_MS: '600000'}))
-      .toMatchObject({streamIdleTimeoutMs: 600_000, requestTimeoutMs: 1_200_000});
+      .toMatchObject({streamIdleTimeoutMs: 600_000, requestTimeoutMs: 0});
   });
 
   it('keeps the operator deadline without a per-turn estimate', () => {

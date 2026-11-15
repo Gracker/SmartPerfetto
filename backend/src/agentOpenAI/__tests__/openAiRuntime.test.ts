@@ -1441,7 +1441,7 @@ describe('OpenAI cancellation and bounded recovery', () => {
           reasoning: controls ? 'disabled' : 'provider_default', outcome: 'ok'}),
       ]));
       const prompt = (run.mock.calls[1][1] as any[])[0].content;
-      expect(prompt).toContain('本轮调查已耗尽预算（timeout：');
+      expect(prompt).toContain('本轮调查已停止（timeout：');
       expect(prompt).toContain('"rows":[[195]]');
       expect(result).toMatchObject({partial: true, terminationReason: 'timeout',
         conclusion: 'Main thread waited 195 ms; the owner is not established.',

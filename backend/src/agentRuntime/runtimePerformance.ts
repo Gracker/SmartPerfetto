@@ -877,7 +877,9 @@ export function projectRuntimeInvestigationRequestReceipt(value: unknown): Runti
       receipt.evidence = observationMember(input.evidence, INVESTIGATION_EVIDENCE_STATUSES);
       receipt.turns = observationCounts(input.turns, ['used', 'limit', 'total']);
       receipt.elapsedMs = observationCount(input.elapsedMs, MAX_MS);
-      receipt.remainingMs = observationCount(input.remainingMs, MAX_MS);
+      // A run without an elapsed-time cap uses a finite safe-integer deadline.
+      // Preserve that observation instead of silently dropping the whole receipt.
+      receipt.remainingMs = observationCount(input.remainingMs);
       receipt.decision = observationMember(input.decision, INVESTIGATION_DECISIONS);
     }
     return receipt;

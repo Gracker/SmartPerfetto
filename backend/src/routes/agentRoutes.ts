@@ -3101,6 +3101,34 @@ router.post('/:sessionId/cancel', async (req, res) => {
   return sendCancelSessionRunResult(res, result);
 });
 
+// End acquisition and deliver a partial summary without cancelling the run.
+router.post('/:sessionId/summarize', (req, res) => {
+  const {sessionId} = req.params;
+  const session = getAuthorizedSession(req, res, sessionId);
+  if (!session) return;
+  if (!hasRbacPermission(requireRequestContext(req), 'agent:run')) {
+    return sendForbidden(res, 'Summarizing an active analysis requires agent:run');
+  }
+  const runId = readRequiredCancellationRunId(req.body?.runId);
+  if (!runId) return res.status(400).json({success: false, sessionId,
+    code: 'RUN_ID_REQUIRED', error: 'runId is required for summarization'});
+  const run = resolveSessionRun(session, runId);
+  if (!run) return res.status(404).json({success: false, sessionId, runId,
+    code: 'RUN_NOT_FOUND', error: 'Run not found in session'});
+  if (!isCurrentRunOwner(session, runId)) return res.status(409).json({success: false, sessionId, runId,
+    code: 'RUN_NOT_ACTIVE', error: 'Run is not the active session owner'});
+  if (!['pending', 'running'].includes(run.status) || !['pending', 'running'].includes(session.status)
+    || session.cancellationInFlightRunId === runId || isSessionRunCancelled(session, runId)) {
+    return res.status(409).json({success: false, sessionId, runId,
+      code: 'RUN_NOT_SUMMARIZABLE', error: 'Run is no longer accepting a summary request'});
+  }
+  if (!session.orchestrator.requestSummary) return res.status(409).json({success: false, sessionId, runId,
+    code: 'SUMMARY_UNSUPPORTED', error: 'This runtime does not support an early summary'});
+  if (!session.orchestrator.requestSummary(sessionId, runId)) return res.status(409).json({success: false, sessionId, runId,
+    code: 'RUN_NOT_SUMMARIZABLE', error: 'Run is no longer accepting a summary request'});
+  return res.json({success: true, sessionId, runId, outcome: 'accepted'});
+});
+
 router.post('/:sessionId/interaction', async (req, res) => {
   const { sessionId } = req.params;
   const session = getAuthorizedSession(req, res, sessionId);

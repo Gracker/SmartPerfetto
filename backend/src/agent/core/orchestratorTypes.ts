@@ -50,6 +50,8 @@ export interface IOrchestrator {
   reset(): void;
   /** Best-effort, idempotent cancellation for a specific in-flight session. */
   abortSession?(sessionId: string, referenceTraceId?: string): void | Promise<void>;
+  /** End acquisition for this exact live run and summarize its returned evidence. */
+  requestSummary?(sessionId: string, runId: string): boolean;
   /** Clean up all session-scoped state for a specific session (agentv3: artifacts, notes, plans). */
   cleanupSession?(sessionId: string): void;
   /** Historical focus-store hook. Guard with: typeof orchestrator.getFocusStore === 'function'. */
@@ -84,6 +86,7 @@ export type AnalysisTerminationReason =
   | 'max_structured_output_retries'
   | 'execution_error'
   | 'timeout'
+  | 'user_requested'
   | 'quality_gate_failed'
   | 'plan_incomplete'
   /** A delivered answer whose review stop did not settle in time; stored unverified. */

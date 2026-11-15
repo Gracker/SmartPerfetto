@@ -636,7 +636,7 @@ function snapshot(): SessionStateSnapshot {
 }
 
 describe('private session snapshot provenance', () => {
-  it('preserves the quality-specific termination reason', () => {
+  it.each(['quality_gate_failed', 'user_requested'] as const)('preserves the safe termination reason %s', terminationReason => {
     const projected = projectPrivateAnalysisResult('session-private', {
       sessionId: 'session-private',
       success: true,
@@ -647,10 +647,10 @@ describe('private session snapshot provenance', () => {
       rounds: 1,
       totalDurationMs: 1,
       partial: true,
-      terminationReason: 'quality_gate_failed',
+      terminationReason,
     }, 'zh-CN');
 
-    expect(projected.terminationReason).toBe('quality_gate_failed');
+    expect(projected.terminationReason).toBe(terminationReason);
   });
 
   it('keeps bounded source generation provenance without private content', () => {

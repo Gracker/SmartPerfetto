@@ -149,7 +149,6 @@ import {isRuntimeCandidateAdmitted} from '../../runtimeCandidateAdmission';
 import {countCompletedQuickConversationTurns} from '../../quickBudget';
 import {getLruCacheEntry, setLruCacheEntry} from '../../runtimeCache';
 import {
-  DEFAULT_FULL_REQUEST_TIMEOUT_MS,
   DEFAULT_PROVIDER_STREAM_IDLE_TIMEOUT_MS,
   MODEL_ROW_PAGE_MAX_BYTES,
   type RuntimeTimeoutKind,
@@ -434,12 +433,12 @@ export function resolvePiRuntimeTimeouts(env: EnvLike): {
   const requestCapMs = positiveIntegerEnv(
     env,
     [PI_AGENT_CORE_REQUEST_TIMEOUT_MS_ENV, AGENT_FULL_REQUEST_TIMEOUT_MS_ENV],
-    DEFAULT_FULL_REQUEST_TIMEOUT_MS,
+    0,
   );
   const fullPerTurnMs = positiveIntegerEnv(env, [AGENT_FULL_PER_TURN_MS_ENV], 0);
   return {
     requestTimeoutMs: fullPerTurnMs > 0
-      ? resolveFullRequestTimeoutMs(fullPerTurnMs, resolveAgentRuntimeBudgetConfig(env).maxTurns, requestCapMs)
+      ? resolveFullRequestTimeoutMs(fullPerTurnMs, resolveAgentRuntimeBudgetConfig(env).maxTurns, requestCapMs || Number.MAX_SAFE_INTEGER)
       : requestCapMs,
     streamIdleTimeoutMs: positiveIntegerEnv(
       env,
@@ -480,9 +479,10 @@ function buildPiTimeoutResult(input: {
   startedAt: number;
   timeoutKind: RuntimeTimeoutKind;
   timeoutMs: number;
+  cancelled?: boolean;
   reason?: unknown;
 }): AnalysisResult {
-  const message = input.timeoutKind === 'stream_idle'
+  const message = input.cancelled ? 'Pi Agent Core analysis cancelled.' : input.timeoutKind === 'stream_idle'
     ? `Pi Agent Core provider stream idle timeout after ${input.timeoutMs}ms.`
     : `Pi Agent Core request timeout after ${input.timeoutMs}ms.`;
   const detail = input.reason instanceof Error
@@ -508,6 +508,10 @@ class PiProviderIdleTimeoutError extends Error {
   constructor(readonly timeoutMs: number) {
     super(`Pi Agent Core provider stream idle timeout after ${timeoutMs}ms`);
   }
+}
+
+class PiSummaryRequestedError extends Error {
+  constructor() { super('Summary requested by user'); }
 }
 
 function createPiProviderIdleSupervisor(input: {
@@ -635,7 +639,7 @@ export function selectAssistantConclusion(messages: unknown[] | undefined): stri
 }
 
 /** The acquisition budgets a run can exhaust; each is a distinct, separately actionable stop. */
-type PiBudgetStop = Extract<NonNullable<AnalysisCompletion['reason']>, 'turn_limit' | 'context_limit' | 'budget_limit'>;
+type PiBudgetStop = Extract<NonNullable<AnalysisCompletion['reason']>, 'turn_limit' | 'context_limit' | 'budget_limit' | 'user_requested'>;
 
 export function buildPiAnalysisCompletion(input: {
   assistant?: Record<string, unknown>;
@@ -1093,20 +1097,23 @@ async function runPiProviderPromptWithSupervision(input: {
   providerIdle: ReturnType<typeof createPiProviderIdleSupervisor>;
   executionLease: RuntimeExecutionLease;
   workSignal?: AbortSignal;
+  summarySignal?: AbortSignal;
   abortJoinTimeoutMs: number;
 }): Promise<void> {
   input.providerIdle.start();
   const promptPromise = input.resume ? input.agent.continue!() : input.agent.prompt(input.prompt);
   const workSignal = input.workSignal ?? input.executionLease.signal;
   const abort = createPiAbortPromise(workSignal);
+  const summary = input.summarySignal ? createPiAbortPromise(input.summarySignal) : undefined;
   void abort.promise.catch(() => undefined);
+  void summary?.promise.catch(() => undefined);
   try {
-    await Promise.race([promptPromise, input.providerIdle.promise, abort.promise]);
+    await Promise.race([promptPromise, input.providerIdle.promise, abort.promise, ...(summary ? [summary.promise] : [])]);
     if (input.providerIdle.timeoutError) throw input.providerIdle.timeoutError;
   } catch (error) {
     input.agent.abort();
     input.providerIdle.clear();
-    if (error instanceof PiProviderIdleTimeoutError && !workSignal.aborted) {
+    if ((error instanceof PiProviderIdleTimeoutError || error instanceof PiSummaryRequestedError) && !workSignal.aborted) {
       const cleanedUp = await joinPiPromptCleanup(promptPromise, input.abortJoinTimeoutMs);
       // Never overlap a retry/successor with a provider that ignored abort.
       if (!cleanedUp) input.executionLease.abort(error);
@@ -1118,11 +1125,14 @@ async function runPiProviderPromptWithSupervision(input: {
   } finally {
     input.providerIdle.clear();
     abort.clear();
+    summary?.clear();
   }
 }
 
 interface PiRunWorkControl {
   readonly signal: AbortSignal;
+  readonly summarySignal: AbortSignal;
+  closeSummaryWindow(): void;
   assertActive(): void;
   setAgent(agent: PiAgentCoreAgent): void;
   checkpoint(factory: () => AnalysisResult): void;
@@ -1321,6 +1331,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
   private readonly moduleRuntimeCache = new Map<string, ReturnType<PiAgentCoreModuleLoader>>();
   private readonly providerRuntimeCache = new Map<string, ReturnType<PiAgentCoreProviderRuntimeLoader>>();
   private readonly activeAgents = new Map<string, PiAgentCoreAgent>();
+  private readonly summaryRequests = new Map<string, {runId: string; controller: AbortController; accepting: boolean; signal: AbortSignal}>();
   private readonly artifactStores = new Map<string, ArtifactStore>();
   private readonly sessionNotes = new Map<string, AnalysisNote[]>();
   private readonly sessionPlans = new Map<string, { current: AnalysisPlanV3 | null; history: AnalysisPlanV3[] }>();
@@ -1381,9 +1392,12 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     let requestTimer: ReturnType<typeof setTimeout> | undefined;
     const workController = new AbortController();
     const workSignal = AbortSignal.any([executionLease.signal, workController.signal]);
+    const summaryRequest = {runId: executionLease.key.runId!, controller: new AbortController(),
+      accepting: true, signal: workSignal};
+    this.summaryRequests.set(sessionId, summaryRequest);
     let runAgent: PiAgentCoreAgent | undefined;
     let acceptedCheckpoint: (() => AnalysisResult) | undefined;
-    const getRunDeadlineMs = () => Math.min(startedAt + requestTimeoutMs,
+    const getRunDeadlineMs = () => Math.min(requestTimeoutMs > 0 ? startedAt + requestTimeoutMs : Number.MAX_SAFE_INTEGER,
       admission.admission.task?.facts.hardDeadlineAt ?? Number.POSITIVE_INFINITY);
     const settleLease = () => {
       if (leaseSettled) return;
@@ -1397,6 +1411,11 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const requestTimeout = new Promise<never>((_, reject) => { rejectRequestTimeout = reject; });
     const expireRequest = () => {
       if (workController.signal.aborted || executionLease.signal.aborted) return;
+      const remaining = getRunDeadlineMs() - Date.now();
+      if (remaining > 0) {
+        requestTimer = setTimeout(expireRequest, Math.min(remaining, 2_147_483_647));
+        return;
+      }
       const budgetMs = Math.max(0, getRunDeadlineMs() - startedAt);
       markTimeout('request', budgetMs);
       const reason = new Error(`Pi Agent Core request timeout after ${budgetMs}ms`);
@@ -1406,6 +1425,8 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     };
     const work: PiRunWorkControl = {
       signal: workSignal,
+      summarySignal: summaryRequest.controller.signal,
+      closeSummaryWindow: () => {summaryRequest.accepting = false;},
       assertActive: () => {
         executionLease.throwIfAborted();
         if (Date.now() >= getRunDeadlineMs()) expireRequest();
@@ -1418,8 +1439,12 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     };
     const armRequestTimeout = (limitMs: number) => {
       if (requestTimer) clearTimeout(requestTimer);
-      requestTimeoutMs = Math.min(timeouts.requestTimeoutMs, limitMs);
-      requestTimer = setTimeout(expireRequest, Math.max(0, getRunDeadlineMs() - Date.now()));
+      requestTimeoutMs = timeouts.requestTimeoutMs > 0 && limitMs > 0
+        ? Math.min(timeouts.requestTimeoutMs, limitMs) : limitMs;
+      const deadline = getRunDeadlineMs();
+      if (deadline < Number.MAX_SAFE_INTEGER) {
+        requestTimer = setTimeout(expireRequest, Math.min(2_147_483_647, Math.max(0, deadline - Date.now())));
+      }
     };
     armRequestTimeout(requestTimeoutMs);
     void requestTimeout.catch(() => undefined);
@@ -1429,7 +1454,10 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     void executionAbort.promise.catch(() => undefined);
     try {
       work.assertActive();
+      // Scene reconstruction has its own controller/terminal protocol.
+      if (resolveSceneProductScope(options, {sessionId, traceId, runId: executionLease.key.runId!})) work.closeSummaryWindow();
       const fakeStream = parseFlagValue(this.env[PI_AGENT_CORE_FAKE_STREAM_ENV]) === true;
+      if (fakeStream) work.closeSummaryWindow();
       analysis = fakeStream
         ? this.analyzeFakeStream(
           query,
@@ -1461,7 +1489,8 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
             strategyRegistry = registry;
             if (policy.budgetMode === 'quick') {
               const budget = resolveQuickTurnBudget({env: this.env});
-              armRequestTimeout(budget.hardCapTurns * positiveIntegerEnv(this.env, ['AGENT_QUICK_PER_TURN_MS'], 40_000));
+              const perTurnMs = positiveIntegerEnv(this.env, ['AGENT_QUICK_PER_TURN_MS'], 0);
+              if (perTurnMs > 0) armRequestTimeout(budget.hardCapTurns * perTurnMs);
             }
           },
           getRunDeadlineMs,
@@ -1499,6 +1528,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           startedAt,
           timeoutKind: timeout.kind,
           timeoutMs: timeout.timeoutMs,
+          cancelled: !timedOut,
           reason: error,
         });
         interrupted.turnIntent = turnIntent;
@@ -1532,6 +1562,8 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       }
       throw error;
     } finally {
+      summaryRequest.accepting = false;
+      if (this.summaryRequests.get(sessionId) === summaryRequest) this.summaryRequests.delete(sessionId);
       const deliveredSupplements = options.runSupplementChannel?.deliveredRecords({includeText: false}).length ?? 0;
       if (deliveredSupplements > 0) runtimePerformance.recordRunSupplementsDelivered(deliveredSupplements);
       executionAbort.clear();
@@ -1843,7 +1875,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const prep = await this.prepareAnalysis(
       query, sessionId, traceId, options, providerRuntime.model.id,
       executionLease, turnIntent, policy, intentResolver.strategyRegistry, analysisHistoryReader, work, closeoutTape.observe,
-      () => toolAdmissionsOpen && !work.signal.aborted && Date.now() < getRunDeadlineMs(), getRunDeadlineMs(), authorization,
+      () => toolAdmissionsOpen && !work.summarySignal.aborted && !work.signal.aborted && Date.now() < getRunDeadlineMs(), getRunDeadlineMs(), authorization,
     );
     onPreparationReady({sourceUse: prep.sourceUse, artifactStore: prep.artifactStore,
       selection: prep.analysisRunSpec.selection});
@@ -1932,6 +1964,10 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         const spentBudget: PiBudgetStop | undefined = rounds + 1 >= providerTurnLimit ? 'turn_limit'
           : piContextNearlyFull(message, providerRuntime.model.contextWindow) ? 'context_limit'
           : maxBudgetUsd > 0 && spentUsd >= maxBudgetUsd ? 'budget_limit' : undefined;
+        if (work.summarySignal.aborted) {
+          budgetStop = maxBudgetUsd > 0 && spentUsd >= maxBudgetUsd ? 'budget_limit' : 'user_requested';
+          return {action: 'end' as const};
+        }
         if (!supplements && !spentBudget) return undefined;
         const toolCall = piAssistantMessageHasToolCall(message);
         // Never steer onto a finished answer: it would buy a provider request of its own.
@@ -1949,7 +1985,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       }) satisfies InstalledPiAgentOptions['finishTurn'],
       beforeToolCall: (async ({toolCall}) => {
         work.assertActive();
-        if (!toolAdmissionsOpen || budgetStop || !toolCall?.name || !prep.allowedToolNames.has(toolCall.name)) {
+        if (!toolAdmissionsOpen || work.summarySignal.aborted || budgetStop || !toolCall?.name || !prep.allowedToolNames.has(toolCall.name)) {
           return {block: true, reason: 'Tool is not in the SmartPerfetto request-scoped allowlist.'};
         }
         return undefined;
@@ -1962,6 +1998,10 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     let providerIdle: ReturnType<typeof createPiProviderIdleSupervisor> | undefined;
     const runProviderPrompt = async (prompt: string, turnLimit = turnBudget.acquisitionTurns) => {
       work.assertActive();
+      if (work.summarySignal.aborted) {
+        budgetStop = 'user_requested';
+        return {assistant: undefined, attemptId: `${attempt}`, text: '', budgetStop};
+      }
       if (rounds >= turnLimit) { budgetStop = 'turn_limit'; return undefined; }
       providerTurnLimit = turnLimit;
       const boundary = agent.state.messages?.length ?? 0;
@@ -1978,10 +2018,11 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         void providerIdle.promise.catch(() => undefined);
         try {
           await runPiProviderPromptWithSupervision({agent, prompt, resume, providerIdle, executionLease,
-            workSignal: work.signal, abortJoinTimeoutMs});
+            workSignal: work.signal, summarySignal: work.summarySignal, abortJoinTimeoutMs});
         } catch (error) {
-          if (!(error instanceof PiProviderIdleTimeoutError)) throw error;
-          idleFailure = error;
+          if (error instanceof PiSummaryRequestedError) budgetStop = 'user_requested';
+          else if (error instanceof PiProviderIdleTimeoutError) idleFailure = error;
+          else throw error;
         } finally {
           providerIdle.clear();
           providerIdle = undefined;
@@ -1990,6 +2031,11 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         }
         executionLease.throwIfAborted();
         work.signal.throwIfAborted();
+        if (work.summarySignal.aborted) {
+          heldTransientErrors = [];
+          budgetStop = maxBudgetUsd > 0 && spentUsd >= maxBudgetUsd ? 'budget_limit' : 'user_requested';
+          break;
+        }
         const held = heldTransientErrors;
         heldTransientErrors = [];
         const messages = agent.state.messages ?? [];
@@ -2026,7 +2072,14 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           `模型服务连接中断，${Math.round(backoffMs / 1000)}s 后重发本轮 (${transientTurnRetries}/${PI_MAX_TRANSIENT_TURN_RETRIES})...`,
           `The model provider connection dropped. Re-sending this turn in ${Math.round(backoffMs / 1000)}s (${transientTurnRetries}/${PI_MAX_TRANSIENT_TURN_RETRIES})...`)},
         timestamp: Date.now()});
-        await delay(backoffMs, undefined, {signal: work.signal});
+        try {
+          await delay(backoffMs, undefined, {signal: AbortSignal.any([work.signal, work.summarySignal])});
+        } catch (error) {
+          work.assertActive();
+          if (!work.summarySignal.aborted) throw error;
+          budgetStop = 'user_requested';
+          break;
+        }
       }
       executionLease.throwIfAborted();
       work.signal.throwIfAborted();
@@ -2056,7 +2109,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       const update = projectPiAgentCoreEventToStreamingUpdate(event, Date.now(), outputLanguage);
       if (correctionInProgress && update?.type === 'error') return;
       // Held until the run decides: a re-sent or overflowed turn is not a run error.
-      if (update?.type === 'error' && (providerIdle?.timeoutError || classifyFailedTurn((event as {message?: unknown}).message))) {
+      if (update?.type === 'error' && (work.summarySignal.aborted || providerIdle?.timeoutError || classifyFailedTurn((event as {message?: unknown}).message))) {
         heldTransientErrors.push(update);
         return;
       }
@@ -2117,11 +2170,20 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         throw error;
       }
       // The main prompt ended: nothing later may pick up a queued supplement.
+      work.closeSummaryWindow();
       supplements?.closeWindow('window_closed');
       toolAdmissionsOpen = false;
+      if (acceptedBudgetStop === 'user_requested' && !acceptedText) {
+        acceptedAssistant = undefined;
+        acceptedText = localize(outputLanguage,
+          '已按请求提前结束取证；当前尚无可交付结论，已保留本轮已返回的证据。',
+          'Evidence acquisition ended at your request. No conclusion is available yet; returned evidence has been retained.');
+        checkpointAccepted();
+      }
       // An exhausted cost budget buys no further call, the closeout included.
       if (acceptedBudgetStop && acceptedBudgetStop !== 'budget_limit' && turnBudget.deliveryTurns > 0
-        && rounds < turnBudget.totalTurns && Date.now() < getRunDeadlineMs()) {
+        && rounds < turnBudget.totalTurns && Date.now() < getRunDeadlineMs()
+        && (maxBudgetUsd <= 0 || spentUsd < maxBudgetUsd)) {
         const closeoutTapePrompt = closeoutTape.buildPrompt({query, priorConclusion: acceptedText, outputLanguage,
           budgetExhausted: acceptedBudgetStop});
         // The closeout transport sends only this prompt: delivered supplements must be carried explicitly.
@@ -2137,7 +2199,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
             const closeout = await runPiIntentTransport({
               purpose: 'continuation',
               prompt: closeoutPrompt, systemPrompt: prep.systemPrompt,
-              signal: work.signal, deadlineMs: getRunDeadlineMs(),
+              signal: work.signal, deadlineMs: Math.min(getRunDeadlineMs(), Date.now() + streamIdleTimeoutMs),
               outputByteLimit: 64 * 1024, providerRuntime,
               // The closeout writes the conclusion, so it keeps the depth this run followed.
               ...(providerRuntime.runThinkingFollowsScene ? {reasoning: runThinkingLevel} : {}),
@@ -2216,6 +2278,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         }
       }
     } finally {
+      work.closeSummaryWindow();
       supplements?.closeWindow(work.signal.aborted ? 'run_stopped' : 'run_failed');
       acceptingProviderEvents = false;
       draftController.dispose();
@@ -2227,26 +2290,31 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     }
     executionLease.throwIfAborted();
     if (checkpoint) return checkpoint();
-    return buildAcceptedResult(acceptedText,
-      completionFor(acceptedAssistant, acceptedText, acceptedAttemptId, acceptedBudgetStop), acceptedAttemptId, closeoutAccepted);
+    const completion = completionFor(acceptedAssistant, acceptedText, acceptedAttemptId, acceptedBudgetStop);
+    return buildAcceptedResult(acceptedText, completion, acceptedAttemptId, candidateOutputOrigin(completion));
+
+    function candidateOutputOrigin(completion: AnalysisCompletion): AnalysisResult['outputOrigin'] {
+      return !acceptedAssistant ? 'runtime_fallback'
+        : closeoutAccepted || completion.status === 'completed' ? 'sdk_final' : 'assistant_stream';
+    }
 
     function checkpointAccepted(): void {
       const text = acceptedText;
       const completion = Object.freeze(completionFor(acceptedAssistant, text, acceptedAttemptId, acceptedBudgetStop));
       const attemptId = acceptedAttemptId;
-      const fromCloseout = closeoutAccepted;
+      const outputOrigin = candidateOutputOrigin(completion);
       let cached: AnalysisResult | undefined;
       const factory = () => {
         executionLease.throwIfAborted();
         authorization.assertCurrent();
-        return cached ??= buildAcceptedResult(text, completion, attemptId, fromCloseout);
+        return cached ??= buildAcceptedResult(text, completion, attemptId, outputOrigin);
       };
       work.checkpoint(factory);
       checkpoint = factory;
     }
 
     function buildAcceptedResult(conclusion: string, acceptedCompletion: AnalysisCompletion,
-      candidateAttemptId: string, fromCloseout: boolean): AnalysisResult {
+      candidateAttemptId: string, outputOrigin: AnalysisResult['outputOrigin']): AnalysisResult {
       const completion = {...acceptedCompletion};
       const actualRounds = Math.max(rounds, attempt);
       // Native facts only: draft diagnostics chose a repair above and never set
@@ -2260,10 +2328,13 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         sessionId, success: completion.status !== 'failed' && completion.status !== 'cancelled', findings,
         hypotheses: prep.hypotheses.map(h => toRuntimeProtocolHypothesis(h, 'pi-agent-core')),
         conclusion, turnIntent, completion,
-        outputOrigin: fromCloseout || completion.status === 'completed' ? 'sdk_final' : 'assistant_stream',
+        outputOrigin,
         confidence: estimateAnalysisConfidence({findings, partial}),
         rounds: actualRounds, totalDurationMs: Date.now() - startedAt,
         partial: partial || undefined, terminationReason,
+        ...(terminationReason === 'user_requested' ? {terminationMessage: localize(outputLanguage,
+          '已按请求提前总结；未完成的调查仍保持未知。',
+          'Summarized early at your request; unfinished investigation remains unresolved.')} : {}),
         ...(prep.quickMode ? {quickRun: buildQuickRunReceipt({
           requestedMode: options.analysisMode ?? 'auto', turnIntent, budget: quickBudget,
           actualTurns: actualRounds, elapsedMs: Date.now() - startedAt,
@@ -2732,6 +2803,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       agent.reset();
     }
     this.activeAgents.clear();
+    this.summaryRequests.clear();
     this.architectureCache.clear();
     this.providerRuntimeCache.clear();
     this.moduleRuntimeCache.clear();
@@ -2749,6 +2821,13 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       .abortSession(sessionId, `Runtime analysis aborted for session ${sessionId}`)
       .catch(() => undefined);
     this.activeAgents.get(sessionId)?.abort();
+  }
+
+  requestSummary(sessionId: string, runId: string): boolean {
+    const request = this.summaryRequests.get(sessionId);
+    if (!request || request.runId !== runId || !request.accepting || request.signal.aborted) return false;
+    if (!request.controller.signal.aborted) request.controller.abort(new PiSummaryRequestedError());
+    return true;
   }
 
   cleanupSession(sessionId: string): void {

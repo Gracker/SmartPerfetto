@@ -372,6 +372,10 @@ binding 是否存在；分页空页不等于空 capture，binding 存在不表�
 
 HTTP、CLI、conversation 与直接 runtime 调用共用私有 `RuntimeAdmission` 身份。预算从本轮获准开始处理时计算，包含分类与准备阶段，不能在进入 native SDK 时重新起算。显式任务上限、工作停止信号与用户取消/授权保持分离；未配置显式上限时不增加配置解析前的硬定时器。已开始的准备查询可以排空。超时保留已完成候选，guard 等待真实 native 工作、工具与清理结束后才释放，迟到结果不能影响后继 run。
 
+Pi 默认不限制整次分析的总耗时，大 trace 可在持续工作时继续分析。只有显式配置的 `SMARTPERFETTO_PI_AGENT_CORE_REQUEST_TIMEOUT_MS` / `AGENT_FULL_REQUEST_TIMEOUT_MS`、每轮耗时估算或 `taskTimeoutMs` 才施加总截止时间；未配置估算时不创建定时器。轮次、上下文、费用、取消和授权约束仍然生效。分类及无工具交付保留各自有限的单次请求边界；交付受配置的 provider idle 时长和显式总截止时间共同约束。
+
+Web 面板的**总结现有结果**通过 `POST /api/agent/v1/:sessionId/summarize` 携带精确的当前 `runId` 请求提前收尾：关闭新取证，仅中止当前 native 请求并等待清理，再用本轮已返回证据和原预留额度做一次无工具交付。不从头重跑，不增加轮次或费用预算。结果保留 `partial`，completion 与 termination reason 为 `user_requested`；未完成的问题保持未知。总结不能覆盖取消、授权撤销或显式截止时间；旧 run、不支持的 runtime 明确拒绝，同一活动请求幂等，收尾过程中不再启动第二次交付。原停止按钮仍执行完整取消。
+
 完整模式默认 100 轮，快速模式默认 50 轮；5 轮 quick target 仅为软目标。
 总预算大于 1 时预留一次无工具交付。原生 `length/output_limit` 表示单次输出未写完，可在原始
 预算和截止时间内使用这一次预留额度补齐完整正文；已完成但没有回答正文的候选可用它做一次
