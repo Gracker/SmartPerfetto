@@ -873,7 +873,26 @@ export class IdentityGate {
     if (target.upid !== undefined) {
       const selected = resolution.candidates.filter(candidate => candidate.upid === target.upid);
       if (resolution.status !== 'verified' || resolution.upids.length !== 1 || resolution.upids[0] !== target.upid) {
-        return conflict('Explicit UPID could not be verified; no other process may replace it');
+        // A name observed on this UPID is not necessarily verifiable (e.g.
+        // shared UID). Check it before suggesting a separate named invocation.
+        const candidate = selected[0];
+        const name = candidate?.processName || candidate?.recommendedProcessNameParam || candidate?.metadataProcessName;
+        const selector = input.skill.inputs?.find(item => DEFAULT_PROCESS_IDENTITY_ALIASES.includes(item.name))?.name;
+        let hint = `No verified named alternative is available. Inspect process_identity_resolver and ` +
+          `SELECT upid,pid,name FROM process WHERE upid=${target.upid}; do not guess another selector.`;
+        if (parentScope?.mode === 'exact_upid') {
+          hint = 'Inherited exact scope must remain unchanged; inspect process_identity_resolver for this UPID.';
+        } else if (name && selector && !resolution.resolverError) {
+          const named = await input.resolve({requestedName: name, threadName: target.threadName,
+            startTs: target.startTs, endTs: target.endTs});
+          if (!named.resolverError && isVerified(named, config) && named.upids.includes(target.upid)) {
+            hint = `Verified named alternative: ${selector}=${JSON.stringify(name)}. ` +
+              'If named scope is intended, omit upid/pid and retry with this selector; identity will be rechecked and same-name instances may be included. ' +
+              'If the exact instance is required, keep the UPID and inspect process_identity_resolver.';
+          }
+        }
+        if (resolution.warnings.length) hint += ` Identity warnings: ${resolution.warnings.join('; ')}`;
+        return conflict(`Explicit UPID could not be verified; no other process may replace it. ${hint}`);
       }
       const names = new Set([
         ...selected.flatMap(candidate => [candidate.processName, candidate.metadataProcessName,

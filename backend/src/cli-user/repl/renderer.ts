@@ -68,6 +68,8 @@ interface CompletionMetadata extends CliSceneReportMetadata {
   terminationReason?: string;
   terminationMessage?: string;
   hasConclusion?: boolean;
+  /** Canonical persisted body, used to detect missing/changed text delivery. */
+  conclusionMd?: string;
   /** Absent for callers that predate it; the marker then follows success/partial only. */
   deliveryVerdict?: DeliveryVerdict;
 }
@@ -109,6 +111,7 @@ export function createRenderer(opts: RendererOptions): Renderer {
   // answer_token events arrive many per second — write without newline to get
   // a typewriter feel. A newline is printed once a non-token event interrupts.
   let answerStreamOpen = false;
+  let printedConclusion: string | undefined;
 
   function closeAnswerStream() {
     if (answerStreamOpen) {
@@ -215,6 +218,7 @@ export function createRenderer(opts: RendererOptions): Renderer {
     console.log(conclusion.trim() ? conclusion : dim(localize(
       language, '未生成可交付结论。', 'No deliverable conclusion was generated.',
     )));
+    printedConclusion = conclusion;
     if (meta.analysisEvidence) {
       console.log('');
       console.log(renderCliAnalysisEvidence(
@@ -241,6 +245,15 @@ export function createRenderer(opts: RendererOptions): Renderer {
   }
 
   function printCompletion(meta: CompletionMetadata): void {
+    if (meta.conclusionMd !== undefined && printedConclusion !== meta.conclusionMd) {
+      closeAnswerStream();
+      console.warn(localize(parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE),
+        '警告：text 正文与会话产物不一致；以下回退输出完整 conclusion.md。',
+        'Warning: text body differs from session artifacts; falling back to the complete conclusion.md.'));
+      printConclusionHeader('结论');
+      console.log(meta.conclusionMd);
+    }
+    printedConclusion = undefined;
     closeAnswerStream();
     // A truncated run reached this point with a plain green tick, which is the
     // same thing a complete run prints. Say which one happened.

@@ -668,6 +668,63 @@ describe('IdentityGate exact process scope', () => {
     expect(result.allowed).toBe(false);
   });
 
+  it('verifies an observed named alternative for the rejected UPID and rechecks the explicit retry', async () => {
+    const gate = new IdentityGate();
+    const observed: ProcessIdentityResolution = {...exact(), status: 'ambiguous', upids: [], candidates: [
+      {rank: 1, confidenceScore: 60, upid: 42, processName: 'com.example'},
+      {rank: 2, confidenceScore: 50, upid: 43, processName: 'com.other'},
+    ]};
+    const resolve = jest.fn(async (target: {upid?: number}) => target.upid !== undefined ? observed : exact());
+    const rejected = await gate.apply({traceId: 'trace', skill: targetSkill, params: {upid: 42}, resolve});
+    expect(rejected.allowed).toBe(false);
+    expect(rejected.processScope).toBeUndefined();
+    expect(rejected.error).toContain('package="com.example"');
+    expect(rejected.error).toContain('omit upid/pid');
+    expect(rejected.error).toContain('identity will be rechecked');
+    expect(rejected.error).not.toContain('com.other');
+    const retried = await gate.apply({traceId: 'trace', skill: targetSkill, params: {package: 'com.example'}, resolve});
+    expect(resolve).toHaveBeenCalledTimes(3);
+    expect(retried.allowed).toBe(true);
+    expect(retried.processScope?.mode).toBe('named');
+  });
+
+  it('does not suggest a known ambiguous named retry, including shared UID candidates', async () => {
+    const resolution = {...exact(), status: 'ambiguous' as const, upids: [], warnings: ['shared UID']};
+    const resolve = jest.fn(async () => resolution);
+    const rejected = await new IdentityGate().apply({traceId: 'trace', skill: targetSkill, params: {upid: 42}, resolve});
+    expect(rejected.allowed).toBe(false);
+    expect(rejected.processScope).toBeUndefined();
+    expect(rejected.error).toContain('No verified named alternative');
+    expect(rejected.error).toContain('shared UID');
+    expect(rejected.error).not.toContain('package=');
+    expect(resolve).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps an inherited exact scope when a new thread target fails verification', async () => {
+    const gate = new IdentityGate();
+    const prepared = await gate.apply({traceId: 'trace', skill: targetSkill, params: {upid: 42}, resolve: async () => exact()});
+    const resolve = jest.fn(async () => ({...exact(), status: 'ambiguous' as const, upids: []}));
+    const rejected = await gate.apply({traceId: 'trace', processScope: prepared.processScope,
+      skill: {...targetSkill, inputs: [...targetSkill.inputs!, {name: 'thread_name', type: 'string', required: false}]},
+      params: {thread_name: 'RenderThread'}, resolve});
+    expect(rejected.allowed).toBe(false);
+    expect(rejected.error).toContain('Inherited exact scope must remain unchanged');
+    expect(rejected.error).not.toContain('omit upid/pid');
+    expect(rejected.error).not.toContain('package=');
+    expect(resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not invent a named selector when no candidate belongs to the rejected UPID', async () => {
+    const rejected = await new IdentityGate().apply({traceId: 'trace', skill: targetSkill, params: {upid: 42},
+      resolve: async () => ({...exact(), status: 'not_found', upids: [], candidates: [
+        {rank: 1, confidenceScore: 100, upid: 43, processName: 'com.other'},
+      ]})});
+    expect(rejected.allowed).toBe(false);
+    expect(rejected.error).toContain('SELECT upid,pid,name FROM process WHERE upid=42');
+    expect(rejected.error).toContain('No verified named alternative');
+    expect(rejected.error).not.toContain('com.other');
+  });
+
   it('preserves inherited exact scope under none/exempt and refuses trace changes or forged scopes', async () => {
     const gate = new IdentityGate();
     const first = await gate.apply({ traceId: 'trace', skill: targetSkill, params: { upid: 42 }, resolve: async () => exact() });

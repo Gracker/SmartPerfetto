@@ -29,6 +29,25 @@ describe('sqlIncludeInjector - happy paths', () => {
     expect(guidance).toContain('s.track_id=tt.id JOIN thread t ON tt.utid=t.utid');
   });
 
+  it('uses real binder timestamps and names instead of nonexistent generic columns/tables', () => {
+    const guidance = fs.readFileSync(path.resolve(__dirname, '../../../strategies/knowledge-perfetto-sql.template.md'), 'utf8');
+    const docs = loadPerfettoSqlDocsAsset()!;
+    const binder = docs.entries.find(entry => entry.name === 'android_binder_txns')!;
+    const columns = binder.columns!.map(column => column.name);
+    const row = guidance.match(/^\| android_binder_txns \| ([a-z_, ]+) \|$/m)![1];
+    for (const column of ['client_ts', 'client_dur', 'server_ts', 'server_dur', 'aidl_name']) {
+      expect(columns).toContain(column);
+      expect(row.split(/,\s*/)).toContain(column);
+    }
+    for (const column of ['ts', 'dur']) expect(columns).not.toContain(column);
+    expect(guidance).toContain('android_binder_txns: no ts/dur; ORDER BY client_ts');
+    const absent = guidance.match(/^No TP tables: ([a-z_/]+)\.$/m)![1].split('/');
+    expect(absent).toEqual(['mm_event', 'page_fault', 'lmks']);
+    for (const table of absent) {
+      expect(docs.entries.some(entry => entry.name === table && ['table', 'view'].includes(entry.type))).toBe(false);
+    }
+  });
+
   it('executes the window guidance with bundled-doc columns before filtering and aggregation', () => {
     const guidance = fs.readFileSync(path.resolve(__dirname, '../../../strategies/knowledge-perfetto-sql.template.md'), 'utf8');
     const example = guidance.match(/`(WITH w AS\s*\([^`]+)`/)?.[1];

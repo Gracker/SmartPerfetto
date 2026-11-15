@@ -5,6 +5,53 @@
 import { createRenderer, parseOutputFormat, parseTextJsonFormat } from '../renderer';
 
 describe('CLI renderer', () => {
+  const tableConclusion = '| App | Startup |\n| --- | --- |\n| demo | 257.6 ms |';
+  const completion = {sessionId: 's', sessionDir: '/tmp/s', reportPath: '/tmp/s/report.html'};
+
+  test.each([{}, {analysisEvidence: {evidence: null, unavailableReason: 'analysis_evidence_projection_invalid'}}])(
+    'prints the complete table-only body when optional report sections are missing: %j', meta => {
+      const warning = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const output = captureStdout(() => {
+          const renderer = createRenderer({verbose: false, useColor: false});
+          renderer.printConclusion(tableConclusion, meta as any);
+          renderer.printCompletion({...completion, conclusionMd: tableConclusion});
+        });
+        expect(output).toContain(tableConclusion);
+        expect(output.split(tableConclusion)).toHaveLength(2);
+        expect(warning).not.toHaveBeenCalled();
+      } finally {warning.mockRestore();}
+    },
+  );
+
+  test.each([undefined, '', '| App | Startup |'])('restores the persisted body after missing/partial text delivery: %j', printed => {
+    const warning = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const output = captureStdout(() => {
+        const renderer = createRenderer({verbose: false, useColor: false});
+        if (printed !== undefined) renderer.printConclusion(printed, {});
+        renderer.printCompletion({...completion, conclusionMd: tableConclusion});
+      });
+      expect(output).toContain(tableConclusion);
+      expect(output.indexOf(tableConclusion)).toBeLessThan(output.indexOf('✓ session'));
+      expect(warning).toHaveBeenCalledWith(expect.stringMatching(/conclusion\.md/));
+    } finally {warning.mockRestore();}
+  });
+
+  test('checks each REPL turn independently even when successive conclusions are identical', () => {
+    const warning = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const output = captureStdout(() => {
+        const renderer = createRenderer({verbose: false, useColor: false});
+        renderer.printConclusion(tableConclusion, {});
+        renderer.printCompletion({...completion, conclusionMd: tableConclusion});
+        renderer.printCompletion({...completion, conclusionMd: tableConclusion});
+      });
+      expect(output.split(tableConclusion)).toHaveLength(3);
+      expect(warning).toHaveBeenCalledTimes(1);
+    } finally {warning.mockRestore();}
+  });
+
   test('prints the projected tool failure reason in default text mode without raw payloads', () => {
     const reason = 'invoke_skill failed: Process identity could not be verified: status=unresolved, confidence=0';
     const output = captureStdout(() => {

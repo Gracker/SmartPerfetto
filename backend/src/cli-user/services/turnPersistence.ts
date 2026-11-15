@@ -190,6 +190,7 @@ export function commitTurnOutputs(input: CommitTurnInput): void {
     sessionId,
     success: result.result.success,
     hasConclusion: Boolean(conclusion.trim()),
+    conclusionMd: conclusion,
     ...(result.result.terminationMessage ? { terminationMessage: result.result.terminationMessage } : {}),
     ...(result.result.partial ? { partial: true } : {}),
     ...(result.result.terminationReason ? { terminationReason: result.result.terminationReason } : {}),

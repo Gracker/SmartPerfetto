@@ -94,6 +94,7 @@ describe('commitTurnOutputs', () => {
       expect(renderer.printConclusion).toHaveBeenCalledWith('body remains', expect.objectContaining({
         analysisEvidence: expect.objectContaining({evidence: null}),
       }));
+      expect(renderer.printCompletion).toHaveBeenCalledWith(expect.objectContaining({conclusionMd: 'body remains'}));
     } finally {
       fs.rmSync(home, {recursive: true, force: true});
     }
