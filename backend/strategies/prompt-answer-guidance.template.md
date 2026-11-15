@@ -6,14 +6,13 @@ text written from this run's tool and Skill data; no machine sidecar. -->
 
 ## Writing the answer
 
-No fixed headings, length, plan or tool calls; stay within the question's scope.
-When the question cannot be answered without more input from the user, say what
-is needed instead of guessing.
+No fixed headings, length, plan or tool calls; stay within scope. If user input
+is needed to answer, ask instead of guessing.
 
 Call something abnormal only against a stated metric, scope and threshold; a
 latency, share or row count alone is not an abnormality. Check unit arithmetic
 (ns / 1e6 = ms, 1000 / ms = fps) and show the operands of derived values. Missing
-data is unknown, never zero. State each quantity once rather than repeating it.
+data is unknown, never zero. State each quantity once.
 Prefer the units and totals a Skill reports over values re-derived from raw rows;
 SQL columns whose unit is unknown cannot establish a measurement. A Skill's
 window total already handles clipping at the window edges and unfinished rows,

@@ -17,7 +17,7 @@ describe('sqlIncludeInjector - happy paths', () => {
   it('keeps every core schema card column grounded in the bundled processor docs', () => {
     const guidance = fs.readFileSync(path.resolve(__dirname, '../../../strategies/knowledge-perfetto-sql.template.md'), 'utf8');
     const docs = loadPerfettoSqlDocsAsset()!;
-    const relations = [...guidance.matchAll(/^\| ([a-z_]+) \| ([a-z_, ]+) \|$/gm)];
+    const relations = [...guidance.matchAll(/^\|\s*([a-z_]+)(?:=[a-z_.]+)?\s*\|\s*([a-z_, ]+?)\s*\|$/gm)];
     expect(relations.length).toBeGreaterThanOrEqual(8);
     for (const [, relation, columns] of relations) {
       const entry = docs.entries.find(item => item.name === relation && (item.type === 'table' || item.type === 'view'));
@@ -34,7 +34,7 @@ describe('sqlIncludeInjector - happy paths', () => {
     const docs = loadPerfettoSqlDocsAsset()!;
     const binder = docs.entries.find(entry => entry.name === 'android_binder_txns')!;
     const columns = binder.columns!.map(column => column.name);
-    const row = guidance.match(/^\| android_binder_txns \| ([a-z_, ]+) \|$/m)![1];
+    const row = guidance.match(/^\|\s*android_binder_txns(?:=[a-z_.]+)?\s*\|\s*([a-z_, ]+?)\s*\|$/m)![1];
     for (const column of ['client_ts', 'client_dur', 'server_ts', 'server_dur', 'aidl_name']) {
       expect(columns).toContain(column);
       expect(row.split(/,\s*/)).toContain(column);
@@ -48,22 +48,42 @@ describe('sqlIncludeInjector - happy paths', () => {
     }
   });
 
+  it('grounds module-created relations and their INCLUDE dependencies in bundled docs', () => {
+    const guidance = fs.readFileSync(path.resolve(__dirname, '../../../strategies/knowledge-perfetto-sql.template.md'), 'utf8');
+    const docs = loadPerfettoSqlDocsAsset()!;
+    const mappings = [...guidance.matchAll(/\b(android_[a-z_]+)=(android\.[a-z_.]+)\b/g)];
+    expect(mappings.map(([, relation]) => relation).sort()).toEqual([
+      'android_binder_txns',
+      'android_monitor_contention', 'android_startups',
+    ]);
+    expect(guidance).toContain('`INCLUDE PERFETTO MODULE <module>;` before SELECT');
+    expect(guidance).toContain('android_monitor_contention=android.monitor_contention (no s)');
+    expect(docs.entries.some(entry => entry.name === 'android_monitor_contentions')).toBe(false);
+    for (const [, relation, module] of mappings) {
+      const entry = docs.entries.find(item => item.name === relation && ['table', 'view'].includes(item.type));
+      const include = `INCLUDE PERFETTO MODULE ${module};`;
+      expect(entry).toMatchObject({module, include});
+      const query = `SELECT * FROM ${relation} LIMIT 0`;
+      expect(injectStdlibIncludes(query)).toEqual({sql: `${include}\n${query}`, injected: [module]});
+      expect(injectStdlibIncludes(`${include}\n${query}`).injected).toEqual([]);
+      expect(analyzeSqlStdlibDependencies(`${include}\n${query}`).requiredModules).toEqual([]);
+    }
+  });
+
   it('executes the window guidance with bundled-doc columns before filtering and aggregation', () => {
     const guidance = fs.readFileSync(path.resolve(__dirname, '../../../strategies/knowledge-perfetto-sql.template.md'), 'utf8');
     const example = guidance.match(/`(WITH w AS\s*\([^`]+)`/)?.[1];
     expect(example).toBeDefined();
     const docs = loadPerfettoSqlDocsAsset()!;
     const counter = docs.entries.find(entry => entry.name === 'counter' && (entry.type === 'table' || entry.type === 'view'))!;
-    for (const match of example!.matchAll(/c\.([a-z_]+)/g)) {
-      expect(counter.columns?.map(column => column.name)).toContain(match[1]);
-    }
+    for (const column of ['ts', 'track_id']) expect(counter.columns?.map(item => item.name)).toContain(column);
     const slice = docs.entries.find(entry => entry.name === 'slice' && (entry.type === 'table' || entry.type === 'view'))!;
     expect(slice.columns?.map(column => column.name)).not.toContain('upid');
     expect(slice.columns?.map(column => column.name)).not.toContain('utid');
     const db = new Database(':memory:');
     try {
       db.exec('CREATE TABLE counter(ts INTEGER, track_id INTEGER); INSERT INTO counter VALUES (10,1),(20,1),(40,1),(1000,2),(1010,2)');
-      expect(db.prepare(example!).get()).toEqual({'AVG(w.gap)': 40 / 3});
+      expect(db.prepare(example!).get()).toEqual({'AVG(gap)': 40 / 3});
       expect(() => db.prepare('SELECT AVG(LAG(c.ts) OVER (ORDER BY c.ts)) FROM counter c')).toThrow(/misuse of window/);
       expect(() => db.prepare('SELECT c.ts FROM counter c WHERE LAG(c.ts) OVER (ORDER BY c.ts) IS NOT NULL')).toThrow(/misuse of window/);
       expect(() => db.prepare('SELECT * FROM counter c JOIN (SELECT 1 AS upid) p USING(upid)')).toThrow(/cannot join using column/);
