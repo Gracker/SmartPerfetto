@@ -13,6 +13,37 @@ Detailed commit-level history is available via `git log`.
 
 ## [Unreleased]
 
+## [1.19.0] - 2026-11-15
+
+### Added
+
+- **Bitmap memory shape**: inspect per-process Bitmap live sets, size distributions and large objects, with recorded allocation/heap evidence kept separate from total process memory.
+- **Doze state timeline**: labelled light/deep idle states and transitions; rapid transitions are reported as observations rather than proof of abnormal power use.
+- **CPU PMU evidence**: expose counter deltas, event ratios and process attribution when the trace records the required counters; unsupported or missing data remains explicit.
+
+### Changed
+
+- Continue hardening the **Pi Agent Core** default introduced in 1.18.0: cap model-facing tool rows while retaining retrievable evidence, retain a larger bounded investigation working set, and preserve tool result facts and complete discovery catalogs through transport previews.
+- Rendering explanations now come from maintained product teaching cards. Pipeline detection and Buffer/Transaction analysis distinguish recorded frame-production and presentation evidence, including WebView, React Native and browser compositor boundaries.
+- Camera analysis measures observed frame cadence and reuses a single SurfaceFlinger binding decision; presentation conclusions stay bounded by the available binding and frame evidence.
+- Skill discovery explains how to execute a Skill and exposes pinned invocation parameters. Plans report missing, successful and failed phase calls with actual tool-call IDs; object-shaped legacy expectations normalize into the same validation contract.
+- Timestamp previews derive exact seconds only from witnessed nanosecond units without changing source cells or the trace clock. SQL guidance now includes schema-grounded core columns, slice/thread joins and supported stdlib use.
+
+### Fixed
+
+- Recover transient Pi provider/idle-stream failures within the retry contract, preserve the last useful tool evidence, and honor billed-failure and cost-cap retry limits. Enforce the final model-facing tool budget and name the exhausted budget when closing out.
+- Keep identity rejection reasons and safe next actions visible in CLI output even when a parameter contract is large. Parameter hints cannot bypass process-identity verification.
+- Report bounded missing SQL table/column/function identifiers alongside the query hash without logging raw SQL; correct the invalid `sched.is_idle` guidance to use `thread.is_idle` through a thread join.
+- Explain original-trace query refusals and the supported recovery path; distinguish Skill discovery from Skill execution.
+- Preserve HTML report delivery in the text CLI and persisted turn artifacts.
+
+### Validation and limits
+
+- This release consolidates deterministic regressions and earlier real-provider investigations. Historical batches used different source revisions and workloads; they are not a single final-release benchmark or a measured accuracy rate.
+- The 30-trace investigation originally completed 29 cases with one failure caused by concurrent runtime-asset drift. Three cases were subsequently replayed in isolation; the resulting evidence combines 27 original completions and three replays. Semantic review still identified overstrong causal wording in some model conclusions.
+- Fresh50-driven fixes received focused camera/thermal CLI reruns and controlled diagnostic probes; the full 50-case batch was not rerun after those fixes. A one-case SQL-error reduction does not establish a general percentage improvement. A thermal report frequency-unit label was still noted as unresolved.
+- Provider, identity, authorization and missing-evidence boundaries remain in force. Trace omissions still limit Bitmap/Doze/PMU/rendering attribution; model completion alone does not establish a correct causal diagnosis. The hidden legacy-runtime fallback remains available; its removal is not part of this release.
+
 ## [1.18.1] - 2026-11-10
 
 ### Added
@@ -1182,7 +1213,8 @@ Detailed commit-level history is available via `git log`.
 - HTML report generation and CSV / JSON export.
 - AGPL v3.0 licensing throughout.
 
-[Unreleased]: https://github.com/Gracker/SmartPerfetto/compare/v1.14.0...HEAD
+[Unreleased]: https://github.com/Gracker/SmartPerfetto/compare/v1.19.0...HEAD
+[1.19.0]: https://github.com/Gracker/SmartPerfetto/compare/v1.18.1...v1.19.0
 [1.14.0]: https://github.com/Gracker/SmartPerfetto/compare/v1.13.0...v1.14.0
 [1.13.0]: https://github.com/Gracker/SmartPerfetto/compare/v1.12.1...v1.13.0
 [1.12.1]: https://github.com/Gracker/SmartPerfetto/compare/v1.12.0...v1.12.1
