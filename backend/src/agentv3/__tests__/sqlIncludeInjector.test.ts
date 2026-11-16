@@ -5,6 +5,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import Database from 'better-sqlite3';
+import {spawnSync} from 'child_process';
+import * as os from 'os';
+import {getPrebuiltTraceProcessorPath} from '../../services/workingTraceProcessor';
 
 import {
   injectStdlibIncludes,
@@ -42,7 +45,7 @@ describe('sqlIncludeInjector - happy paths', () => {
     for (const column of ['ts', 'dur']) expect(columns).not.toContain(column);
     expect(guidance).toContain('android_binder_txns: no ts/dur; ORDER BY client_ts');
     const absent = guidance.match(/^No TP tables: ([a-z_/]+)\.$/m)![1].split('/');
-    expect(absent).toEqual(['mm_event', 'page_fault', 'lmks']);
+    expect(absent).toEqual(['mm_event', 'page_fault', 'lmks', 'frames', 'thread_track_name', 'cpu_frequency_track', 'freq']);
     for (const table of absent) {
       expect(docs.entries.some(entry => entry.name === table && ['table', 'view'].includes(entry.type))).toBe(false);
     }
@@ -83,7 +86,8 @@ describe('sqlIncludeInjector - happy paths', () => {
     const db = new Database(':memory:');
     try {
       db.exec('CREATE TABLE counter(ts INTEGER, track_id INTEGER); INSERT INTO counter VALUES (10,1),(20,1),(40,1),(1000,2),(1010,2)');
-      expect(db.prepare(example!).get()).toEqual({'AVG(gap)': 40 / 3});
+      expect(db.prepare(example!).get()).toEqual({'AVG(gap)': 40 / 3, 'COUNT(gap)': 3});
+      expect(() => db.prepare('SELECT LAG(ts) FROM counter')).toThrow(/misuse of window/);
       expect(() => db.prepare('SELECT AVG(LAG(c.ts) OVER (ORDER BY c.ts)) FROM counter c')).toThrow(/misuse of window/);
       expect(() => db.prepare('SELECT c.ts FROM counter c WHERE LAG(c.ts) OVER (ORDER BY c.ts) IS NOT NULL')).toThrow(/misuse of window/);
       expect(() => db.prepare('SELECT * FROM counter c JOIN (SELECT 1 AS upid) p USING(upid)')).toThrow(/cannot join using column/);
@@ -92,6 +96,46 @@ describe('sqlIncludeInjector - happy paths', () => {
       expect(db.prepare('SELECT a.ts AS left_ts, b.ts AS right_ts FROM counter a JOIN counter b ON a.ts=b.ts ORDER BY a.ts LIMIT 1').get())
         .toEqual({left_ts: 10, right_ts: 10});
     } finally {db.close();}
+  });
+
+  it('executes the card examples and absent-table checks on the bundled TP', () => {
+    const guidance = fs.readFileSync(path.resolve(__dirname, '../../../strategies/knowledge-perfetto-sql.template.md'), 'utf8');
+    const binary = getPrebuiltTraceProcessorPath();
+    expect(binary && fs.existsSync(binary)).toBe(true);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sql-card-'));
+    const trace = path.join(dir, 'empty.pftrace');
+    fs.writeFileSync(trace, '');
+    const query = (sql: string) => spawnSync(binary!, ['query', '--no-agent', trace, sql], {encoding: 'utf8', timeout: 15_000});
+    try {
+      const example = guidance.match(/`(WITH w AS\s*\([^`]+)`/)![1];
+      const result = query(example);
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('"COUNT(gap)"');
+      // Exercise the same literal example with multiple tracks and nonempty data.
+      const populated = query(`WITH counter(ts,track_id) AS(VALUES(10,1),(20,1),(40,1),(1000,2),(1010,2)), ${example.slice(5)}`);
+      expect(populated.status).toBe(0);
+      expect(populated.stdout.trim().split('\n').pop()).toBe('13.333333,3');
+      expect(query(example.replace('AVG(gap)', 'ROUND(AVG(gap))')).status).toBe(0);
+      for (const invalid of ['SELECT LAG(ts) FROM counter', 'SELECT ROUND(AVG(ts-LAG(ts) OVER(ORDER BY ts))) FROM counter']) {
+        const run = query(invalid);
+        expect(run.status).not.toBe(0);
+        expect(run.stderr).toMatch(/misuse of (window|aliased aggregate)/);
+      }
+      const absent = guidance.match(/^No TP tables: ([a-z_/]+)\.$/m)![1].split('/');
+      const names = absent.map(name => `'${name}'`).join(',');
+      const missing = query(`INCLUDE PERFETTO MODULE android.binder; INCLUDE PERFETTO MODULE android.frames.timeline; INCLUDE PERFETTO MODULE linux.cpu.frequency; SELECT name FROM sqlite_master WHERE name IN (${names})`);
+      expect(missing.status).toBe(0);
+      expect(missing.stdout.trim()).toBe('"name"');
+      const binder = query('INCLUDE PERFETTO MODULE android.binder; SELECT client_ts,server_ts FROM android_binder_txns ORDER BY client_ts LIMIT 0');
+      expect(binder.status).toBe(0);
+      expect(binder.stdout.trim()).toBe('"client_ts","server_ts"');
+      const sliceJoin = guidance.match(/`(slice s JOIN [^`]+)`/)![1];
+      expect(query(`SELECT s.id FROM ${sliceJoin} LIMIT 0`).status).toBe(0);
+      const join = guidance.match(/`(counter c JOIN counter_track t ON c.track_id=t.id)`/)![1];
+      expect(query(`SELECT c.ts,c.value,t.name FROM ${join} LIMIT 0`).status).toBe(0);
+      expect(query('SELECT c.ts,c.value,t.cpu FROM counter c JOIN cpu_counter_track t ON c.track_id=t.id LIMIT 0').status).toBe(0);
+    } finally {fs.rmSync(dir, {recursive: true, force: true});}
   });
 
   it('injects slices.self_dur when SQL references slice_self_dur', () => {

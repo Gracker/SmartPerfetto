@@ -4271,6 +4271,8 @@ describe('createClaudeMcpServer', () => {
       });
       expect(first.schemaDiagnostic.availableColumns).toEqual(expect.arrayContaining(['client_ts', 'server_ts']));
       expect(first.schemaDiagnostic.closestColumns).toEqual(expect.arrayContaining(['client_ts', 'server_ts']));
+      expect(first.schemaDiagnostic.hint).toContain('client_ts for client time or server_ts for server time');
+      expect(second.schemaDiagnostic.hint).toBe(first.schemaDiagnostic.hint);
       expect(second.schemaDiagnostic.repeatCount).toBe(2);
 
       // A new server is a new run: its memory starts empty.

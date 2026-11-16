@@ -18,6 +18,7 @@
  * not be a pure read and would taint native provenance on the processor.
  */
 
+import {loadPromptSegment} from './strategyLoader';
 import {getPerfettoStdlibModules, getPerfettoStdlibSymbolIndex} from '../services/perfettoStdlibScanner';
 import {loadPerfettoSqlDocsAsset} from '../services/perfettoSqlDocs';
 import {
@@ -62,6 +63,8 @@ export interface SqlSchemaDiagnosticV1 {
   alternativeSymbols?: string[];
   /** Times this run has now failed with the same kind, symbol and name (1 = first). */
   repeatCount: number;
+  /** Advisory recovery guidance; never a rewrite or evidence of trace data. */
+  hint?: string;
 }
 
 export interface SqlSchemaDiagnosticInput {
@@ -231,6 +234,10 @@ function resolveMissingColumn(
     column,
     ...(closestColumns.length > 0 ? {closestColumns} : {}),
     ...(alternatives.length > 0 ? {alternativeSymbols: alternatives.slice(0, MAX_ALTERNATIVE_SYMBOLS)} : {}),
+    ...(symbol === 'android_binder_txns' && wanted === 'ts' &&
+      (qualifier !== undefined || bindings.length === 1) &&
+      ['client_ts', 'server_ts'].every(name => facts.availableColumns?.includes(name))
+      ? {hint: loadPromptSegment('prompt-sql-binder-timestamp-hint')} : {}),
   };
 }
 

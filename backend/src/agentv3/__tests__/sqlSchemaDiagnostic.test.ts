@@ -36,6 +36,28 @@ describe('buildSqlSchemaDiagnostic', () => {
     expect(result.closestColumns).toEqual(expect.arrayContaining(['client_ts', 'server_ts']));
   });
 
+  it.each([
+    ['SELECT ts FROM android_binder_txns ORDER BY ts', 'ts'],
+    ['SELECT b.client_dur FROM android_binder_txns b ORDER BY b.ts', 'b.ts'],
+    ['SELECT b.TS FROM android_binder_txns b', 'b.TS'],
+  ])('gives side-specific timestamp recovery for %s', (sql, column) => {
+    const result = diagnose(`no such column: ${column}`, sql);
+    expect(result.hint).toContain('client_ts for client time or server_ts for server time');
+    expect(result.hint).toContain('including ORDER BY');
+    expect(result.hint).not.toMatch(/<!--|\{\{/);
+    expect(result.absence).toBe('query_error_not_data_absence');
+  });
+
+  it.each([
+    ['SELECT ts FROM android_startups', 'ts'],
+    ['SELECT dur FROM android_binder_txns', 'dur'],
+    ['SELECT ts FROM unknown_relation', 'ts'],
+    ['SELECT ts FROM android_binder_txns b JOIN android_startups s ON b.client_upid=s.upid', 'ts'],
+    ['SELECT x.ts FROM android_binder_txns b', 'x.ts'],
+  ])('does not guess a binder timestamp hint for %s', (sql, column) => {
+    expect(diagnose(`no such column: ${column}`, sql).hint).toBeUndefined();
+  });
+
   it('resolves a qualified column through its alias', () => {
     const result = diagnose(
       'no such column: b.dur (line 1, col 8)',
