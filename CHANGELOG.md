@@ -13,6 +13,16 @@ Detailed commit-level history is available via `git log`.
 
 ## [Unreleased]
 
+## [1.19.1] - 2026-11-16
+
+### Fixed
+
+- Clarify legal SQL window-function shapes with an executable CTE example, expand the unsupported-table quick card, and show the counter-to-track join instead of guessed counter columns.
+- Give side-specific `client_ts` / `server_ts` recovery guidance when a failed query unambiguously requests `android_binder_txns.ts`, preserving the failed-query and evidence boundaries.
+- Document INCLUDE requirements for module-created tables and views, including Binder, monitor contention and startup relations.
+- Preserve the recorded Skill and stdlib startup classifications and expose the evidence behind any classification difference.
+- Remove Pi's implicit whole-request elapsed cap; explicit limits remain enforced, and users can request a summary of evidence already collected.
+
 ## [1.19.0] - 2026-11-15
 
 ### Added
