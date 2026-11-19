@@ -3,7 +3,9 @@
 
 ## SQL
 
-ts/dur: ns. lookup_sql_schema/list_stdlib_modules; __intrinsic_stdlib_objects. = exact; GLOB wildcard; regexp(pattern,input,'i') opt-in partial.
+lookup_sql_schema/list_stdlib_modules; __intrinsic_stdlib_objects
+
+ts/dur: ns. = exact; GLOB wildcard; regexp(pattern,input,'i') opt-in partial.
 No TP tables: mm_event/page_fault/lmks/frames/thread_track_name/cpu_frequency_track/freq.
 SQLite scalar `MAX(a,b)/MIN(a,b)`, no GREATEST/LEAST. `MAX(x)` aggregates.
 |slice|id,ts,dur,track_id,name,parent_id|
