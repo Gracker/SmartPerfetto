@@ -273,7 +273,7 @@ describe('strategyLoader tolerates leading SPDX HTML comments', () => {
   it('loads schema discovery and intentional SQL matching guidance from the live knowledge asset', () => {
     const sql = loadPromptTemplate('knowledge-perfetto-sql');
     expect(sql).toContain('__intrinsic_stdlib_objects');
-    expect(sql).toContain('lookup_sql_schema/list_stdlib_modules as needed');
+    expect(sql).toContain('lookup_sql_schema/list_stdlib_modules');
     expect(sql).toContain("regexp(pattern,input,'i')");
     expect(sql).toContain('= exact');
     expect(sql).toContain('GLOB wildcard');

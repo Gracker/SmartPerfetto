@@ -43,7 +43,7 @@ describe('sqlIncludeInjector - happy paths', () => {
       expect(row.split(/,\s*/)).toContain(column);
     }
     for (const column of ['ts', 'dur']) expect(columns).not.toContain(column);
-    expect(guidance).toContain('android_binder_txns: no ts/dur; ORDER BY client_ts');
+    expect(guidance).toContain('Binder: no ts/dur; ORDER BY client_ts');
     const absent = guidance.match(/^No TP tables: ([a-z_/]+)\.$/m)![1].split('/');
     expect(absent).toEqual(['mm_event', 'page_fault', 'lmks', 'frames', 'thread_track_name', 'cpu_frequency_track', 'freq']);
     for (const table of absent) {
@@ -59,7 +59,7 @@ describe('sqlIncludeInjector - happy paths', () => {
       'android_binder_txns',
       'android_monitor_contention', 'android_startups',
     ]);
-    expect(guidance).toContain('`INCLUDE PERFETTO MODULE <module>;` before SELECT');
+    expect(guidance).toContain('`INCLUDE PERFETTO MODULE <module>;` first');
     expect(guidance).toContain('android_monitor_contention=android.monitor_contention (no s)');
     expect(docs.entries.some(entry => entry.name === 'android_monitor_contentions')).toBe(false);
     for (const [, relation, module] of mappings) {
@@ -117,6 +117,20 @@ describe('sqlIncludeInjector - happy paths', () => {
       expect(populated.status).toBe(0);
       expect(populated.stdout.trim().split('\n').pop()).toBe('13.333333,3');
       expect(query(example.replace('AVG(gap)', 'ROUND(AVG(gap))')).status).toBe(0);
+      const extrema = guidance.match(/SQLite scalar `([^`]+)\/([^`]+)`, no (\w+)\/(\w+)\. `([^`]+)` aggregates\./)!;
+      const [, scalarMax, scalarMin, unsupportedMax, unsupportedMin, aggregateMax] = extrema;
+      const values = 'WITH input(a,b) AS (VALUES(2,7),(6,3))';
+      const scalar = query(`${values} SELECT ${scalarMax}, ${scalarMin} FROM input ORDER BY a`);
+      expect(scalar.status).toBe(0);
+      expect(scalar.stdout.trim().split('\n').slice(1)).toEqual(['7,2', '6,3']);
+      const aggregate = query(`WITH input(x) AS (VALUES(2),(7)) SELECT ${aggregateMax} FROM input`);
+      expect(aggregate.status).toBe(0);
+      expect(aggregate.stdout.trim().split('\n').slice(1)).toEqual(['7']);
+      for (const fn of [unsupportedMax, unsupportedMin]) {
+        const invalid = query(`SELECT ${fn}(2,7)`);
+        expect(invalid.status).not.toBe(0);
+        expect(invalid.stderr).toContain(`no such function: ${fn}`);
+      }
       for (const invalid of ['SELECT LAG(ts) FROM counter', 'SELECT ROUND(AVG(ts-LAG(ts) OVER(ORDER BY ts))) FROM counter']) {
         const run = query(invalid);
         expect(run.status).not.toBe(0);

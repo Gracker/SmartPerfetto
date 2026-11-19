@@ -40,22 +40,70 @@ describe('buildSqlSchemaDiagnostic', () => {
     ['SELECT ts FROM android_binder_txns ORDER BY ts', 'ts'],
     ['SELECT b.client_dur FROM android_binder_txns b ORDER BY b.ts', 'b.ts'],
     ['SELECT b.TS FROM android_binder_txns b', 'b.TS'],
-  ])('gives side-specific timestamp recovery for %s', (sql, column) => {
+    ['SELECT B.TS FROM "ANDROID_BINDER_TXNS" AS [B]', 'B.TS'],
+  ])('lists documented binder timestamp candidates for %s', (sql, column) => {
     const result = diagnose(`no such column: ${column}`, sql);
-    expect(result.hint).toContain('client_ts for client time or server_ts for server time');
-    expect(result.hint).toContain('including ORDER BY');
+    expect(result.hint).toContain('Related columns: aidl_ts, client_ts, server_ts.');
+    expect(result.hint).toContain('Choose the event, side, or measurement');
     expect(result.hint).not.toMatch(/<!--|\{\{/);
     expect(result.absence).toBe('query_error_not_data_absence');
   });
 
+  // These columns were verified by SELECT on the pinned trace processor.
   it.each([
-    ['SELECT ts FROM android_startups', 'ts'],
-    ['SELECT dur FROM android_binder_txns', 'dur'],
+    ['no such column: ts', 'SELECT ts FROM android_input_events', 'android_input_events',
+      'android.input', 'dispatch_ts, receive_ts'],
+    ['no such column: gc.ts', 'SELECT gc.ts FROM android_garbage_collection_events gc JOIN thread t USING(utid)',
+      'android_garbage_collection_events', 'android.garbage_collection', 'gc_ts'],
+    ['no such column: utid', 'SELECT utid FROM android_binder_txns',
+      'android_binder_txns', 'android.binder', 'client_utid, server_utid'],
+    ['no such column: upid', 'SELECT upid FROM android_binder_txns',
+      'android_binder_txns', 'android.binder', 'client_upid, server_upid'],
+  ])('uses documented columns for %s in %s', (error, sql, symbol, module, candidates) => {
+    const result = diagnose(error, `INCLUDE PERFETTO MODULE ${module}; ${sql}`);
+    expect(result).toMatchObject({
+      errorKind: 'missing_column',
+      absence: 'query_error_not_data_absence',
+      symbol,
+      stdlibModule: module,
+      moduleInjected: true,
+      availableColumnsSource: 'bundled_stdlib_docs',
+    });
+    expect(result.hint).toContain(`Related columns: ${candidates}.`);
+  });
+
+  it.each([
+    ['SELECT ts FROM chrome_scroll_update_info_step_templates', 'ts'],
+    ['SELECT s.ts FROM android_startups s', 's.ts'],
+    ['SELECT id FROM android_input_events', 'id'],
     ['SELECT ts FROM unknown_relation', 'ts'],
     ['SELECT ts FROM android_binder_txns b JOIN android_startups s ON b.client_upid=s.upid', 'ts'],
     ['SELECT x.ts FROM android_binder_txns b', 'x.ts'],
-  ])('does not guess a binder timestamp hint for %s', (sql, column) => {
+    ['SELECT ts$x.ts FROM android_input_events', 'ts$x.ts'],
+    ['SELECT i.ts FROM android_input_events i$other', 'i.ts'],
+    ["SELECT android_input_events.ts FROM android_input_events AS 'i'", 'android_input_events.ts'],
+    ['WITH gaps AS (SELECT dispatch_ts AS start_ts FROM android_input_events) SELECT gaps.ts FROM gaps', 'gaps.ts'],
+    ['WITH gaps AS (VALUES(1)) SELECT ts FROM android_input_events JOIN gaps', 'ts'],
+    ['SELECT ts FROM android_input_events JOIN (VALUES(1)) AS other', 'ts'],
+    ['SELECT ts FROM android_input_events JOIN json_each(\'[]\') AS other', 'ts'],
+    ['SELECT ts FROM (android_input_events) AS i', 'ts'],
+    ['SELECT ts FROM android_input_events WHERE EXISTS (SELECT 1)', 'ts'],
+    ['SELECT ts FROM android_input_events; SELECT 1', 'ts'],
+    ['SELECT i.ts FROM android_input_events i JOIN android_input_events i', 'i.ts'],
+    ['SELECT i.ts FROM android_input_events i JOIN thread t ON i.upid=t.upid, process i', 'i.ts'],
+    ['SELECT i.ts FROM android_input_events i JOIN thread t USING(upid), process i', 'i.ts'],
+    ['SELECT window.ts FROM android_input_events WINDOW w AS ()', 'window.ts'],
+  ])('does not offer related columns for %s', (sql, column) => {
     expect(diagnose(`no such column: ${column}`, sql).hint).toBeUndefined();
+  });
+
+  it('withholds hints from prelude even when documented columns share the suffix', () => {
+    const result = diagnose('no such column: ts', 'SELECT ts FROM process');
+    expect(result).toMatchObject({
+      symbol: 'process',
+      availableColumns: expect.arrayContaining(['start_ts', 'end_ts']),
+    });
+    expect(result.hint).toBeUndefined();
   });
 
   it('resolves a qualified column through its alias', () => {
@@ -65,6 +113,7 @@ describe('buildSqlSchemaDiagnostic', () => {
     );
     expect(result).toMatchObject({symbol: 'android_binder_txns', column: 'dur'});
     expect(result.closestColumns).toEqual(expect.arrayContaining(['client_dur', 'server_dur']));
+    expect(result.hint).toContain('aidl_dur, client_dur, server_dur, client_monotonic_dur, server_monotonic_dur');
     expect(result.alternativeSymbols).toBeUndefined();
   });
 

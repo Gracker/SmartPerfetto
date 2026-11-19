@@ -18,12 +18,13 @@
  * not be a pure read and would taint native provenance on the processor.
  */
 
-import {loadPromptSegment} from './strategyLoader';
+import {loadPromptSegment, renderTemplate} from './strategyLoader';
 import {getPerfettoStdlibModules, getPerfettoStdlibSymbolIndex} from '../services/perfettoStdlibScanner';
 import {loadPerfettoSqlDocsAsset} from '../services/perfettoSqlDocs';
 import {
   analyzeSqlStdlibDependencies,
   extractExternalTableBindings,
+  extractFlatSelectTableBindings,
   moduleCoveredByStdlibDeclaration,
 } from '../services/sqlStdlibDependencyAnalyzer';
 import {
@@ -203,6 +204,32 @@ function symbolFacts(
 
 type Resolution = Omit<SqlSchemaDiagnosticV1, 'errorKind' | 'absence' | 'repeatCount'>;
 
+function relatedColumnHint(
+  sql: string | undefined,
+  qualifier: string | undefined,
+  wanted: string,
+  facts: ReturnType<typeof symbolFacts>,
+  columns: readonly string[],
+): string | undefined {
+  if (!sql || !facts.stdlibModule || !facts.availableColumns || !/^(ts|dur|utid|upid)$/.test(wanted) ||
+    columns.some(name => name.toLowerCase() === wanted)) return undefined;
+  // Match whole suffixes. For example, `events` and `ts_column_name` are
+  // not timestamps. Keep the names that are visible in this diagnostic.
+  const related = facts.availableColumns.filter(name => name.toLowerCase().endsWith(`_${wanted}`));
+  if (related.length === 0) return undefined;
+  const bindings = extractFlatSelectTableBindings(sql);
+  const bound = qualifier === undefined ? bindings
+    : bindings.filter(binding => (binding.alias ?? binding.table) === qualifier.toLowerCase());
+  if (bound.length !== 1 || bound[0].table !== facts.symbol) return undefined;
+
+  const template = loadPromptSegment('prompt-sql-related-columns-hint');
+  return template && renderTemplate(template, {
+    relation: facts.symbol,
+    column: wanted,
+    candidates: related.join(', '),
+  });
+}
+
 function resolveMissingColumn(
   qualifier: string | undefined,
   column: string,
@@ -226,24 +253,21 @@ function resolveMissingColumn(
   const [symbol, ...alternatives] = candidates;
   if (symbol === undefined) return {column};
   const facts = symbolFacts(symbol, input);
-  const closestColumns = facts.availableColumns
-    ? closest(column, tables.get(symbol)?.columns ?? [])
-    : [];
+  const columns = tables.get(symbol)?.columns ?? [];
+  const closestColumns = closest(column, columns);
+  const hint = relatedColumnHint(input.sql, qualifier, wanted, facts, columns);
   return {
     ...facts,
     column,
     ...(closestColumns.length > 0 ? {closestColumns} : {}),
     ...(alternatives.length > 0 ? {alternativeSymbols: alternatives.slice(0, MAX_ALTERNATIVE_SYMBOLS)} : {}),
-    ...(symbol === 'android_binder_txns' && wanted === 'ts' &&
-      (qualifier !== undefined || bindings.length === 1) &&
-      ['client_ts', 'server_ts'].every(name => facts.availableColumns?.includes(name))
-      ? {hint: loadPromptSegment('prompt-sql-binder-timestamp-hint')} : {}),
+    ...(hint ? {hint} : {}),
   };
 }
 
 function resolve(message: string, errorKind: TraceProcessorSqlErrorKind, input: SqlSchemaDiagnosticInput): Resolution {
   if (errorKind === 'missing_column') {
-    const column = /no such column:\s*(?:([A-Za-z_]\w*)\.)?([A-Za-z_]\w*)/i.exec(message);
+    const column = /no such column:\s*(?:([A-Za-z_]\w*)\.)?([A-Za-z_]\w*)(?=\s|$)/i.exec(message);
     if (column) return resolveMissingColumn(column[1], column[2], input);
     const fn = /no such function:\s*([A-Za-z_]\w*)/i.exec(message);
     if (fn) {

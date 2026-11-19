@@ -4271,7 +4271,7 @@ describe('createClaudeMcpServer', () => {
       });
       expect(first.schemaDiagnostic.availableColumns).toEqual(expect.arrayContaining(['client_ts', 'server_ts']));
       expect(first.schemaDiagnostic.closestColumns).toEqual(expect.arrayContaining(['client_ts', 'server_ts']));
-      expect(first.schemaDiagnostic.hint).toContain('client_ts for client time or server_ts for server time');
+      expect(first.schemaDiagnostic.hint).toContain('Related columns: aidl_ts, client_ts, server_ts.');
       expect(second.schemaDiagnostic.hint).toBe(first.schemaDiagnostic.hint);
       expect(second.schemaDiagnostic.repeatCount).toBe(2);
 

@@ -50,6 +50,10 @@ const FUNCTION_CALL_REGEX = /\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
 const MACRO_INVOCATION_REGEX = /\b([A-Za-z_][A-Za-z0-9_]*)\s*!\s*\(/g;
 const ALREADY_INCLUDED_REGEX = /\bINCLUDE\s+PERFETTO\s+MODULE\s+([\w.]+)/gi;
 const TOKEN_REGEX = /"(?:""|[^"\n])+"|`[^`\n]+`|\[[^\]\n]+\]|[A-Za-z_][A-Za-z0-9_]*|[(),;]/g;
+const FLAT_SELECT_TOKEN_REGEX = new RegExp(
+  `--[^\\r\\n]*|/\\*[\\s\\S]*?\\*/|'(?:''|[^'])*'|${TOKEN_REGEX.source}|\\S`,
+  'g',
+);
 const IDENTIFIER_CAPTURE_PATTERN =
   '(?:"(?:""|[^"\\n])+"|`[^`\\n]+`|\\[[^\\]\\n]+\\]|[A-Za-z_][\\w.]*)';
 
@@ -329,10 +333,24 @@ export interface SqlTableBinding {
 }
 
 function extractFromJoinBindings(maskedSql: string): SqlTableBinding[] {
-  const tokens = maskedSql.match(TOKEN_REGEX) || [];
+  return extractTableBindings(maskedSql.match(TOKEN_REGEX) ?? []);
+}
+
+function extractTableBindings(tokens: string[], plainRelationsOnly = false): SqlTableBinding[] {
   const bindings: SqlTableBinding[] = [];
+  let inFromClause = false;
   for (let i = 0; i < tokens.length; i++) {
     const upper = tokens[i].toUpperCase();
+    if (plainRelationsOnly) {
+      if (upper === '(') {
+        i = skipBalancedParentheses(tokens, i) - 1;
+        continue;
+      }
+      if (upper === 'FROM' && tokens[i - 1]?.toUpperCase() === 'DISTINCT') continue;
+      if (/^(WHERE|GROUP|HAVING|ORDER|LIMIT)$/.test(upper)) inFromClause = false;
+      // A comma not consumed below can follow ON/USING and introduce a binding.
+      if (inFromClause && upper === ',') return [];
+    }
     if (upper !== 'FROM' && upper !== 'JOIN') {
       continue;
     }
@@ -340,17 +358,24 @@ function extractFromJoinBindings(maskedSql: string): SqlTableBinding[] {
     while (j < tokens.length) {
       const ident = tokens[j];
       if (ident === '(') {
+        if (plainRelationsOnly) return [];
         j = readOptionalAlias(tokens, skipBalancedParentheses(tokens, j)).next;
       } else if (isIdentifierToken(ident)) {
         const isTableValuedFunction = tokens[j + 1] === '(';
+        if (plainRelationsOnly && isTableValuedFunction) return [];
         if (isTableValuedFunction) {
           j = readOptionalAlias(tokens, skipBalancedParentheses(tokens, j + 1)).next;
         } else {
           const {next, alias} = readOptionalAlias(tokens, j + 1);
+          const following = tokens[next];
+          // A split identifier or an unsupported alias can look like a valid binding prefix.
+          if (plainRelationsOnly && following && following !== ',' && following !== ';' &&
+            !FROM_CLAUSE_TERMINATORS.has(following.toUpperCase())) return [];
           bindings.push({table: unquoteIdentifier(ident).toLowerCase(), ...(alias ? {alias} : {})});
           j = next;
         }
       } else {
+        if (plainRelationsOnly) return [];
         break;
       }
       if (j < tokens.length && tokens[j] === ',') {
@@ -359,8 +384,28 @@ function extractFromJoinBindings(maskedSql: string): SqlTableBinding[] {
       }
       break;
     }
+    if (plainRelationsOnly) {
+      inFromClause = true;
+      i = j - 1;
+    }
   }
   return bindings;
+}
+
+/**
+ * Bindings suitable for advisory column hints. Keep duplicate bindings and
+ * abstain when the scanner cannot account for every relation in one SELECT.
+ */
+export function extractFlatSelectTableBindings(sql: string): SqlTableBinding[] {
+  const statements = splitSqlStatements(sql)
+    .map(statement => (statement.match(FLAT_SELECT_TOKEN_REGEX) ?? [])
+      .filter(token => !token.startsWith('--') && !token.startsWith('/*')))
+    .filter(tokens => tokens.length > 0);
+  const select = statements.pop();
+  if (!select || select[0].toUpperCase() !== 'SELECT' ||
+    statements.some(tokens => tokens.slice(0, 3).join(' ').toUpperCase() !== 'INCLUDE PERFETTO MODULE') ||
+    select.slice(1).some(token => /^(SELECT|WITH|VALUES|UNION|INTERSECT|EXCEPT|INDEXED|WINDOW)$/i.test(token))) return [];
+  return extractTableBindings(select, true);
 }
 
 function extractFromJoinTables(maskedSql: string): string[] {

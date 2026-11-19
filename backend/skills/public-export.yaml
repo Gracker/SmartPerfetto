@@ -1945,7 +1945,7 @@ strategies:
   backend/strategies/prompt-runtime-sql-pitfalls-zh.template.md:
     disposition: product-only
     reason: SmartPerfetto runtime memory and SQL retry orchestration
-  backend/strategies/prompt-sql-binder-timestamp-hint.template.md:
+  backend/strategies/prompt-sql-related-columns-hint.template.md:
     disposition: product-only
     reason: SmartPerfetto failed-query schemaDiagnostic recovery hint
   backend/strategies/prompt-sql-evidence-guidance.template.md:

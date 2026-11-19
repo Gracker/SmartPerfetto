@@ -1304,7 +1304,8 @@ describe('experimental Pi agent-core runtime contract', () => {
       'resolve_hypothesis',
     ]));
     expect(agent.state.systemPrompt.length).toBeGreaterThan(500);
-    expect(agent.state.systemPrompt.match(/android_binder_txns: no ts\/dur; ORDER BY client_ts/g)).toHaveLength(1);
+    expect(agent.state.systemPrompt.match(/Binder: no ts\/dur; ORDER BY client_ts/g)).toHaveLength(1);
+    expect(agent.state.systemPrompt).toContain('SQLite scalar `MAX(a,b)/MIN(a,b)`');
     expect(agent.prompts[0]).toContain('分析启动性能');
     expect(JSON.stringify(agent.state.model)).not.toContain('sk-pi-test-secret');
     expect((agent.state.model as any).apiKey).toBeUndefined();
