@@ -173,6 +173,39 @@ Finally, verify that generated outputs were not staged:
 git status --short --branch
 ```
 
+## Quark Drive Mirror
+
+Mirror each public stable version during the same release session. Do not create
+a scheduler or polling task. Use the maintainer's locally authorized official
+Quark Skill and configured `SmartPerfetto/v<version>/` destination. Keep the
+folder ID and authorization local, outside the repository.
+
+1. Upload only the three verified final portable archives for this Release,
+   checking asset IDs, names, sizes, and SHA256. Download missing local archives
+   from their exact assets; never rebuild or repack. Include `SHA256SUMS.txt`,
+   release notes, and download instructions, never source, logs, config, or secrets.
+2. Use a separate folder per version and retain all older versions. Skip existing
+   names only when evidence proves identical contents; stop on conflicts without
+   overwriting or deleting. Preserve partial progress and resume unfinished items.
+3. Verify the complete cloud file list and byte sizes after upload, and download
+   small files to compare SHA256. If the official API prevents archive downloads,
+   record cloud archive SHA256 verification as unavailable, retaining source and
+   pre-upload hashes plus upload completion evidence. Do not claim archive
+   roundtrip verification passed.
+4. Create and verify a permanent public share for this version folder, never its
+   parent. Only after success, append one Quark download-link section to the
+   matching GitHub Release body, preserving existing notes. Re-read it and check
+   the link and unchanged release/asset identity. Do not change title, tag, target,
+   or assets. Use `<!-- smartperfetto-quark-mirror:start -->` and
+   `<!-- smartperfetto-quark-mirror:end -->` markers to prevent duplicate sections.
+5. Report authentication, capacity, permission, or upload failures without adding
+   premature links, deleting history, or purchasing membership. If the mirror is
+   complete but the notes update fails, retry only the notes update.
+
+The release operator performs this step separately from `release:portable`'s
+read-only public-release verification. Existing release gates remain unchanged;
+building or running SmartPerfetto does not require the Quark Skill.
+
 ## Release Invariants
 
 - Root `package.json` is the version source; `npm run version:set -- <version>` must synchronize all four version files.
@@ -193,8 +226,9 @@ git status --short --branch
 - Public macOS packages require Developer ID, Hardened Runtime, Apple
   notarization, and a stapled ticket. Ad-hoc signing is only for local or draft
   testing.
-- A published GitHub release and its asset set are read-only; never clobber,
-  replace, or edit them.
+- A published GitHub release and its asset set are read-only except for the
+  authorized mirror-link body addition above. Never clobber or replace assets
+  or edit other release metadata.
 - `dist/portable/`, `dist/windows-exe/`, and `.cache/smartperfetto-portable/` are generated outputs and must not be committed.
 - `frontend/` is consumed by Docker, `./start.sh`, and portable packages; AI Assistant plugin UI changes must run `./scripts/update-frontend.sh`.
 - If a root commit points at a new `perfetto/` submodule commit, that submodule commit must already be pushed to the Gracker fork and be reachable from `fork/main` (`git -C perfetto merge-base --is-ancestor <gitlink> fork/main` exits 0); a gitlink reachable only from a feature branch breaks once that branch is deleted.

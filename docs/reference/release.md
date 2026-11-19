@@ -151,6 +151,31 @@ release ID 和 asset ID/状态/名称/大小/digest。公开 release
 git status --short --branch
 ```
 
+## 夸克网盘镜像
+
+每次公开稳定版发布时，在同一次发布操作中完成镜像，不创建定时任务或轮询。
+使用维护者本机已授权的夸克官方 Skill，将本版本放进已配置的
+`SmartPerfetto/v<version>/`；目录 ID 和授权只保存在本机，不提交到仓库。
+
+1. 只上传本次 Release 已验证的三个最终免安装包，核对 asset ID、名称、大小和
+   SHA256；缺少本地包时下载对应资产，不重新构建或打包。附上 `SHA256SUMS.txt`、
+   发布说明和下载说明，不上传源码、日志、配置或凭据。
+2. 每个版本单独建目录，保留所有旧版本。同名文件只在已有证据确认内容一致时
+   跳过；冲突时停止，不覆盖或删除。部分失败保留进度，只补未完成项。
+3. 上传完成后核对完整云端文件清单和字节数，小文件回下载比对 SHA256。
+   若官方接口限制安装包回下载，明确记录整包云端 SHA256 复核不可用，保留来源
+   哈希、预上传哈希和上传终态证据，不能称为整包回下载校验通过。
+4. 为本版本目录创建长期公开分享并核对内容，不分享父目录。成功后只在对应
+   GitHub Release 的 body 追加一次“国内下载（夸克网盘）”链接，保留原说明，
+   回读确认链接及 release/asset 身份未变；不修改标题、tag、target 或资产。
+   使用 `<!-- smartperfetto-quark-mirror:start -->` 和
+   `<!-- smartperfetto-quark-mirror:end -->` 标记避免重复追加。
+5. 认证、容量、权限或上传失败时报告具体缺口，不提前写链接、不删除历史版本、
+   不自动购买会员。镜像成功但说明更新失败时，只重试说明更新。
+
+该步骤由发布者执行，独立于 `release:portable` 的只读公开版本验证；不改变
+原有发布门禁，也不要求用户安装夸克 Skill 才能构建或运行 SmartPerfetto。
+
 ## 必须保持的发布不变量
 
 - 根目录 `package.json` 是版本源；`npm run version:set -- <version>` 必须同步四个版本文件。
@@ -167,7 +192,8 @@ git status --short --branch
 - `--no-draft` 必须复用已经完成 exact-asset smoke 的现有 draft，不能上传或替换资产。
 - 公开 macOS 包必须使用 Developer ID、Hardened Runtime、Apple 公证和 stapled
   ticket；ad-hoc 仅用于本地或 draft 测试。
-- 已公开 GitHub release 只读且 asset 集合不可变；不得 clobber、替换或改写。
+- 已公开 GitHub release 只读且 asset 集合不可变；仅允许上述已授权的网盘链接
+  body 追加，不得 clobber、替换资产或改写其他发布元数据。
 - `dist/portable/`、`dist/windows-exe/`、`.cache/smartperfetto-portable/` 都是生成产物，不进 git。
 - `frontend/` 是 Docker、`./start.sh` 和免安装包的用户路径依赖；AI Assistant 插件 UI 变更必须运行 `./scripts/update-frontend.sh`。
 - 如果 root commit 指向 `perfetto/` submodule 新提交，该 submodule commit 必须已经 push 到 Gracker fork，并且可从 `fork/main` 到达（`git -C perfetto merge-base --is-ancestor <gitlink> fork/main` 返回 0）；只在某个 feature 分支上可达的 gitlink 会在分支删除后失效。

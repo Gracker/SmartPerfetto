@@ -41,6 +41,10 @@ patch, not mutation of an existing public artifact.
 6. Wait for npm Trusted Publishing and Docker workflow terminal results, verify
    registry install and remote dual-architecture manifest/tags. Recheck clean Git
    status; generated packages/caches stay untracked. Report each delivery separately.
+7. During the same release session, mirror the verified public portable assets to
+   the maintainer's configured Quark `SmartPerfetto/v<version>/` folder and append
+   its verified version-only share URL to that Release's body, following the
+   runbook. Preserve older versions. Do not create a scheduler or polling task.
 
 ## Exact Portable Identity and Lifecycle
 
@@ -80,6 +84,9 @@ patch, not mutation of an existing public artifact.
   may exit successfully but cannot replace/edit assets. Missing native targets keep
   a draft unless the user explicitly accepts a visible named verification gap;
   such a downgrade is never complete all-platform acceptance.
+- The authorized Quark download-link addition is a separate post-publication,
+  body-only operation. Preserve existing notes and release identity/assets;
+  it does not relax promotion gates or let `release:portable` edit public releases.
 
 ## macOS Signing
 
