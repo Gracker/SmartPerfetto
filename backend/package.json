@@ -194,7 +194,7 @@
     "express": "^5.2.1",
     "google-auth-library": "^10.9.1",
     "js-yaml": "^5.4.1",
-    "markdown-it": "^14.2.0",
+    "markdown-it": "^15.0.3",
     "multer": "^2.1.1",
     "openai": "^6.38.0",
     "openid-client": "^6.8.4",
