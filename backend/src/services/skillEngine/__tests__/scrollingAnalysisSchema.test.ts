@@ -3863,6 +3863,11 @@ describe('smoothness_basis puts present cadence beside frame duration', () => {
         layer_hybrid_frames: 13, layer_over_budget_gaps: 2, layer_over_budget_pct: 6.9,
         smoothness_rating: 'fair',
       });
+      db.exec(`UPDATE actual_frame_timeline_slice SET dur = dur + ${2 * VSYNC} WHERE id IN (5, 22, 27)`);
+      expect(basis(db)[0]).toMatchObject({
+        layer_hybrid_frames: 13, layer_over_budget_gaps: 5, layer_over_budget_pct: 17.24,
+        smoothness_rating: 'poor',
+      });
     } finally { db.close(); }
   });
 
@@ -3885,16 +3890,22 @@ describe('smoothness_basis puts present cadence beside frame duration', () => {
       `);
       const step = stepOf(scrolling, 'flutter_swap_touch_gaps');
       const sql = bind(String(step.sql), step.sql_fragments);
-      expect(db.prepare(sql).all()).toEqual([
+      const boundGaps = db.prepare(sql).all();
+      expect(boundGaps).toEqual([
         expect.objectContaining({gap_class: 'between_contacts_or_next_touch_onset', complete_contacts: 2,
           gaps: 1, max_gap_ns: 515000000, max_touch_overlap_ns: 20000000}),
         expect.objectContaining({gap_class: 'over_budget_during_touch', gaps: 2, max_touch_overlap_ns: 62000000}),
         expect.objectContaining({gap_class: 'touch_timing_unresolved', gaps: 1, max_gap_ns: 118000000}),
       ]);
+      for (const row of boundGaps) {
+        expect(row).toMatchObject({touch_over_budget_gaps: 2, between_contact_gaps: 1, unresolved_touch_gaps: 1,
+          longest_touch_gap_ns: 62000000, longest_unresolved_gap_ns: 118000000});
+      }
       db.exec('DELETE FROM slice WHERE track_id = 10');
       expect(db.prepare(sql).all()).toEqual([
         expect.objectContaining({gap_class: 'touch_timing_unresolved', complete_contacts: 0, gaps: 4,
-          max_touch_overlap_ns: null}),
+          max_touch_overlap_ns: null, touch_over_budget_gaps: 0, between_contact_gaps: 0, unresolved_touch_gaps: 4,
+          longest_touch_gap_ns: null, longest_unresolved_gap_ns: 515000000}),
       ]);
     } finally { db.close(); }
   });

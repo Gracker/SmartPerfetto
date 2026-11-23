@@ -600,7 +600,12 @@
                 "gap_class",
                 "gaps",
                 "max_gap_ns",
-                "max_touch_overlap_ns"
+                "max_touch_overlap_ns",
+                "touch_over_budget_gaps",
+                "between_contact_gaps",
+                "unresolved_touch_gaps",
+                "longest_touch_gap_ns",
+                "longest_unresolved_gap_ns"
               ],
               "assertions": [
                 {
@@ -620,6 +625,16 @@
                 },
                 {
                   "column": "max_gap_ns",
+                  "operator": "eq",
+                  "value": 60000000
+                },
+                {
+                  "column": "unresolved_touch_gaps",
+                  "operator": "eq",
+                  "value": 1
+                },
+                {
+                  "column": "longest_unresolved_gap_ns",
                   "operator": "eq",
                   "value": 60000000
                 }

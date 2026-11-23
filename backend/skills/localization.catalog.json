@@ -11,7 +11,7 @@
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
     "stepCount": 1401,
-    "explicitColumnCount": 5473
+    "explicitColumnCount": 5478
   },
   "skills": {
     "ams_module": {
@@ -37059,6 +37059,36 @@
                 "zh-CN": "最长连续触摸内间隔",
                 "en": "Longest gap within a single touch"
               }
+            },
+            "touch_over_budget_gaps": {
+              "label": {
+                "zh-CN": "触摸内超预算间隔数",
+                "en": "Over-budget gaps during touch"
+              }
+            },
+            "between_contact_gaps": {
+              "label": {
+                "zh-CN": "手势间及起手间隔数",
+                "en": "Gaps between contacts or at touch onset"
+              }
+            },
+            "unresolved_touch_gaps": {
+              "label": {
+                "zh-CN": "触摸状态未知间隔数",
+                "en": "Gaps with unresolved touch state"
+              }
+            },
+            "longest_touch_gap_ns": {
+              "label": {
+                "zh-CN": "触摸内最长超预算间隔",
+                "en": "Longest over-budget interval within touch"
+              }
+            },
+            "longest_unresolved_gap_ns": {
+              "label": {
+                "zh-CN": "触摸状态未知的最长间隔",
+                "en": "Longest gap with unresolved touch state"
+              }
             }
           },
           "synthesizeLabels": {}
@@ -37369,14 +37399,14 @@
             },
             "real_jank_count": {
               "label": {
-                "zh-CN": "实际掉帧",
-                "en": "Real Jank Count"
+                "zh-CN": "Skill 混合掉帧帧数",
+                "en": "Skill hybrid jank frame count"
               }
             },
             "false_positive": {
               "label": {
-                "zh-CN": "假阳性",
-                "en": "False Positive"
+                "zh-CN": "混合口径未计入的标签帧",
+                "en": "Tagged frames excluded by the hybrid rule"
               }
             },
             "total_dur": {
@@ -38278,7 +38308,7 @@
             },
             "field:perceived_jank_frames": {
               "zh-CN": "Skill 感知掉帧（混合信号）",
-              "en": "Perceived Jank Frames"
+              "en": "Skill perceived jank (hybrid signal)"
             },
             "field:buffer_stuffing_frames": {
               "zh-CN": "BufferStuffing帧",

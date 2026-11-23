@@ -747,6 +747,7 @@ steps:
           label: 总帧数
         - key: perceived_jank_frames
           label: Skill 感知掉帧（混合信号）
+          label_i18n: {en: "Skill perceived jank (hybrid signal)"}
           format: "{{value}} ({{jank_rate}}%)"
         - key: buffer_stuffing_frames
           label: Buffer Stuffing
@@ -778,12 +779,14 @@ steps:
           unit: frames
           label: "Skill 感知掉帧（混合信号）"
           label_i18n: {en: "Skill perceived jank (hybrid signal)"}
+          semantics: "Hybrid frame count: includes non-Buffer-Stuffing Late Present and dropped frames. A Late Present frame can have an on-budget present gap."
           type: number
           format: compact
         - name: jank_rate
           unit: "%"
           label: "Skill 感知掉帧率（混合信号）"
           label_i18n: {en: "Skill perceived jank rate (hybrid signal)"}
+          semantics: "Share of hybrid frame-status events, using frame count as denominator. Presentation cadence has a separate gap denominator in smoothness_basis."
           type: percentage
           format: percentage
         - name: buffer_stuffing_frames
@@ -1376,15 +1379,15 @@ steps:
         - {name: layer_name, label: "图层", type: string}
         - {name: verdict_basis, label: "流畅度判定依据", label_i18n: {en: "Smoothness verdict basis"}, type: string}
         - {name: primary_layer, label: "主图层", label_i18n: {en: "Primary layer"}, type: boolean}
-        - {name: smoothness_rating, label: "呈现节奏评级（图层全区间）", label_i18n: {en: "Presentation cadence rating across layer sessions"}, type: string}
+        - {name: smoothness_rating, label: "呈现节奏评级（图层全区间）", label_i18n: {en: "Presentation cadence rating across layer sessions"}, type: string, semantics: "Fixed cadence rating for this process and layer across the included scrolling sessions. Use the primary-layer row. Unrated means presentation smoothness cannot be rated."}
         - {name: layer_frames, label: "图层全区间帧数", label_i18n: {en: "Layer frames across sessions"}, type: number, unit: frames}
         - {name: layer_tagged_frames, label: "FrameTimeline 掉帧标签帧", label_i18n: {en: "FrameTimeline jank-tagged frames"}, type: number, unit: frames}
-        - {name: layer_tagged_pct, label: "FrameTimeline 掉帧标签率", label_i18n: {en: "FrameTimeline jank-tag rate"}, type: percentage, unit: "%", format: percentage}
+        - {name: layer_tagged_pct, label: "FrameTimeline 掉帧标签率", label_i18n: {en: "FrameTimeline jank-tag rate"}, type: percentage, unit: "%", format: percentage, semantics: "All non-None FrameTimeline jank tags, including Prediction Error and Buffer Stuffing, divided by layer_frames."}
         - {name: layer_hybrid_frames, label: "Skill 感知掉帧（混合信号）", label_i18n: {en: "Skill perceived jank (hybrid signal)"}, type: number, unit: frames}
-        - {name: layer_hybrid_pct, label: "Skill 感知掉帧率（混合信号）", label_i18n: {en: "Skill perceived jank rate (hybrid signal)"}, type: percentage, unit: "%", format: percentage}
+        - {name: layer_hybrid_pct, label: "Skill 感知掉帧率（混合信号）", label_i18n: {en: "Skill perceived jank rate (hybrid signal)"}, type: percentage, unit: "%", format: percentage, semantics: "Hybrid frame-status share, layer_hybrid_frames / layer_frames. Includes non-Buffer-Stuffing Late Present even with an on-budget gap. Zero is a measured rate."}
         - {name: layer_present_gap_count, label: "图层呈现间隔数", label_i18n: {en: "Layer present intervals"}, type: number, unit: events}
         - {name: layer_over_budget_gaps, label: "图层超 1.5 倍预算间隔数", label_i18n: {en: "Layer gaps over 1.5x budget"}, type: number, unit: events}
-        - {name: layer_over_budget_pct, label: "图层超 1.5 倍预算间隔率", label_i18n: {en: "Layer gap rate over 1.5x budget"}, type: percentage, unit: "%", format: percentage}
+        - {name: layer_over_budget_pct, label: "图层超 1.5 倍预算间隔率", label_i18n: {en: "Layer gap rate over 1.5x budget"}, type: percentage, unit: "%", format: percentage, semantics: "Measured presentation gaps above 1.5x VSync, layer_over_budget_gaps / layer_present_gap_count. This is the sole rating input when there is a supported budget and sufficient sample."}
         - {name: cadence_metric, label: "节奏口径", label_i18n: {en: "Cadence metric"}, type: string}
         - {name: cadence_gap_p50_ns, label: "节奏间隔 P50", label_i18n: {en: "Cadence gap P50"}, type: duration, format: duration_ms, unit: ns}
         - {name: cadence_gap_p95_ns, label: "节奏间隔 P95", label_i18n: {en: "Cadence gap P95"}, type: duration, format: duration_ms, unit: ns}
@@ -1689,10 +1692,15 @@ steps:
         - {name: swap_count, label: "换帧次数", label_i18n: {en: "Swap count"}, type: number}
         - {name: complete_contacts, label: "已配对触摸", label_i18n: {en: "Paired touch contacts"}, type: number}
         - {name: gap_budget_ns, label: "间隔阈值（1.5 倍 VSync）", label_i18n: {en: "Gap threshold (1.5x VSync)"}, type: duration, unit: ns, format: duration_ms}
-        - {name: gap_class, label: "触摸时间归类", label_i18n: {en: "Touch timing classification"}, type: string}
+        - {name: gap_class, label: "触摸时间归类", label_i18n: {en: "Touch timing classification"}, type: string, semantics: "Only over_budget_during_touch supports touch-time jank. between_contacts_or_next_touch_onset is bounded by paired touches. touch_timing_unresolved has no proven touch state, including before the first paired touch."}
         - {name: gaps, label: "间隔数", type: number}
         - {name: max_gap_ns, label: "最长完整换帧间隔", label_i18n: {en: "Longest full swap gap"}, type: duration, unit: ns, format: duration_ms}
         - {name: max_touch_overlap_ns, label: "最长连续触摸内间隔", label_i18n: {en: "Longest gap within a single touch"}, type: duration, unit: ns, format: duration_ms}
+        - {name: touch_over_budget_gaps, label: "触摸内超预算间隔数", label_i18n: {en: "Over-budget gaps during touch"}, type: number, unit: events}
+        - {name: between_contact_gaps, label: "手势间及起手间隔数", label_i18n: {en: "Gaps between contacts or at touch onset"}, type: number, unit: events}
+        - {name: unresolved_touch_gaps, label: "触摸状态未知间隔数", label_i18n: {en: "Gaps with unresolved touch state"}, type: number, unit: events}
+        - {name: longest_touch_gap_ns, label: "触摸内最长超预算间隔", label_i18n: {en: "Longest over-budget interval within touch"}, type: duration, unit: ns, format: duration_ms}
+        - {name: longest_unresolved_gap_ns, label: "触摸状态未知的最长间隔", label_i18n: {en: "Longest gap with unresolved touch state"}, type: duration, unit: ns, format: duration_ms}
     sql_fragments:
       - fragments/effective_target_processes.sql
       - fragments/vsync_config.sql
@@ -1782,14 +1790,25 @@ steps:
           ELSE 'touch_timing_unresolved'
         END AS gap_class
         FROM swap_gaps g
+      ),
+      gap_classes AS (
+        SELECT g.upid, g.process_name, g.utid, MAX(g.swap_count) AS swap_count,
+          COALESCE(c.complete_contacts, 0) AS complete_contacts, g.gap_budget_ns,
+          g.gap_class, COUNT(*) AS gaps, MAX(g.end_ts - g.start_ts) AS max_gap_ns,
+          MAX(g.touch_overlap_ns) AS max_touch_overlap_ns
+        FROM classified g LEFT JOIN contact_totals c USING (upid)
+        GROUP BY g.upid, g.process_name, g.utid, g.gap_budget_ns, g.gap_class
       )
-      SELECT g.upid, g.process_name, g.utid, MAX(g.swap_count) AS swap_count,
-        COALESCE(c.complete_contacts, 0) AS complete_contacts, g.gap_budget_ns,
-        g.gap_class, COUNT(*) AS gaps, MAX(g.end_ts - g.start_ts) AS max_gap_ns,
-        MAX(g.touch_overlap_ns) AS max_touch_overlap_ns
-      FROM classified g LEFT JOIN contact_totals c USING (upid)
-      GROUP BY g.upid, g.process_name, g.utid, g.gap_budget_ns, g.gap_class
-      ORDER BY g.upid, g.utid, g.gap_class
+      -- Repeat the per-raster totals in the first-row artifact preview.
+      SELECT *,
+        SUM(CASE WHEN gap_class = 'over_budget_during_touch' THEN gaps ELSE 0 END) OVER raster AS touch_over_budget_gaps,
+        SUM(CASE WHEN gap_class = 'between_contacts_or_next_touch_onset' THEN gaps ELSE 0 END) OVER raster AS between_contact_gaps,
+        SUM(CASE WHEN gap_class = 'touch_timing_unresolved' THEN gaps ELSE 0 END) OVER raster AS unresolved_touch_gaps,
+        MAX(CASE WHEN gap_class = 'over_budget_during_touch' THEN max_touch_overlap_ns END) OVER raster AS longest_touch_gap_ns,
+        MAX(CASE WHEN gap_class = 'touch_timing_unresolved' THEN max_gap_ns END) OVER raster AS longest_unresolved_gap_ns
+      FROM gap_classes
+      WINDOW raster AS (PARTITION BY upid, utid)
+      ORDER BY upid, utid, gap_class
     save_as: flutter_swap_touch_gaps
 
   # ==========================================================================
@@ -2231,11 +2250,15 @@ steps:
           format: compact
         - name: real_jank_count
           unit: frames
-          label: "实际掉帧"
+          label: "Skill 混合掉帧帧数"
+          label_i18n: {en: "Skill hybrid jank frame count"}
+          semantics: "Frame-status hybrid count for this tag, not the count of measured over-budget presentation gaps."
           type: number
           format: compact
         - name: false_positive
-          label: "假阳性"
+          label: "混合口径未计入的标签帧"
+          label_i18n: {en: "Tagged frames excluded by the hybrid rule"}
+          semantics: "Frames with a non-None tag that the hybrid rule does not count. The exclusion alone does not establish on-time presentation."
           type: number
         # FrameTimeline dur runs from the app frame's start to its present:
         # latency, neither a cost nor a present interval.
@@ -2400,9 +2423,9 @@ steps:
       SELECT
         jank_type,
         COUNT(*) as count,
-        -- 实际用户感知掉帧数（present_type 为 Late/Dropped）
+        -- Skill 混合帧状态计数，呈现间隔超标在 smoothness_basis 单独测量。
         SUM(is_consumer_jank) as real_jank_count,
-        -- 假阳性数（jank_type 报告掉帧，但 present_type 未标记为 Late/Dropped）
+        -- 有 jank 标签但混合规则未计入的帧。
         SUM(CASE WHEN jank_type != 'None' AND is_consumer_jank = 0 THEN 1 ELSE 0 END) as false_positive,
         CAST(SUM(CASE WHEN dur > 0 THEN dur ELSE 0 END) AS REAL) as total_dur,
         CAST(ROUND(AVG(CASE WHEN dur > 0 THEN dur ELSE NULL END)) AS INTEGER) as avg_dur,

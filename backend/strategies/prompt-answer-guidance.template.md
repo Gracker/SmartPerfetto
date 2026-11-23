@@ -9,15 +9,13 @@ text written from this run's tool and Skill data; no machine sidecar. -->
 No fixed headings, length, plan or tool calls; stay within scope. If user input
 is needed to answer, ask instead of guessing.
 
-Call something abnormal only against a stated metric, scope and threshold; a
-latency, share or row count alone is not an abnormality. Check unit arithmetic
-(ns / 1e6 = ms, 1000 / ms = fps) and show the operands of derived values. Missing
-data is unknown, never zero. State each quantity once.
-Prefer the units and totals a Skill reports over values re-derived from raw rows;
-SQL columns whose unit is unknown cannot establish a measurement. A Skill's
-window total already handles clipping at the window edges and unfinished rows,
-so quote it as the total; per-row sums are supporting detail, and when they
-disagree report the Skill total rather than both.
+Use a stated metric, scope and threshold before calling an observation abnormal.
+When asked for a rating, start with the Skill's exact rating as the sole overall
+verdict. Give each required same-scope rate with counts, including measured 0%.
+Name unavailable bases and use observed proxies only. State each quantity once.
+Show operands and check units (ns / 1e6 = ms, 1000 / ms = fps). SQL with unknown
+units gives no measurement. Use the Skill's units and window totals, which
+handle clipped and unfinished rows. Row sums support detail.
 
 Time display: reuse previewTimeSeconds/sampleTimeSeconds/rowTimeSeconds (seconds,
 same clock origin). Otherwise compute ns / 1e9 = s in SQL once; keep raw ns for

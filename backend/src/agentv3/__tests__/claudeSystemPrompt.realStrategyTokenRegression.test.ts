@@ -64,14 +64,29 @@ describe('typed prompt with real strategy assets', () => {
     expect(estimatePromptTokens(parts.fullPrompt)).toBeLessThanOrEqual(MAX_PROMPT_TOKENS);
   });
 
-  it('retains the three distinct scrolling rate fields in the required report context', () => {
-    const parts = buildSystemPromptParts(makeWorstCaseContext('scrolling'));
+  it.each(['zh-CN', 'en'] as const)('retains the scrolling opening verdict under the %s prompt budget', outputLanguage => {
+    const parts = buildSystemPromptParts({...makeWorstCaseContext('scrolling'), outputLanguage});
     const report = parts.segments.find(segment => segment.label === 'report_requirements');
-    expect(report).toBeDefined();
-    for (const field of ['layer_tagged_pct', 'layer_over_budget_pct', 'layer_hybrid_pct']) {
-      expect(report?.content).toContain(field);
-    }
-    expect(report?.content).toContain('Hybrid includes Late Present even without a long gap.');
+    expect(report).toMatchObject({droppable: false, truncatable: false});
+    expect(parts.fullPrompt).toContain(report?.content);
+    expect(report?.content).toContain('Open with the exact smoothness_basis primary rating.');
+    expect(report?.content).toContain('layer_over_budget_pct, layer_tagged_pct, layer_hybrid_pct including 0%');
+    expect(report?.content).toContain('Hybrid includes on-budget Late Present.');
+    expect(report?.content).toContain('Keep unknown touch gaps separate.');
+  });
+
+  it('retains rating and unavailable evidence guidance in a bounded answer without a report contract', () => {
+    const context = makeWorstCaseContext('scrolling');
+    const parts = buildSystemPromptParts({...context, turnIntent: {
+      ...context.turnIntent!, scope: 'bounded_question', deliverable: 'answer',
+    }});
+    expect(parts.segments.some(segment => segment.label === 'report_requirements')).toBe(false);
+    const guide = parts.segments.find(segment => segment.label === 'answer_guidance');
+    expect(guide).toMatchObject({tier: 1, droppable: false, truncatable: false});
+    expect(guide?.content).toContain("the Skill's exact rating");
+    expect(guide?.content).toContain('same-scope rate with counts, including measured 0%');
+    expect(guide?.content).toContain('Name unavailable bases and use observed proxies only.');
+    expect(parts.fullPrompt).toContain(guide?.content);
   });
 
   it.each((['startup', 'scrolling'] as const).flatMap(sceneType =>

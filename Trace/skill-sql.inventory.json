@@ -16959,7 +16959,7 @@
     },
     "scrolling_analysis": {
       "source_file": "backend/skills/composite/scrolling_analysis.skill.yaml",
-      "source_sha256": "fb16a0f90123fec350caec674cd2ae0f31a0874a1214e1021d6bbc877ebd6109",
+      "source_sha256": "2ad10a0f97520d92dd9f9a9fdb446b1a9f258280c8e5f5f565e0e380e01963a9",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -17410,7 +17410,7 @@
           "id": "flutter_swap_touch_gaps",
           "at": "steps[17].sql",
           "top_level_index": 17,
-          "sha256": "1b4aa3fb786019c5764fb5eca6ad75e94581986c378c8c4b9db8f4e0d05e9182",
+          "sha256": "cc08e68e4daeb1586275c0d61215a982a960c20d67ec438399eb7e2d2fee3065",
           "required_columns": [
             "process_name",
             "swap_count",
@@ -17419,7 +17419,12 @@
             "gap_class",
             "gaps",
             "max_gap_ns",
-            "max_touch_overlap_ns"
+            "max_touch_overlap_ns",
+            "touch_over_budget_gaps",
+            "between_contact_gaps",
+            "unresolved_touch_gaps",
+            "longest_touch_gap_ns",
+            "longest_unresolved_gap_ns"
           ],
           "has_condition": false,
           "read_only": true,
@@ -17548,7 +17553,7 @@
           "id": "jank_type_stats",
           "at": "steps[23].sql",
           "top_level_index": 23,
-          "sha256": "69839b1893f9ce126571f4315dac7628c6d0c9a8920ad330124ba98046948f30",
+          "sha256": "3837cde5f9bdb0dc460f7bb790bca9e1684c03f78f9214e2047b8d339c0aea46",
           "required_columns": [
             "jank_type",
             "count",
