@@ -133,7 +133,7 @@ final_report_contract:
         - ['vsync_missed', 'VSync\s*丢失', '丢失\s*\d+\s*VSync', '超预算', '预算', 'budget overrun', 'missed[-\s]?vsync']
     - id: peak_and_semantic_metrics
       label: 峰值/口径指标
-      description: 'Use smoothness_basis primary-layer rating and three separate rows: layer_tagged_pct, layer_over_budget_pct, layer_hybrid_pct. Include peaks/fallback. Verify touch boundaries before attributing pauses.'
+      description: 'Use smoothness_basis primary rating and separate layer_tagged_pct, layer_over_budget_pct, layer_hybrid_pct. Hybrid includes Late Present even without a long gap. Include peaks/fallback. Align pauses with touch.'
       recovery_text:
         zh:
           - '用 smoothness_basis 主图层评级；并列 FrameTimeline 标签率、呈现间隔超预算率和 Skill 混合率。停帧须对照触摸时间；缺失时保留未知。'
@@ -191,6 +191,8 @@ final_report_contract:
 
 <!-- strategy-detail id="overview_artifacts" title="滑动概览、artifact、全局上下文和身份确认" keywords="overview,scrolling_analysis,fetch_artifact,batch_frame_root_cause,scroll_sessions,process_identity_resolver" default="true" -->
 第一张流畅度表固定三行，同取 `smoothness_basis` 的主图层行：**FrameTimeline 原始标签率** `layer_tagged_pct`、**呈现间隔超 1.5× 预算率** `layer_over_budget_pct`、**Skill 感知掉帧率** `layer_hybrid_pct`。逐行列分子/分母或不可用与替代口径。Buffer Stuffing 子集不能代替全部原始标签。标题采用该行 `smoothness_rating`。
+Skill 混合口径会计入非 Buffer Stuffing 的 `Late Present` 和丢弃帧。即使这些帧的实测间隔没有超标，框架仍可标为晚拍。纯 `Prediction Error` 与 `Late Present` 不是同一字段。说明分歧时，分别核实标签数、混合数和实测间隔数，勿将混合数解释成超预算间隔数。
+
 停帧比较输入 DOWN→UP/CANCEL；Flutter EGL 有 `flutter_swap_touch_gaps` 时先取它的 rows。跨下一次 DOWN 的长间隔拆开写，首段无前一 UP 或输入无法对齐时标未知。
 **Android 版本注意**：
 - FrameTimeline 数据需要 Android 12+ (API 31)

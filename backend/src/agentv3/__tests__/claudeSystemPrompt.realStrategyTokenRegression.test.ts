@@ -71,6 +71,7 @@ describe('typed prompt with real strategy assets', () => {
     for (const field of ['layer_tagged_pct', 'layer_over_budget_pct', 'layer_hybrid_pct']) {
       expect(report?.content).toContain(field);
     }
+    expect(report?.content).toContain('Hybrid includes Late Present even without a long gap.');
   });
 
   it.each((['startup', 'scrolling'] as const).flatMap(sceneType =>
