@@ -120,7 +120,7 @@ final_report_contract:
         - ['slice', '任务', 'task', '未标注', 'unattributed', '数据不足', 'unavailable']
     - id: root_cause_distribution
       label: 掉帧与根因分布
-      description: '用 jank_type_stats 报告全量掉帧类型/责任；用 batch_frame_root_cause 报告已分析帧的 reason_code，并在采样截断时明确 X/Y、coverage 和 scope，禁止外推样本百分比。'
+      description: 'Full jank_type_stats tags/attribution; report batch_frame_root_cause reason_code with analyzed X/Y, coverage and scope. Never extrapolate truncated samples.'
       pattern_groups:
         - ['掉帧与根因分布', '根因样本分布', '全帧根因分布', '根因分布', 'root[-\s]?cause distribution', 'reason_code']
         - ['帧数', '占比', 'frame count', 'percentage', '\|\s*根因\s*\|', '\|\s*reason']
@@ -133,13 +133,13 @@ final_report_contract:
         - ['vsync_missed', 'VSync\s*丢失', '丢失\s*\d+\s*VSync', '超预算', '预算', 'budget overrun', 'missed[-\s]?vsync']
     - id: peak_and_semantic_metrics
       label: 峰值/口径指标
-      description: '说明总帧数、真实掉帧、假阳性/Buffer Stuffing、最长帧和最长连续丢帧等口径。'
+      description: 'Use smoothness_basis primary-layer rating and three separate rows: layer_tagged_pct, layer_over_budget_pct, layer_hybrid_pct. Include peaks/fallback. Verify touch boundaries before attributing pauses.'
       recovery_text:
         zh:
-          - '真实掉帧口径：以以下已完成阶段中确认的用户可感知卡顿为准；仅在阶段证据明确区分时排除假阳性/Buffer Stuffing，否则保留为口径限制。'
+          - '用 smoothness_basis 主图层评级；并列 FrameTimeline 标签率、呈现间隔超预算率和 Skill 混合率。停帧须对照触摸时间；缺失时保留未知。'
           - '最长帧/峰值口径：以下阶段证据中的最长单帧与最长连续丢帧代表当前采集窗口峰值；缺失项保持为数据缺口。'
         en:
-          - 'Real jank semantics: use user-visible jank confirmed by the completed phases below; exclude false positives or Buffer Stuffing only when the phase evidence distinguishes them, otherwise keep that boundary as a limitation.'
+          - 'Use the primary-layer smoothness_basis rating. Show FrameTimeline tags, over-budget present gaps and the Skill hybrid rate. Attribute pauses only after checking touch timing.'
           - 'Longest frame / peak semantics: the longest single frame and longest consecutive missed-frame interval in the phase evidence below represent the current capture-window peak; keep missing fields as data gaps.'
       pattern_groups:
         - ['真实掉帧', 'real[_\s-]?jank']
@@ -155,8 +155,10 @@ final_report_contract:
 - `submit_plan` 必须覆盖 frontmatter mandatory aspects；detail 仅 informational，不能替代 Skill/SQL/artifact 证据。
 - 条件项只在用户问题、plan 或 trace 证据命中 trigger 时强制；无数据用 `skipped` + reason/waiver。
 - 核心链路：`scrolling_analysis` → 读主线程连续工作与帧结果 artifact → 按实际任务/等待追源。FrameTimeline 是出帧结果参考，不能用帧边界裁掉原因，也不能只围绕红黄帧取证。
-  整条 Trace 的总体使用 `frame_timeline_population` 的 `total_frames/jank_frames`（所有进程、按 UPID+frame_key、原始 jank 标签含 Buffer Stuffing），与目标 App/Session 的感知掉帧口径分别引用，不用临时 SQL 重新计数替代已有捕获。
+  整条 Trace 的总体使用 `frame_timeline_population` 的 `total_frames/jank_frames`（所有进程、按 UPID+frame_key、原始 jank 标签含 Buffer Stuffing），与目标 App/Session 的 Skill 混合掉帧口径分别引用，不用临时 SQL 重新计数替代已有捕获。
 - 身份 `ambiguous` 按 Phase 1.6 消歧并带证据 UPID 重试；未解仅限制相关归因，继续交付独立 SQL/系统结论。
+- 停帧/掉帧间隔归因前，核对同一时钟下的输入 DOWN→UP/CANCEL 边界。只有触摸内的连续停帧部分超预算，才计入触摸期间停帧卡顿；触摸间的静止单列。无完整边界或无法对齐时明确“无法区分触摸内外”，不把间隔默认算作卡顿。自动动画或松手后惯性滚动若有独立的持续出图需求证据，另行说明。
+- Flutter EGL 先读 `scrolling_analysis:flutter_swap_touch_gaps`：它按目标进程 UI 线程已配对的 dispatchInputEvent 手势拆换帧间隔。报告触摸内、手势间和未判定的间隔。停帧从上次 UP 后开始、跨到下次 DOWN 的，分别说明手势间隔和 DOWN 后至下一换帧的短尾；后者不是输入到上屏时延，不能把整段归作触摸内停帧。其他 producer 或没有此输出时，同轨迹查询帧端点和输入边界。
 - TextureView 的 `signal_inventory.event_count` 是信号次数，不是帧数；`consumer_notification` cadence gap 只是时序候选。未与 FrameTimeline / present 证据明确关联前，不得称为 hidden jank、producer stall 或根因。
 
 **Required phases**
@@ -174,7 +176,8 @@ final_report_contract:
 - 必须显式出现 `### 主线程连续执行与任务来源`：具体任务及定位引用、帧内/帧外工作、执行/等待、后续 doFrame 时序、来源线索和对应建议；任务未标注或请求/deadline/源码证据缺失时如实说明。
 - 必须显式出现 `### 掉帧与根因分布`：先给 jank_type_stats 全量类型/责任，再给 batch 已分析帧 reason_code；同时写根因分析 X/Y、coverage 和 scope。截断时禁止外推样本百分比。
 - 必须显式出现 `### 代表帧分析`：耗时、超预算、vsync_missed、四象限/频率、关键 slice/阻塞点、因果链。
-- 必须显式出现 `### 峰值/口径指标`：真实掉帧、假阳性、最长帧、最长连续丢帧；缺数据时写缺失来源和降级口径。
+- 回答流畅度时，标题和定性必须遵循 `smoothness_basis` 的主图层（`primary_layer`）`smoothness_rating`。并列写该图层 FrameTimeline 掉帧标签率、呈现间隔超 1.5× 预算率、Skill 感知掉帧率（混合信号），给出分子、分母与覆盖窗口。有效预算且至少 19 个呈现间隔才评级。超标率 <1% 优秀、<5% 良好、<15% 一般、否则较差。其他口径和峰值用于说明差异与局部异常；不得重选评级。无可用评级时写明缺项及替代口径（如 doFrame 起点间隔或生产端间隔），并明确呈现流畅度无法评级。
+- 必须显式出现 `### 峰值/口径指标`：区分掉帧标签、混合信号、最长帧时延和最长呈现间隔；写明缺失来源。
 - 必须显式分层给出 App/系统建议。
 
 **Detail refs**
@@ -187,6 +190,8 @@ final_report_contract:
 
 
 <!-- strategy-detail id="overview_artifacts" title="滑动概览、artifact、全局上下文和身份确认" keywords="overview,scrolling_analysis,fetch_artifact,batch_frame_root_cause,scroll_sessions,process_identity_resolver" default="true" -->
+第一张流畅度表固定三行，同取 `smoothness_basis` 的主图层行：**FrameTimeline 原始标签率** `layer_tagged_pct`、**呈现间隔超 1.5× 预算率** `layer_over_budget_pct`、**Skill 感知掉帧率** `layer_hybrid_pct`。逐行列分子/分母或不可用与替代口径。Buffer Stuffing 子集不能代替全部原始标签。标题采用该行 `smoothness_rating`。
+停帧比较输入 DOWN→UP/CANCEL；Flutter EGL 有 `flutter_swap_touch_gaps` 时先取它的 rows。跨下一次 DOWN 的长间隔拆开写，首段无前一 UP 或输入无法对齐时标未知。
 **Android 版本注意**：
 - FrameTimeline 数据需要 Android 12+ (API 31)
 - blocked_functions 需要 trace 包含 `sched/sched_blocked_reason`，并且设备 tracepoint / 符号化可用；缺失时不要只归因 CONFIG_SCHEDSTATS
@@ -232,8 +237,8 @@ invoke_skill("scrolling_analysis", { start_ts: "<trace_start>", end_ts: "<trace_
 - 优先保留用户选择的动画/交互时间范围；不要用首尾 FrameTimeline 或识别出的滑动 session 缩掉首帧前、末帧后以及无帧期间的主线程工作。
 - 返回结果以 artifact 引用形式返回（紧凑摘要），包含：
   - `main_thread_work_summary` / `main_thread_work_tasks` / `main_thread_work_cadence`：实际主线程连续执行、可定位任务及 doFrame 节奏；独立于 FrameTimeline。先看覆盖率、未标注执行和任务采样范围，再按具体任务取来源证据。
-  - `smoothness_basis`：每个滑动区间×图层并列呈现间隔节奏、帧时长和原始 Buffer Stuffing 占比，`cadence_status` 按 presentation_cadence_audit 的规则逐区间判定（只用实测 VSYNC-sf 预算）。流畅度按 `verdict_basis` 所指口径下结论；帧时长是时延，不是节奏。`presentation_status = unmeasured`（无 FrameTimeline，只有 doFrame 起点间隔）时不得给出呈现流畅度结论。
-  - `jank_type_stats`：掉帧类型分布，**注意 real_jank_count（真实掉帧）vs false_positive（假阳性）**
+  - `smoothness_basis`：按滑动区间×图层给出间隔、时延和 Buffer Stuffing。评级与三种比例使用同图层全区间的 `layer_*` 计数，同图层各行重复展示，不要累加。评级取 `primary_layer` 行。FrameTimeline 缺失、预算不可靠或呈现样本太少时保持未评级。`presentation_status = unmeasured`（无 FrameTimeline，只有 doFrame 起点间隔）时不得给出呈现流畅度结论。
+  - `jank_type_stats`：按框架类型拆分 Skill 混合计数（`real_jank_count`）及被其过滤的标签（`false_positive`）；语义仍受呈现节奏证据约束。
   - `scroll_sessions`：滑动区间列表
   - `input_data_check` / `input_latency_summary`：可选的 android.input 证据源检测和输入分发/处理/ACK/跟手度概览。缺数据时只能说明 trace 未包含完整 input event 链路，不可据此否定输入延迟问题
     - dispatch/handling/ACK 按事件精确测量。`speculative_frame_matches` 计的是只推测关联到同一 UI 线程下一个 `Choreographer#doFrame` 的事件：该帧未经证实消费了事件，只是候选；`input_backlog_frames`、`frame_matched_events` 和 `max_e2e_ms` 只按精确关联计算；`input_data_status = speculative_only` 表示只有推测关联，帧关联不可用。画面不由该线程产出（如 Flutter SurfaceView）或全部事件都是推测关联时，跟手度结论只能是候选或不可测量。
@@ -509,22 +514,14 @@ invoke_skill("jank_frame_detail", {
 
 1. **概览**（必须包含以下数据）：
    - 先检查 `fps_source` 和 `coverage_status`。如果来源为 `buffer_tx_rising_edge_fallback`，本节只交付 BufferTX 接收更新数/速率/观测时长/证据轨道，帧数、FPS、全量掉帧、峰值、责任与评级明确“当前 trace 证据不可用”，不能从 NULL 填 0。存在 sparse root rows 时可独立分析已观测样本，必须标记部分样本，不能按来源事件数比外推全量。
-   - 总帧数、**总真实掉帧数 = SUM(所有 jank_type 行的 real_jank_count)**
-   - 分类明细：App 侧掉帧 N 帧 + 隐形掉帧 N 帧 + 假阳性 N 帧
+   - 总帧数与框架标签分类；`real_jank_count` 是 Skill 混合口径，需同实测呈现间隔并列。
    - **峰值体验指标**（仅看掉帧率会掩盖极端长帧对用户感知的影响）：
      - 最长帧耗时：XXms（超预算 N 倍）
      - 最长连续丢帧 VSync 数：N 个 VSync（= XXms 无响应）
      - 如有 >3 帧超过 3× VSync 预算，标注"存在用户强感知卡顿峰值"
-   - **综合评级标准**（不能只看掉帧率，必须同时考虑峰值）：
-     - 优秀：掉帧率 <1% 且最长帧 <2× VSync
-     - 良好：掉帧率 <3% 且最长帧 <4× VSync
-     - 一般：掉帧率 <5% 或最长帧 <8× VSync
-     - 差：掉帧率 ≥5% 或最长帧 ≥8× VSync
-     - 例：掉帧率 2% 但最长帧 62ms（7.5× VSync）→ 评级应为"一般"而非"良好"
+   - **评级**：复用 `smoothness_basis.smoothness_rating`，并列三种口径。若 `Prediction Error` 抬高 Skill 感知掉帧率，解释其中的 Late Present 框架状态和实测节奏的差异，不能单凭前者定性。
    - **指标口径说明**：FPS 基于滑动时间窗口（非分析耗时），时间范围需标注来源
-   - 如果存在隐形掉帧（`jank_type=None` 但 `real_jank_count > 0`），**必须在概览中明确标注**：
-     "其中 N 帧为隐形掉帧（框架未标记但消费端检测到真实掉帧），可能与 SurfaceFlinger 合成延迟、管线积压或跨进程 Binder 阻塞有关"
-   - ⚠️ **`App Deadline Missed` 不等于全部真实掉帧**。例如 135 帧 App Deadline Missed + 165 帧隐形掉帧 = 300 总真实掉帧
+   - `App Deadline Missed` 只覆盖 App deadline；独立呈现异常、丢弃帧与无标签的异常另行报告。原因需要对应链路证据。
 
    最终报告中必须把上述峰值体验和指标口径整理到 `### 峰值/口径指标` 小节，不能只散落在概览或建议里。
 

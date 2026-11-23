@@ -26,6 +26,7 @@ import {
   selectAssistantConclusion,
   type PiAgentCoreEvent,
 } from '../piAgentCoreRuntime';
+import {addPiOutputLimitToolFeedback} from '../engines/pi/piAssistantMessage';
 import * as piAgentCoreRuntimeModule from '../piAgentCoreRuntime';
 import {piContextNearlyFull, piRunThinkingLevel, resolvePiRuntimeTimeouts} from '../engines/pi/piAgentCoreRuntime';
 import {installedPiAiVersion, parsePiAgentCoreModelConfig, piRuntimeFingerprintInput} from '../engines/pi/piAgentCoreConfig';
@@ -954,6 +955,32 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(() => createPiAgentCoreToolFromSharedSpec(createSharedSpec(), {
       allowedToolNames: new Set(['other_tool']),
     })).toThrow('Pi agent-core tool is not allowed in this request: query_trace');
+  });
+
+  it('reports once and feeds back the duplicate count after a length-stopped tool batch', async () => {
+    const calls = Array.from({length: 448}, (_, index) => ({
+      type: 'toolCall' as const, id: `call-${index}`,
+      name: 'list_stdlib_modules', arguments: index < 440 ? {namespace: 'android'} : {},
+    }));
+    const assistant = {role: 'assistant' as const, stopReason: 'length' as const, content: calls};
+    const sdkRejection = {role: 'toolResult' as const, isError: true, toolName: 'list_stdlib_modules',
+      toolCallId: calls[calls.length - 1].id, content: [{type: 'text' as const, text: 'SDK output-limit rejection'}]};
+    const messages = [assistant, sdkRejection] as unknown as Parameters<typeof addPiOutputLimitToolFeedback>[0];
+    const transformed = await addPiOutputLimitToolFeedback(messages);
+    expect(transformed[1]).toMatchObject({content: [
+      {text: 'SDK output-limit rejection'},
+      {text: expect.stringMatching(/rejected all 448 tool calls.*446 repeated.*smallest necessary set of distinct calls/)},
+    ]});
+    expect(sdkRejection.content).toHaveLength(1);
+    expect(await addPiOutputLimitToolFeedback(transformed)).toBe(transformed);
+    expect(await addPiOutputLimitToolFeedback([messages[0]])).toEqual([messages[0]]);
+    expect(projectPiAgentCoreEventToStreamingUpdate({type: 'message_end', message: assistant}, 1)).toBeUndefined();
+    expect(projectPiAgentCoreEventToStreamingUpdate({type: 'turn_end', message: assistant}, 2, 'en')).toEqual({
+      type: 'progress', timestamp: 2,
+      content: {phase: 'tool_output_limit', message: '448 tool calls in this response were not executed (output token limit).'},
+    });
+    expect(projectPiAgentCoreEventToStreamingUpdate({type: 'turn_end',
+      message: {...assistant, stopReason: 'toolUse'}}, 3)).toBeUndefined();
   });
 
   it('projects Pi agent-core events without synthesizing route terminal events', () => {

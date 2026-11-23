@@ -64,6 +64,15 @@ describe('typed prompt with real strategy assets', () => {
     expect(estimatePromptTokens(parts.fullPrompt)).toBeLessThanOrEqual(MAX_PROMPT_TOKENS);
   });
 
+  it('retains the three distinct scrolling rate fields in the required report context', () => {
+    const parts = buildSystemPromptParts(makeWorstCaseContext('scrolling'));
+    const report = parts.segments.find(segment => segment.label === 'report_requirements');
+    expect(report).toBeDefined();
+    for (const field of ['layer_tagged_pct', 'layer_over_budget_pct', 'layer_hybrid_pct']) {
+      expect(report?.content).toContain(field);
+    }
+  });
+
   it.each((['startup', 'scrolling'] as const).flatMap(sceneType =>
     (['zh-CN', 'en'] as const).map(outputLanguage => ({sceneType, outputLanguage}))))
   ('ignores retired declaration and final-submission fields for real $sceneType $outputLanguage prompts', ({sceneType, outputLanguage}) => {

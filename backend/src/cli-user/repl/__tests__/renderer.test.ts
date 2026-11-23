@@ -8,6 +8,18 @@ describe('CLI renderer', () => {
   const tableConclusion = '| App | Startup |\n| --- | --- |\n| demo | 257.6 ms |';
   const completion = {sessionId: 's', sessionDir: '/tmp/s', reportPath: '/tmp/s/report.html'};
 
+  test('shows the output-limit batch notice in default text mode', () => {
+    const log = jest.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      createRenderer({verbose: false, format: 'text', useColor: false}).onEvent({
+        type: 'progress', timestamp: 1,
+        content: {phase: 'tool_output_limit', message: '本响应 448 个工具调用未执行（触及输出 token 上限）。'},
+      });
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('本响应 448 个工具调用未执行'));
+    } finally { log.mockRestore(); }
+  });
+
   test.each([{}, {analysisEvidence: {evidence: null, unavailableReason: 'analysis_evidence_projection_invalid'}}])(
     'prints the complete table-only body when optional report sections are missing: %j', meta => {
       const warning = jest.spyOn(console, 'warn').mockImplementation(() => {});

@@ -101,6 +101,16 @@
         "id": "system-binder",
         "process": "system",
         "name": "binder:system_1"
+      },
+      {
+        "id": "app-raster",
+        "process": "app",
+        "name": "1.raster"
+      },
+      {
+        "id": "peer-raster",
+        "process": "peer",
+        "name": "1.raster"
       }
     ]
   },
@@ -1359,6 +1369,42 @@
       "thread": "peer-main",
       "name": "deliverInputEvent src=0x1002 eventTimeNano=9405000000 id=0x5c000001",
       "cpu": 6
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "1350000000",
+      "duration_ns": "1000000",
+      "process": "app",
+      "thread": "app-raster",
+      "name": "eglSwapBuffers",
+      "cpu": 5
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "1390000000",
+      "duration_ns": "1000000",
+      "process": "app",
+      "thread": "app-raster",
+      "name": "eglSwapBuffers",
+      "cpu": 5
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "1350000000",
+      "duration_ns": "1000000",
+      "process": "peer",
+      "thread": "peer-raster",
+      "name": "eglSwapBuffers",
+      "cpu": 5
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "1410000000",
+      "duration_ns": "1000000",
+      "process": "peer",
+      "thread": "peer-raster",
+      "name": "eglSwapBuffers",
+      "cpu": 5
     }
   ]
 }

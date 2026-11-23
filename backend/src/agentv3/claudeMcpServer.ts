@@ -112,6 +112,7 @@ import {
   getPerfettoStdlibPath,
 } from '../services/perfettoStdlibScanner';
 import {
+  documentedAndroidEventSqlRows,
   listPerfettoSqlModuleDocs,
   searchPerfettoSqlDocs,
   searchAllPerfettoSqlDocs,
@@ -2602,6 +2603,12 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     {isError: true});
   }
 
+  const rawSqlArgument = z.string().describe([
+    'PerfettoSQL. In CTEs, project the needed columns and use the outer binding. Compute LAG/LEAD in a SELECT, then filter or aggregate in an outer SELECT. Convert ns to ms with /1e6.',
+    'Event quick reference (selected columns). Use the module after = in INCLUDE PERFETTO MODULE. Use lookup_sql_schema for other symbols.',
+    ...documentedAndroidEventSqlRows(),
+  ].join('\n'));
+
   const executeSql = tool(
     'execute_sql',
     requirePromptSegment('prompt-execute-sql-tool-description') + '\n\n' +
@@ -2609,9 +2616,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     {
       planPhaseId: z.string().optional().describe('Optional explicit plan phase ID for this invocation.'),
       executionContext: z.enum(SQL_EXECUTION_CONTEXTS).optional().describe('SQL execution namespace.'),
-      sql: z.string().describe(
-        'The SQL query to execute. Use Perfetto stdlib tables/functions (e.g. android_jank_cuj, slice, thread, process).'
-      ),
+      sql: rawSqlArgument,
       summary: z.boolean().optional().describe(
         'When true, returns column statistics (min/max/avg/percentiles) + 10 most interesting sample rows instead of full results. Use for large result sets where you need aggregate understanding, not row-level data. Default: false.'
       ),
@@ -4174,13 +4179,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   // Enables Claude to discover available stdlib modules by namespace (e.g., "android.frames", "sched").
   const listStdlibModules = tool(
     'list_stdlib_modules',
-    'List available Perfetto SQL stdlib modules by namespace. Use this to discover what pre-built tables, views, and functions ' +
-    'are available before writing custom SQL. Modules can be loaded via INCLUDE PERFETTO MODULE <name> in SQL queries. ' +
-    'Core modules (android.frames.timeline, android.startup.startups, android.binder) are pre-loaded; ' +
-    'others load on-demand via skill prerequisites or INCLUDE PERFETTO MODULE in your SQL.',
+    'Summarize Perfetto stdlib namespaces in one unfiltered call. Query one known prefix when needed. ' +
+    'Use lookup_sql_schema for specific tables or columns. Avoid enumerating prefixes.',
     {
       namespace: z.string().optional().describe(
-        'Filter by namespace prefix (e.g., "android", "android.frames", "sched", "chrome", "wattson"). Omit to list all.'
+        'One known dot-delimited module prefix (e.g., "android.frames"). Omit for a summary of all namespaces.'
       ),
     },
     async ({ namespace }) => {
@@ -4226,7 +4229,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
               : undefined,
             hint: namespace
               ? 'Use lookup_sql_schema to find specific tables/views/functions within a module.'
-              : 'Call again with a namespace (e.g., "android.frames") to see full module list. ' +
+              : 'Use lookup_sql_schema for specific objects; request one relevant namespace only when its module list is needed. ' +
                 'Critical modules (android.frames.*, android.binder*, android.startup.*, sched.*) are pre-loaded.',
           }),
         }],
@@ -7072,7 +7075,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       trace: z.enum(['current', 'reference']).describe(
         'Which trace to query: "current" = primary trace loaded in Perfetto, "reference" = comparison trace.'
       ),
-      sql: z.string().describe('The SQL query to execute against the specified trace.'),
+      sql: rawSqlArgument,
       summary: z.boolean().optional().describe(
         'When true, returns column statistics + sample rows instead of full results. Default: false.'
       ),

@@ -147,11 +147,19 @@ describe('normalizeRawSql', () => {
     const result = normalizeRawSql(input);
 
     expect(result.sql).toContain('SELECT s.name AS slice_name, s.dur/1e6 as dur_ms');
-    expect(result.sql).toContain('ORDER BY s.dur DESC');
+    expect(result.sql).toContain('ORDER BY dur DESC');
     expect(result.rewrites).toEqual(expect.arrayContaining([
       'qualified bare slice name as s.name after joins with other name columns',
       'qualified bare slice dur as s.dur after slice joins',
     ]));
+  });
+
+  // Tool arguments captured before normalization in pi-fresh50f.
+  it.each([
+    "WITH h AS (\n  SELECT sl.dur FROM slice sl JOIN thread_track tt ON sl.track_id = tt.id\n  WHERE tt.utid = 904 AND sl.name GLOB 'dispatchInputEvent MotionEvent*'\n), p AS (SELECT dur, ROW_NUMBER() OVER (ORDER BY dur) rn, COUNT(*) OVER () n FROM h)\nSELECT n AS total_events,\n  MAX(CASE WHEN rn = CAST(n*0.5 AS INT) THEN dur/1e6 END) AS p50_ms,\n  MAX(CASE WHEN rn = CAST(n*0.95 AS INT) THEN dur/1e6 END) AS p95_ms,\n  MAX(dur)/1e6 AS max_ms\nFROM p",
+    "SELECT id, ts, (ts+dur) AS pend, dur/1e6 AS dur_ms, 'SF_display' AS src\nFROM actual_frame_timeline_slice\nWHERE surface_frame_token IS NULL AND dur >= 0\n  AND ts < 624248813207885 AND ts + dur > 624248759335437\nUNION ALL\nSELECT s.id, s.ts, s.ts+s.dur, s.dur/1e6, 'doFrame'\nFROM slice s JOIN thread_track tt ON s.track_id = tt.id\nWHERE tt.utid = 904 AND s.name GLOB 'Choreographer#doFrame*' AND s.dur > 0\n  AND s.ts < 624248813207885 AND s.ts + s.dur > 624248759335437\nORDER BY ts",
+  ])('preserves valid duration references across separate SELECT scopes %#', sql => {
+    expect(normalizeRawSql(sql)).toEqual({sql, rewrites: []});
   });
 
   it('inserts missing whitespace between boolean operators and known Perfetto columns', () => {

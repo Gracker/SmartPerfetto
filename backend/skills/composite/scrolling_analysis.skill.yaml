@@ -732,7 +732,7 @@ steps:
   # L1: 帧性能汇总 (双信号混合检测掉帧)
   # ==========================================================================
   # 核心原理：
-  # - 非 BS 帧：present_type IN ('Late Present', 'Dropped Frame') 为权威信号
+  # - 非 BS 帧：Late Present / Dropped Frame 是框架状态，需与实际呈现节奏并列
   # - BS 帧：present_type 始终为 Late Present，需用 present_ts 间隔二次验证
   #   间隔 > 1.5x vsync 为掉帧候选；均匀间隔不直接证明管线背压
   # - vsync_missed 用 present_ts 间隔估算严重度（辅助信号）
@@ -746,7 +746,7 @@ steps:
         - key: total_frames
           label: 总帧数
         - key: perceived_jank_frames
-          label: 感知掉帧
+          label: Skill 感知掉帧（混合信号）
           format: "{{value}} ({{jank_rate}}%)"
         - key: buffer_stuffing_frames
           label: Buffer Stuffing
@@ -758,8 +758,6 @@ steps:
         - key: sf_jank
           label: SF 侧掉帧
       insights:
-        - condition: "jank_rate > 10"
-          template: "感知掉帧率 {{jank_rate}}% 较高，需要优化"
         # Raw stuffing tags require presentation-cadence and expected-offset
         # evidence before any queue-delay or producer/consumer diagnosis.
         - condition: "buffer_stuffing_rate > 50"
@@ -778,12 +776,14 @@ steps:
           format: compact
         - name: perceived_jank_frames
           unit: frames
-          label: "感知掉帧"
+          label: "Skill 感知掉帧（混合信号）"
+          label_i18n: {en: "Skill perceived jank (hybrid signal)"}
           type: number
           format: compact
         - name: jank_rate
           unit: "%"
-          label: "感知掉帧率"
+          label: "Skill 感知掉帧率（混合信号）"
+          label_i18n: {en: "Skill perceived jank rate (hybrid signal)"}
           type: percentage
           format: percentage
         - name: buffer_stuffing_frames
@@ -831,9 +831,6 @@ steps:
           unit: ns
         - name: present_interval_source
           label: "呈现间隔来源"
-          type: string
-        - name: rating
-          label: "评级"
           type: string
     sql_fragments:
       - fragments/effective_target_processes.sql
@@ -1093,9 +1090,9 @@ steps:
       )
       SELECT
         (SELECT total FROM app_stats) as total_frames,
-        -- 感知掉帧（排除 Buffer Stuffing）— 用户真正能感知到的掉帧
+        -- 混合信号含框架晚拍，呈现评级由 smoothness_basis 单独给出
         (SELECT perceived_jank_frames FROM resolved_jank) as perceived_jank_frames,
-        -- 感知掉帧率（主指标，用于 rating）
+        -- Skill 混合口径
         ROUND(
           100.0 * (SELECT perceived_jank_frames FROM resolved_jank) / NULLIF((SELECT total FROM app_stats), 0),
           2
@@ -1132,25 +1129,6 @@ steps:
           CAST(ROUND(1e9 / (SELECT vsync_period_ns FROM timing_config)) AS INTEGER)
         ) as actual_fps,
         CAST(ROUND(1e9 / (SELECT vsync_period_ns FROM timing_config)) AS INTEGER) as refresh_rate,
-        -- 评级基于感知掉帧率（排除 Buffer Stuffing），但先过两道门。
-        CASE
-          -- ① 样本量门槛。5 帧（一次 65ms 通知栏窗口）曾被评成「较差」——
-          -- 那不是评价，是把噪声打扮成结论。20 帧在 120Hz 下不到 0.2s、
-          -- 60Hz 下不到 0.4s，真实的短手势仍然评得出来。
-          WHEN (SELECT total FROM app_stats) < 20 THEN '样本不足'
-          -- ② 帧率达成率门槛。只看掉帧率时，120Hz 屏上 31fps 因为「每一帧都准时」
-          -- 被评成「优秀」。准时地少给一半以上的帧不是优秀。
-          WHEN MIN(
-                 ROUND(1e9 * (SELECT total FROM app_stats) / NULLIF((SELECT duration_ns FROM time_range), 0), 1),
-                 CAST(ROUND(1e9 / (SELECT vsync_period_ns FROM timing_config)) AS INTEGER)
-               ) < CAST(ROUND(1e9 / (SELECT vsync_period_ns FROM timing_config)) AS INTEGER) * 0.5
-            THEN '一般'
-          WHEN (SELECT perceived_jank_frames FROM resolved_jank) = 0 THEN '优秀'
-          WHEN 100.0 * (SELECT perceived_jank_frames FROM resolved_jank) / NULLIF((SELECT total FROM app_stats), 0) < 1 THEN '优秀'
-          WHEN 100.0 * (SELECT perceived_jank_frames FROM resolved_jank) / NULLIF((SELECT total FROM app_stats), 0) < 5 THEN '良好'
-          WHEN 100.0 * (SELECT perceived_jank_frames FROM resolved_jank) / NULLIF((SELECT total FROM app_stats), 0) < 15 THEN '一般'
-          ELSE '较差'
-        END as rating,
         (SELECT fps_source FROM resolved_jank) as fps_source,
         (SELECT max_vsync_missed FROM resolved_jank) as max_vsync_missed,
         (SELECT total_vsync_missed FROM resolved_jank) as total_vsync_missed,
@@ -1389,14 +1367,24 @@ steps:
     display:
       level: summary
       layer: overview
-      title: "流畅度口径：呈现间隔 vs 帧时长 vs Buffer Stuffing"
+      title: "流畅度评级与口径对照"
       title_i18n:
-        en: "Smoothness basis: present gaps vs frame duration vs Buffer Stuffing"
+        en: "Smoothness rating and measurement bases"
       columns:
         - {name: process_name, label: "进程", type: string}
         - {name: session_id, label: "区间", type: number}
         - {name: layer_name, label: "图层", type: string}
         - {name: verdict_basis, label: "流畅度判定依据", label_i18n: {en: "Smoothness verdict basis"}, type: string}
+        - {name: primary_layer, label: "主图层", label_i18n: {en: "Primary layer"}, type: boolean}
+        - {name: smoothness_rating, label: "呈现节奏评级（图层全区间）", label_i18n: {en: "Presentation cadence rating across layer sessions"}, type: string}
+        - {name: layer_frames, label: "图层全区间帧数", label_i18n: {en: "Layer frames across sessions"}, type: number, unit: frames}
+        - {name: layer_tagged_frames, label: "FrameTimeline 掉帧标签帧", label_i18n: {en: "FrameTimeline jank-tagged frames"}, type: number, unit: frames}
+        - {name: layer_tagged_pct, label: "FrameTimeline 掉帧标签率", label_i18n: {en: "FrameTimeline jank-tag rate"}, type: percentage, unit: "%", format: percentage}
+        - {name: layer_hybrid_frames, label: "Skill 感知掉帧（混合信号）", label_i18n: {en: "Skill perceived jank (hybrid signal)"}, type: number, unit: frames}
+        - {name: layer_hybrid_pct, label: "Skill 感知掉帧率（混合信号）", label_i18n: {en: "Skill perceived jank rate (hybrid signal)"}, type: percentage, unit: "%", format: percentage}
+        - {name: layer_present_gap_count, label: "图层呈现间隔数", label_i18n: {en: "Layer present intervals"}, type: number, unit: events}
+        - {name: layer_over_budget_gaps, label: "图层超 1.5 倍预算间隔数", label_i18n: {en: "Layer gaps over 1.5x budget"}, type: number, unit: events}
+        - {name: layer_over_budget_pct, label: "图层超 1.5 倍预算间隔率", label_i18n: {en: "Layer gap rate over 1.5x budget"}, type: percentage, unit: "%", format: percentage}
         - {name: cadence_metric, label: "节奏口径", label_i18n: {en: "Cadence metric"}, type: string}
         - {name: cadence_gap_p50_ns, label: "节奏间隔 P50", label_i18n: {en: "Cadence gap P50"}, type: duration, format: duration_ms, unit: ns}
         - {name: cadence_gap_p95_ns, label: "节奏间隔 P95", label_i18n: {en: "Cadence gap P95"}, type: duration, format: duration_ms, unit: ns}
@@ -1530,16 +1518,33 @@ steps:
         GROUP BY upid, session_id, layer_name
       ),
       layer_stats AS (
-        SELECT upid, process_name, session_id, layer_name,
-          MIN(ts) AS start_ts, MAX(ts + MAX(dur, 0)) AS end_ts, COUNT(*) AS frames,
-          CAST(PERCENTILE(CASE WHEN dur > 0 THEN dur END, 50) AS INTEGER) AS dur_p50_ns,
-          CAST(PERCENTILE(CASE WHEN dur > 0 THEN dur END, 95) AS INTEGER) AS dur_p95_ns,
-          MAX(CASE WHEN dur > 0 THEN dur END) AS dur_max_ns,
-          SUM(CASE WHEN jank_type GLOB '*Buffer Stuffing*' THEN 1 ELSE 0 END) AS buffer_stuffing_frames,
-          SUM(CASE WHEN present_type = 'Dropped Frame' THEN 1 ELSE 0 END) AS dropped_frames,
-          SUM(CASE WHEN dur IS NULL OR dur <= 0 THEN 1 ELSE 0 END) AS incomplete_frames
-        FROM session_rows
-        GROUP BY upid, session_id, layer_name
+        SELECT r.upid, r.process_name, r.session_id, r.layer_name,
+          MIN(r.ts) AS start_ts, MAX(r.ts + MAX(r.dur, 0)) AS end_ts, COUNT(*) AS frames,
+          CAST(PERCENTILE(CASE WHEN r.dur > 0 THEN r.dur END, 50) AS INTEGER) AS dur_p50_ns,
+          CAST(PERCENTILE(CASE WHEN r.dur > 0 THEN r.dur END, 95) AS INTEGER) AS dur_p95_ns,
+          MAX(CASE WHEN r.dur > 0 THEN r.dur END) AS dur_max_ns,
+          SUM(CASE WHEN r.jank_type GLOB '*Buffer Stuffing*' THEN 1 ELSE 0 END) AS buffer_stuffing_frames,
+          SUM(CASE WHEN r.present_type = 'Dropped Frame' THEN 1 ELSE 0 END) AS dropped_frames,
+          SUM(CASE WHEN r.dur IS NULL OR r.dur <= 0 THEN 1 ELSE 0 END) AS incomplete_frames,
+          SUM(COALESCE(r.jank_type, 'None') != 'None') AS tagged_frames,
+          SUM(CASE
+            WHEN r.present_type = 'Dropped Frame' THEN 1
+            WHEN r.present_type = 'Late Present' AND (
+              COALESCE(r.jank_type, '') NOT GLOB '*Buffer Stuffing*'
+              OR r.jank_type GLOB '*Self Jank*'
+              OR r.jank_type GLOB '*SurfaceFlinger*'
+              OR android_is_app_jank_type(r.jank_type)
+              OR android_is_missed_frame_type(r.jank_type)
+            ) THEN 1
+            WHEN r.jank_type GLOB '*Buffer Stuffing*'
+              AND n.gap_ns > v.vsync_period_ns * 1.5
+              AND n.gap_ns <= v.vsync_period_ns * 6 THEN 1
+            ELSE 0
+          END) AS hybrid_frames
+        FROM session_rows r
+        LEFT JOIN presented_neighbors n ON n.id = r.id AND n.session_id = r.session_id
+        CROSS JOIN vsync_config v
+        GROUP BY r.upid, r.session_id, r.layer_name
       ),
       -- One row per observed doFrame start, read only when the target has no
       -- FrameTimeline frame in the window; a duration needs one complete marker.
@@ -1613,9 +1618,40 @@ steps:
             ELSE 'measured'
           END AS budget_status
         FROM basis_rows r CROSS JOIN vsync_config v
+      ),
+      layer_totals AS (
+        SELECT b.upid, b.layer_name,
+          SUM(l.frames) AS frames,
+          SUM(l.tagged_frames) AS tagged_frames,
+          SUM(l.hybrid_frames) AS hybrid_frames,
+          SUM(b.gap_count) AS present_gap_count,
+          SUM(b.gaps_over_budget) AS over_budget_gaps,
+          MIN(b.budget_status IN ('measured', 'derived_from_expected_frames')) AS has_supported_budget
+        FROM budgeted_rows b
+        JOIN layer_stats l USING (upid, session_id, layer_name)
+        GROUP BY b.upid, b.layer_name
+      ),
+      rated_layers AS (
+        SELECT *,
+          ROW_NUMBER() OVER (PARTITION BY upid ORDER BY frames DESC, layer_name) = 1 AS primary_layer,
+          CASE
+            WHEN COALESCE(has_supported_budget, 0) != 1 OR COALESCE(present_gap_count, 0) < 19 THEN 'unrated'
+            WHEN over_budget_gaps * 100.0 < present_gap_count THEN 'excellent'
+            WHEN over_budget_gaps * 100.0 < present_gap_count * 5 THEN 'good'
+            WHEN over_budget_gaps * 100.0 < present_gap_count * 15 THEN 'fair'
+            ELSE 'poor'
+          END AS smoothness_rating
+        FROM layer_totals
       )
       SELECT r.upid, r.process_name, r.session_id, r.layer_name,
         printf('%d', r.start_ts) AS start_ts, printf('%d', r.end_ts) AS end_ts, r.frames,
+        l.primary_layer, COALESCE(l.smoothness_rating, 'unrated') AS smoothness_rating,
+        l.frames AS layer_frames, l.tagged_frames AS layer_tagged_frames,
+        ROUND(100.0 * l.tagged_frames / NULLIF(l.frames, 0), 2) AS layer_tagged_pct,
+        l.hybrid_frames AS layer_hybrid_frames,
+        ROUND(100.0 * l.hybrid_frames / NULLIF(l.frames, 0), 2) AS layer_hybrid_pct,
+        l.present_gap_count AS layer_present_gap_count, l.over_budget_gaps AS layer_over_budget_gaps,
+        ROUND(100.0 * l.over_budget_gaps / NULLIF(l.present_gap_count, 0), 2) AS layer_over_budget_pct,
         r.budget_ns, r.budget_source, r.cadence_metric,
         r.gap_count AS cadence_gap_count, r.gap_p50_ns AS cadence_gap_p50_ns,
         r.gap_p95_ns AS cadence_gap_p95_ns, r.gap_max_ns AS cadence_gap_max_ns,
@@ -1633,10 +1669,128 @@ steps:
             THEN 'present_gaps_partial_frame_timeline'
           ELSE 'present_gaps_vs_budget'
         END AS verdict_basis
-      FROM budgeted_rows r CROSS JOIN frame_timeline_coverage c
-      ORDER BY r.upid, r.start_ts, r.layer_name
+      FROM budgeted_rows r
+      LEFT JOIN rated_layers l USING (upid, layer_name)
+      CROSS JOIN frame_timeline_coverage c
+      ORDER BY l.primary_layer DESC, r.upid, r.start_ts, r.layer_name
     save_as: smoothness_basis
     condition: "frame_timeline.data[0]?.has_frame_timeline === 1"
+
+  - id: flutter_swap_touch_gaps
+    type: atomic
+    name: "Flutter 换帧间隔与触摸边界"
+    display:
+      level: summary
+      layer: overview
+      title: "Flutter 换帧间隔与触摸边界"
+      title_i18n: {en: "Flutter swap gaps and touch boundaries"}
+      columns:
+        - {name: process_name, label: "进程", type: string}
+        - {name: swap_count, label: "换帧次数", label_i18n: {en: "Swap count"}, type: number}
+        - {name: complete_contacts, label: "已配对触摸", label_i18n: {en: "Paired touch contacts"}, type: number}
+        - {name: gap_budget_ns, label: "间隔阈值（1.5 倍 VSync）", label_i18n: {en: "Gap threshold (1.5x VSync)"}, type: duration, unit: ns, format: duration_ms}
+        - {name: gap_class, label: "触摸时间归类", label_i18n: {en: "Touch timing classification"}, type: string}
+        - {name: gaps, label: "间隔数", type: number}
+        - {name: max_gap_ns, label: "最长完整换帧间隔", label_i18n: {en: "Longest full swap gap"}, type: duration, unit: ns, format: duration_ms}
+        - {name: max_touch_overlap_ns, label: "最长连续触摸内间隔", label_i18n: {en: "Longest gap within a single touch"}, type: duration, unit: ns, format: duration_ms}
+    sql_fragments:
+      - fragments/effective_target_processes.sql
+      - fragments/vsync_config.sql
+    process_scope:
+      role: target
+      binding: effective_target_processes
+    sql: |
+      WITH
+      swap_intervals AS (
+        SELECT t.upid, p.name AS process_name, t.utid, s.ts AS end_ts,
+          LAG(s.ts) OVER (PARTITION BY t.utid ORDER BY s.ts, s.id) AS start_ts,
+          COUNT(*) OVER (PARTITION BY t.utid) AS swap_count
+        FROM effective_target_processes p
+        JOIN thread t USING (upid)
+        JOIN thread_track tt USING (utid)
+        JOIN slice s ON s.track_id = tt.id
+        WHERE (t.name = '1.raster' OR t.name GLOB '*.raster')
+          AND s.name = 'eglSwapBuffers' AND s.dur > 0
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' = ''
+            OR p.name = '${package}' OR p.name GLOB '${package}:*')
+          AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR s.ts < ${end_ts})
+      ),
+      touch_markers AS (
+        SELECT t.upid, s.id, s.track_id, s.ts,
+          SUBSTR(s.name, LENGTH('dispatchInputEvent MotionEvent ') + 1) AS action_args,
+          CASE WHEN INSTR(s.name, ' deviceId=') > 0
+            THEN SUBSTR(s.name, INSTR(s.name, ' deviceId=') + LENGTH(' deviceId=')) END AS device_args
+        FROM (SELECT DISTINCT upid FROM swap_intervals) r
+        JOIN thread t ON t.upid = r.upid AND t.is_main_thread = 1
+        JOIN thread_track tt USING (utid)
+        JOIN slice s ON s.track_id = tt.id
+        WHERE s.name GLOB 'dispatchInputEvent MotionEvent ACTION_*'
+      ),
+      touch_actions AS (
+        SELECT *,
+          SUBSTR(action_args, 1, INSTR(action_args || ' ', ' ') - 1) AS action,
+          SUBSTR(device_args, 1, INSTR(device_args || ' ', ' ') - 1) AS device_id
+        FROM touch_markers
+      ),
+      -- Pair receiver-side edges from one UI track and device. An omitted
+      -- device id is its own stream; unpaired edges never establish contacts.
+      touch_edges AS (
+        SELECT upid, ts, action,
+          LEAD(ts) OVER w AS next_ts, LEAD(action) OVER w AS next_action
+        FROM touch_actions
+        WHERE action IN ('ACTION_DOWN', 'ACTION_UP', 'ACTION_CANCEL')
+        WINDOW w AS (PARTITION BY track_id, device_id ORDER BY ts, id)
+      ),
+      contacts AS (
+        SELECT DISTINCT upid, ts AS down_ts, next_ts AS release_ts
+        FROM touch_edges
+        WHERE action = 'ACTION_DOWN' AND ts < next_ts
+          AND next_action IN ('ACTION_UP', 'ACTION_CANCEL')
+      ),
+      contact_totals AS (
+        SELECT upid, COUNT(*) AS complete_contacts FROM contacts GROUP BY upid
+      ),
+      swap_gaps AS (
+        SELECT sw.*, v.vsync_period_ns * 1.5 AS gap_budget_ns,
+          (SELECT MAX(MIN(c.release_ts, sw.end_ts) - MAX(c.down_ts, sw.start_ts))
+           FROM contacts c WHERE c.upid = sw.upid AND c.down_ts < sw.end_ts AND c.release_ts > sw.start_ts
+          ) AS touch_overlap_ns,
+          (SELECT MAX(c.release_ts) FROM contacts c WHERE c.upid = sw.upid AND c.release_ts <= sw.start_ts) AS prior_release_ts,
+          (SELECT MIN(c.down_ts) FROM contacts c WHERE c.upid = sw.upid AND c.down_ts >= sw.start_ts) AS next_down_ts
+        FROM swap_intervals sw CROSS JOIN vsync_config v
+        WHERE sw.end_ts - sw.start_ts > v.vsync_period_ns * 1.5
+      ),
+      classified AS (
+        SELECT g.*, CASE
+          WHEN g.touch_overlap_ns > g.gap_budget_ns AND EXISTS (
+            SELECT 1 FROM contacts c WHERE c.upid = g.upid AND c.down_ts <= g.start_ts
+              AND MIN(c.release_ts, g.end_ts) - g.start_ts > g.gap_budget_ns
+          ) THEN 'over_budget_during_touch'
+          WHEN g.prior_release_ts IS NOT NULL AND g.next_down_ts IS NOT NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM contacts c WHERE c.upid = g.upid
+                AND c.down_ts <= g.start_ts AND c.release_ts > g.start_ts
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM touch_edges e WHERE e.upid = g.upid
+                AND e.ts > g.prior_release_ts AND e.ts < g.next_down_ts
+            ) AND (g.end_ts <= g.next_down_ts OR EXISTS (
+              SELECT 1 FROM contacts c WHERE c.upid = g.upid AND c.down_ts = g.next_down_ts
+                AND g.end_ts <= c.release_ts
+            )) THEN 'between_contacts_or_next_touch_onset'
+          ELSE 'touch_timing_unresolved'
+        END AS gap_class
+        FROM swap_gaps g
+      )
+      SELECT g.upid, g.process_name, g.utid, MAX(g.swap_count) AS swap_count,
+        COALESCE(c.complete_contacts, 0) AS complete_contacts, g.gap_budget_ns,
+        g.gap_class, COUNT(*) AS gaps, MAX(g.end_ts - g.start_ts) AS max_gap_ns,
+        MAX(g.touch_overlap_ns) AS max_touch_overlap_ns
+      FROM classified g LEFT JOIN contact_totals c USING (upid)
+      GROUP BY g.upid, g.process_name, g.utid, g.gap_budget_ns, g.gap_class
+      ORDER BY g.upid, g.utid, g.gap_class
+    save_as: flutter_swap_touch_gaps
 
   # ==========================================================================
   # L1: Input Pipeline 数据源与延迟概览
@@ -2656,12 +2810,12 @@ steps:
           format: compact
         - name: janky_count
           unit: frames
-          label: "感知掉帧"
+          label: "Skill 感知掉帧（混合信号）"
           type: number
           format: compact
         - name: jank_rate
           unit: "%"
-          label: "感知掉帧率"
+          label: "Skill 感知掉帧率（混合信号）"
           type: percentage
           format: percentage
         - name: app_janky_count

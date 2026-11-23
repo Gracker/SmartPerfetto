@@ -14,7 +14,7 @@ Pinned Perfetto SQL source: `1e9c61e9844affd7dccd3d42d9ea9f3a3d10cf6d`. The gene
 
 Skill execution quality: 296 source-column-backed semantic, 33 execution-only composition, 1 expected-empty negative, 11 explicit deferred prerequisite, 32 definition-only.
 
-Exact-scope unit bindings (each `exact_sql` and each UPID-bound target step): 35 semantic, 127 execution-only.
+Exact-scope unit bindings (each `exact_sql` and each UPID-bound target step): 36 semantic, 127 execution-only.
 
 ## Commands
 

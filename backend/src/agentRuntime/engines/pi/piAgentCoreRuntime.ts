@@ -33,7 +33,7 @@ import {runPiIntentTransport} from './piIntentTransport';
 import {createPiRunSupplementBinding} from './piRunSupplementBinding';
 import {createPiAgentModelCallTracker, piUsageToModelCallUsage} from './piAgentModelCalls';
 import {createPiAnswerDraftController} from './piAnswerDraft';
-import {piAssistantMessageHasToolCall} from './piAssistantMessage';
+import {addPiOutputLimitToolFeedback, piAssistantMessageHasToolCall, piOutputLimitedToolCalls} from './piAssistantMessage';
 import logger from '../../../utils/logger';
 import {SILENT_ANSWER_DRAFT, createAnswerDraftStream, createProjectedAnswerDraft} from '../../answerDraftStream';
 import {createPiInvestigationAdapter} from './piInvestigationAdapter';
@@ -812,6 +812,13 @@ export function projectPiAgentCoreEventToStreamingUpdate(
     case 'message_end':
     case 'turn_end': {
       const errorMessage = extractPiAssistantErrorMessage(event.message);
+      const rejectedCount = event.type === 'turn_end' ? piOutputLimitedToolCalls(event.message).length : 0;
+      if (!errorMessage && rejectedCount > 0) {
+        return {type: 'progress', content: {phase: 'tool_output_limit',
+          message: localize(outputLanguage,
+            `本响应 ${rejectedCount} 个工具调用未执行（触及输出 token 上限）。`,
+            `${rejectedCount} tool calls in this response were not executed (output token limit).`)}, timestamp};
+      }
       return errorMessage
         ? {
             type: 'error',
@@ -1948,6 +1955,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         }) ?? providerRuntime.streamFn)(...args), request?.index);
       },
       ...(supplements ? {steeringMode: 'all' as const} : {}),
+      transformContext: addPiOutputLimitToolFeedback,
       prepareRequest: supplements ? ((request: Parameters<typeof investigation.prepareRequest>[0], signal?: AbortSignal) => {
         const update = investigation.prepareRequest(request, signal);
         supplements.onPrepareRequest(investigation.currentRequest()?.index);

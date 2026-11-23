@@ -397,13 +397,42 @@ function extractTableBindings(tokens: string[], plainRelationsOnly = false): Sql
  * abstain when the scanner cannot account for every relation in one SELECT.
  */
 export function extractFlatSelectTableBindings(sql: string): SqlTableBinding[] {
+  return extractSelectBindings(sql, false);
+}
+
+/** Outer bindings when a WITH clause precedes one plain SELECT. For error advice only. */
+export function extractCteOuterSelectBindings(sql: string): SqlTableBinding[] {
+  return extractSelectBindings(sql, true);
+}
+
+function extractSelectBindings(sql: string, allowCtes: boolean): SqlTableBinding[] {
   const statements = splitSqlStatements(sql)
     .map(statement => (statement.match(FLAT_SELECT_TOKEN_REGEX) ?? [])
       .filter(token => !token.startsWith('--') && !token.startsWith('/*')))
     .filter(tokens => tokens.length > 0);
-  const select = statements.pop();
-  if (!select || select[0].toUpperCase() !== 'SELECT' ||
-    statements.some(tokens => tokens.slice(0, 3).join(' ').toUpperCase() !== 'INCLUDE PERFETTO MODULE') ||
+  let select = statements.pop();
+  if (!select || statements.some(tokens => tokens.slice(0, 3).join(' ').toUpperCase() !== 'INCLUDE PERFETTO MODULE')) return [];
+  if (allowCtes) {
+    if (select[0].toUpperCase() !== 'WITH') return [];
+    let i = 1;
+    while (i < select.length && select[i].toUpperCase() !== 'SELECT') {
+      i = select[i] === '(' ? skipBalancedParentheses(select, i) : i + 1;
+    }
+    // Hide scalar subquery bodies from the outer binding scan. FROM (SELECT ...)
+    // is still refused by the plain-relation reader.
+    const outer: string[] = [];
+    for (; i < select.length; i++) {
+      outer.push(select[i]);
+      if (select[i] === '(' && /^(SELECT|WITH)$/i.test(select[i + 1] ?? '')) {
+        const end = skipBalancedParentheses(select, i);
+        if (select[end - 1] !== ')') return [];
+        outer.push(')');
+        i = end - 1;
+      }
+    }
+    select = outer;
+  }
+  if (select[0]?.toUpperCase() !== 'SELECT' ||
     select.slice(1).some(token => /^(SELECT|WITH|VALUES|UNION|INTERSECT|EXCEPT|INDEXED|WINDOW)$/i.test(token))) return [];
   return extractTableBindings(select, true);
 }

@@ -11349,7 +11349,7 @@
           },
           {
             "id": "performance_summary",
-            "sha256": "534c710531d908bb0a41fb4bc946faaa8b51e00140ba25d0099ad56e8ea5127e",
+            "sha256": "31398bf663268be726e402f375c474ad6a514726a641472b9e44bcc5859ee6d4",
             "required_columns": [
               "total_frames",
               "perceived_jank_frames",
@@ -11362,8 +11362,7 @@
               "refresh_rate",
               "avg_frame_dur",
               "p95_frame_dur",
-              "present_interval_source",
-              "rating"
+              "present_interval_source"
             ]
           },
           {
@@ -11391,12 +11390,22 @@
           },
           {
             "id": "smoothness_basis",
-            "sha256": "dadcf0d5d571680ec9e13d5d0cbdde0b1d5ed6b068f982fa411a75b71cd8e98c",
+            "sha256": "73ed16d865979ea9d0cb79aac3b1aa4d1ef1ba2fa8bd8c4fdd437a4bc8a028d1",
             "required_columns": [
               "process_name",
               "session_id",
               "layer_name",
               "verdict_basis",
+              "primary_layer",
+              "smoothness_rating",
+              "layer_frames",
+              "layer_tagged_frames",
+              "layer_tagged_pct",
+              "layer_hybrid_frames",
+              "layer_hybrid_pct",
+              "layer_present_gap_count",
+              "layer_over_budget_gaps",
+              "layer_over_budget_pct",
               "cadence_metric",
               "cadence_gap_p50_ns",
               "cadence_gap_p95_ns",
@@ -11421,6 +11430,20 @@
               "start_ts",
               "end_ts",
               "upid"
+            ]
+          },
+          {
+            "id": "flutter_swap_touch_gaps",
+            "sha256": "1b4aa3fb786019c5764fb5eca6ad75e94581986c378c8c4b9db8f4e0d05e9182",
+            "required_columns": [
+              "process_name",
+              "swap_count",
+              "complete_contacts",
+              "gap_budget_ns",
+              "gap_class",
+              "gaps",
+              "max_gap_ns",
+              "max_touch_overlap_ns"
             ]
           },
           {

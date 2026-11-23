@@ -847,6 +847,15 @@ describe('MCP original trace SQL context', () => {
       const definition = h.toolDefinitions.find(item => item.name === toolName)!;
       const schema = runtimeToolSpec.createJsonSchemaFromZodRawShape(definition.shared.inputSchema);
       expect(schema).toMatchObject({properties: {executionContext: {enum: ['working', 'original_trace']}}});
+      expect(schema).toMatchObject({properties: {sql: {description: expect.stringMatching(
+        /android_input_events=android\.input\|[^|]*dispatch_ts[^|]*receive_ts/,
+      )}}});
+      expect(schema).toMatchObject({properties: {sql: {description: expect.stringMatching(
+        /android_garbage_collection_events=android\.garbage_collection\|[^|]*gc_type[^|]*gc_ts,gc_dur/,
+      )}}});
+      expect(schema).toMatchObject({properties: {sql: {description: expect.stringContaining(
+        'Compute LAG/LEAD in a SELECT, then filter or aggregate in an outer SELECT.',
+      )}}});
       expect(schema).not.toHaveProperty('properties.executionContext.default');
       expect(schema).not.toHaveProperty('required', expect.arrayContaining(['executionContext']));
       expect(definition.shared.evidenceEffect).toBe('acquire');

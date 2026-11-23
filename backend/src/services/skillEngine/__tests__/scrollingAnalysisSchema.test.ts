@@ -3722,6 +3722,7 @@ describe('smoothness_basis puts present cadence beside frame duration', () => {
         return sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * state.p / 100))] : null;
       },
     });
+    db.function('android_is_app_jank_type', (value: unknown) => /App Deadline Missed/.test(String(value)) ? 1 : 0);
     db.function('android_is_missed_frame_type', (value: unknown) => /App Deadline Missed/.test(String(value)) ? 1 : 0);
     db.exec(`
       CREATE TABLE trace_bounds(start_ts INTEGER, end_ts INTEGER);
@@ -3807,7 +3808,8 @@ describe('smoothness_basis puts present cadence beside frame duration', () => {
         cadence_metric: 'doframe_start_gap', cadence_gap_count: 39, cadence_gaps_over_1_5x_budget: 1,
         frame_dur_metric: 'doframe_main_thread_execution', frame_dur_p50_ns: 5000000,
         buffer_stuffing_pct: null, cadence_status: 'presentation_unmeasured',
-        presentation_status: 'unmeasured', verdict_basis: 'doframe_start_gaps_presentation_unmeasured',
+        presentation_status: 'unmeasured', smoothness_rating: 'unrated', layer_over_budget_pct: null,
+        verdict_basis: 'doframe_start_gaps_presentation_unmeasured',
       })]);
     } finally { db.close(); }
   });
@@ -3836,6 +3838,64 @@ describe('smoothness_basis puts present cadence beside frame duration', () => {
       expect(basis(db).map(row => [row.session_id, row.start_ts, row.frames]))
         .toEqual(sessions.map(row => [row.session_id, row.start_ts, row.frame_count]));
       expect(sessions).toHaveLength(2);
+    } finally { db.close(); }
+  });
+
+  it('keeps Prediction Error, hybrid Late Present and the cadence-based rating distinct', () => {
+    const db = fixture();
+    try {
+      db.exec(`UPDATE actual_frame_timeline_slice
+        SET jank_type = 'Prediction Error', present_type = CASE WHEN id <= 13 THEN 'Late Present' ELSE 'Early Present' END,
+          dur = ${VSYNC}`);
+      expect(basis(db)[0]).toMatchObject({
+        primary_layer: 1, layer_frames: 30, layer_tagged_frames: 30, layer_tagged_pct: 100,
+        layer_hybrid_frames: 13, layer_hybrid_pct: 43.33,
+        layer_present_gap_count: 29, layer_over_budget_gaps: 0, layer_over_budget_pct: 0,
+        smoothness_rating: 'excellent',
+      });
+      db.exec(`UPDATE actual_frame_timeline_slice SET dur = dur + ${2 * VSYNC} WHERE id = 12`);
+      expect(basis(db)[0]).toMatchObject({
+        layer_hybrid_frames: 13, layer_over_budget_gaps: 1, layer_over_budget_pct: 3.45,
+        smoothness_rating: 'good',
+      });
+      db.exec(`UPDATE actual_frame_timeline_slice SET dur = dur + ${2 * VSYNC} WHERE id = 17`);
+      expect(basis(db)[0]).toMatchObject({
+        layer_hybrid_frames: 13, layer_over_budget_gaps: 2, layer_over_budget_pct: 6.9,
+        smoothness_rating: 'fair',
+      });
+    } finally { db.close(); }
+  });
+
+  it('keeps between-gesture pauses, touch gaps and an unobserved boundary apart', () => {
+    const db = fixture();
+    try {
+      db.exec(`
+        ALTER TABLE thread ADD COLUMN is_main_thread INTEGER;
+        UPDATE thread SET is_main_thread = 1 WHERE utid = 1;
+        INSERT INTO thread VALUES(2, 1, 101, '1.raster', NULL, NULL, 0);
+        INSERT INTO thread_track VALUES(20, 2);
+        INSERT INTO slice (id, track_id, ts, dur, name) VALUES
+          (1, 10, 200000000, 1, 'dispatchInputEvent MotionEvent ACTION_DOWN deviceId=1'),
+          (2, 10, 300000000, 1, 'dispatchInputEvent MotionEvent ACTION_UP deviceId=1'),
+          (3, 10, 800000000, 1, 'dispatchInputEvent MotionEvent ACTION_DOWN'),
+          (4, 10, 900000000, 1, 'dispatchInputEvent MotionEvent ACTION_UP'),
+          (5, 20, 100000000, 1, 'eglSwapBuffers'), (6, 20, 218000000, 1, 'eglSwapBuffers'),
+          (7, 20, 238000000, 1, 'eglSwapBuffers'), (8, 20, 305000000, 1, 'eglSwapBuffers'),
+          (9, 20, 820000000, 1, 'eglSwapBuffers');
+      `);
+      const step = stepOf(scrolling, 'flutter_swap_touch_gaps');
+      const sql = bind(String(step.sql), step.sql_fragments);
+      expect(db.prepare(sql).all()).toEqual([
+        expect.objectContaining({gap_class: 'between_contacts_or_next_touch_onset', complete_contacts: 2,
+          gaps: 1, max_gap_ns: 515000000, max_touch_overlap_ns: 20000000}),
+        expect.objectContaining({gap_class: 'over_budget_during_touch', gaps: 2, max_touch_overlap_ns: 62000000}),
+        expect.objectContaining({gap_class: 'touch_timing_unresolved', gaps: 1, max_gap_ns: 118000000}),
+      ]);
+      db.exec('DELETE FROM slice WHERE track_id = 10');
+      expect(db.prepare(sql).all()).toEqual([
+        expect.objectContaining({gap_class: 'touch_timing_unresolved', complete_contacts: 0, gaps: 4,
+          max_touch_overlap_ns: null}),
+      ]);
     } finally { db.close(); }
   });
 

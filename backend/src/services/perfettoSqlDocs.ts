@@ -136,6 +136,19 @@ export function loadPerfettoSqlDocsAsset(): PerfettoSqlDocsAsset | null {
   }
 }
 
+/** Compact discovery card for Android event relations with source-specific time columns. */
+export function documentedAndroidEventSqlRows(): string[] {
+  return (loadPerfettoSqlDocsAsset()?.entries ?? []).flatMap(entry => {
+    if ((entry.type !== 'table' && entry.type !== 'view') ||
+      !entry.name.startsWith('android_') || !entry.name.endsWith('_events') || !entry.module) return [];
+    const columns = entry.columns?.map(column => column.name) ?? [];
+    // Skip conventional event schemas and metadata tables without event timestamps.
+    if (columns.includes('ts') || !columns.some(column => column.endsWith('_ts'))) return [];
+    const fields = columns.filter(column => /^[a-z]+_(ts|dur|type|action)$/.test(column));
+    return [`|${entry.name}=${entry.module}|${fields.join(',')}|`];
+  });
+}
+
 /** @internal Test seam. */
 export function clearPerfettoSqlDocsCache(): void {
   cachedAsset = undefined;

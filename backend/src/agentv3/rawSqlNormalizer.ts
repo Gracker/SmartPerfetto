@@ -2,6 +2,8 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {extractFlatSelectTableBindings} from '../services/sqlStdlibDependencyAnalyzer';
+
 export interface RawSqlNormalizationResult {
   sql: string;
   rewrites: string[];
@@ -198,7 +200,6 @@ function readOptionalSqlAliasToken(sql: string, index: number): { value: string;
 }
 
 const THREAD_SLICE_FROM = /\bFROM\s+thread_slice(?:\s+(?:AS\s+)?(?!WHERE\b|JOIN\b|LEFT\b|RIGHT\b|INNER\b|OUTER\b|CROSS\b|GROUP\b|ORDER\b|LIMIT\b|ON\b|USING\b)([A-Za-z_]\w*))?/i;
-const SLICE_FROM_WITH_ALIAS = /\bFROM\s+slice\s+(?:AS\s+)?([A-Za-z_]\w*)\b/i;
 
 function findThreadSliceAlias(sql: string): string | undefined {
   return THREAD_SLICE_FROM.exec(sql)?.[1];
@@ -409,36 +410,24 @@ function normalizeThreadMainThreadColumn(sql: string): { sql: string; rewrites: 
 }
 
 function normalizeBareSliceColumnsAfterJoins(sql: string): { sql: string; rewrites: string[] } {
-  const fromMatch = SLICE_FROM_WITH_ALIAS.exec(sql);
-  if (!fromMatch) return { sql, rewrites: [] };
-  if (!/\bJOIN\s+(?:thread|process|thread_track)\b/i.test(sql)) return { sql, rewrites: [] };
+  // A CTE, subquery or compound SELECT has its own aliases. A regex over
+  // the whole SQL can qualify an otherwise legal outer column with an inner alias.
+  const bindings = extractFlatSelectTableBindings(sql);
+  const sliceBindings = bindings.filter(binding => binding.table === 'slice');
+  const alias = sliceBindings.length === 1 ? sliceBindings[0].alias : undefined;
+  if (!alias || !/^[a-z_]\w*$/.test(alias) || !bindings.some(binding => ['thread', 'process', 'thread_track'].includes(binding.table))) {
+    return {sql, rewrites: []};
+  }
 
-  const alias = fromMatch[1];
+  const name = replaceOutsideSqlLiteralsCommentsAndQuotedIdentifiers(sql, /\bSELECT\s+name(?=\s*(?:,|FROM\b))/gi,
+    () => `SELECT ${alias}.name AS slice_name`);
+  const duration = replaceOutsideSqlLiteralsCommentsAndQuotedIdentifiers(name.sql, /(?<!\.)\bdur\s*\/\s*1e6\b/gi,
+    () => `${alias}.dur/1e6`);
+  // ORDER BY may refer to an output alias called dur. Leave it to SQL name resolution.
   const rewrites: string[] = [];
-  let normalized = sql;
-  let changedName = 0;
-  normalized = normalized.replace(/\bSELECT\s+name\b/i, () => {
-    changedName += 1;
-    return `SELECT ${alias}.name AS slice_name`;
-  });
-  if (changedName > 0) {
-    rewrites.push(`qualified bare slice name as ${alias}.name after joins with other name columns`);
-  }
-
-  let changedDur = 0;
-  normalized = normalized.replace(/(?<!\.)\bdur\s*\/\s*1e6\b/gi, () => {
-    changedDur += 1;
-    return `${alias}.dur/1e6`;
-  });
-  normalized = normalized.replace(/\bORDER\s+BY\s+dur\b/gi, () => {
-    changedDur += 1;
-    return `ORDER BY ${alias}.dur`;
-  });
-  if (changedDur > 0) {
-    rewrites.push(`qualified bare slice dur as ${alias}.dur after slice joins`);
-  }
-
-  return { sql: normalized, rewrites };
+  if (name.count > 0) rewrites.push(`qualified bare slice name as ${alias}.name after joins with other name columns`);
+  if (duration.count > 0) rewrites.push(`qualified bare slice dur as ${alias}.dur after slice joins`);
+  return {sql: duration.sql, rewrites};
 }
 
 function normalizeThreadTrackProcessJoin(sql: string): { sql: string; rewrites: string[] } {

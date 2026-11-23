@@ -10,8 +10,8 @@
     "skillCount": 254,
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
-    "stepCount": 1400,
-    "explicitColumnCount": 5456
+    "stepCount": 1401,
+    "explicitColumnCount": 5473
   },
   "skills": {
     "ams_module": {
@@ -37006,6 +37006,63 @@
           },
           "synthesizeLabels": {}
         },
+        "flutter_swap_touch_gaps": {
+          "title": {
+            "zh-CN": "Flutter 换帧间隔与触摸边界",
+            "en": "Flutter swap gaps and touch boundaries"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程",
+                "en": "Process Name"
+              }
+            },
+            "swap_count": {
+              "label": {
+                "zh-CN": "换帧次数",
+                "en": "Swap count"
+              }
+            },
+            "complete_contacts": {
+              "label": {
+                "zh-CN": "已配对触摸",
+                "en": "Paired touch contacts"
+              }
+            },
+            "gap_budget_ns": {
+              "label": {
+                "zh-CN": "间隔阈值（1.5 倍 VSync）",
+                "en": "Gap threshold (1.5x VSync)"
+              }
+            },
+            "gap_class": {
+              "label": {
+                "zh-CN": "触摸时间归类",
+                "en": "Touch timing classification"
+              }
+            },
+            "gaps": {
+              "label": {
+                "zh-CN": "间隔数",
+                "en": "Gaps"
+              }
+            },
+            "max_gap_ns": {
+              "label": {
+                "zh-CN": "最长完整换帧间隔",
+                "en": "Longest full swap gap"
+              }
+            },
+            "max_touch_overlap_ns": {
+              "label": {
+                "zh-CN": "最长连续触摸内间隔",
+                "en": "Longest gap within a single touch"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
         "frame_timeline_check": {
           "title": {
             "zh-CN": "FrameTimeline 数据源检测",
@@ -38149,14 +38206,14 @@
             },
             "perceived_jank_frames": {
               "label": {
-                "zh-CN": "感知掉帧",
-                "en": "Perceived Jank Frames"
+                "zh-CN": "Skill 感知掉帧（混合信号）",
+                "en": "Skill perceived jank (hybrid signal)"
               }
             },
             "jank_rate": {
               "label": {
-                "zh-CN": "感知掉帧率",
-                "en": "Jank Rate"
+                "zh-CN": "Skill 感知掉帧率（混合信号）",
+                "en": "Skill perceived jank rate (hybrid signal)"
               }
             },
             "buffer_stuffing_frames": {
@@ -38212,12 +38269,6 @@
                 "zh-CN": "呈现间隔来源",
                 "en": "Present Interval Source"
               }
-            },
-            "rating": {
-              "label": {
-                "zh-CN": "评级",
-                "en": "Rating"
-              }
             }
           },
           "synthesizeLabels": {
@@ -38226,7 +38277,7 @@
               "en": "Total Frames"
             },
             "field:perceived_jank_frames": {
-              "zh-CN": "感知掉帧",
+              "zh-CN": "Skill 感知掉帧（混合信号）",
               "en": "Perceived Jank Frames"
             },
             "field:buffer_stuffing_frames": {
@@ -38404,13 +38455,13 @@
             },
             "janky_count": {
               "label": {
-                "zh-CN": "感知掉帧",
+                "zh-CN": "Skill 感知掉帧（混合信号）",
                 "en": "Janky Count"
               }
             },
             "jank_rate": {
               "label": {
-                "zh-CN": "感知掉帧率",
+                "zh-CN": "Skill 感知掉帧率（混合信号）",
                 "en": "Jank Rate"
               }
             },
@@ -38467,8 +38518,8 @@
         },
         "smoothness_basis": {
           "title": {
-            "zh-CN": "流畅度口径：呈现间隔 vs 帧时长 vs Buffer Stuffing",
-            "en": "Smoothness basis: present gaps vs frame duration vs Buffer Stuffing"
+            "zh-CN": "流畅度评级与口径对照",
+            "en": "Smoothness rating and measurement bases"
           },
           "columns": {
             "process_name": {
@@ -38493,6 +38544,66 @@
               "label": {
                 "zh-CN": "流畅度判定依据",
                 "en": "Smoothness verdict basis"
+              }
+            },
+            "primary_layer": {
+              "label": {
+                "zh-CN": "主图层",
+                "en": "Primary layer"
+              }
+            },
+            "smoothness_rating": {
+              "label": {
+                "zh-CN": "呈现节奏评级（图层全区间）",
+                "en": "Presentation cadence rating across layer sessions"
+              }
+            },
+            "layer_frames": {
+              "label": {
+                "zh-CN": "图层全区间帧数",
+                "en": "Layer frames across sessions"
+              }
+            },
+            "layer_tagged_frames": {
+              "label": {
+                "zh-CN": "FrameTimeline 掉帧标签帧",
+                "en": "FrameTimeline jank-tagged frames"
+              }
+            },
+            "layer_tagged_pct": {
+              "label": {
+                "zh-CN": "FrameTimeline 掉帧标签率",
+                "en": "FrameTimeline jank-tag rate"
+              }
+            },
+            "layer_hybrid_frames": {
+              "label": {
+                "zh-CN": "Skill 感知掉帧（混合信号）",
+                "en": "Skill perceived jank (hybrid signal)"
+              }
+            },
+            "layer_hybrid_pct": {
+              "label": {
+                "zh-CN": "Skill 感知掉帧率（混合信号）",
+                "en": "Skill perceived jank rate (hybrid signal)"
+              }
+            },
+            "layer_present_gap_count": {
+              "label": {
+                "zh-CN": "图层呈现间隔数",
+                "en": "Layer present intervals"
+              }
+            },
+            "layer_over_budget_gaps": {
+              "label": {
+                "zh-CN": "图层超 1.5 倍预算间隔数",
+                "en": "Layer gaps over 1.5x budget"
+              }
+            },
+            "layer_over_budget_pct": {
+              "label": {
+                "zh-CN": "图层超 1.5 倍预算间隔率",
+                "en": "Layer gap rate over 1.5x budget"
               }
             },
             "cadence_metric": {

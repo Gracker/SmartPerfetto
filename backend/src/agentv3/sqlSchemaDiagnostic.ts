@@ -23,7 +23,9 @@ import {getPerfettoStdlibModules, getPerfettoStdlibSymbolIndex} from '../service
 import {loadPerfettoSqlDocsAsset} from '../services/perfettoSqlDocs';
 import {
   analyzeSqlStdlibDependencies,
+  extractCteOuterSelectBindings,
   extractExternalTableBindings,
+  extractLocalSqlSymbols,
   extractFlatSelectTableBindings,
   moduleCoveredByStdlibDeclaration,
 } from '../services/sqlStdlibDependencyAnalyzer';
@@ -211,7 +213,7 @@ function relatedColumnHint(
   facts: ReturnType<typeof symbolFacts>,
   columns: readonly string[],
 ): string | undefined {
-  if (!sql || !facts.stdlibModule || !facts.availableColumns || !/^(ts|dur|utid|upid)$/.test(wanted) ||
+  if (!sql || !facts.stdlibModule || !facts.availableColumns || !/^(ts|dur|utid|upid|type|name)$/.test(wanted) ||
     columns.some(name => name.toLowerCase() === wanted)) return undefined;
   // Match whole suffixes. For example, `events` and `ts_column_name` are
   // not timestamps. Keep the names that are visible in this diagnostic.
@@ -236,6 +238,20 @@ function resolveMissingColumn(
   input: SqlSchemaDiagnosticInput,
 ): Resolution {
   const bindings = input.sql ? extractExternalTableBindings(input.sql) : [];
+  if (input.sql && qualifier) {
+    const outer = extractCteOuterSelectBindings(input.sql);
+    const referred = outer.find(binding => (binding.alias ?? binding.table) === qualifier.toLowerCase());
+    const ctes = new Set(extractLocalSqlSymbols(input.sql));
+    if (referred && ctes.has(referred.table)) {
+      return {column, hint: `Check the SELECT list of CTE ${referred.table}: the outer query can only use its projected columns. Project ${column} (or use the alias projected by that CTE).`};
+    }
+    const inner = bindings.find(binding => (binding.alias ?? binding.table) === qualifier.toLowerCase());
+    if (!referred && outer.some(binding => ctes.has(binding.table)) && inner &&
+      docsIndex().tables.get(inner.table)?.columns.some(name => name.toLowerCase() === column.toLowerCase())) {
+      return {column, hint: `${inner.table} has ${column}, but ${qualifier} is bound inside a CTE. In the outer SELECT, use the CTE's projected column through its outer binding, and project it first if needed.`};
+    }
+  }
+
   const {tables} = docsIndex();
   const wanted = column.toLowerCase();
   let candidates: string[];
@@ -296,8 +312,26 @@ function resolve(message: string, errorKind: TraceProcessorSqlErrorKind, input: 
   if (errorKind === 'unknown_module') {
     const module = /unknown module\s*'?([\w.]+)'?/i.exec(message);
     if (!module) return {};
-    const closestSymbols = closest(module[1], getPerfettoStdlibModules());
+    const name = module[1];
+    const table = docsIndex().tables.get(name.replace(/\./g, '_'));
+    if (table && table.module !== name) {
+      return {symbol: name, closestSymbols: [table.module],
+        hint: `Use INCLUDE PERFETTO MODULE ${table.module}; the table name goes in FROM or JOIN.`};
+    }
+    const closestSymbols = closest(name, getPerfettoStdlibModules());
     return {symbol: module[1], ...(closestSymbols.length > 0 ? {closestSymbols} : {})};
+  }
+  if (/misuse of window function/i.test(message)) {
+    return {hint: 'Compute the window expression (for example LAG(...) OVER (...)) in a SELECT/CTE, project its result, then filter or aggregate that projected column in the outer SELECT.'};
+  }
+  if (/syntax error near ['"]\.\d/i.test(message) && /\b\d+(?:\.\d+)?e[+-]?\d+\.\d/i.test(input.sql ?? '')) {
+    return {hint: 'Scientific notation takes an integer exponent. For nanoseconds to milliseconds use /1e6 (or /1000000.0).'};
+  }
+  if (/syntax error near ['"]THEN/i.test(message)) {
+    return {hint: 'Check CASE boundaries around THEN: each branch needs WHEN condition THEN expression. For clipping use MAX(0, MIN(end, window_end) - MAX(start, window_start)).'};
+  }
+  if (/ambiguous column name:/i.test(message)) {
+    return {hint: 'Qualify the reported column with the correct FROM/JOIN alias in that SELECT block. Give each relation a unique alias.'};
   }
   return {};
 }

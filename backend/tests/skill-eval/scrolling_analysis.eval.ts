@@ -124,13 +124,6 @@ describeWithTrace('scrolling_analysis skill', TRACE_FILE, () => {
         }
       }, 30000);
 
-      it('should have valid performance rating', async () => {
-        const result = defaultStep('performance_summary');
-        const summary = result.data[0];
-
-        expect(['优秀', '良好', '一般', '较差']).toContain(summary.rating);
-      }, 30000);
-
       it('should have frame duration metrics', async () => {
         const result = defaultStep('performance_summary');
         const summary = result.data[0];
@@ -143,6 +136,21 @@ describeWithTrace('scrolling_analysis skill', TRACE_FILE, () => {
         // 只验证 p99 >= p95
         expect(summary.p99_frame_dur).toBeGreaterThanOrEqual(summary.p95_frame_dur);
       }, 30000);
+    });
+
+    it('rates the primary layer from measured presentation gaps', () => {
+      const result = defaultStep('smoothness_basis');
+      expect(result.success).toBe(true);
+      const candidates = result.data.filter(row => row.primary_layer === 1 && row.smoothness_rating !== 'unrated');
+      expect(candidates.length).toBeGreaterThan(0);
+      for (const row of candidates) {
+        expect(row.layer_present_gap_count).toBeGreaterThanOrEqual(19);
+        const rate = 100 * row.layer_over_budget_gaps / row.layer_present_gap_count;
+        expect(row.layer_over_budget_pct).toBeCloseTo(rate, 2);
+        expect(row.smoothness_rating).toBe(rate < 1 ? 'excellent' : rate < 5 ? 'good' : rate < 15 ? 'fair' : 'poor');
+        expect(row.layer_tagged_frames).toBeLessThanOrEqual(row.layer_frames);
+        expect(row.layer_hybrid_frames).toBeLessThanOrEqual(row.layer_frames);
+      }
     });
 
     describe('input_data_check step', () => {
