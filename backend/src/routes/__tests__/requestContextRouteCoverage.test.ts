@@ -16,6 +16,7 @@ import providerRoutes from '../providerRoutes';
 import reportRoutes from '../reportRoutes';
 import batchTraceRoutes from '../batchTraceRoutes';
 import skillPackRoutes from '../skillPackRoutes';
+import perfettoChatRoutes from '../perfettoChatRoutes';
 import traceRoutes from '../simpleTraceRoutes';
 import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
 
@@ -59,6 +60,13 @@ async function makeApp() {
     providerRoutes,
   );
   app.use(
+    '/api/workspaces/:workspaceId/perfetto-chat/v1',
+    bindWorkspaceRouteContext,
+    authenticate,
+    requireWorkspaceRouteContext,
+    perfettoChatRoutes,
+  );
+  app.use(
     '/api/workspaces/:workspaceId/skill-packs',
     bindWorkspaceRouteContext,
     authenticate,
@@ -85,6 +93,28 @@ afterEach(async () => {
 });
 
 describe('RequestContext route coverage', () => {
+  it('authenticates the experimental workspace chat before revealing capabilities', async () => {
+    process.env.SMARTPERFETTO_API_KEY = 'test-secret';
+    const res = await request(await makeApp()).get('/api/workspaces/default/perfetto-chat/v1/capabilities');
+    expect(res.status).toBe(401);
+  });
+
+  it('reports the experiment as unavailable and rejects mutations when disabled', async () => {
+    delete process.env.SMARTPERFETTO_API_KEY;
+    const previous = process.env.SMARTPERFETTO_PERFETTO_CHAT;
+    process.env.SMARTPERFETTO_PERFETTO_CHAT = '0';
+    try {
+      const server = await makeApp();
+      const base = '/api/workspaces/default/perfetto-chat/v1';
+      const capability = await request(server).get(base + '/capabilities');
+      expect(capability.body).toEqual({version: 1, enabled: false, chat: false, trace: false, code: 'FEATURE_UNAVAILABLE'});
+      expect((await request(server).post(base + '/sessions').send({profileId: 'local'})).status).toBe(404);
+    } finally {
+      if (previous === undefined) delete process.env.SMARTPERFETTO_PERFETTO_CHAT;
+      else process.env.SMARTPERFETTO_PERFETTO_CHAT = previous;
+    }
+  });
+
   it('keeps trace health available through dev fallback', async () => {
     delete process.env.SMARTPERFETTO_API_KEY;
 

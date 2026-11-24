@@ -66,16 +66,16 @@
     "assets/syntaqlite-runtime.wasm": "sha256-/2Vh3J/dda+5V70kG6t23YpRk4MCO8Ue2cPVbKKsHiA=",
     "assets/syntaqlite-sqlite.wasm": "sha256-wpSDrwxb4BhCM1q4r0MsFVt2FSuevcDL/7DFUEd4Lbw=",
     "engine_bundle.js": "sha256-mK4Y4cNdR2eE8qu4Eme1mYbDrNOEA9jNa5n8KLcspIk=",
-    "frontend.css": "sha256-yyca5M2Cu1HecEb/FsJFrDgTN3O9WOO05Mx/W8gfhXU=",
-    "frontend_bundle.js": "sha256-ImAXoenB11svnmzIUnSW+9Zj3fr4TISCX/DG2iDjgQU=",
+    "frontend.css": "sha256-99q2Zs5Pdgs14s/WQa5EpdYJIwf3qlVbAydAwrvH1O0=",
+    "frontend_bundle.js": "sha256-QuFqlY9k8xWb6Npv8ZcM5VBWmUOkjrztkg29SBtA3ng=",
     "proto_utils.wasm": "sha256-f4XdIUl8LwBqLo1TDqZ6AvnadOg+bVAL9WTppEbOFfE=",
-    "stdlib_docs.json": "sha256-MkN/jvDIzqmYzPwaWkhmC1uPd/njmFd3jN/jamTgWoA=",
+    "stdlib_docs.json": "sha256-VAD5U6ygcc8GtmsrFSCQ9bddWSj6RkwfFKJezhbe/hE=",
     "syntaqlite-runtime.js": "sha256-03Zp8saQe2PidK3xSzWcn+tZNK9fFCFhTr2P9u0GyI8=",
     "syntaqlite-runtime.wasm": "sha256-/2Vh3J/dda+5V70kG6t23YpRk4MCO8Ue2cPVbKKsHiA=",
     "syntaqlite-sqlite.wasm": "sha256-wpSDrwxb4BhCM1q4r0MsFVt2FSuevcDL/7DFUEd4Lbw=",
     "trace_processor.wasm": "sha256-wO334biw9fmiT6VbHoRKPYdBwhNf5WXU0HVul7EynXo=",
     "trace_processor_memory64.wasm": "sha256-uSKrlMXBAX2akrCfyoTzsCR6eOPE678zEBEutOOklQE=",
     "traceconv.wasm": "sha256-fyEihNZ+sFMukFHQwZYVIdfBPF9E+H93dBlZ72pBqhU=",
-    "traceconv_bundle.js": "sha256-A1m7KccwLguhJgvWxH6kupXMskR8vviqxPXFFBlFGUA="
+    "traceconv_bundle.js": "sha256-0gRciEAjXN2cmwZxNYRrljYUGc1x8mtSrHz0j1XAq64="
   }
 }

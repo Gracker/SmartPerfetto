@@ -12304,6 +12304,145 @@ tr.detail-row .expanded-empty.compact .empty-sections {
   display: flex;
   justify-content: flex-end;
   margin-bottom: 6px;
+}/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/* Copyright (C) 2026 Gracker (Chris) */
+.pf-perfetto-chat-page {
+  block-size: 100%;
+  min-block-size: 0;
+  display: flex;
+  justify-content: center;
+}
+
+.pf-perfetto-chat {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  block-size: 100%;
+  inline-size: 100%;
+  max-inline-size: 840px;
+  min-block-size: 0;
+  padding: 12px;
+  overflow: hidden;
+}
+.pf-perfetto-chat h2, .pf-perfetto-chat p {
+  margin-block: 0 8px;
+}
+.pf-perfetto-chat h2 {
+  font-size: 16px;
+  margin: 0;
+}
+.pf-perfetto-chat button, .pf-perfetto-chat select, .pf-perfetto-chat textarea {
+  font: inherit;
+  color: inherit;
+  background: var(--pf-color-background);
+  border: 1px solid var(--pf-color-border);
+  border-radius: 4px;
+  padding: 4px 7px;
+}
+.pf-perfetto-chat button:not([disabled]) {
+  cursor: pointer;
+}
+.pf-perfetto-chat button[disabled] {
+  opacity: 0.55;
+}
+.pf-perfetto-chat button:focus-visible, .pf-perfetto-chat select:focus-visible, .pf-perfetto-chat textarea:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 1px;
+}
+.pf-perfetto-chat textarea {
+  min-inline-size: 0;
+  flex: 1;
+  resize: vertical;
+}
+.pf-perfetto-chat form {
+  display: flex;
+  gap: 8px;
+  align-items: end;
+}
+.pf-perfetto-chat small {
+  opacity: 0.8;
+  overflow-wrap: anywhere;
+}
+
+.pf-perfetto-chat__header,
+.pf-perfetto-chat__attachment {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  justify-content: space-between;
+  overflow-wrap: anywhere;
+}
+
+.pf-perfetto-chat__messages {
+  flex: 1;
+  min-block-size: 2rem;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding-block: 6px;
+}
+
+.pf-perfetto-chat__round {
+  border-block-start: 1px solid var(--pf-color-border);
+  padding-block: 10px;
+}
+
+.pf-perfetto-chat__question {
+  font-weight: 600;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.pf-perfetto-chat__answer {
+  padding-block-start: 8px;
+  overflow-wrap: anywhere;
+}
+.pf-perfetto-chat__answer pre, .pf-perfetto-chat__answer table {
+  max-inline-size: 100%;
+  overflow: auto;
+}
+.pf-perfetto-chat__answer table {
+  display: block;
+  border-collapse: collapse;
+}
+.pf-perfetto-chat__answer th, .pf-perfetto-chat__answer td {
+  border: 1px solid var(--pf-color-border);
+  padding: 3px 6px;
+}
+
+.pf-perfetto-chat__composer {
+  border-block-start: 1px solid var(--pf-color-border);
+  padding-block-start: 8px;
+  display: grid;
+  gap: 8px;
+  overflow: auto;
+}
+
+.pf-perfetto-chat__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.pf-perfetto-chat__attachment label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.pf-perfetto-chat__consent {
+  border: 1px solid var(--pf-color-border);
+  padding: 8px;
+  overflow-wrap: anywhere;
+}
+.pf-perfetto-chat__consent .pf-perfetto-chat__actions {
+  margin-block-start: 8px;
+}
+
+.pf-perfetto-chat__status {
+  padding-block: 4px;
 }.pf-aggregate-profiles-page {
   overflow: auto;
   padding: 0.25rem;

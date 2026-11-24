@@ -879,6 +879,36 @@ For a public or shared deployment, enable [OIDC Browser Login](#oidc-browser-log
 API gateway. Enterprise workspace quotas on trace size, concurrent runs and
 monthly runs bound analysis resources; they are not per-request rate limits.
 
+## Perfetto Chat experiment
+
+This entry point is off by default. Use it from source on a trusted, single-user macOS arm64
+machine. The backend must bind to `127.0.0.1` in keyless local mode. Keep it off public networks,
+shared reverse proxies, and tunnels. The feature is unavailable in Docker, Portable, and
+enterprise OIDC deployments.
+
+| Backend environment variable | Value |
+|---|---|
+| `SMARTPERFETTO_PERFETTO_CHAT` | Set to `1` and restart with `./start.sh` or `./scripts/start-dev.sh`. |
+| `SMARTPERFETTO_PERFETTO_CHAT_BASE_URL` | OpenAI-compatible Chat Completions API base URL, with streaming and tool calling support. HTTPS and `http://127.0.0.1` are accepted. |
+| `SMARTPERFETTO_PERFETTO_CHAT_MODEL` | Model ID used by this experiment. |
+| `SMARTPERFETTO_PERFETTO_CHAT_API_KEY` | Server-side API key for the model. |
+| `SMARTPERFETTO_PERFETTO_CHAT_SKILL_DIR` | Absolute path to the complete `skills/perfetto-performance-analysis` directory from the [pinned Perfetto-Skills revision](https://github.com/Gracker/Perfetto-Skills/tree/3afbec19393b21dc2d83c4659327fd6440776ac6/skills/perfetto-performance-analysis). |
+| `SMARTPERFETTO_PERFETTO_CHAT_PYTHON` | Absolute path to a local Python 3.11 or newer executable. |
+| `SMARTPERFETTO_PERFETTO_CHAT_PROCESSOR` | Absolute path to a local Trace Processor matching the mac-arm64 SHA-256 in the pinned Skill’s `references/trace-processor-lock.json`. |
+
+Prepare the files and matching Processor using the public Skill instructions before startup.
+The backend verifies the complete Skill bundle and Processor and runs from a verified local
+copy. Restart after repairing prerequisites or changing configuration. General chat only
+requires the model configuration. Trace attachment requires the full runtime and a shareable,
+downloadable local single-file trace up to 256 MiB. The experiment has independent model
+configuration, conversations, and session limits.
+
+Select Perfetto Chat in the sidebar. With a trace open, it returns to the Viewer and opens
+the side panel, where you can attach the trace and choose a focus for the next question.
+Without a trace, it opens the standalone chat page. The confirmation displays the model service address. The trace file stays on the machine. Query results and selection context
+may be sent to that service. Conversations live in process memory. Start a new chat after
+reloading the page or restarting the backend.
+
 ## Runtime and Provider Boundary
 
 The backend orchestration runtime is always Pi Agent Core; a provider decides only the endpoint, model, and credentials. `SMARTPERFETTO_AGENT_RUNTIME` is deprecated: it accepts only runtime names that were once valid (`claude-agent-sdk`, `openai-agents-sdk`, `pi-agent-core`, `opencode`, `qoder-agent-sdk`), maps them all to Pi with one deprecation warning, and still rejects unknown values such as a provider name like `deepseek`.

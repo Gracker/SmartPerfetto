@@ -35,6 +35,8 @@ import enterpriseApiKeyRoutes from './routes/enterpriseApiKeyRoutes';
 import enterpriseTenantRoutes from './routes/enterpriseTenantRoutes';
 import enterpriseRuntimeDashboardRoutes from './routes/enterpriseRuntimeDashboardRoutes';
 import analysisResultRoutes from './routes/analysisResultRoutes';
+import perfettoChatRoutes from './routes/perfettoChatRoutes';
+import {closeAllChatSessions} from './perfettoChat/sessions';
 import workspaceWindowRoutes from './routes/workspaceWindowRoutes';
 import comparisonRoutes from './routes/comparisonRoutes';
 import traceConfigProposalRoutes from './routes/traceConfigProposalRoutes';
@@ -199,6 +201,11 @@ app.use('/api/sql', rejectRemovedSqlApi);
 app.use('/api/auth', enterpriseAuthRoutes);
 app.use('/api/auth', enterpriseApiKeyRoutes);
 app.use('/api/tenant', enterpriseTenantRoutes);
+app.use(
+  '/api/workspaces/:workspaceId/perfetto-chat/v1',
+  ...workspaceRouteContextMiddleware,
+  perfettoChatRoutes,
+);
 app.use(
   '/api/workspaces/:workspaceId/traces',
   ...workspaceRouteContextMiddleware,
@@ -403,6 +410,7 @@ function gracefulShutdown(signal: string) {
 
   console.log('🧬 Closing self-evolution admin control plane...');
   closeSelfEvolutionAdminService();
+  const chatSessionsClosed = closeAllChatSessions();
   const closedEventStreams = activeHttpResponses.closeEventStreams();
   if (closedEventStreams > 0) {
     console.log(`📡 Closed ${closedEventStreams} active SSE connection(s).`);
@@ -410,7 +418,8 @@ function gracefulShutdown(signal: string) {
 
   if (!server) {
     console.log('✅ Cleanup complete before listener startup, exiting...');
-    process.exit(0);
+    void chatSessionsClosed.then(() => process.exit(0));
+    return;
   }
 
   for (const socket of upgradedSockets) {
@@ -425,7 +434,8 @@ function gracefulShutdown(signal: string) {
     process.exit(1);
   }, 5_000);
   forcedExit.unref();
-  server.close((error) => {
+  server.close(async (error) => {
+    await chatSessionsClosed;
     clearTimeout(forcedExit);
     if (error) {
       console.error('❌ Backend listener shutdown failed:', error);

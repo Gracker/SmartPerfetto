@@ -746,6 +746,32 @@ SmartPerfetto 没有内置的请求限流，也不读取旧文档列出的
 `SMARTPERFETTO_API_KEY`），并在反向代理或 API 网关层做限流。Enterprise workspace 的
 trace 大小、并发 run 与每月 run 配额只约束分析资源，不是按请求计数的限流。
 
+## Perfetto 对话实验
+
+此入口默认关闭。仅在受信、单用户的 macOS arm64 源码环境中使用，服务需绑定
+`127.0.0.1`，并处于无 API 密钥的本地模式。请勿经公网、共享反向代理或隧道暴露服务。
+Docker、Portable 和企业 OIDC 环境下入口不可用。
+
+| 后端环境变量 | 配置 |
+|---|---|
+| `SMARTPERFETTO_PERFETTO_CHAT` | 设置为 `1` 启用，重新启动 `./start.sh` 或 `./scripts/start-dev.sh`。 |
+| `SMARTPERFETTO_PERFETTO_CHAT_BASE_URL` | 支持工具调用和流式输出的 OpenAI-compatible Chat Completions API 根地址。接受 HTTPS 或 `http://127.0.0.1`。 |
+| `SMARTPERFETTO_PERFETTO_CHAT_MODEL` | 此实验固定使用的模型 ID。 |
+| `SMARTPERFETTO_PERFETTO_CHAT_API_KEY` | 此模型的服务端密钥。 |
+| `SMARTPERFETTO_PERFETTO_CHAT_SKILL_DIR` | [Perfetto-Skills 固定版本](https://github.com/Gracker/Perfetto-Skills/tree/3afbec19393b21dc2d83c4659327fd6440776ac6/skills/perfetto-performance-analysis) 中完整 `skills/perfetto-performance-analysis` 目录的绝对路径。 |
+| `SMARTPERFETTO_PERFETTO_CHAT_PYTHON` | 本机 Python 3.11 或更新版本的可执行文件绝对路径。 |
+| `SMARTPERFETTO_PERFETTO_CHAT_PROCESSOR` | 本机 Trace Processor 的绝对路径，需匹配固定 Skills 目录中 `references/trace-processor-lock.json` 的 mac-arm64 SHA-256。 |
+
+先在服务启动前按公开 Skill 的说明安装文件和匹配的 Processor。服务会验证整套
+Skills 和 Processor，运行时读取已验证的本地副本。修改配置或修复依赖后重新启动。
+只有模型配置也可以普通对话。附加 Trace 需完整环境，且首版支持不超过 256 MiB、
+允许分享及下载的本地单文件。该实验有独立的模型配置、对话和会话限额。
+
+点击侧栏的「Perfetto 对话」。已打开 Trace 时会返回 Viewer 并显示右侧页签，
+可明确附加当前 Trace，再切换本轮关注范围。未打开 Trace 时进入独立对话页。
+确认附加前，界面会展示模型服务地址。Trace 文件留在本机，
+查询结果和选区信息可能发送给该服务。会话保存在进程内，刷新与重启后可新建对话。
+
 ## Runtime 与 Provider 的边界
 
 后端编排 runtime 固定为 Pi Agent Core；provider 只决定 endpoint、模型和凭据。`SMARTPERFETTO_AGENT_RUNTIME` 已废弃：只接受曾经有效的 runtime 名称（`claude-agent-sdk`、`openai-agents-sdk`、`pi-agent-core`、`opencode`、`qoder-agent-sdk`），全部映射为 Pi 并提示一次废弃；未知值（例如 `deepseek` 这类 provider 名称）仍会报错。

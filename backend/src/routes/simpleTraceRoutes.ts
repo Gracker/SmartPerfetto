@@ -3,7 +3,6 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import { Router, type NextFunction, type Request, type Response } from 'express';
-import multer from 'multer';
 import path from 'path';
 import { createWriteStream } from 'fs';
 import fs from 'fs/promises';
@@ -62,7 +61,10 @@ import {
   type TraceMetadata,
   writeTraceMetadata,
 } from '../services/traceMetadataStore';
-import { getUploadRoot } from '../services/traceUploadPaths';
+import {
+  createUploadDiskSpaceCheck, cleanupUploadFile as cleanupFile, createTraceMultipartUpload,
+  normalizeUtf8Filename, tempUploadFilename,
+} from '../middleware/traceMultipartUpload';
 import { isPrivilegedRequestContext, sendResourceNotFound } from '../services/resourceOwnership';
 import {
   canDeleteTraceResource,
@@ -84,28 +86,10 @@ import {
 
 const router = Router();
 const URL_UPLOAD_TIMEOUT_MS = 300000;
-const TEMP_UPLOAD_SUFFIX = '.uploading';
 const CLEANUP_TERMINAL_LEASE_STATES = new Set<TraceProcessorLeaseState>(['released', 'failed']);
 const DELETE_BLOCKING_RUN_STATUSES = new Set(['pending', 'running', 'awaiting_user']);
 const DEFAULT_TRACE_LIST_LIMIT = 100;
 const MAX_TRACE_LIST_LIMIT = 200;
-// 2x covers the in-flight upload plus the .uploading temp file written alongside the final trace.
-const DISK_SAFETY_MULTIPLIER = 2;
-
-/**
- * Multer/Busboy decodes multipart filename parameters as Latin-1 by default,
- * while browsers send the filename bytes as UTF-8. Recover the original name
- * only when the Latin-1 code units form a lossless UTF-8 byte sequence.
- */
-function normalizeUtf8Filename(filename: string): string {
-  if ([...filename].some(character => (character.codePointAt(0) ?? 0) > 0xff)) {
-    return filename;
-  }
-  const decoded = Buffer.from(filename, 'latin1').toString('utf8');
-  return Buffer.from(decoded, 'utf8').toString('latin1') === filename
-    ? decoded
-    : filename;
-}
 
 function normalizeTraceCatalogFilename(metadata: TraceMetadata): TraceMetadata {
   const filename = normalizeUtf8Filename(metadata.filename);
@@ -117,72 +101,6 @@ class TraceUploadTooLargeError extends Error {
     super(`Trace file too large. Maximum allowed size is ${maxBytes} bytes`);
     this.name = 'TraceUploadTooLargeError';
   }
-}
-
-async function getAvailableDiskBytes(targetPath: string): Promise<number | null> {
-  let candidate = targetPath;
-  for (let i = 0; i < 8; i++) {
-    try {
-      const stats = await fs.statfs(candidate);
-      return stats.bavail * stats.bsize;
-    } catch (error: any) {
-      if (error?.code === 'ENOENT') {
-        const parent = path.dirname(candidate);
-        if (parent === candidate) return null;
-        candidate = parent;
-        continue;
-      }
-      console.warn(`[Traces] statfs precheck failed (${error?.code ?? 'unknown'}) for ${candidate}; allowing upload to proceed`);
-      return null;
-    }
-  }
-  return null;
-}
-
-function checkUploadDiskSpace(req: Request, res: Response, next: NextFunction): void {
-  const contentLength = Number.parseInt(req.headers['content-length'] ?? '', 10);
-  if (!Number.isFinite(contentLength) || contentLength <= 0) {
-    next();
-    return;
-  }
-
-  let tracesDir: string;
-  try {
-    tracesDir = getWritableTraceDirForContext(requireRequestContext(req));
-  } catch {
-    next();
-    return;
-  }
-
-  getAvailableDiskBytes(tracesDir)
-    .then((available) => {
-      if (available === null) {
-        next();
-        return;
-      }
-      const required = contentLength * DISK_SAFETY_MULTIPLIER;
-      if (available < required) {
-        const formatBytes = (bytes: number): string => {
-          const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
-          let value = bytes;
-          let unit = 0;
-          while (value >= 1024 && unit < units.length - 1) {
-            value /= 1024;
-            unit++;
-          }
-          return `${unit === 0 ? value : value.toFixed(2)} ${units[unit]}`;
-        };
-        res.status(507).json({
-          error: 'Insufficient disk space',
-          details:
-            `Need ${formatBytes(required)} (declared ${formatBytes(contentLength)} x ${DISK_SAFETY_MULTIPLIER} safety), ` +
-            `only ${formatBytes(available)} free on ${tracesDir}`,
-        });
-        return;
-      }
-      next();
-    })
-    .catch(() => next());
 }
 
 interface FinalizedTraceUploadInfo {
@@ -745,9 +663,6 @@ function getFilenameFromUrl(rawUrl: string, fallback = 'trace.perfetto'): string
   }
 }
 
-function tempUploadFilename(): string {
-  return `${uuidv4()}${TEMP_UPLOAD_SUFFIX}`;
-}
 
 function traceUploadHasRpcTarget(traceInfo: FinalizedTraceUploadInfo | undefined): boolean {
   if (traceInfo?.status === 'error') return false;
@@ -765,21 +680,15 @@ function traceProcessorUnavailableMessage(traceInfo: FinalizedTraceUploadInfo | 
     : 'Trace uploaded, but backend did not return an HTTP RPC port or lease';
 }
 
-function sendTraceProcessorUnavailable(res: Response, traceInfo: FinalizedTraceUploadInfo | undefined): void {
+function sendTraceProcessorUnavailable(
+  res: Response, traceInfo: FinalizedTraceUploadInfo | undefined, assetTraceId?: string,
+): void {
   res.json({
     success: false,
     error: traceProcessorUnavailableMessage(traceInfo),
     trace: traceInfo && projectTraceForHttp(traceInfo),
+    assetTraceId,
   });
-}
-
-async function cleanupFile(filePath: string | undefined): Promise<void> {
-  if (!filePath) return;
-  try {
-    await fs.unlink(filePath);
-  } catch {
-    // Best-effort cleanup only.
-  }
 }
 
 function createUploadSizeLimitStream(maxBytes: number): { stream: Transform; getBytesWritten: () => number } {
@@ -840,39 +749,12 @@ router.get('/health', (_req, res) => {
 
 router.use(attachRequestContext);
 
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: (req, _file, cb) => {
-    let tracesDir: string;
-    try {
-      tracesDir = getWritableTraceDirForContext(requireRequestContext(req));
-    } catch (error) {
-      cb(error as Error, getUploadRoot());
-      return;
-    }
-
-    fs.mkdir(tracesDir, { recursive: true })
-      .then(() => cb(null, tracesDir))
-      .catch((error) => cb(error, tracesDir));
-  },
-  filename: (_req, _file, cb) => {
-    cb(null, tempUploadFilename());
-  },
-});
-
-const upload = multer({
-  storage,
-  limits: {
-    fileSize: resolveTraceUploadLimitBytes(),
-  },
-});
-
 // POST /api/traces/upload - Simple upload with RequestContext ownership
 router.post(
   '/upload',
   requireTracePermission('trace:write', 'Uploading traces requires trace:write permission'),
-  checkUploadDiskSpace,
-  upload.single('file'),
+  createUploadDiskSpaceCheck(true),
+  createTraceMultipartUpload(),
   async (req, res) => {
     try {
       const context = requireRequestContext(req);
@@ -908,7 +790,7 @@ router.post(
       // Get trace status and processor port from service
       const traceInfo = await finalizeTraceUpload(traceId, filename, file.size, finalPath, context, 'local', managedInput);
       if (!traceUploadHasRpcTarget(traceInfo)) {
-        sendTraceProcessorUnavailable(res, traceInfo);
+        sendTraceProcessorUnavailable(res, traceInfo, traceId);
         return;
       }
 
