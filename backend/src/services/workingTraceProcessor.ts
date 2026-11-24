@@ -805,8 +805,10 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
     this.nativeProvenance = native.provenance;
     this.nativeBootstrapCapability = native.bootstrapCapability;
 
-    // Allocate port from pool
-    this._httpPort = getPortPool().allocate(this.processorKey);
+    // A retired Viewer port is still known to earlier callers. Keep it
+    // eligible for later Viewer reuse but out of every private analysis lease.
+    this._httpPort = getPortPool().allocate(this.processorKey,
+      this.analysisRunPrivate ? exposedNativePorts : undefined);
     if (exposedNativePorts.has(this._httpPort)) this.invalidateNativeProvenance();
     this.sqlWorker = new TraceProcessorSqlWorker({
       processorId: this.id,

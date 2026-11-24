@@ -109,6 +109,7 @@ export function makeChatTools({bundle, getTrace, signal, authorize, onTool, onRe
         type: 'object',
         additionalProperties: {anyOf: [
           {type: 'string'}, {type: 'number'}, {type: 'boolean'},
+          ...(mode === 'query' ? [{type: 'null'}] : []),
           {type: 'array', items: {anyOf: [{type: 'string'}, {type: 'number'}, {type: 'boolean'}]}},
         ]},
       }}, ['id'], async ({id, parameters = {}}, toolCallId) => enqueue(async () => {
@@ -144,7 +145,7 @@ export function makeChatTools({bundle, getTrace, signal, authorize, onTool, onRe
     ));
   };
   addExecutionTool('query', 'query_trace',
-    'Run one standard Perfetto manifest query by SKILL/STEP. Use declared parameters. Pass absolute ns timestamps as decimal strings.');
+    'Run one standard Perfetto manifest query by SKILL/STEP. Bind its declared parameters explicitly. Use null only for a catalog-listed nullable parameter you intend to leave unset. Pass absolute ns timestamps as decimal strings.');
   addExecutionTool('skill', 'run_perfetto_skill',
     'Run a complete exported standard Perfetto Skill by Skill ID. Use declared inputs. Pass absolute ns timestamps as decimal strings.');
   return tools;

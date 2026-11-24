@@ -1,19 +1,41 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import {spawn} from 'node:child_process';
+import {execFile, spawn} from 'node:child_process';
 import {mkdtemp, rm, stat} from 'node:fs/promises';
-import {freemem} from 'node:os';
+import {freemem, totalmem} from 'node:os';
 import path from 'node:path';
+import {promisify} from 'node:util';
 import {estimateTraceProcessorRssBytes} from '../services/traceProcessorRamBudget';
+import {TraceProcessorFactory} from '../services/workingTraceProcessor';
 import {parameterArgs, type SkillRuntime} from './skillBundle';
 
 export type RunnerMode = 'probe' | 'query' | 'skill';
 const RUN_TIMEOUT_SECONDS = 60;
 let runnerActive = false;
 let runnerUnsafe = false;
+const runFile = promisify(execFile);
 
 export function isSkillRunnerAvailable(): boolean {
   return !runnerUnsafe;
+}
+
+async function hasRunnerRam(estimate: number): Promise<boolean> {
+  const {availableForNewLeaseBytes} = TraceProcessorFactory.getStats().ramBudget;
+  if (estimate > availableForNewLeaseBytes) return false;
+  if (estimate <= freemem()) return true;
+  if (process.platform !== 'darwin') return false;
+  // macOS keeps reclaimable memory out of Node's free-page count. Ask the
+  // OS for its system-wide estimate when the raw free pages are insufficient.
+  try {
+    const {stdout} = await runFile('/usr/bin/memory_pressure', [], {
+      timeout: 1000, maxBuffer: 16_384, env: {LC_ALL: 'C'},
+    });
+    const match = stdout.match(/^System-wide memory free percentage: (\d{1,3})%$/m);
+    const percent = match ? Number(match[1]) : 0;
+    return percent > 0 && percent <= 100 && estimate <= Math.floor(totalmem() * percent / 100);
+  } catch {
+    return false;
+  }
 }
 
 // The standard RPC runner creates an independent guardian process group.
@@ -108,7 +130,7 @@ export async function runStandardSkill(
   let temp: string | undefined;
   try {
     const estimate = estimateTraceProcessorRssBytes((await stat(tracePath)).size);
-    if (estimate > freemem()) throw new Error('CAPACITY_EXCEEDED');
+    if (!await hasRunnerRam(estimate)) throw new Error('CAPACITY_EXCEEDED');
     temp = await mkdtemp(path.join(path.dirname(tracePath), 'run-'));
     const command = `perfetto_${mode}.py`;
     const base = [tracePath, '--trace-processor', runtime.processor, '--timeout', String(RUN_TIMEOUT_SECONDS)];

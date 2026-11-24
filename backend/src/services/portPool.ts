@@ -105,10 +105,13 @@ export class PortPool extends EventEmitter {
    * @returns The allocated port number
    * @throws Error if no ports are available
    */
-  allocate(traceId: string): number {
+  allocate(traceId: string, excludedPorts?: ReadonlySet<number>): number {
     // Check if this trace already has a port
     const existing = this.allocations.get(traceId);
     if (existing) {
+      if (excludedPorts?.has(existing.port)) {
+        throw new Error('Existing TraceProcessor port is excluded from allocation');
+      }
       if (!IS_TEST_ENV) {
         console.log(`[PortPool] Trace ${traceId} already has port ${existing.port}`);
       }
@@ -118,7 +121,7 @@ export class PortPool extends EventEmitter {
     // Select the first locally free port that the OS also reports as bindable.
     // Each process has its own in-memory pool, so the OS probe is the authority
     // for ports currently owned by another backend or CLI instance.
-    const port = this.getNextBindablePort();
+    const port = this.getNextBindablePort(excludedPorts);
     if (port === null) {
       throw new Error(`No available ports in pool (${this.minPort}-${this.maxPort}). Active allocations: ${this.allocations.size}`);
     }
@@ -273,28 +276,22 @@ export class PortPool extends EventEmitter {
    * Get the next available port
    * @returns The next available port or null if none available
    */
-  private getNextAvailablePort(): number | null {
-    if (this.availablePorts.size === 0) {
-      return null;
-    }
+  private getNextAvailablePort(excludedPorts?: ReadonlySet<number>): number | null {
     const origin = this.scanOrigin;
-    if (origin === 'lowest') {
-      // Get the smallest available port for predictability
-      return Math.min(...this.availablePorts);
-    }
     // The first free port at or after the origin, wrapping to the lowest.
     let atOrAfter: number | null = null;
     let lowest: number | null = null;
     for (const port of this.availablePorts) {
+      if (excludedPorts?.has(port)) continue;
       if (lowest === null || port < lowest) lowest = port;
-      if (port >= origin && (atOrAfter === null || port < atOrAfter)) atOrAfter = port;
+      if (origin !== 'lowest' && port >= origin && (atOrAfter === null || port < atOrAfter)) atOrAfter = port;
     }
     return atOrAfter ?? lowest;
   }
 
-  private getNextBindablePort(): number | null {
+  private getNextBindablePort(excludedPorts?: ReadonlySet<number>): number | null {
     while (this.availablePorts.size > 0) {
-      const port = this.getNextAvailablePort();
+      const port = this.getNextAvailablePort(excludedPorts);
       if (port === null) return null;
       if (this.isPortBindable(port)) return port;
 

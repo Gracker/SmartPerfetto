@@ -143,7 +143,8 @@ async function configureServices(workspace, providerOptions) {
     CORS_ORIGINS: frontendUrl,
     PERFETTO_UI_ORIGIN: frontendUrl,
     SMARTPERFETTO_AI_ENABLED: "true",
-    SMARTPERFETTO_AGENT_RUNTIME: "openai-agents-sdk",
+    // The default Pi runtime projects the compatibility profile onto this
+    // API surface. Without the pin it would call /responses, not our stub.
     OPENAI_AGENTS_PROTOCOL: "chat_completions",
     OPENAI_BASE_URL: provider.baseUrl,
     OPENAI_API_KEY: provider.apiKey,
@@ -282,12 +283,13 @@ function validateBackendHealth(health) {
   const errors = [];
   if (health?.status !== "OK") errors.push("status must be OK");
   if (health?.environment !== "test") errors.push("environment must be test");
-  if (engine?.runtime !== "openai-agents-sdk")
-    errors.push("runtime must be openai-agents-sdk");
-  if (engine?.source !== "env") errors.push("runtime source must be env");
-  if (engine?.providerMode !== "openai_chat_completions_compatible")
+  if (engine?.runtime !== "pi-agent-core")
+    errors.push("runtime must be pi-agent-core");
+  if (engine?.source !== "default") errors.push("runtime source must be default");
+  if (engine?.providerMode !== "pi-agent-core")
     errors.push("invalid provider mode");
   if (engine?.configured !== true) errors.push("runtime must be configured");
+  if (engine?.diagnostics?.fakeStream !== false) errors.push("native Pi stream must be active");
   if (engine?.aiEnabled !== true) errors.push("AI must be enabled");
   if (engine?.activeProvider !== undefined)
     errors.push("Provider Manager must be empty");

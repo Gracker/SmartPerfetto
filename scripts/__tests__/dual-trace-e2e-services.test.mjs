@@ -26,7 +26,7 @@ test('provider stub completes streamed tool-free intent and holds only the analy
   try {
     const intent = await fetch(`${stub.baseUrl}/v1/chat/completions`, {
       method: 'POST', headers,
-      body: JSON.stringify({model: 'test-model', stream: true, temperature: 0,
+      body: JSON.stringify({model: 'test-model', stream: true,
         messages: [{role: 'user', content: 'Compare the two startup traces'}]}),
     });
     assert.equal(intent.status, 200);
@@ -41,8 +41,9 @@ test('provider stub completes streamed tool-free intent and holds only the analy
     const analysis = await fetch(`${stub.baseUrl}/v1/chat/completions`, {
       method: 'POST', headers, signal: controller.signal,
       body: JSON.stringify({model: 'test-model', stream: true,
-        stream_options: {include_usage: true}, parallel_tool_calls: false,
-        tools: [], messages: [{role: 'user', content: 'Compare the two startup traces'}]}),
+        stream_options: {include_usage: true},
+        tools: [{type: 'function', function: {name: 'read_trace_info'}}],
+        messages: [{role: 'user', content: 'Compare the two startup traces'}]}),
     });
     assert.equal(analysis.status, 200);
     assert.equal(stub.snapshot().active, 1);
@@ -95,6 +96,8 @@ test('browser E2E isolates the selected provider credential and preserves the de
     const services = await configureServices(workspace, real);
     assert.equal(services.backendEnvironment.OPENAI_BASE_URL, real.baseUrl);
     assert.equal(services.backendEnvironment.OPENAI_API_KEY, real.apiKey);
+    assert.equal(services.backendEnvironment.OPENAI_AGENTS_PROTOCOL, 'chat_completions');
+    assert.equal(services.backendEnvironment.SMARTPERFETTO_AGENT_RUNTIME, undefined);
     assert.equal(services.backendEnvironment.OPENAI_LIGHT_MODEL, real.lightModel);
     assert.equal(services.backendEnvironment.DEEPSEEK_API_KEY, undefined);
     const children = childEnvironments(workspace, services, real.baseUrl);
@@ -145,12 +148,13 @@ test('dual-trace diagnostics use the authenticated runtime health endpoint', asy
     status: 'OK',
     environment: 'test',
     aiEngine: {
-      runtime: 'openai-agents-sdk',
-      source: 'env',
-      providerMode: 'openai_chat_completions_compatible',
+      runtime: 'pi-agent-core',
+      source: 'default',
+      providerMode: 'pi-agent-core',
       configured: true,
       aiEnabled: true,
       authRequired: true,
+      diagnostics: {fakeStream: false},
     },
   };
 
@@ -172,6 +176,9 @@ test('dual-trace diagnostics use the authenticated runtime health endpoint', asy
   assert.equal(request.options.headers.Authorization, 'Bearer test-key');
   assert.deepEqual(result, diagnostics);
   assert.doesNotThrow(() => validateBackendHealth(result));
+  assert.throws(() => validateBackendHealth({...result, aiEngine: {
+    ...result.aiEngine, runtime: 'openai-agents-sdk', providerMode: 'openai_chat_completions_compatible',
+  }}), /runtime must be pi-agent-core; invalid provider mode/);
 });
 
 test('dual-trace diagnostics reject unauthenticated or forbidden responses', async () => {
@@ -191,12 +198,13 @@ test('dual-trace diagnostics retry a cold runtime-health timeout', async () => {
     status: 'OK',
     environment: 'test',
     aiEngine: {
-      runtime: 'openai-agents-sdk',
-      source: 'env',
-      providerMode: 'openai_chat_completions_compatible',
+      runtime: 'pi-agent-core',
+      source: 'default',
+      providerMode: 'pi-agent-core',
       configured: true,
       aiEnabled: true,
       authRequired: true,
+      diagnostics: {fakeStream: false},
     },
   };
 

@@ -95,17 +95,26 @@ describe('Perfetto chat contracts', () => {
     const files = new Map<string, Buffer>();
     files.set('SKILL.md', Buffer.from('fixture skill'));
     files.set(root + 'skill-index.json', Buffer.from(JSON.stringify({skills: {startup: 'skills/startup.json'}})));
-    files.set(root + 'skills/startup.json', Buffer.from(JSON.stringify({inputs: [{name: 'start_ts', type: 'timestamp'}]})));
+    files.set(root + 'skills/startup.json', Buffer.from(JSON.stringify({inputs: [
+      {name: 'start_ts', type: 'timestamp', required: true},
+      {name: 'package', type: 'string', required: false},
+    ]})));
     files.set(root + 'queries/startup.json', Buffer.from(JSON.stringify({queries: [
-      {id: 'startup/overview', template: {parameters: ['start_ts']}},
+      {id: 'startup/overview', template: {parameters: ['start_ts', 'package']}},
     ]})));
     const bundle: Bundle = {name: 'fixture', description: 'fixture', files};
     expect(describeSkillCatalog(bundle, undefined, 'start')).toEqual({skills: ['startup']});
     expect(describeSkillCatalog(bundle, 'startup')).toMatchObject({
-      queries: [{id: 'startup/overview', parameters: ['start_ts']}],
+      queries: [{id: 'startup/overview', parameters: ['start_ts', 'package'], nullableParameters: ['package']}],
     });
-    expect(parameterArgs(bundle, 'query', 'startup/overview', {start_ts: '9007199254740993'}))
+    expect(parameterArgs(bundle, 'query', 'startup/overview', {start_ts: '9007199254740993', package: null}))
+      .toEqual(['--param', 'start_ts=9007199254740993', '--param', 'package=null']);
+    expect(parameterArgs(bundle, 'skill', 'startup', {start_ts: '9007199254740993'}))
       .toEqual(['--param', 'start_ts=9007199254740993']);
+    expect(() => parameterArgs(bundle, 'query', 'startup/overview', {start_ts: null}))
+      .toThrow('INVALID_SKILL_PARAMETER');
+    expect(() => parameterArgs(bundle, 'skill', 'startup', {package: null}))
+      .toThrow('INVALID_SKILL_PARAMETER');
     expect(() => parameterArgs(bundle, 'query', 'startup/overview', {sql: 'DROP TABLE slice'}))
       .toThrow('INVALID_SKILL_PARAMETER');
     expect(() => readSkillResource(bundle, '../SKILL.md', 0)).toThrow('RESOURCE_UNAVAILABLE');

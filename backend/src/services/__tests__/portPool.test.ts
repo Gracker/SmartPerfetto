@@ -91,6 +91,33 @@ describe('PortPool ownership-safe release', () => {
 });
 
 describe('PortPool scan origin', () => {
+  it('keeps analysis-private processors off retired Viewer ports while allowing public reuse', () => {
+    const pool = new PortPool(18220, 18221, always);
+    usePool(pool);
+    const viewer = new WorkingTraceProcessor('viewer-before-analysis', '/fixture.trace');
+    const disclosedPort = viewer.httpPort;
+    TraceProcessorFactory.exposeNativePort(disclosedPort);
+    viewer.destroy();
+    expect(pool.isAvailable(disclosedPort)).toBe(true);
+
+    const options = {leaseMode: 'isolated', analysisRunPrivate: true} as const;
+    const privateRun = new WorkingTraceProcessor('analysis-after-viewer', '/fixture.trace', options);
+    try {
+      expect(privateRun.httpPort).not.toBe(disclosedPort);
+      expect(() => new WorkingTraceProcessor('another-private-analysis', '/fixture.trace', options))
+        .toThrow('No available ports in pool');
+      const nextViewer = new WorkingTraceProcessor('viewer-after-analysis', '/fixture.trace');
+      try {
+        expect(nextViewer.httpPort).toBe(disclosedPort);
+        expect(nextViewer.getNativeProvenanceSnapshot().status).toBe('tainted');
+      } finally {
+        nextViewer.destroy();
+      }
+    } finally {
+      privateRun.destroy();
+    }
+  });
+
   it('defaults to the lowest free port', () => {
     const pool = new PortPool(9100, 9109, always);
     expect(pool.getScanOrigin()).toBe('lowest');

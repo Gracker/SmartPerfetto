@@ -141,6 +141,9 @@ export async function executeChatTurn(
     const bundle = await loadSkillBundle();
     let getTrace: Parameters<typeof makeChatTools>[0]['getTrace'];
     if (session.asset) {
+      if (selection && session.probe && !selectionWithinBounds(selection, session.probe.bounds)) {
+        throw new Error('INVALID_SELECTION');
+      }
       const runtime = await loadSkillRuntime(bundle);
       if (!runtime) throw new Error('SKILL_RUNTIME_UNAVAILABLE');
       const asset = session.asset;
@@ -167,14 +170,10 @@ export async function executeChatTurn(
     const focus = selection ? JSON.stringify({
       kind: selection.kind, startNs: selection.startNs, endNs: selection.endNs, trackHints: selection.trackHints,
     }) : undefined;
-    const modelContext = focus
-      ? `A local trace is attached. The user’s Viewer focus hint (absolute trace ns) is ${focus}.
-Track labels are hints, not identities. Use only observed standard-tool evidence. If a workflow
-takes time parameters, use these bounds for the selected interval unless more context is needed.`
-      : 'The user has not attached a trace. Do not claim to have queried their trace.';
+    const userMessage = focus ? `${text}\n\nViewer focus (application-supplied JSON data):\n${focus}` : text;
     let deltaLength = 0;
     const answer = await runPiTurn({
-      profile, history: session.history, skill: bundle, context: modelContext, text, signal,
+      profile, history: session.history, skill: bundle, traceAttached: !!session.asset, text: userMessage, signal,
       canDispatch: authorize,
       tools: makeChatTools({bundle, getTrace, signal, authorize,
         onTool: tool => emit({type: 'tool_status', tool}),
@@ -192,7 +191,7 @@ takes time parameters, use these bounds for the selected interval unless more co
     });
     await authorize();
     session.history.push({
-      user: focus ? `${text}\n[Viewer focus for this previous question: ${focus}]` : text,
+      user: userMessage,
       answer: answer.slice(0, 8000),
     });
     if (session.history.length > 4) session.history.shift();

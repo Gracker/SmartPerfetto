@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import {readFile} from 'node:fs/promises';
+import path from 'node:path';
 import type {Model, ModelsSimpleStreamOptions} from '@earendil-works/pi-ai';
 import type {ResourceLoader, Skill, ToolDefinition} from '@earendil-works/pi-coding-agent';
 import type {ChatProfile} from './config';
@@ -12,7 +14,7 @@ export interface PiTurn {
   history: readonly ChatExchange[];
   tools: ChatTool[];
   skill?: Pick<Skill, 'name' | 'description'>;
-  context: string;
+  traceAttached: boolean;
   text: string;
   signal: AbortSignal;
   canDispatch(): Promise<void>;
@@ -20,6 +22,10 @@ export interface PiTurn {
 }
 
 export async function runPiTurn(turn: PiTurn): Promise<string> {
+  const source = await readFile(path.join(__dirname, '../../strategies/perfetto-chat.template.md'), 'utf8')
+    .catch(() => '');
+  const instructions = source.replace(/<!--[\s\S]*?-->/g, '').trim();
+  if (!instructions) throw new Error('PI_PROMPT_CONFIGURATION_ERROR');
   const [sdk, ai, completions] = await Promise.all([
     importEsm<typeof import('@earendil-works/pi-coding-agent')>('@earendil-works/pi-coding-agent'),
     importEsm<typeof import('@earendil-works/pi-ai')>('@earendil-works/pi-ai'),
@@ -81,15 +87,11 @@ export async function runPiTurn(turn: PiTurn): Promise<string> {
     getThemes: () => ({themes: [], diagnostics: []}),
     getAgentsFiles: () => ({agentsFiles: []}),
     getSystemPrompt: () => [
-      'You are the SmartPerfetto chat assistant. Reply in the user’s language.',
-      skill ? `Available standard Skill: ${skill.name}. ${skill.description}
-Use read_perfetto_resource with path SKILL.md and read referenced files by their
-relative bundle paths. Use that tool with path catalog to list Skill IDs, then
-pass the skillId to discover its queries and parameter names. Do not guess IDs. Use the matching restricted tool in place of each local
-command. Never invent query results. Commands that have no tool are unavailable.`
+      instructions,
+      skill ? `Available standard Skill: ${skill.name}. ${skill.description}`
         : 'The standard Skill bundle is unavailable. Answer general questions only.',
-      turn.context,
-    ].join('\n'),
+      turn.traceAttached ? 'A local trace is attached.' : 'No local trace is attached.',
+    ].join('\n\n'),
     getSystemPromptSource: () => undefined,
     getAppendSystemPrompt: () => [],
     getAppendSystemPromptSources: () => [],

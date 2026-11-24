@@ -28,8 +28,7 @@ async function readJsonRequest(request) {
 }
 
 function classifyRequest(body) {
-  // The native intent transport streams too, but deliberately has no tools.
-  // Analysis always carries the tool array, including when it is empty.
+  // Pi omits tools for a tool-free intent request; analysis declares tools.
   return body?.tools === undefined ? 'classification' : 'analysis';
 }
 
@@ -42,16 +41,12 @@ function validateRequest(request, body, apiKey, kind) {
     errors.push('body must be an object');
   }
   if (!model) errors.push('model must be a non-empty string');
+  if (!stream) errors.push('request must stream');
   if (kind === 'analysis') {
-    if (!stream) errors.push('analysis must stream');
     if (body?.stream_options?.include_usage !== true) {
       errors.push('stream_options.include_usage must be true');
     }
-    if (body?.parallel_tool_calls !== false) errors.push('parallel_tool_calls must be false');
-    if (!toolsValid) errors.push('tools must be an array');
-  } else {
-    if (body?.temperature !== 0) errors.push('classification temperature must be zero');
-    if (toolsValid) errors.push('classification must not send tools');
+    if (!toolsValid || body.tools.length === 0) errors.push('analysis must declare tools');
   }
   if (!Array.isArray(body?.messages)) errors.push('messages must be an array');
   if (request.headers.authorization !== `Bearer ${apiKey}`) {
@@ -143,20 +138,13 @@ async function startHangingOpenAIStub(logPath, apiKey) {
       });
       record.closedAt = new Date().toISOString();
       closed += 1;
-      if (validation.stream) {
-        response.writeHead(200, {'Content-Type': 'text/event-stream'});
-        const chunk = (delta, finish_reason) => `data: ${JSON.stringify({
-          id, model: validation.model,
-          choices: [{index: 0, delta, finish_reason}],
-        })}\n\n`;
-        response.end(chunk({role: 'assistant', content: decision}, null)
-          + chunk({}, 'stop') + 'data: [DONE]\n\n');
-      } else {
-        response.writeHead(200, {'Content-Type': 'application/json'});
-        response.end(JSON.stringify({choices: [{
-          message: {role: 'assistant', content: decision}, finish_reason: 'stop',
-        }]}));
-      }
+      response.writeHead(200, {'Content-Type': 'text/event-stream'});
+      const chunk = (delta, finish_reason) => `data: ${JSON.stringify({
+        id, model: validation.model,
+        choices: [{index: 0, delta, finish_reason}],
+      })}\n\n`;
+      response.end(chunk({role: 'assistant', content: decision}, null)
+        + chunk({}, 'stop') + 'data: [DONE]\n\n');
       appendLog(logPath, {id, event: 'classification_completed'});
       return;
     }

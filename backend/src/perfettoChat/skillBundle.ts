@@ -159,6 +159,8 @@ export function describeSkillCatalog(bundle: Bundle, skillId?: string, prefix = 
       skillId, manifest: RUNTIME + skills[skillId], inputs: manifest?.inputs ?? [],
       queries: queries.slice(offset, offset + 30).map(query => ({
         id: query.id, parameters: query.template?.parameters ?? [],
+        nullableParameters: query.template?.parameters?.filter(name =>
+          allowsNullQueryParameter(manifest?.inputs?.find(input => input.name === name))) ?? [],
       })),
       nextOffset: offset + 30 < queries.length ? offset + 30 : undefined,
     };
@@ -170,9 +172,13 @@ export function describeSkillCatalog(bundle: Bundle, skillId?: string, prefix = 
   };
 }
 
-interface DeclaredInput { name: string; type: string }
+interface DeclaredInput { name: string; type: string; required?: boolean; default?: unknown }
 interface SkillManifest { inputs?: DeclaredInput[] }
 interface QueryManifest { id: string; template?: {parameters?: string[]} }
+
+function allowsNullQueryParameter(input?: DeclaredInput): boolean {
+  return input?.required === false && input.default === undefined;
+}
 
 export function parameterArgs(bundle: Bundle, mode: 'query' | 'skill', id: string, input: Record<string, unknown>): string[] {
   const idPattern = mode === 'query' ? /^[\w-]+\/[\w.-]+$/ : /^[\w-]+$/;
@@ -187,12 +193,14 @@ export function parameterArgs(bundle: Bundle, mode: 'query' | 'skill', id: strin
     ? load<{queries: QueryManifest[]}>(`queries/${skill}.json`)?.queries.find(entry => entry.id === id)
     : undefined;
   if (!manifest || (mode === 'query' && !query)) throw new Error('UNKNOWN_SKILL_OR_QUERY');
-  const declared = new Map((manifest.inputs ?? []).map(item => [item.name, item.type]));
+  const declared = new Map((manifest.inputs ?? []).map(item => [item.name, item]));
   const names = query ? query.template?.parameters ?? [] : [...declared.keys()];
   return Object.entries(input).flatMap(([name, value]) => {
     if (!names.includes(name) || !/^[a-zA-Z_]\w*$/.test(name)) throw new Error('INVALID_SKILL_PARAMETER');
     let serialized: string;
-    if (declared.get(name) === 'timestamp' || /^(start|end)_(ts|ns)$/.test(name)) {
+    if (value === null && query && allowsNullQueryParameter(declared.get(name))) {
+      serialized = 'null';
+    } else if (declared.get(name)?.type === 'timestamp' || /^(start|end)_(ts|ns)$/.test(name)) {
       if (typeof value !== 'string' || !isTraceTimestamp(value)) throw new Error('INVALID_SKILL_PARAMETER');
       // The public runner expects a JSON integer. Keep its decimal without a JS number conversion.
       serialized = value;

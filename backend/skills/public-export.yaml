@@ -1520,6 +1520,9 @@ skills:
     disposition: exported
     destination: references/generated/skills/pipeline_webview_textureview_custom.md
 strategies:
+  backend/strategies/perfetto-chat.template.md:
+    disposition: product-only
+    reason: SmartPerfetto Pi host instructions for its Viewer focus and restricted chat tools
   backend/strategies/scene-reconstruction.strategy.md:
     disposition: product-only
     reason: SmartPerfetto issued scene-run proposal and verification lifecycle
