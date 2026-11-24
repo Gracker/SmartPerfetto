@@ -123,6 +123,7 @@ interface ReportResultLike {
   findings: Finding[];
   hypotheses: AgentDrivenReportData['hypotheses'];
   conclusion: string;
+  conclusionEvidence?: AnalysisResult['conclusionEvidence'];
   sceneTimeline?: AnalysisResult['sceneTimeline'];
   sceneReport?: AnalysisResult['sceneReport'];
   turnIntent?: AgentDrivenReportData['result']['turnIntent'];

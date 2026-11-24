@@ -25,7 +25,8 @@ import {
 
 export type AnalysisDeliveryFields = Pick<AnalysisResult,
   'turnIntent' | 'completion' | 'outputOrigin' | 'runtimeAppendix' |
-  'reportAssessment' | 'investigationAssessment' | 'deliveryAssurance' | 'knowledgeUse'>;
+  'reportAssessment' | 'investigationAssessment' | 'deliveryAssurance' | 'knowledgeUse' |
+  'conclusionEvidence'>;
 
 /** Preserve surviving field order because existing bindings hash the serialized contract. */
 export function preserveProjectedFieldOrder<T>(original: unknown, projection: T, depth = 0): T {
@@ -175,6 +176,14 @@ function copyAssuranceStatus(value: unknown): AnalysisAssuranceStatus {
 /** Explicit serialization only. These stored fields never issue current-run authority. */
 export function copyAnalysisDeliveryFields(input: AnalysisDeliveryFields): AnalysisDeliveryFields {
   const output: AnalysisDeliveryFields = {};
+  const measurements = input.conclusionEvidence;
+  if (measurements?.schemaVersion === 'scrolling_conclusion@1' &&
+      typeof measurements.markdown === 'string' && measurements.markdown.trim() &&
+      Array.isArray(measurements.evidenceRefIds) &&
+      measurements.evidenceRefIds.every(id => typeof id === 'string' && id.length > 0)) {
+    output.conclusionEvidence = {schemaVersion: measurements.schemaVersion, markdown: measurements.markdown,
+      evidenceRefIds: [...measurements.evidenceRefIds]};
+  }
   const intent = input.turnIntent;
   if (intent?.schemaVersion === 1 && member(intent.status, ['resolved', 'unavailable']) &&
       member(intent.source, ['semantic', 'fallback', 'product']) &&
@@ -327,6 +336,13 @@ export function analysisProjectionChanged(before: unknown, after: unknown): bool
   return analysisDeliveryFingerprint(before) !== analysisDeliveryFingerprint(after);
 }
 
+export function projectConclusionEvidence(measurements: NonNullable<AnalysisResult['conclusionEvidence']>,
+  projectText: (text: string) => string): AnalysisResult['conclusionEvidence'] {
+  const markdown = projectText(measurements.markdown);
+  if (!markdown.trim()) return undefined;
+  return {...measurements, markdown, evidenceRefIds: measurements.evidenceRefIds.filter(id => projectText(id) === id)};
+}
+
 /**
  * Redaction invalidates a binding; it cannot re-sign a different body. Empty
  * fingerprints deliberately represent no binding and remain empty on replay.
@@ -342,6 +358,11 @@ export function projectPrivateAnalysisDelivery(
   const bodyChanged = input.conclusion !== projection.conclusion;
   const contractChanged = analysisProjectionChanged(input.conclusionContract, projection.conclusionContract);
   const claimsChanged = bodyChanged || contractChanged || Boolean(projection.claimsChanged);
+  if (output.conclusionEvidence) {
+    const evidence = projectConclusionEvidence(output.conclusionEvidence, projectText);
+    if (evidence) output.conclusionEvidence = evidence;
+    else delete output.conclusionEvidence;
+  }
   if (output.turnIntent) {
     const {reason: _reason, actualModel: _model, finishReason: _finish, ...intent} = output.turnIntent;
     output.turnIntent = options.privateMetadata !== false ? intent

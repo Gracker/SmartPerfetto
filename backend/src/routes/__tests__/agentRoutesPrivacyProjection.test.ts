@@ -768,11 +768,12 @@ describe('agent route private projections', () => {
     expect(data.resultContract).toBeUndefined();
   });
 
-  it('drops untrusted investigation metadata from persisted private SSE without relying on live redaction guards', () => {
+  it('drops untrusted evidence and investigation metadata from persisted private SSE without live redaction guards', () => {
     const secret = 'UNREGISTERED_PRIVATE_INVESTIGATION_SECRET';
     const session = {sessionId, codeAwareMode: 'provider_send', codebaseIds: ['cb-private']} as any;
     const hash = analysisDeliveryFingerprint('retained');
     const eventData = JSON.stringify({data: {success: true, conclusion: 'Stored conclusion',
+      conclusionEvidence: {schemaVersion: 'scrolling_conclusion@1', markdown: secret, evidenceRefIds: [secret]},
       investigationAssessment: {schemaVersion: 1, status: 'checked', binding: {
         candidateRef: 'candidate', runId: 'run', attemptId: 'attempt', conclusionFingerprint: hash,
         conclusionContractFingerprint: hash, evidenceFingerprint: hash, requirementsFingerprint: hash,
@@ -791,6 +792,7 @@ describe('agent route private projections', () => {
     const projected = agentRoutesPrivacyProjectionTestSeam.sanitizePersistedAnalysisCompletedEvent(
       session, {eventType: 'analysis_completed', eventData} as any, analysisHasPrivateContext(session));
     const data = JSON.parse(projected.eventData).data;
+    expect(data.conclusionEvidence).toBeUndefined();
     expect(data.investigationAssessment).toBeUndefined();
     expect(data.deliveryAssurance).toBeUndefined();
     expect(projected.eventData).not.toContain(secret);

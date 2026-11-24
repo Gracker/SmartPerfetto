@@ -1601,6 +1601,9 @@ strategies:
   backend/strategies/prompt-answer-guidance.template.md:
     disposition: product-only
     reason: SmartPerfetto runtime answer writing guidance for plain assistant answers
+  backend/strategies/prompt-scrolling-delivery.template.md:
+    disposition: product-only
+    reason: SmartPerfetto split presentation of measured scrolling results and model explanations
   backend/strategies/source-anchor-normalization.yaml:
     disposition: product-only
     reason: SmartPerfetto trace-anchor normalization and ranking for its source locate tool

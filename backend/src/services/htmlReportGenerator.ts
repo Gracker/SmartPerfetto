@@ -146,6 +146,7 @@ export interface AgentDrivenReportData {
       contradictingEvidence: any[];
     }>;
     conclusion: string;
+    conclusionEvidence?: import('../types/analysisDelivery').AnalysisConclusionEvidence;
     sceneTimeline?: import('../types/sceneTimeline').SceneTimelineView;
     sceneReport?: import('../agent/core/orchestratorTypes').AnalysisResult['sceneReport'];
     turnIntent?: import('../agent/core/orchestratorTypes').AnalysisResult['turnIntent'];
@@ -2042,6 +2043,14 @@ ${REPORT_DOCUMENT_NO_SCRIPT}
    */
   private formatAnswer(answer: string): string {
     return this.markdownToHtml(answer);
+  }
+
+  private renderConclusionBody(body: string, language: OutputLanguage,
+    measurements?: import('../types/analysisDelivery').AnalysisConclusionEvidence): string {
+    const summary = measurements ? `
+      <div class="answer-box">${this.formatAnswer(measurements.markdown)}</div>
+      <h3>${localize(language, '模型分析', 'Model analysis')}</h3>` : '';
+    return `${summary}<div class="answer-box">${this.formatAnswer(body)}</div>`;
   }
 
   /**
@@ -4284,17 +4293,13 @@ ${REPORT_DOCUMENT_NO_SCRIPT}
     <div class="section">
       <h2 class="section-title">${localize(outputLanguage, '分析结论', 'Analysis Conclusion')}</h2>
       ${(conclusionHistory && conclusionHistory.length > 1)
-        ? conclusionHistory.map(ch => `
+        ? conclusionHistory.map((ch, index) => `
       <div style="margin-bottom: 16px;">
         <div style="font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 6px; padding: 4px 8px; background: #f3f4f6; border-radius: 4px; display: inline-block;">${localize(outputLanguage, `第 ${ch.turn} 轮 · 置信度 ${(ch.confidence * 100).toFixed(0)}%`, `Turn ${ch.turn} · Confidence ${(ch.confidence * 100).toFixed(0)}%`)}</div>
-        <div class="answer-box">
-          ${this.formatAnswer(ch.conclusion)}
-        </div>
+        ${this.renderConclusionBody(ch.conclusion, outputLanguage,
+          index === conclusionHistory.length - 1 && ch.conclusion === result.conclusion ? result.conclusionEvidence : undefined)}
       </div>`).join('')
-        : `
-      <div class="answer-box">
-        ${this.formatAnswer(result.conclusion)}
-      </div>`}
+        : this.renderConclusionBody(result.conclusion, outputLanguage, result.conclusionEvidence)}
     </div>
 
     ${evidencePresentation ? this.renderConclusionClaimSourcesSection({claims: evidencePresentation.claims}, dataEnvelopes,

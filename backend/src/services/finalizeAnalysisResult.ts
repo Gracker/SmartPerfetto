@@ -30,7 +30,8 @@ import {assessSceneTimeline} from '../agent/scene/sceneTimelineAssessment';
 import {projectSceneTimelineForOwner} from '../agent/scene/sceneTimelineProjection';
 import type {SceneScope} from '../agent/scene/sceneTimelineContract';
 import {issueSceneTimelinePublication, type SceneTimelinePublication} from '../agent/scene/sceneTimelinePublication';
-import {localize, type OutputLanguage} from '../agentv3/outputLanguage';
+import {localize, parseOutputLanguage, type OutputLanguage} from '../agentv3/outputLanguage';
+import {buildScrollingConclusionEvidence} from './evidence/scrollingConclusionEvidence';
 
 export interface AnalysisFinalizationOwner {
   runId: string;
@@ -46,6 +47,7 @@ export interface FinalizeAnalysisResultInput {
   context?: RuntimeFinalizationContext;
   owner: AnalysisFinalizationOwner;
   query: string;
+  outputLanguage?: OutputLanguage;
   dataEnvelopes?: readonly DataEnvelope[];
   comparisonIdentity?: FinalResultComparisonIdentity;
   /** Curated-case hits the server retrieved for this run. */
@@ -200,7 +202,8 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
       providerQuery.analysisContextFingerprint !== owner.analysisContextFingerprint) {
       throw new Error('finalization_authorization_fingerprint_mismatch');
     }
-    const {sceneTimeline: _untrustedSceneTimeline, sceneReport: _untrustedSceneReport, ...nativeResult} = input.result;
+    const {sceneTimeline: _untrustedSceneTimeline, sceneReport: _untrustedSceneReport,
+      conclusionEvidence: _untrustedConclusionEvidence, ...nativeResult} = input.result;
     const original = frozenSnapshot(nativeResult);
     const conversation = frozenSnapshot(input.conversation);
     const suppliedIdentity = frozenSnapshot(input.comparisonIdentity);
@@ -278,6 +281,12 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
     assertOwner(owner);
     const qualityIssue = applyFinalResultQualityGate({result, query, context: delivery, comparisonIdentity});
     assertOwner(owner);
+    if (result.success && context && result.conclusion.trim()) {
+      const measurements = await buildScrollingConclusionEvidence(context,
+        input.outputLanguage ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE), owner.signal);
+      assertOwner(owner);
+      if (measurements) result.conclusionEvidence = measurements;
+    }
     if (sceneSnapshot && input.scene) {
       result.sceneTimeline = projectSceneTimelineForOwner(assessSceneTimeline(sceneSnapshot, input.scene.scope));
       if (result.sceneTimeline.status === 'partial') result.partial = true;

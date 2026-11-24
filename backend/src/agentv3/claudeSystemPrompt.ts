@@ -185,6 +185,10 @@ function buildTypedTurnSystemPromptParts(
 
   push(1, 'turn_protocol', requiredAsset('prompt-turn-policy'));
   push(1, 'answer_guidance', requiredAsset('prompt-answer-guidance'));
+  if (intent.status === 'resolved' && (intent.taskKind === 'investigation' || intent.taskKind === 'fact') &&
+      strategy?.entrySkill?.id === 'scrolling_analysis') {
+    push(1, 'scrolling_delivery', requiredAsset('prompt-scrolling-delivery'));
+  }
   push(1, 'output_language', requiredAsset(language === 'en' ? 'prompt-language-en' : 'prompt-language-zh'));
   push(1, 'retrieved_context_safety', requiredAsset('retrieved-context-safety'));
   if (policy.allowNewEvidence) push(3, 'sql_discovery_guidance', requiredAsset('knowledge-perfetto-sql'));

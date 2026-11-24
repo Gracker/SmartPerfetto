@@ -46,6 +46,13 @@ export interface AnalysisRuntimeAppendix {
   reason?: AnalysisCompletion['reason'];
 }
 
+/** Product-authored measurements from the run's retained Skill captures. */
+export interface AnalysisConclusionEvidence {
+  schemaVersion: 'scrolling_conclusion@1';
+  markdown: string;
+  evidenceRefIds: string[];
+}
+
 export interface AnalysisReportBinding extends AnalysisCandidateIdentity {
   conclusionContractFingerprint: string;
   evidenceFingerprint: string;

@@ -42,11 +42,13 @@ export interface AnalysisEvidencePresentation {
   sourceCitations?: SourceCitationV1[];
   /** Selected knowledge delivered and the answer's knowledge citations; absent when not recorded. */
   knowledgeUse?: KnowledgeUseV1;
+  conclusionEvidence?: AnalysisResult['conclusionEvidence'];
 }
 
 export type AnalysisEvidencePresentationInput = Pick<AnalysisResult,
   'claimSupport' | 'claimVerificationResult' | 'identityResolutions' |
-  'investigationAssessment' | 'deliveryAssurance' | 'knowledgeUse'> & {conclusionContract?: unknown};
+  'investigationAssessment' | 'deliveryAssurance' | 'knowledgeUse' |
+  'conclusionEvidence'> & {conclusionContract?: unknown};
 
 const scalar = z.union([z.string(), z.number().finite(), z.boolean()]);
 const nullableScalar = scalar.nullable();
@@ -336,6 +338,11 @@ function schemas(strict: boolean) {
     sourceReferences: z.array(sourceReference), sourceClaimBindings: z.array(sourceBinding),
     sourceClaimStatuses: z.array(sourceClaimStatus).optional(), sourceCitations: z.array(sourceCitation).optional(),
     knowledgeUse: knowledgeUse.optional(),
+    conclusionEvidence: object({
+      schemaVersion: z.literal('scrolling_conclusion@1'),
+      markdown: z.string().min(1),
+      evidenceRefIds: z.array(z.string().min(1)),
+    }).optional(),
   });
 }
 
@@ -375,6 +382,8 @@ export function projectAnalysisEvidenceForDisplay(input: {
     // A malformed record is dropped by itself; it reads as not recorded.
     const knowledgeUse = sanitizeKnowledgeUse(ownDataValue(input.result, 'knowledgeUse'));
     if (knowledgeUse) Object.assign(candidate, {knowledgeUse});
+    const conclusionEvidence = ownDataValue(input.result, 'conclusionEvidence');
+    if (conclusionEvidence) Object.assign(candidate, {conclusionEvidence});
     const prepared = prepareWriterTree(candidate);
     return deepFreeze(writeSchema.parse(prepared)) as AnalysisEvidencePresentation;
   } catch {

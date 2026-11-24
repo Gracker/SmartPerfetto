@@ -215,6 +215,13 @@ export function createRenderer(opts: RendererOptions): Renderer {
     const language = parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
     const bar = '─'.repeat(Math.min(60, (process.stdout.columns || 80) - 4));
     printConclusionHeader('结论');
+    const measurements = meta.analysisEvidence?.evidence?.conclusionEvidence;
+    if (measurements && conclusion.trim()) {
+      console.log(measurements.markdown);
+      console.log('');
+      console.log(localize(language, '## 模型分析', '## Model analysis'));
+      console.log('');
+    }
     console.log(conclusion.trim() ? conclusion : dim(localize(
       language, '未生成可交付结论。', 'No deliverable conclusion was generated.',
     )));

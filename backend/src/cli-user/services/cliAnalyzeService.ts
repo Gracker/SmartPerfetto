@@ -720,7 +720,7 @@ export class CliAnalyzeService {
             : undefined;
           assertActive();
           contextTransferred = true;
-          const finalized = await finalizeAnalysisResult({result, context, query: input.query,
+          const finalized = await finalizeAnalysisResult({result, context, query: input.query, outputLanguage,
             owner: {runId: run.runId, signal: run.controller.signal,
               analysisContextFingerprint,
               isCurrent: () => this.currentSessionRuns.get(sessionId) === run && session.runSequence === ownedRunSequence,

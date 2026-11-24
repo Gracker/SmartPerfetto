@@ -28,6 +28,8 @@ import {recordRuntimeFinalTransportEvent} from '../../agentRuntime/runtimePerfor
 import {HTMLReportGenerator} from '../htmlReportGenerator';
 import {applyFinalResultQualityGate} from '../finalResultQualityGate';
 import {copyAnalysisDeliveryFields} from '../security/analysisDeliveryProjection';
+import {captureEvidenceTable} from '../evidence/evidenceCapture';
+import {buildTraceProcessorQueryProvenance} from '../traceProcessorConnectionModel';
 
 const registry = buildStrategyRegistrySnapshotFromDefinitions({definitions: [], overlayGeneration: 'final-result-test'});
 const DEFAULT_BODY = 'The captured frame count is 49.';
@@ -71,6 +73,7 @@ function fixture(options: {
   report?: boolean;
   investigation?: boolean;
   knowledgeUse?: KnowledgeUseRecord;
+  scrolling?: (store: ArtifactStore) => void;
   nativeCompletion?: {status: 'incomplete'; reason: 'output_limit'};
 } = {}) {
   const runId = 'run';
@@ -107,24 +110,27 @@ function fixture(options: {
     detailSections: [], sourcePath: '/fixture/general.strategy.md', finalReportContract: {requiredSections: [{
       id: 'detail', label: 'Detail', required: true, triggerPatterns: [], patterns: [], patternGroups: [], recoveryText: {zh: [], en: []},
     }]},
+    ...(options.scrolling ? {entrySkill: {id: 'scrolling_analysis', params: {}}} : {}),
     ...(options.investigation ? {investigationContract: {schemaVersion: 1 as const, profileRefs: [], requirements: [{
       id: 'thread_state', domain: 'thread_state', description: 'Thread state', required: true,
       evidenceMetrics: ['system.thread.state.duration']}]}} : {})} as StrategyDefinition;
-  const pinnedRegistry = options.report || options.investigation
+  const pinnedRegistry = options.report || options.investigation || options.scrolling
     ? buildStrategyRegistrySnapshotFromDefinitions({definitions: [strategy], overlayGeneration: 'report-test'}) : registry;
   const store = new ArtifactStore();
+  options.scrolling?.(store);
   const owner: AnalysisFinalizationOwner = {runId, signal: new AbortController().signal,
     isCurrent: () => true, assertAuthorized: () => {}};
   attachFinalizationContext(result, {runId, sessionId: result.sessionId, deadlineMs: Date.now() + 600_000,
     strategyRegistry: pinnedRegistry, traceIdentity: {currentTraceId: 'trace'},
     turnIntent: {schemaVersion: 1, status: 'resolved', source: 'semantic', registryFingerprint: pinnedRegistry.registryFingerprint,
-      taskKind: options.investigation ? 'investigation' : 'fact', sceneId: 'general',
+      taskKind: options.investigation || options.scrolling ? 'investigation' : 'fact', sceneId: 'general',
       scope: options.report || options.investigation ? 'scene_wide' : 'bounded_question', recommendedComplexity: 'quick',
-      deliverable: options.report ? 'report' : 'answer', evidenceAccess: 'existing_only'},
+      deliverable: options.report ? 'report' : 'answer', evidenceAccess: options.scrolling ? 'read_new' : 'existing_only'},
     deliveryContext: projection?.deliveryContext ?? nativeDelivery,
     ...(sourceUse ? {sourceUse} : {}), sourceScope,
     ...(options.knowledgeUse ? {knowledgeUse: options.knowledgeUse} : {}),
-    evidenceReadView: store.createEvidenceReadView({allowedTraces: [{traceId: 'trace', traceSide: 'current'}], ownerKey: 'run'})});
+    evidenceReadView: store.createEvidenceReadView({allowedTraces: [{traceId: 'trace', traceSide: 'current'}],
+      ownerKey: 'run', ...(options.scrolling ? {currentRunId: runId} : {})})});
   const context = takeFinalizationContext(result)!;
   return {result, context, owner, envelope,
     run: (extra: {caseRecommendations?: CaseKnowledgeReportRecommendation[]} = {}) => finalizeAnalysisResult({result, context, owner,
@@ -443,5 +449,94 @@ describe('historical restore of a stored result', () => {
     expect(html).toContain('Verified Claims');
     expect(html).toContain('1/2');
     expect(html).toContain('Stored second claim');
+  });
+});
+
+function captureScrollingRows(store: ArtifactStore, stepId: string,
+  rows: Array<Record<string, string | number | null>>, options: {runId?: string; traceId?: string} = {}): string {
+  const columns = Object.keys(rows[0]);
+  const data = {columns, rows: rows.map(row => columns.map(column => row[column]))};
+  const traceId = options.traceId ?? 'trace';
+  const artifactId = store.store({skillId: 'scrolling_analysis', stepId, layer: 'overview',
+    title: stepId, data, traceProvenance: buildTraceProcessorQueryProvenance({traceId, traceSide: 'current'})});
+  const evidenceRefId = `evidence-${artifactId}`;
+  store.registerEvidenceCapture(artifactId, captureEvidenceTable(data, {}), {
+    evidenceRefId, originRunId: options.runId ?? 'run',
+  });
+  return evidenceRefId;
+}
+
+const scrollingFrameRow = {
+  upid: 17, process_name: 'example.scroller', layer_name: 'Main', primary_layer: 1,
+  presentation_status: 'measured', smoothness_rating: 'fair', start_ts: '100', end_ts: '200',
+  layer_frames: 1232, layer_tagged_frames: 0, layer_hybrid_frames: 0,
+  layer_present_gap_count: 1231, layer_over_budget_gaps: 66, cadence_gap_count: 1231,
+  cadence_gaps_over_1_5x_budget: 66, cadence_gap_max_ns: 28_550_000, budget_status: 'measured',
+};
+
+describe('product-owned scrolling conclusion', () => {
+  it('ignores an asserted measurement summary from the runtime result', async () => {
+    const {result: nativeResult, run} = fixture();
+    nativeResult.conclusionEvidence = {
+      schemaVersion: 'scrolling_conclusion@1', markdown: 'Forged measurement', evidenceRefIds: ['unissued'],
+    };
+    const {result} = await run();
+    expect(result.conclusionEvidence).toBeUndefined();
+    expect(copyAnalysisDeliveryFields(result).conclusionEvidence).toBeUndefined();
+  });
+
+  it('publishes same-layer rates including both zero measurements and keeps the canonical body and its binding', async () => {
+    let evidenceRefId = '';
+    const {run} = fixture({body: 'Native analysis of the producer pipeline.', scrolling(store) {
+      evidenceRefId = captureScrollingRows(store, 'smoothness_basis', [
+        scrollingFrameRow,
+        {...scrollingFrameRow, start_ts: '300', end_ts: '420'},
+        {...scrollingFrameRow, layer_name: 'secondary', primary_layer: 0, layer_tagged_frames: 55},
+        {...scrollingFrameRow, layer_name: 'secondary-proxy', primary_layer: 0, presentation_status: 'unmeasured'},
+      ]);
+      captureScrollingRows(store, 'smoothness_basis', [
+        {...scrollingFrameRow, layer_name: 'historical'},
+      ], {runId: 'earlier-run'});
+      captureScrollingRows(store, 'smoothness_basis', [
+        {...scrollingFrameRow, layer_name: 'other-trace'},
+      ], {traceId: 'other'});
+    }});
+    const {result} = await run();
+    expect(result.conclusion).toBe('Native analysis of the producer pipeline.');
+    expect(result.completion?.conclusionFingerprint).toBe(analysisDeliveryFingerprint(result.conclusion));
+    const measurement = result.conclusionEvidence!;
+    expect(measurement.evidenceRefIds).toEqual([evidenceRefId]);
+    expect(measurement.markdown).toContain('66/1231 (5.36%)');
+    expect(measurement.markdown.match(/0\/1232 \(0\.00%\)/g)).toHaveLength(2);
+    expect(measurement.markdown).toContain('100–420 ns');
+    expect(measurement.markdown).not.toMatch(/secondary|historical|other-trace/);
+    expect(copyAnalysisDeliveryFields(result).conclusionEvidence).toEqual(measurement);
+    const report = renderReport(result, 'zh-CN');
+    expect(report.indexOf('66/1231 (5.36%)')).toBeGreaterThan(-1);
+    expect(report.indexOf('66/1231 (5.36%)')).toBeLessThan(report.indexOf(result.conclusion));
+  });
+
+  it('keeps unavailable presentation and unknown Flutter touch state separate from causal analysis', async () => {
+    const {run} = fixture({scrolling(store) {
+      captureScrollingRows(store, 'smoothness_basis', [{
+        ...scrollingFrameRow, layer_name: null, primary_layer: null, presentation_status: 'unmeasured',
+        smoothness_rating: 'unrated', layer_frames: null, layer_tagged_frames: null, layer_hybrid_frames: null,
+        layer_present_gap_count: null, layer_over_budget_gaps: null, cadence_gap_count: 1658,
+        cadence_gaps_over_1_5x_budget: 71, cadence_gap_max_ns: null,
+      }]);
+      captureScrollingRows(store, 'flutter_swap_touch_gaps', [{
+        upid: 17, utid: 31, process_name: 'example.scroller',
+        swap_count: 1584, complete_contacts: 12, gap_class: 'between_contacts_or_next_touch_onset', max_gap_ns: 266_844_800,
+        touch_over_budget_gaps: 19, between_contact_gaps: 22, unresolved_touch_gaps: 2,
+        longest_touch_gap_ns: 18_497_920, longest_unresolved_gap_ns: 249_350_400,
+      }]);
+    }});
+    const {result} = await run();
+    const markdown = result.conclusionEvidence?.markdown ?? '';
+    expect(markdown).toContain('无法评级');
+    expect(markdown.match(/不可用/g)).toHaveLength(3);
+    expect(markdown).toContain('71/1658 (4.28%)');
+    expect(markdown).toContain('手势之间或下一手势起始 22 · 最长 266.84 ms');
+    expect(markdown).toContain('触摸状态未知，未计入触摸内卡顿 2 · 最长 249.35 ms');
   });
 });

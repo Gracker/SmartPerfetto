@@ -54,6 +54,8 @@ export interface EvidenceLocatorDetail {
 const MAX_LOCATOR_DETAIL_COLUMNS = 32;
 export interface EvidenceReadView {
   investigationEvidence?(): InvestigationEvidenceSnapshot;
+  /** Product-only catalog of this run's retained Skill results. Row reads still use resolveReferences. */
+  currentSkillResults?(skillId: string, stepIds: readonly string[]): readonly CapturedEvidenceRecord[];
   resolveReferences(requests: readonly EvidenceReadRequest[], signal?: AbortSignal): Promise<readonly EvidenceReadResolution[]>;
 }
 export interface EvidenceReadBudget {maxReferences: number; maxScannedRows: number; maxCells: number; maxElapsedMs: number; maxBytes: number}
@@ -228,6 +230,15 @@ export function createEvidenceReadView(records: () => readonly EvidenceReadRecor
     maxElapsedMs: EVIDENCE_READ_MAX_ELAPSED_MS, maxBytes: 1_048_576, ...options.budget};
   if (Object.values(budget).some(value => !Number.isSafeInteger(value) || value < 0)) throw new Error('Invalid evidence read budget');
   return Object.freeze({investigationEvidence: () => buildInvestigationEvidenceSnapshot(records(), options, observations()),
+    currentSkillResults(skillId: string, stepIds: readonly string[]) {
+      if (!options.currentRunId) return [];
+      return records().filter(({record}) => record.originRunId === options.currentRunId &&
+        record.meta.type === 'skill_result' && record.meta.skillId === skillId &&
+        typeof record.meta.stepId === 'string' && stepIds.includes(record.meta.stepId) &&
+        allowed.has(`${record.meta.traceSide}:${record.meta.traceId}`) &&
+        record.meta.executionStatus === 'observed' && record.totalRowCount > 0 &&
+        immutableReadRecord(record)).map(({record}) => record);
+    },
     async resolveReferences(requests: readonly EvidenceReadRequest[], signal?: AbortSignal) {
     const deadline = Date.now() + budget.maxElapsedMs;
     let scanned = 0;

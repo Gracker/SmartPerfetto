@@ -12,7 +12,7 @@ import * as path from 'path';
 import { bootstrap } from '../bootstrap';
 import { loadSession } from '../io/sessionStore';
 import { openPath } from '../io/openFile';
-import {parseOutputLanguage} from '../../agentv3/outputLanguage';
+import {localize, parseOutputLanguage} from '../../agentv3/outputLanguage';
 import {loadCliAnalysisEvidence, renderCliAnalysisEvidence} from '../services/analysisResultPresentation';
 import {loadCliSceneReport, renderCliSceneReport} from '../services/sceneReportReference';
 
@@ -44,7 +44,6 @@ export async function runShowCommand(args: ShowCommandArgs): Promise<number> {
   const conclusion = readIfExists(sp.conclusion);
   const turnMarkdown = readIfExists(path.join(sp.turnsDir, `${String(config.turnCount).padStart(3, '0')}.md`));
   if (fs.existsSync(sp.conclusion)) {
-    console.log(conclusion);
     const evidence = loadCliAnalysisEvidence({
       sp,
       sessionId: config.sessionId,
@@ -53,9 +52,17 @@ export async function runShowCommand(args: ShowCommandArgs): Promise<number> {
       turnMarkdown,
       latest: true,
     });
+    const language = parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
+    if (evidence.status === 'available' && evidence.bundle.evidence.conclusionEvidence) {
+      console.log(evidence.bundle.evidence.conclusionEvidence.markdown);
+      console.log('');
+      console.log(localize(language, '## 模型分析', '## Model analysis'));
+      console.log('');
+    }
+    console.log(conclusion);
     const evidenceText = renderCliAnalysisEvidence(
       evidence,
-      parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE),
+      language,
     );
     if (evidenceText) console.log(`\n${evidenceText}`);
   } else {

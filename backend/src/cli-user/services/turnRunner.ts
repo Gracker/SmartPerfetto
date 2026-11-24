@@ -542,7 +542,8 @@ function formatTurnMarkdown(
   turn: number,
   query: string,
   conclusion: string,
-  result: Pick<AnalysisResult, 'confidence' | 'rounds' | 'totalDurationMs' | 'findings' | 'claimVerificationResult'>,
+  result: Pick<AnalysisResult, 'confidence' | 'rounds' | 'totalDurationMs' | 'findings' |
+    'claimVerificationResult' | 'conclusionEvidence'>,
   degraded: boolean,
   lineageNotice?: string,
 ): string {
@@ -564,6 +565,9 @@ function formatTurnMarkdown(
   }
   if (degraded) {
     lines.push(`> _Note: SDK context was unavailable for this turn — prior conclusion was replayed as preamble._`, ``);
+  }
+  if (result.conclusionEvidence) {
+    lines.push(result.conclusionEvidence.markdown, '');
   }
   lines.push('## Conclusion', '', conclusion || '*(empty)*', '');
   return lines.join('\n');

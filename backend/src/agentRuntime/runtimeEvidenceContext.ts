@@ -252,6 +252,12 @@ function createRunStore(run: RunState): ArtifactStore {
           if (!snapshot) throw new Error('investigation_evidence_unavailable');
           return snapshot;
         },
+        currentSkillResults(skillId, stepIds) {
+          assertRunActive(run);
+          const results = view.currentSkillResults?.(skillId, stepIds) ?? [];
+          assertRunActive(run);
+          return results;
+        },
         async resolveReferences(requests, signal) {
         assertRunActive(run);
         const result = await view.resolveReferences(requests, signal);

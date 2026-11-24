@@ -7,7 +7,7 @@ import type {SourceExecutionScopeV1, SourceUseDecisionV1} from '../services/code
 import type {KnowledgeUseRecord} from '../services/knowledge/knowledgeUse';
 import type {ReadonlyStrategyRegistrySnapshot} from '../services/selfEvolution/effectiveRuntimeRegistryContext';
 import type {AnalysisDeliveryContext} from '../types/analysisDelivery';
-import type {EvidenceReadRequest, EvidenceReadResolution, EvidenceReadView} from '../services/evidence/evidenceReadView';
+import type {CapturedEvidenceRecord, EvidenceReadRequest, EvidenceReadResolution, EvidenceReadView} from '../services/evidence/evidenceReadView';
 import type {AnalysisTurnIntent} from './analysisTurnIntent';
 import {isIssuedInvestigationEvidenceSnapshot,
   type InvestigationEvidenceSnapshot} from '../services/evidence/investigationEvidenceLedger';
@@ -54,6 +54,7 @@ export interface RuntimeFinalizationContext {
   readonly investigationEvidence?: InvestigationEvidenceSnapshot;
   /** Input-role view, never a general exemption from output privacy projection. */
   getProviderQuery(signal: AbortSignal): Readonly<FinalizationProviderQuery> | undefined;
+  currentSkillResults?(skillId: string, stepIds: readonly string[], signal: AbortSignal): readonly CapturedEvidenceRecord[];
   resolveReferences(requests: readonly EvidenceReadRequest[], signal: AbortSignal): Promise<readonly EvidenceReadResolution[]>;
   /** Cancels in-flight operations and drops closures; does not replace a product run lease. */
   dispose(): void;
@@ -232,6 +233,10 @@ export function takeFinalizationContext(result: AnalysisResult): RuntimeFinaliza
     get knowledgeUse() { return current().knowledgeUse; },
     get investigationEvidence() { return current().investigationEvidence; },
     getProviderQuery(signal: AbortSignal) { return active(signal).providerQuery; },
+    currentSkillResults(skillId: string, stepIds: readonly string[], signal: AbortSignal) {
+      const value = active(signal);
+      return value.evidenceReadView?.currentSkillResults?.(skillId, stepIds) ?? [];
+    },
     async resolveReferences(requests: readonly EvidenceReadRequest[], signal: AbortSignal): Promise<readonly EvidenceReadResolution[]> {
       const value = active(signal);
       const reader = value.evidenceReadView;

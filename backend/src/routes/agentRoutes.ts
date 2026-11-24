@@ -44,7 +44,7 @@ import {takeFinalizationContext, type RuntimeFinalizationContext} from '../agent
 import {assertRuntimeTaskWorkRemaining, ensureRuntimeAdmission, forwardRuntimeAdmission} from '../agentRuntime/runtimeTaskDeadline';
 import {resolveRuntimeTurnPolicy} from '../agentRuntime/runtimeTurnPolicy';
 import type {CaseKnowledgeReportRecommendation} from '../types/caseKnowledge';
-import {copyAnalysisDeliveryFields, projectStoredConclusionSourceMetadata} from '../services/security/analysisDeliveryProjection';
+import {copyAnalysisDeliveryFields, projectConclusionEvidence, projectStoredConclusionSourceMetadata} from '../services/security/analysisDeliveryProjection';
 import { persistReport } from './reportRoutes';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
 import {
@@ -178,7 +178,7 @@ import {
   resolveKnowledgeScope,
   type KnowledgeScope,
 } from '../services/scopedKnowledgeStore';
-import {revokeCodeAwareOutputGuards} from '../services/security/codeAwareOutputRegistry';
+import {revokeCodeAwareOutputGuards, sanitizeOwnerCodeAwareText} from '../services/security/codeAwareOutputRegistry';
 import {projectCodeAwareStreamingUpdate, projectOwnerCodeAwareStreamingUpdate} from '../services/security/codeAwareStreamingUpdateProjection';
 import {
   privateAnalysisFailureMessage,
@@ -1510,6 +1510,7 @@ function sanitizePersistedAnalysisCompletedEvent(
         findings: [],
         hypotheses: [],
         conclusion: '',
+        conclusionEvidence: undefined,
         conclusionContract: undefined,
         claimSupport: undefined,
         claimVerificationResult: undefined,
@@ -4847,7 +4848,7 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
     finalizationRun.assertCurrent();
     contextTransferred = true;
     const finalized = await finalizeAnalysisResult({
-      result, context: finalizationContext, owner: finalizationRun.owner, query,
+      result, context: finalizationContext, owner: finalizationRun.owner, query, outputLanguage,
       ...(sceneSeal ? {scene: {seal: sceneSeal, outputLanguage, providerId: options.providerId,
         scope: {runId: runIdForAnalysis, sessionId, traceId,
         ownerKey: sceneRunOwnerKey(session)}}} : {}),
@@ -4862,7 +4863,8 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
     // The finalized text goes out now, ahead of report and snapshot generation;
     // its delivery assurance arrives with analysis_completed. Scene runs own
     // their terminal delivery.
-    if (!options.sceneRunBinding) broadcastAnswer(session, result.conclusion, finalizationRun, outputLanguage);
+    if (!options.sceneRunBinding) broadcastAnswer(session, result.conclusion, finalizationRun, outputLanguage,
+      result.conclusionEvidence);
     if (finalized.scenePublication && result.sceneTimeline) {
       try {
         const requestedRange = result.sceneTimeline.scanCoverage?.requestedWindow;
@@ -5259,13 +5261,19 @@ function broadcastAnswer(
   body: string,
   run: HttpFinalizationRun,
   outputLanguage: OutputLanguage,
+  conclusionEvidence?: import('../types/analysisDelivery').AnalysisConclusionEvidence,
 ): boolean {
   const runId = run.owner.runId;
   if (!body.trim() || !isCurrentRunOwner(session, runId) ||
     assistantAppService.getSession(session.sessionId) !== session) return false;
   const privateKnowledge = sessionRunHasPrivateContext(session, runId);
   const conclusion = projectOwnerAnswerConclusion(privateKnowledge, session.sessionId, body, outputLanguage);
-  broadcastToAgentDrivenClients(session.sessionId, {type: 'conclusion', content: {conclusion}, timestamp: Date.now()},
+  const measurements = conclusionEvidence && privateKnowledge
+    ? projectConclusionEvidence(conclusionEvidence, text => sanitizeOwnerCodeAwareText(session.sessionId, text))
+    : conclusionEvidence;
+  broadcastToAgentDrivenClients(session.sessionId, {type: 'conclusion', content: {
+    conclusion, ...(measurements ? {conclusionEvidence: measurements} : {}),
+  }, timestamp: Date.now()},
     runId, {persist: !privateKnowledge});
   return true;
 }

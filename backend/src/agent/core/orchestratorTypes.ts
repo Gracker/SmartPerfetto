@@ -24,6 +24,7 @@ import type {RunManifestAttributionSink} from '../../types/selfEvolution';
 import type {AnalysisTurnIntent} from '../../agentRuntime/analysisTurnIntent';
 import type {
   AnalysisCompletion,
+  AnalysisConclusionEvidence,
   AnalysisDeliveryAssurance,
   AnalysisOutputOrigin,
   AnalysisRuntimeAppendix,
@@ -98,6 +99,7 @@ export interface AnalysisResult {
   findings: Finding[];
   hypotheses: Hypothesis[];
   conclusion: string;
+  conclusionEvidence?: AnalysisConclusionEvidence;
   /** Server-owned metadata. Deserializing these fields does not attest a new turn. */
   turnIntent?: AnalysisTurnIntent;
   completion?: AnalysisCompletion;
