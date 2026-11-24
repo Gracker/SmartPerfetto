@@ -13,6 +13,20 @@ Detailed commit-level history is available via `git log`.
 
 ## [Unreleased]
 
+## [1.20.1] - 2026-11-25
+
+### Added
+
+- Add an opt-in Perfetto Chat for trusted, single-user macOS arm64 source installations. Open it from the sidebar to ask a question or attach the current trace, share a selection with your configured model and jump back to a time range returned by a query.
+- Run the pinned public Perfetto Skills bundle locally through Pi with a separate model configuration and in-memory conversation. The attachment prompt identifies the model service that can receive selection details and bounded query results.
+
+### Fixed
+
+- Keep Viewer timestamps and track labels in the user turn. The chat system prompt describes the available capabilities, and each follow-up retains the focus of its own question.
+- Expose the public query's nullable parameters during discovery and account for reclaimable memory on macOS when deciding whether a local Trace Processor can start.
+- Restore both Viewers in dual-trace comparison by allowing the application to embed its own Viewer document.
+- Keep ports previously exposed to the Viewer available for Viewer reuse while reserving undisclosed ports for private analysis. This allows a follow-up question to continue after a dual-trace comparison.
+
 ## [1.20.0] - 2026-11-24
 
 ### Added
@@ -1242,7 +1256,9 @@ Detailed commit-level history is available via `git log`.
 - HTML report generation and CSV / JSON export.
 - AGPL v3.0 licensing throughout.
 
-[Unreleased]: https://github.com/Gracker/SmartPerfetto/compare/v1.19.0...HEAD
+[Unreleased]: https://github.com/Gracker/SmartPerfetto/compare/v1.20.1...HEAD
+[1.20.1]: https://github.com/Gracker/SmartPerfetto/compare/v1.20.0...v1.20.1
+[1.20.0]: https://github.com/Gracker/SmartPerfetto/compare/v1.19.1...v1.20.0
 [1.19.0]: https://github.com/Gracker/SmartPerfetto/compare/v1.18.1...v1.19.0
 [1.14.0]: https://github.com/Gracker/SmartPerfetto/compare/v1.13.0...v1.14.0
 [1.13.0]: https://github.com/Gracker/SmartPerfetto/compare/v1.12.1...v1.13.0
