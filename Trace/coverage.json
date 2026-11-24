@@ -854,7 +854,7 @@
     ]
   },
   "sql_sources": {
-    "runtime_revision": "1e9c61e9844affd7dccd3d42d9ea9f3a3d10cf6d",
+    "runtime_revision": "6327533d577b18931bedc48a5d1f83cacfa4e9d9",
     "skills": [
       {
         "target": "android_app_background_power_state",
@@ -1104,7 +1104,7 @@
         "steps": [
           {
             "id": "heap_class_table",
-            "sha256": "7415fc6f58b83c242d2dca25899715f2290fb59aed953d557a4d6351a86ff0d8",
+            "sha256": "3a257d48959bced2b7fd78c3b17b67762340303189bdabfe20ca0d0ea651d731",
             "required_columns": [
               "is_libcore_or_array",
               "dominated_obj_count",
@@ -1196,12 +1196,7 @@
       {
         "target": "android_heap_graph_leak_candidates",
         "source_file": "backend/skills/atomic/android_heap_graph_leak_candidates.skill.yaml",
-        "modules": [
-          {
-            "name": "android.memory.heap_graph.excluded_refs",
-            "source_path": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/memory/heap_graph/excluded_refs.sql"
-          }
-        ],
+        "modules": [],
         "steps": [
           {
             "id": "leak_candidates",
@@ -1224,7 +1219,7 @@
           },
           {
             "id": "reference_holders",
-            "sha256": "7d6ff2765fa5490d287881a398fc783d4b079803dfc00e369a423a651341f6e5",
+            "sha256": "f3e903aaa0b510bb85f2505f7864662139a56194c95a65d0bae5094efaa7b500",
             "required_columns": [
               "process_name",
               "graph_sample_ts",

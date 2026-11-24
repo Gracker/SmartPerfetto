@@ -35,8 +35,6 @@ triggers:
     - ".*(Activity|Fragment).*(leak|泄漏).*"
 
 prerequisites:
-  modules:
-    - android.memory.heap_graph.excluded_refs
   required_tables:
     - heap_graph_object
     - heap_graph_class
@@ -426,12 +424,20 @@ steps:
       JOIN heap_graph_dump_scope d USING (upid, graph_sample_ts)
       JOIN heap_graph_reference ref
         ON ref.owned_id = so.object_id
-        AND ref.id NOT IN _excluded_refs
       JOIN heap_graph_object owner_obj
         ON owner_obj.id = ref.owner_id
         AND owner_obj.reachable = 1
       LEFT JOIN heap_graph_class owner_class ON owner_obj.type_id = owner_class.id
       WHERE ref.owner_id IS NOT NULL
+        -- Filter only the referent of the three non-retaining reference kinds.
+        -- Other fields and references with unknown kind or field still supply evidence.
+        AND NOT COALESCE(
+          ref.field_name = 'java.lang.ref.Reference.referent'
+          AND owner_class.kind IN (
+            'KIND_WEAK_REFERENCE', 'KIND_PHANTOM_REFERENCE', 'KIND_FINALIZER_REFERENCE'
+          ),
+          0
+        )
       ORDER BY
         CASE so.leak_state WHEN 'destroyed_reachable' THEN 0 ELSE 1 END,
         so.class_name,
@@ -445,4 +451,4 @@ output:
     - name: leak_candidates
       description: "Reachable Activity/Fragment heap objects classified against sample-time lifecycle evidence; placeholder objects (self_size = -1) are excluded, and dump_completeness=incomplete_dump means counts and sizes are lower bounds"
     - name: reference_holders
-      description: "Small-scope incoming retaining references for suspect heap objects, excluding Perfetto _excluded_refs referent edges (weak/phantom/finalizer in v56; soft reference edges are not filtered by this stdlib helper)"
+      description: "Small-scope incoming retaining references for suspect heap objects, excluding weak/phantom/finalizer referent edges; soft reference edges are not filtered"

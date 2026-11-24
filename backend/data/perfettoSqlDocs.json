@@ -1,20 +1,20 @@
 {
   "version": 1,
-  "generatedAt": "2026-11-05T02:20:54.337Z",
-  "generatedFrom": "1e9c61e9844affd7dccd3d42d9ea9f3a3d10cf6d",
-  "sourceDocs": "git:1e9c61e9844affd7dccd3d42d9ea9f3a3d10cf6d:src/trace_processor/perfetto_sql/stdlib",
+  "generatedAt": "2026-11-24T06:02:33.994Z",
+  "generatedFrom": "6327533d577b18931bedc48a5d1f83cacfa4e9d9",
+  "sourceDocs": "git:6327533d577b18931bedc48a5d1f83cacfa4e9d9:src/trace_processor/perfetto_sql/stdlib",
   "sourceDocsMode": "runtime-revision-source-generator",
   "pfsqlLineage": {
     "status": "unavailable"
   },
   "stats": {
-    "moduleCount": 270,
-    "entryCount": 476,
+    "moduleCount": 273,
+    "entryCount": 489,
     "byType": {
       "function": 72,
-      "table": 198,
+      "table": 210,
       "table_function": 31,
-      "view": 154,
+      "view": 155,
       "macro": 21
     }
   },
@@ -192,8 +192,7 @@
         "power"
       ],
       "includes": [
-        "counters.intervals",
-        "intervals.fill_gaps"
+        "counters.intervals"
       ],
       "dataCheckSql": "SELECT EXISTS(SELECT 1 FROM slice WHERE name = 'BatteryStatus' LIMIT 1) AS has_data",
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/battery/charging_states.sql",
@@ -203,9 +202,7 @@
         "android_charging_states"
       ],
       "transitiveIncludes": [
-        "counters.intervals",
-        "intervals.fill_gaps",
-        "std.metasql.unparenthesize"
+        "counters.intervals"
       ]
     },
     {
@@ -261,9 +258,7 @@
         "android.suspend",
         "android.user_list",
         "graphs.search",
-        "intervals.fill_gaps",
-        "slices.flow",
-        "std.metasql.unparenthesize"
+        "slices.flow"
       ]
     },
     {
@@ -294,7 +289,6 @@
         "android.suspend",
         "android.user_list",
         "graphs.search",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "intervals.overlap",
         "slices.flow",
@@ -345,7 +339,9 @@
       "errors": [],
       "symbols": [],
       "transitiveIncludes": [
-        "android.freezer"
+        "android.freezer",
+        "android.process_metadata",
+        "android.user_list"
       ]
     },
     {
@@ -458,10 +454,8 @@
         "android.suspend",
         "android.user_list",
         "graphs.search",
-        "intervals.fill_gaps",
         "slices.flow",
         "slices.with_context",
-        "std.metasql.unparenthesize",
         "std.thread.with_context"
       ]
     },
@@ -652,10 +646,8 @@
         "android.suspend",
         "android.user_list",
         "graphs.search",
-        "intervals.fill_gaps",
         "slices.flow",
         "slices.with_context",
-        "std.metasql.unparenthesize",
         "std.thread.with_context"
       ]
     },
@@ -790,27 +782,72 @@
       ],
       "includes": [
         "android.critical_blocking_calls",
-        "android.cujs.base"
+        "android.cujs.base",
+        "android.cujs.sysui_cujs",
+        "android.frames.timeline"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/frame_blocking_calls/blocking_calls_aggregation.sql",
       "missingIncludes": [],
       "errors": [],
-      "symbols": [],
+      "symbols": [
+        "android_cuj_frame_blocking_calls",
+        "android_cuj_frame_boundaries"
+      ],
       "transitiveIncludes": [
         "android.binder",
         "android.critical_blocking_calls",
         "android.cujs.base",
+        "android.cujs.sysui_cujs",
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
         "android.process_metadata",
+        "android.render_thread",
         "android.slices",
         "android.suspend",
         "android.user_list",
         "graphs.search",
-        "intervals.fill_gaps",
         "slices.flow",
         "slices.with_context",
-        "std.metasql.unparenthesize",
+        "std.thread.with_context"
+      ]
+    },
+    {
+      "package": "android",
+      "module": "android.frame_blocking_calls.instructions",
+      "moduleDoc": "",
+      "tags": [
+        "android",
+        "performance",
+        "ui"
+      ],
+      "includes": [
+        "android.frame_blocking_calls.blocking_calls_aggregation",
+        "intervals.intersect"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/frame_blocking_calls/instructions.sql",
+      "missingIncludes": [],
+      "errors": [],
+      "symbols": [
+        "android_cuj_frame_blocking_calls_instructions",
+        "android_cuj_frame_blocking_calls_instructions_per_cuj"
+      ],
+      "transitiveIncludes": [
+        "android.binder",
+        "android.critical_blocking_calls",
+        "android.cujs.base",
+        "android.cujs.sysui_cujs",
+        "android.frame_blocking_calls.blocking_calls_aggregation",
+        "android.frames.timeline",
+        "android.frames.timeline_maxsdk28",
+        "android.process_metadata",
+        "android.render_thread",
+        "android.slices",
+        "android.suspend",
+        "android.user_list",
+        "graphs.search",
+        "intervals.intersect",
+        "slices.flow",
+        "slices.with_context",
         "std.thread.with_context"
       ]
     },
@@ -920,7 +957,9 @@
         "android",
         "app-lifecycle"
       ],
-      "includes": [],
+      "includes": [
+        "android.process_metadata"
+      ],
       "dataCheckSql": "SELECT EXISTS(SELECT 1 FROM slice WHERE name GLOB 'Freeze *' LIMIT 1) AS has_data",
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/freezer.sql",
       "missingIncludes": [],
@@ -929,7 +968,10 @@
         "android_freezer_events",
         "android_freezer_state_statsd"
       ],
-      "transitiveIncludes": []
+      "transitiveIncludes": [
+        "android.process_metadata",
+        "android.user_list"
+      ]
     },
     {
       "package": "android",
@@ -1142,9 +1184,7 @@
         "android.job_scheduler_states_track_events",
         "android.screen_state",
         "counters.intervals",
-        "intervals.fill_gaps",
-        "intervals.intersect",
-        "std.metasql.unparenthesize"
+        "intervals.intersect"
       ]
     },
     {
@@ -1183,9 +1223,7 @@
       ],
       "transitiveIncludes": [
         "android.suspend",
-        "counters.intervals",
-        "intervals.fill_gaps",
-        "std.metasql.unparenthesize"
+        "counters.intervals"
       ]
     },
     {
@@ -1223,7 +1261,6 @@
       "transitiveIncludes": [
         "android.monitor_contention",
         "android.suspend",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "intervals.overlap",
         "slices.with_context",
@@ -1267,6 +1304,46 @@
     },
     {
       "package": "android",
+      "module": "android.memory.heap_graph.binder",
+      "moduleDoc": "",
+      "tags": [],
+      "includes": [
+        "android.memory.heap_graph.excluded_refs"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/memory/heap_graph/binder.sql",
+      "missingIncludes": [],
+      "errors": [],
+      "symbols": [
+        "android_heap_graph_binder_stub"
+      ],
+      "transitiveIncludes": [
+        "android.memory.heap_graph.excluded_refs"
+      ]
+    },
+    {
+      "package": "android",
+      "module": "android.memory.heap_graph.binder_proxy",
+      "moduleDoc": "",
+      "tags": [],
+      "includes": [
+        "android.memory.heap_graph.class_classification",
+        "android.memory.heap_graph.dominator_tree",
+        "android.memory.heap_graph.excluded_refs"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/memory/heap_graph/binder_proxy.sql",
+      "missingIncludes": [],
+      "errors": [],
+      "symbols": [
+        "android_heap_graph_binder_proxy"
+      ],
+      "transitiveIncludes": [
+        "android.memory.heap_graph.class_classification",
+        "android.memory.heap_graph.dominator_tree",
+        "android.memory.heap_graph.excluded_refs"
+      ]
+    },
+    {
+      "package": "android",
       "module": "android.memory.heap_graph.bitmap",
       "moduleDoc": "",
       "tags": [],
@@ -1277,6 +1354,21 @@
       "symbols": [
         "heap_graph_bitmaps"
       ],
+      "transitiveIncludes": []
+    },
+    {
+      "package": "android",
+      "module": "android.memory.heap_graph.class_classification",
+      "moduleDoc": "",
+      "tags": [
+        "android",
+        "memory"
+      ],
+      "includes": [],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/memory/heap_graph/class_classification.sql",
+      "missingIncludes": [],
+      "errors": [],
+      "symbols": [],
       "transitiveIncludes": []
     },
     {
@@ -1321,8 +1413,8 @@
         "android.memory.heap_graph.class_tree",
         "android.memory.heap_graph.excluded_refs",
         "android.memory.heap_graph.helpers",
-        "graphs.scan",
-        "graphs.search"
+        "android.memory.heap_graph.shortest_path_tree",
+        "graphs.scan"
       ]
     },
     {
@@ -1331,9 +1423,8 @@
       "moduleDoc": "",
       "tags": [],
       "includes": [
-        "android.memory.heap_graph.excluded_refs",
         "android.memory.heap_graph.helpers",
-        "graphs.search"
+        "android.memory.heap_graph.shortest_path_tree"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/memory/heap_graph/class_tree.sql",
       "missingIncludes": [],
@@ -1342,8 +1433,8 @@
       "transitiveIncludes": [
         "android.memory.heap_graph.excluded_refs",
         "android.memory.heap_graph.helpers",
-        "graphs.scan",
-        "graphs.search"
+        "android.memory.heap_graph.shortest_path_tree",
+        "graphs.scan"
       ]
     },
     {
@@ -1355,18 +1446,17 @@
         "memory"
       ],
       "includes": [
-        "android.memory.heap_graph.helpers",
-        "android.memory.heap_graph.raw_dominator_tree"
+        "android.memory.heap_graph.dominator_tree",
+        "android.memory.heap_graph.helpers"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/memory/heap_graph/dominator_class_tree.sql",
       "missingIncludes": [],
       "errors": [],
       "symbols": [],
       "transitiveIncludes": [
+        "android.memory.heap_graph.dominator_tree",
         "android.memory.heap_graph.excluded_refs",
         "android.memory.heap_graph.helpers",
-        "android.memory.heap_graph.raw_dominator_tree",
-        "graphs.dominator_tree",
         "graphs.scan"
       ]
     },
@@ -1379,7 +1469,7 @@
         "memory"
       ],
       "includes": [
-        "android.memory.heap_graph.raw_dominator_tree"
+        "android.memory.heap_graph.excluded_refs"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/memory/heap_graph/dominator_tree.sql",
       "missingIncludes": [],
@@ -1388,9 +1478,7 @@
         "heap_graph_dominator_tree"
       ],
       "transitiveIncludes": [
-        "android.memory.heap_graph.excluded_refs",
-        "android.memory.heap_graph.raw_dominator_tree",
-        "graphs.dominator_tree"
+        "android.memory.heap_graph.excluded_refs"
       ]
     },
     {
@@ -1414,18 +1502,15 @@
       "moduleDoc": "",
       "tags": [],
       "includes": [
-        "android.memory.heap_graph.class_tree"
+        "android.memory.heap_graph.shortest_path_tree"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/memory/heap_graph/experimental_flamegraph.sql",
       "missingIncludes": [],
       "errors": [],
       "symbols": [],
       "transitiveIncludes": [
-        "android.memory.heap_graph.class_tree",
         "android.memory.heap_graph.excluded_refs",
-        "android.memory.heap_graph.helpers",
-        "graphs.scan",
-        "graphs.search"
+        "android.memory.heap_graph.shortest_path_tree"
       ]
     },
     {
@@ -1437,6 +1522,7 @@
         "memory"
       ],
       "includes": [
+        "android.memory.heap_graph.class_classification",
         "android.memory.heap_graph.dominator_tree",
         "graphs.partition"
       ],
@@ -1447,10 +1533,9 @@
         "android_heap_graph_class_aggregation"
       ],
       "transitiveIncludes": [
+        "android.memory.heap_graph.class_classification",
         "android.memory.heap_graph.dominator_tree",
         "android.memory.heap_graph.excluded_refs",
-        "android.memory.heap_graph.raw_dominator_tree",
-        "graphs.dominator_tree",
         "graphs.partition"
       ]
     },
@@ -1507,18 +1592,15 @@
       "moduleDoc": "",
       "tags": [],
       "includes": [
-        "android.memory.heap_graph.class_tree"
+        "android.memory.heap_graph.shortest_path_tree"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/memory/heap_graph/object_tree.sql",
       "missingIncludes": [],
       "errors": [],
       "symbols": [],
       "transitiveIncludes": [
-        "android.memory.heap_graph.class_tree",
         "android.memory.heap_graph.excluded_refs",
-        "android.memory.heap_graph.helpers",
-        "graphs.scan",
-        "graphs.search"
+        "android.memory.heap_graph.shortest_path_tree"
       ]
     },
     {
@@ -1537,23 +1619,20 @@
     },
     {
       "package": "android",
-      "module": "android.memory.heap_graph.raw_dominator_tree",
+      "module": "android.memory.heap_graph.shortest_path_tree",
       "moduleDoc": "",
-      "tags": [
-        "android",
-        "memory"
-      ],
+      "tags": [],
       "includes": [
-        "android.memory.heap_graph.excluded_refs",
-        "graphs.dominator_tree"
+        "android.memory.heap_graph.excluded_refs"
       ],
-      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/memory/heap_graph/raw_dominator_tree.sql",
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/memory/heap_graph/shortest_path_tree.sql",
       "missingIncludes": [],
       "errors": [],
-      "symbols": [],
+      "symbols": [
+        "heap_graph_shortest_path_tree"
+      ],
       "transitiveIncludes": [
-        "android.memory.heap_graph.excluded_refs",
-        "graphs.dominator_tree"
+        "android.memory.heap_graph.excluded_refs"
       ]
     },
     {
@@ -1721,9 +1800,7 @@
         "android_monitor_contention_graph"
       ],
       "transitiveIncludes": [
-        "android.suspend",
-        "intervals.fill_gaps",
-        "std.metasql.unparenthesize"
+        "android.suspend"
       ]
     },
     {
@@ -1922,8 +1999,7 @@
         "ui"
       ],
       "includes": [
-        "counters.intervals",
-        "intervals.fill_gaps"
+        "counters.intervals"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/screen_state.sql",
       "missingIncludes": [],
@@ -1932,9 +2008,7 @@
         "android_screen_state"
       ],
       "transitiveIncludes": [
-        "counters.intervals",
-        "intervals.fill_gaps",
-        "std.metasql.unparenthesize"
+        "counters.intervals"
       ]
     },
     {
@@ -1980,10 +2054,8 @@
         "android.suspend",
         "android.user_list",
         "graphs.search",
-        "intervals.fill_gaps",
         "slices.flow",
         "slices.with_context",
-        "std.metasql.unparenthesize",
         "std.thread.with_context"
       ]
     },
@@ -2029,7 +2101,6 @@
       "includes": [
         "android.startup.startups",
         "intervals.intersect",
-        "intervals.overlap",
         "slices.hierarchy",
         "slices.with_context"
       ],
@@ -2051,10 +2122,8 @@
         "android.user_list",
         "android.version",
         "intervals.intersect",
-        "intervals.overlap",
         "slices.hierarchy",
         "slices.with_context",
-        "std.metasql.unparenthesize",
         "std.thread.with_context"
       ]
     },
@@ -2086,7 +2155,6 @@
       "includes": [
         "android.process_metadata",
         "android.startup.startups",
-        "intervals.intersect",
         "intervals.mipmap",
         "sched.states",
         "slices.flat_slices"
@@ -2108,11 +2176,9 @@
         "android.version",
         "intervals.intersect",
         "intervals.mipmap",
-        "intervals.overlap",
         "sched.states",
         "slices.flat_slices",
         "slices.with_context",
-        "std.metasql.unparenthesize",
         "std.thread.with_context"
       ]
     },
@@ -2305,19 +2371,14 @@
         "android",
         "power"
       ],
-      "includes": [
-        "intervals.fill_gaps"
-      ],
+      "includes": [],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/suspend.sql",
       "missingIncludes": [],
       "errors": [],
       "symbols": [
         "android_suspend_state"
       ],
-      "transitiveIncludes": [
-        "intervals.fill_gaps",
-        "std.metasql.unparenthesize"
-      ]
+      "transitiveIncludes": []
     },
     {
       "package": "android",
@@ -2388,9 +2449,7 @@
         "android_wakeups"
       ],
       "transitiveIncludes": [
-        "android.suspend",
-        "intervals.fill_gaps",
-        "std.metasql.unparenthesize"
+        "android.suspend"
       ]
     },
     {
@@ -2814,15 +2873,22 @@
       "moduleDoc": "",
       "tags": [],
       "includes": [
+        "intervals.intersect",
         "slices.with_context"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/chrome/loadline_2.sql",
       "missingIncludes": [],
       "errors": [],
       "symbols": [
+        "chrome_loadline2_js_script_slices",
+        "chrome_loadline2_js_scripts",
+        "chrome_loadline2_presentation_breakdown",
+        "chrome_loadline2_renderer_breakdown",
+        "chrome_loadline2_renderer_slices",
         "chrome_loadline2_stages"
       ],
       "transitiveIncludes": [
+        "intervals.intersect",
         "slices.with_context",
         "std.thread.with_context"
       ]
@@ -3414,22 +3480,6 @@
       "errors": [],
       "symbols": [],
       "transitiveIncludes": []
-    },
-    {
-      "package": "intervals",
-      "module": "intervals.fill_gaps",
-      "moduleDoc": "",
-      "tags": [],
-      "includes": [
-        "std.metasql.unparenthesize"
-      ],
-      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/intervals/fill_gaps.sql",
-      "missingIncludes": [],
-      "errors": [],
-      "symbols": [],
-      "transitiveIncludes": [
-        "std.metasql.unparenthesize"
-      ]
     },
     {
       "package": "intervals",
@@ -4132,6 +4182,7 @@
         "trace"
       ],
       "includes": [
+        "prelude.after_eof.tracks",
         "prelude.after_eof.views"
       ],
       "dataCheckSql": "SELECT EXISTS(SELECT 1 FROM __intrinsic_ftrace_event LIMIT 1) AS has_data",
@@ -4148,6 +4199,7 @@
       ],
       "transitiveIncludes": [
         "prelude.after_eof.casts",
+        "prelude.after_eof.tracks",
         "prelude.after_eof.views"
       ]
     },
@@ -4399,7 +4451,8 @@
       "missingIncludes": [],
       "errors": [],
       "symbols": [
-        "stats"
+        "stats",
+        "stats_histogram_bucket"
       ],
       "transitiveIncludes": []
     },
@@ -4568,9 +4621,7 @@
         "cpu",
         "scheduling"
       ],
-      "includes": [
-        "intervals.overlap"
-      ],
+      "includes": [],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/sched/thread_level_parallelism.sql",
       "missingIncludes": [],
       "errors": [],
@@ -4579,11 +4630,7 @@
         "sched_runnable_thread_count",
         "sched_uninterruptible_sleep_thread_count"
       ],
-      "transitiveIncludes": [
-        "intervals.intersect",
-        "intervals.overlap",
-        "std.metasql.unparenthesize"
-      ]
+      "transitiveIncludes": []
     },
     {
       "package": "sched",
@@ -4598,11 +4645,8 @@
       "errors": [],
       "symbols": [],
       "transitiveIncludes": [
-        "intervals.intersect",
-        "intervals.overlap",
         "slices.flat_slices",
         "slices.with_context",
-        "std.metasql.unparenthesize",
         "std.thread.with_context"
       ]
     },
@@ -4660,7 +4704,6 @@
         "trace"
       ],
       "includes": [
-        "intervals.intersect",
         "linux.cpu.utilization.slice",
         "slices.with_context"
       ],
@@ -4689,7 +4732,6 @@
         "trace"
       ],
       "includes": [
-        "intervals.overlap",
         "slices.with_context"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/slices/flat_slices.sql",
@@ -4697,10 +4739,7 @@
       "errors": [],
       "symbols": [],
       "transitiveIncludes": [
-        "intervals.intersect",
-        "intervals.overlap",
         "slices.with_context",
-        "std.metasql.unparenthesize",
         "std.thread.with_context"
       ]
     },
@@ -4782,7 +4821,6 @@
         "trace"
       ],
       "includes": [
-        "intervals.intersect",
         "slices.with_context"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/slices/time_in_state.sql",
@@ -4792,7 +4830,6 @@
         "thread_slice_time_in_state"
       ],
       "transitiveIncludes": [
-        "intervals.intersect",
         "slices.with_context",
         "std.thread.with_context"
       ]
@@ -5203,12 +5240,10 @@
       "moduleDoc": "",
       "tags": [],
       "includes": [
-        "intervals.intersect",
         "wattson.estimates",
         "wattson.tasks.attribution",
         "wattson.tasks.idle_transitions_attribution",
-        "wattson.tasks.task_slices",
-        "wattson.utils"
+        "wattson.tasks.task_slices"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/wattson/aggregation.sql",
       "missingIncludes": [],
@@ -5227,13 +5262,10 @@
         "android.suspend",
         "android.user_list",
         "counters.intervals",
-        "intervals.fill_gaps",
         "intervals.intersect",
-        "intervals.overlap",
         "linux.cpu.frequency",
         "linux.devfreq",
         "linux.irqs",
-        "std.metasql.unparenthesize",
         "time.conversion",
         "wattson.cpu.arm_dsu",
         "wattson.cpu.estimates",
@@ -5270,7 +5302,9 @@
       "tags": [],
       "includes": [
         "linux.devfreq",
-        "wattson.device_infos"
+        "wattson.curves.utils",
+        "wattson.device_infos",
+        "wattson.utils"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/wattson/cpu/arm_dsu.sql",
       "missingIncludes": [],
@@ -5280,6 +5314,12 @@
         "android.device",
         "counters.intervals",
         "linux.devfreq",
+        "wattson.curves.cpu_1d",
+        "wattson.curves.cpu_2d",
+        "wattson.curves.gpu",
+        "wattson.curves.l3",
+        "wattson.curves.tpu",
+        "wattson.curves.utils",
         "wattson.device_infos",
         "wattson.utils"
       ]
@@ -5303,10 +5343,8 @@
         "android.device",
         "android.suspend",
         "counters.intervals",
-        "intervals.fill_gaps",
         "linux.cpu.frequency",
         "linux.devfreq",
-        "std.metasql.unparenthesize",
         "time.conversion",
         "wattson.cpu.arm_dsu",
         "wattson.cpu.freq",
@@ -5365,9 +5403,7 @@
         "android.device",
         "android.suspend",
         "counters.intervals",
-        "intervals.fill_gaps",
         "linux.cpu.frequency",
-        "std.metasql.unparenthesize",
         "time.conversion",
         "wattson.cpu.freq",
         "wattson.cpu.hotplug",
@@ -5396,8 +5432,6 @@
       "transitiveIncludes": [
         "android.device",
         "android.suspend",
-        "intervals.fill_gaps",
-        "std.metasql.unparenthesize",
         "time.conversion",
         "wattson.device_infos",
         "wattson.utils"
@@ -5445,10 +5479,8 @@
         "android.device",
         "android.suspend",
         "counters.intervals",
-        "intervals.fill_gaps",
         "linux.cpu.frequency",
         "linux.devfreq",
-        "std.metasql.unparenthesize",
         "time.conversion",
         "wattson.cpu.arm_dsu",
         "wattson.cpu.freq",
@@ -5598,11 +5630,9 @@
         "android.gpu.mali_power_state",
         "android.suspend",
         "counters.intervals",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "linux.cpu.frequency",
         "linux.devfreq",
-        "std.metasql.unparenthesize",
         "time.conversion",
         "wattson.cpu.arm_dsu",
         "wattson.cpu.estimates",
@@ -5704,13 +5734,10 @@
         "android.suspend",
         "android.user_list",
         "counters.intervals",
-        "intervals.fill_gaps",
         "intervals.intersect",
-        "intervals.overlap",
         "linux.cpu.frequency",
         "linux.devfreq",
         "linux.irqs",
-        "std.metasql.unparenthesize",
         "time.conversion",
         "wattson.cpu.arm_dsu",
         "wattson.cpu.estimates",
@@ -5810,13 +5837,10 @@
         "android.suspend",
         "android.user_list",
         "counters.intervals",
-        "intervals.fill_gaps",
         "intervals.intersect",
-        "intervals.overlap",
         "linux.cpu.frequency",
         "linux.devfreq",
         "linux.irqs",
-        "std.metasql.unparenthesize",
         "time.conversion",
         "wattson.cpu.arm_dsu",
         "wattson.cpu.estimates",
@@ -5852,7 +5876,6 @@
       "tags": [],
       "includes": [
         "android.process_metadata",
-        "intervals.overlap",
         "linux.irqs",
         "wattson.cpu.idle"
       ],
@@ -5865,10 +5888,7 @@
         "android.process_metadata",
         "android.user_list",
         "counters.intervals",
-        "intervals.intersect",
-        "intervals.overlap",
         "linux.irqs",
-        "std.metasql.unparenthesize",
         "wattson.cpu.idle",
         "wattson.device_infos",
         "wattson.utils"
@@ -5931,11 +5951,9 @@
         "android.gpu.mali_power_state",
         "android.suspend",
         "counters.intervals",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "linux.cpu.frequency",
         "linux.devfreq",
-        "std.metasql.unparenthesize",
         "time.conversion",
         "wattson.cpu.arm_dsu",
         "wattson.cpu.estimates",
@@ -6051,6 +6069,7 @@
       ],
       "include": "INCLUDE PERFETTO MODULE prelude.after_eof.events;",
       "moduleIncludes": [
+        "prelude.after_eof.tracks",
         "prelude.after_eof.views"
       ],
       "dataCheckSql": "SELECT EXISTS(SELECT 1 FROM __intrinsic_ftrace_event LIMIT 1) AS has_data",
@@ -6192,6 +6211,7 @@
       ],
       "transitiveIncludes": [
         "prelude.after_eof.casts",
+        "prelude.after_eof.tracks",
         "prelude.after_eof.views"
       ]
     },
@@ -7333,7 +7353,6 @@
         "android.suspend",
         "android.user_list",
         "graphs.search",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "intervals.overlap",
         "slices.flow",
@@ -7417,7 +7436,6 @@
         "android.suspend",
         "android.user_list",
         "graphs.search",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "intervals.overlap",
         "slices.flow",
@@ -7483,9 +7501,7 @@
         "android.suspend",
         "android.user_list",
         "graphs.search",
-        "intervals.fill_gaps",
-        "slices.flow",
-        "std.metasql.unparenthesize"
+        "slices.flow"
       ]
     },
     {
@@ -7532,9 +7548,7 @@
         "android.suspend",
         "android.user_list",
         "graphs.search",
-        "intervals.fill_gaps",
-        "slices.flow",
-        "std.metasql.unparenthesize"
+        "slices.flow"
       ]
     },
     {
@@ -7587,9 +7601,7 @@
         "android.suspend",
         "android.user_list",
         "graphs.search",
-        "intervals.fill_gaps",
-        "slices.flow",
-        "std.metasql.unparenthesize"
+        "slices.flow"
       ]
     },
     {
@@ -7636,9 +7648,7 @@
         "android.suspend",
         "android.user_list",
         "graphs.search",
-        "intervals.fill_gaps",
-        "slices.flow",
-        "std.metasql.unparenthesize"
+        "slices.flow"
       ]
     },
     {
@@ -7701,7 +7711,6 @@
         "android.suspend",
         "android.user_list",
         "graphs.search",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "intervals.overlap",
         "slices.flow",
@@ -8003,9 +8012,7 @@
         "android.suspend",
         "android.user_list",
         "graphs.search",
-        "intervals.fill_gaps",
-        "slices.flow",
-        "std.metasql.unparenthesize"
+        "slices.flow"
       ]
     },
     {
@@ -8230,8 +8237,7 @@
       ],
       "include": "INCLUDE PERFETTO MODULE android.battery.charging_states;",
       "moduleIncludes": [
-        "counters.intervals",
-        "intervals.fill_gaps"
+        "counters.intervals"
       ],
       "dataCheckSql": "SELECT EXISTS(SELECT 1 FROM slice WHERE name = 'BatteryStatus' LIMIT 1) AS has_data",
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/battery/charging_states.sql",
@@ -8270,9 +8276,7 @@
         }
       ],
       "transitiveIncludes": [
-        "counters.intervals",
-        "intervals.fill_gaps",
-        "std.metasql.unparenthesize"
+        "counters.intervals"
       ]
     },
     {
@@ -8835,10 +8839,428 @@
         "android.suspend",
         "android.user_list",
         "graphs.search",
-        "intervals.fill_gaps",
         "slices.flow",
         "slices.with_context",
-        "std.metasql.unparenthesize",
+        "std.thread.with_context"
+      ]
+    },
+    {
+      "id": "stdlib.android.frame_blocking_calls.blocking_calls_aggregation.android_cuj_frame_blocking_calls",
+      "name": "android_cuj_frame_blocking_calls",
+      "type": "table",
+      "category": "android",
+      "subcategory": "frame_blocking_calls.blocking_calls_aggregation",
+      "module": "android.frame_blocking_calls.blocking_calls_aggregation",
+      "package": "android",
+      "description": "Blocking call intervals within extended frame boundaries of completed jank CUJs, including UI thread critical blocking calls, RenderThread critical blocking calls, and `hwuiTask` running intervals during `DrawFrames`",
+      "fullDescription": "Blocking call intervals within extended frame boundaries of completed jank CUJs, including UI thread critical blocking calls, RenderThread critical blocking calls, and `hwuiTask` running intervals during `DrawFrames`. The join between critical blocking calls and frames is split into two branches (UI thread and RenderThread) with `UNION ALL` instead of an `OR` join so SQLite can use indexed equality joins on `utid`, while `bc.utid != frame.ui_thread_utid` keeps the branches disjoint.",
+      "visibility": "public",
+      "tags": [
+        "android",
+        "ui"
+      ],
+      "include": "INCLUDE PERFETTO MODULE android.frame_blocking_calls.blocking_calls_aggregation;",
+      "moduleIncludes": [
+        "android.critical_blocking_calls",
+        "android.cujs.base",
+        "android.cujs.sysui_cujs",
+        "android.frames.timeline"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/frame_blocking_calls/blocking_calls_aggregation.sql",
+      "columns": [
+        {
+          "name": "id",
+          "type": "LONG",
+          "description": "Unique row ID suitable for interval intersection."
+        },
+        {
+          "name": "call_id",
+          "type": "LONG",
+          "description": "Logical blocking call ID. Each critical blocking call slice in a frame has a distinct `call_id`, while all `hwuiTask` running intervals within the same `(cuj_id, frame_id)` share one `call_id` so `COUNT(DISTINCT call_id)` counts `hwuiTask` once per frame."
+        },
+        {
+          "name": "name",
+          "type": "STRING",
+          "description": "Standardized name of the blocking call (or 'hwuiTask')."
+        },
+        {
+          "name": "ts",
+          "type": "TIMESTAMP",
+          "description": "Start timestamp of the blocking call interval, clamped to the frame start."
+        },
+        {
+          "name": "dur",
+          "type": "DURATION",
+          "description": "Duration of the blocking call interval within the frame boundaries."
+        },
+        {
+          "name": "ts_end",
+          "type": "TIMESTAMP",
+          "description": "End timestamp of the blocking call interval, clamped to the frame end."
+        },
+        {
+          "name": "cuj_id",
+          "type": "LONG",
+          "description": "Unique incremental ID for each CUJ."
+        },
+        {
+          "name": "cuj_name",
+          "type": "STRING",
+          "description": "Name of the CUJ without the 'J<' prefix."
+        },
+        {
+          "name": "frame_id",
+          "type": "LONG",
+          "description": "Frame (vsync) ID."
+        },
+        {
+          "name": "layer_id",
+          "type": "LONG",
+          "description": "Layer ID associated with the frame."
+        },
+        {
+          "name": "upid",
+          "type": "JOINID(process.id)",
+          "description": "Process upid.",
+          "table": "process",
+          "column": "id"
+        },
+        {
+          "name": "process_name",
+          "type": "STRING",
+          "description": "Process name."
+        },
+        {
+          "name": "utid",
+          "type": "JOINID(thread.id)",
+          "description": "Thread utid on which the blocking call interval ran.",
+          "table": "thread",
+          "column": "id"
+        }
+      ],
+      "transitiveIncludes": [
+        "android.binder",
+        "android.critical_blocking_calls",
+        "android.cujs.base",
+        "android.cujs.sysui_cujs",
+        "android.frames.timeline",
+        "android.frames.timeline_maxsdk28",
+        "android.process_metadata",
+        "android.render_thread",
+        "android.slices",
+        "android.suspend",
+        "android.user_list",
+        "graphs.search",
+        "slices.flow",
+        "slices.with_context",
+        "std.thread.with_context"
+      ]
+    },
+    {
+      "id": "stdlib.android.frame_blocking_calls.instructions.android_cuj_frame_blocking_calls_instructions",
+      "name": "android_cuj_frame_blocking_calls_instructions",
+      "type": "table",
+      "category": "android",
+      "subcategory": "frame_blocking_calls.instructions",
+      "module": "android.frame_blocking_calls.instructions",
+      "package": "android",
+      "description": "Per-interval blocking call hardware instruction counts within extended frame boundaries of completed jank CUJs",
+      "fullDescription": "Per-interval blocking call hardware instruction counts within extended frame boundaries of completed jank CUJs. Empty if the trace does not contain Linux perf `instructions` counter intervals covering the CUJ blocking calls. Blocking call intervals that execute entirely off-CPU report `0.0` instructions when perf instruction counters are present.",
+      "visibility": "public",
+      "tags": [
+        "android",
+        "performance",
+        "ui"
+      ],
+      "include": "INCLUDE PERFETTO MODULE android.frame_blocking_calls.instructions;",
+      "moduleIncludes": [
+        "android.frame_blocking_calls.blocking_calls_aggregation",
+        "intervals.intersect"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/frame_blocking_calls/instructions.sql",
+      "columns": [
+        {
+          "name": "id",
+          "type": "LONG",
+          "description": "Unique row ID matching `android_cuj_frame_blocking_calls.id`."
+        },
+        {
+          "name": "call_id",
+          "type": "LONG",
+          "description": "Logical blocking call ID matching `android_cuj_frame_blocking_calls.call_id`."
+        },
+        {
+          "name": "name",
+          "type": "STRING",
+          "description": "Standardized name of the blocking call (or 'hwuiTask')."
+        },
+        {
+          "name": "ts",
+          "type": "TIMESTAMP",
+          "description": "Start timestamp of the blocking call interval, clamped to the frame start."
+        },
+        {
+          "name": "dur",
+          "type": "DURATION",
+          "description": "Duration of the blocking call interval within the frame boundaries."
+        },
+        {
+          "name": "ts_end",
+          "type": "TIMESTAMP",
+          "description": "End timestamp of the blocking call interval, clamped to the frame end."
+        },
+        {
+          "name": "cuj_id",
+          "type": "LONG",
+          "description": "Unique incremental ID for each CUJ."
+        },
+        {
+          "name": "cuj_name",
+          "type": "STRING",
+          "description": "Name of the CUJ without the 'J<' prefix."
+        },
+        {
+          "name": "frame_id",
+          "type": "LONG",
+          "description": "Frame (vsync) ID."
+        },
+        {
+          "name": "layer_id",
+          "type": "LONG",
+          "description": "Layer ID associated with the frame."
+        },
+        {
+          "name": "upid",
+          "type": "JOINID(process.id)",
+          "description": "Process upid.",
+          "table": "process",
+          "column": "id"
+        },
+        {
+          "name": "process_name",
+          "type": "STRING",
+          "description": "Process name."
+        },
+        {
+          "name": "utid",
+          "type": "JOINID(thread.id)",
+          "description": "Thread utid on which the blocking call interval ran.",
+          "table": "thread",
+          "column": "id"
+        },
+        {
+          "name": "instruction_count",
+          "type": "DOUBLE",
+          "description": "Estimated local hardware instructions executed on-CPU by `utid` during this blocking call interval."
+        }
+      ],
+      "transitiveIncludes": [
+        "android.binder",
+        "android.critical_blocking_calls",
+        "android.cujs.base",
+        "android.cujs.sysui_cujs",
+        "android.frame_blocking_calls.blocking_calls_aggregation",
+        "android.frames.timeline",
+        "android.frames.timeline_maxsdk28",
+        "android.process_metadata",
+        "android.render_thread",
+        "android.slices",
+        "android.suspend",
+        "android.user_list",
+        "graphs.search",
+        "intervals.intersect",
+        "slices.flow",
+        "slices.with_context",
+        "std.thread.with_context"
+      ]
+    },
+    {
+      "id": "stdlib.android.frame_blocking_calls.instructions.android_cuj_frame_blocking_calls_instructions_per_cuj",
+      "name": "android_cuj_frame_blocking_calls_instructions_per_cuj",
+      "type": "table",
+      "category": "android",
+      "subcategory": "frame_blocking_calls.instructions",
+      "module": "android.frame_blocking_calls.instructions",
+      "package": "android",
+      "description": "Per-CUJ per-frame summary of hardware instruction counts and occurrence counts for critical blocking calls (including `hwuiTask`) in completed jank CUJs",
+      "fullDescription": "Per-CUJ per-frame summary of hardware instruction counts and occurrence counts for critical blocking calls (including `hwuiTask`) in completed jank CUJs. Empty if the trace does not contain Linux perf `instructions` counter intervals covering the CUJ blocking calls.",
+      "visibility": "public",
+      "tags": [
+        "android",
+        "performance",
+        "ui"
+      ],
+      "include": "INCLUDE PERFETTO MODULE android.frame_blocking_calls.instructions;",
+      "moduleIncludes": [
+        "android.frame_blocking_calls.blocking_calls_aggregation",
+        "intervals.intersect"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/frame_blocking_calls/instructions.sql",
+      "columns": [
+        {
+          "name": "cuj_name",
+          "type": "STRING",
+          "description": "Name of the CUJ without the 'J<' prefix."
+        },
+        {
+          "name": "upid",
+          "type": "JOINID(process.id)",
+          "description": "Process upid.",
+          "table": "process",
+          "column": "id"
+        },
+        {
+          "name": "process_name",
+          "type": "STRING",
+          "description": "Process name."
+        },
+        {
+          "name": "blocking_call_name",
+          "type": "STRING",
+          "description": "Standardized name of the blocking call (or 'hwuiTask')."
+        },
+        {
+          "name": "max_instructions",
+          "type": "DOUBLE",
+          "description": "Maximum total local hardware instructions executed per frame for this blocking call across frames of the CUJ."
+        },
+        {
+          "name": "mean_instructions",
+          "type": "DOUBLE",
+          "description": "Mean local hardware instructions per frame (divided by all frames in the CUJ) for this blocking call."
+        },
+        {
+          "name": "max_cnt",
+          "type": "LONG",
+          "description": "Maximum distinct occurrences per frame for this blocking call across frames of the CUJ."
+        },
+        {
+          "name": "mean_cnt",
+          "type": "DOUBLE",
+          "description": "Mean distinct occurrences per frame (divided by all frames in the CUJ) for this blocking call."
+        }
+      ],
+      "transitiveIncludes": [
+        "android.binder",
+        "android.critical_blocking_calls",
+        "android.cujs.base",
+        "android.cujs.sysui_cujs",
+        "android.frame_blocking_calls.blocking_calls_aggregation",
+        "android.frames.timeline",
+        "android.frames.timeline_maxsdk28",
+        "android.process_metadata",
+        "android.render_thread",
+        "android.slices",
+        "android.suspend",
+        "android.user_list",
+        "graphs.search",
+        "intervals.intersect",
+        "slices.flow",
+        "slices.with_context",
+        "std.thread.with_context"
+      ]
+    },
+    {
+      "id": "stdlib.android.frame_blocking_calls.blocking_calls_aggregation.android_cuj_frame_boundaries",
+      "name": "android_cuj_frame_boundaries",
+      "type": "table",
+      "category": "android",
+      "subcategory": "frame_blocking_calls.blocking_calls_aggregation",
+      "module": "android.frame_blocking_calls.blocking_calls_aggregation",
+      "package": "android",
+      "description": "Extended frame boundaries for distinct frames within completed jank CUJs",
+      "fullDescription": "Extended frame boundaries for distinct frames within completed jank CUJs. Each frame starts at the actual frame start timestamp and extends until the earliest of the next actual frame start or the next `Choreographer#doFrame` start in the CUJ, falling back to the actual frame end on the final frame.",
+      "visibility": "public",
+      "tags": [
+        "android",
+        "ui"
+      ],
+      "include": "INCLUDE PERFETTO MODULE android.frame_blocking_calls.blocking_calls_aggregation;",
+      "moduleIncludes": [
+        "android.critical_blocking_calls",
+        "android.cujs.base",
+        "android.cujs.sysui_cujs",
+        "android.frames.timeline"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/frame_blocking_calls/blocking_calls_aggregation.sql",
+      "columns": [
+        {
+          "name": "cuj_id",
+          "type": "LONG",
+          "description": "Unique incremental ID for each CUJ."
+        },
+        {
+          "name": "cuj_name",
+          "type": "STRING",
+          "description": "Name of the CUJ without the 'J<' prefix."
+        },
+        {
+          "name": "upid",
+          "type": "JOINID(process.id)",
+          "description": "Process upid.",
+          "table": "process",
+          "column": "id"
+        },
+        {
+          "name": "process_name",
+          "type": "STRING",
+          "description": "Process name."
+        },
+        {
+          "name": "frame_id",
+          "type": "LONG",
+          "description": "Frame (vsync) ID."
+        },
+        {
+          "name": "layer_id",
+          "type": "LONG",
+          "description": "Layer ID associated with the frame."
+        },
+        {
+          "name": "ui_thread_utid",
+          "type": "JOINID(thread.id)",
+          "description": "UI thread utid.",
+          "table": "thread",
+          "column": "id"
+        },
+        {
+          "name": "render_thread_utid",
+          "type": "JOINID(thread.id)",
+          "description": "RenderThread utid.",
+          "table": "thread",
+          "column": "id"
+        },
+        {
+          "name": "ts",
+          "type": "TIMESTAMP",
+          "description": "Start timestamp of the frame."
+        },
+        {
+          "name": "ts_end",
+          "type": "TIMESTAMP",
+          "description": "Extended end timestamp of the frame."
+        },
+        {
+          "name": "dur",
+          "type": "DURATION",
+          "description": "Duration of the extended frame boundary."
+        }
+      ],
+      "transitiveIncludes": [
+        "android.binder",
+        "android.critical_blocking_calls",
+        "android.cujs.base",
+        "android.cujs.sysui_cujs",
+        "android.frames.timeline",
+        "android.frames.timeline_maxsdk28",
+        "android.process_metadata",
+        "android.render_thread",
+        "android.slices",
+        "android.suspend",
+        "android.user_list",
+        "graphs.search",
+        "slices.flow",
+        "slices.with_context",
         "std.thread.with_context"
       ]
     },
@@ -9489,9 +9911,7 @@
         }
       ],
       "transitiveIncludes": [
-        "android.suspend",
-        "intervals.fill_gaps",
-        "std.metasql.unparenthesize"
+        "android.suspend"
       ]
     },
     {
@@ -9524,9 +9944,7 @@
         }
       ],
       "transitiveIncludes": [
-        "android.suspend",
-        "intervals.fill_gaps",
-        "std.metasql.unparenthesize"
+        "android.suspend"
       ]
     },
     {
@@ -9559,9 +9977,7 @@
         }
       ],
       "transitiveIncludes": [
-        "android.suspend",
-        "intervals.fill_gaps",
-        "std.metasql.unparenthesize"
+        "android.suspend"
       ]
     },
     {
@@ -9594,9 +10010,7 @@
         }
       ],
       "transitiveIncludes": [
-        "android.suspend",
-        "intervals.fill_gaps",
-        "std.metasql.unparenthesize"
+        "android.suspend"
       ]
     },
     {
@@ -9629,9 +10043,7 @@
         }
       ],
       "transitiveIncludes": [
-        "android.suspend",
-        "intervals.fill_gaps",
-        "std.metasql.unparenthesize"
+        "android.suspend"
       ]
     },
     {
@@ -9664,9 +10076,7 @@
         }
       ],
       "transitiveIncludes": [
-        "android.suspend",
-        "intervals.fill_gaps",
-        "std.metasql.unparenthesize"
+        "android.suspend"
       ]
     },
     {
@@ -9699,9 +10109,7 @@
         }
       ],
       "transitiveIncludes": [
-        "android.suspend",
-        "intervals.fill_gaps",
-        "std.metasql.unparenthesize"
+        "android.suspend"
       ]
     },
     {
@@ -9734,9 +10142,7 @@
         }
       ],
       "transitiveIncludes": [
-        "android.suspend",
-        "intervals.fill_gaps",
-        "std.metasql.unparenthesize"
+        "android.suspend"
       ]
     },
     {
@@ -9769,9 +10175,7 @@
         }
       ],
       "transitiveIncludes": [
-        "android.suspend",
-        "intervals.fill_gaps",
-        "std.metasql.unparenthesize"
+        "android.suspend"
       ]
     },
     {
@@ -10382,7 +10786,9 @@
         "app-lifecycle"
       ],
       "include": "INCLUDE PERFETTO MODULE android.freezer;",
-      "moduleIncludes": [],
+      "moduleIncludes": [
+        "android.process_metadata"
+      ],
       "dataCheckSql": "SELECT EXISTS(SELECT 1 FROM slice WHERE name GLOB 'Freeze *' LIMIT 1) AS has_data",
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/freezer.sql",
       "columns": [
@@ -10419,7 +10825,10 @@
           "description": "Unfreeze reason String."
         }
       ],
-      "transitiveIncludes": []
+      "transitiveIncludes": [
+        "android.process_metadata",
+        "android.user_list"
+      ]
     },
     {
       "id": "stdlib.android.freezer.android_freezer_state_statsd",
@@ -10437,7 +10846,9 @@
         "app-lifecycle"
       ],
       "include": "INCLUDE PERFETTO MODULE android.freezer;",
-      "moduleIncludes": [],
+      "moduleIncludes": [
+        "android.process_metadata"
+      ],
       "dataCheckSql": "SELECT EXISTS(SELECT 1 FROM slice WHERE name GLOB 'Freeze *' LIMIT 1) AS has_data",
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/freezer.sql",
       "columns": [
@@ -10477,7 +10888,10 @@
           "description": "Reason for unfreezing."
         }
       ],
-      "transitiveIncludes": []
+      "transitiveIncludes": [
+        "android.process_metadata",
+        "android.user_list"
+      ]
     },
     {
       "id": "stdlib.prelude.after_eof.views.android_game_intervention_list",
@@ -10877,6 +11291,184 @@
       "transitiveIncludes": []
     },
     {
+      "id": "stdlib.android.memory.heap_graph.binder_proxy.android_heap_graph_binder_proxy",
+      "name": "android_heap_graph_binder_proxy",
+      "type": "table",
+      "category": "android",
+      "subcategory": "memory.heap_graph.binder_proxy",
+      "module": "android.memory.heap_graph.binder_proxy",
+      "package": "android",
+      "description": "Reachable `android.os.BinderProxy` objects in ART heap dumps, annotated with their wrapping AIDL `*$Stub$Proxy` class, their nearest non-wrapper dominator (`holder_*`), and any `IBinder.DeathRecipient` registrations in `BinderProxy.mDeathRecipients`",
+      "fullDescription": "Reachable `android.os.BinderProxy` objects in ART heap dumps, annotated with their wrapping AIDL `*$Stub$Proxy` class, their nearest non-wrapper dominator (`holder_*`), and any `IBinder.DeathRecipient` registrations in `BinderProxy.mDeathRecipients`. A holder does not mean a leak: most proxies belong to live sessions, registered callbacks, or process-lifetime service caches. Across heap dumps of peer processes, `replace(proxy_class_name, '$Stub$Proxy', '$Stub')` matches `stub_class_name` in `android_heap_graph_binder_stub`, though a single-process dump cannot tell which remote process owns a stub.",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE android.memory.heap_graph.binder_proxy;",
+      "moduleIncludes": [
+        "android.memory.heap_graph.class_classification",
+        "android.memory.heap_graph.dominator_tree",
+        "android.memory.heap_graph.excluded_refs"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/memory/heap_graph/binder_proxy.sql",
+      "columns": [
+        {
+          "name": "id",
+          "type": "JOINID(heap_graph_object.id)",
+          "description": "Heap graph object id of the `android.os.BinderProxy` instance.",
+          "table": "heap_graph_object",
+          "column": "id"
+        },
+        {
+          "name": "upid",
+          "type": "JOINID(process.id)",
+          "description": "Process upid that owns the heap dump.",
+          "table": "process",
+          "column": "id"
+        },
+        {
+          "name": "graph_sample_ts",
+          "type": "TIMESTAMP",
+          "description": "Heap dump timestamp."
+        },
+        {
+          "name": "proxy_class_id",
+          "type": "JOINID(heap_graph_class.id)",
+          "description": "Class id of the `*$Stub$Proxy` object directly referencing this proxy, or NULL if none (e.g. raw `IBinder` tokens).",
+          "table": "heap_graph_class",
+          "column": "id"
+        },
+        {
+          "name": "proxy_class_name",
+          "type": "STRING",
+          "description": "Java class name (deobfuscated if available) of the `*$Stub$Proxy` object directly referencing this proxy, or NULL if none. When multiple `*$Stub$Proxy` classes reference the same proxy, the first by name wins."
+        },
+        {
+          "name": "holder_id",
+          "type": "JOINID(heap_graph_object.id)",
+          "description": "Heap graph object id of the nearest dominator that is not a container, `*$Stub$Proxy`, or `RemoteCallbackList` wrapper, or NULL if no single non-wrapper object dominates the proxy.",
+          "table": "heap_graph_object",
+          "column": "id"
+        },
+        {
+          "name": "holder_type_id",
+          "type": "JOINID(heap_graph_class.id)",
+          "description": "Class id of `holder_id`, or NULL if `holder_id` is NULL.",
+          "table": "heap_graph_class",
+          "column": "id"
+        },
+        {
+          "name": "holder_class_name",
+          "type": "STRING",
+          "description": "Java class name (deobfuscated if available) of `holder_id` (e.g. `java.lang.Class<Foo>` when held by a static field), or NULL if `holder_id` is NULL."
+        },
+        {
+          "name": "holder_field_name",
+          "type": "STRING",
+          "description": "Field on `holder_id` (deobfuscated if available) that directly references the proxy or its outermost wrapper, or NULL if `holder_id` is NULL or dominates through multiple intermediate non-wrapper paths."
+        },
+        {
+          "name": "death_recipient_count",
+          "type": "LONG",
+          "description": "Number of recipient entries in `BinderProxy.mDeathRecipients` (0 when the list is empty or the field is absent from the dump)."
+        },
+        {
+          "name": "death_recipient_class_name",
+          "type": "STRING",
+          "description": "First recipient Java class name (deobfuscated if available) ordered by name in `BinderProxy.mDeathRecipients`, or NULL when `death_recipient_count` is 0."
+        }
+      ],
+      "transitiveIncludes": [
+        "android.memory.heap_graph.class_classification",
+        "android.memory.heap_graph.dominator_tree",
+        "android.memory.heap_graph.excluded_refs"
+      ]
+    },
+    {
+      "id": "stdlib.android.memory.heap_graph.binder.android_heap_graph_binder_stub",
+      "name": "android_heap_graph_binder_stub",
+      "type": "table",
+      "category": "android",
+      "subcategory": "memory.heap_graph.binder",
+      "module": "android.memory.heap_graph.binder",
+      "package": "android",
+      "description": "`android.os.Binder` objects held by a JNI global reference (`ROOT_JNI_GLOBAL`) in ART heap dumps",
+      "fullDescription": "`android.os.Binder` objects held by a JNI global reference (`ROOT_JNI_GLOBAL`) in ART heap dumps. For Binder objects this is typically `JavaBBinder` keeping the object alive while other processes hold handles to it. Annotated with the concrete class, the nearest `*$Stub` superclass, and whether the process's own GC roots no longer reach the object (`is_remote_only`). Remote-only does not mean leaked: stubs can be legitimately held by clients, `servicemanager`, in-flight transactions, or peers that have not yet released their handles.",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE android.memory.heap_graph.binder;",
+      "moduleIncludes": [
+        "android.memory.heap_graph.excluded_refs"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/memory/heap_graph/binder.sql",
+      "columns": [
+        {
+          "name": "id",
+          "type": "JOINID(heap_graph_object.id)",
+          "description": "Heap graph object id of the Binder object.",
+          "table": "heap_graph_object",
+          "column": "id"
+        },
+        {
+          "name": "upid",
+          "type": "JOINID(process.id)",
+          "description": "Process upid that owns the heap dump.",
+          "table": "process",
+          "column": "id"
+        },
+        {
+          "name": "graph_sample_ts",
+          "type": "TIMESTAMP",
+          "description": "Heap dump timestamp."
+        },
+        {
+          "name": "type_id",
+          "type": "JOINID(heap_graph_class.id)",
+          "description": "Class id of the Binder object.",
+          "table": "heap_graph_class",
+          "column": "id"
+        },
+        {
+          "name": "class_name",
+          "type": "STRING",
+          "description": "Concrete Java class name of the Binder object (deobfuscated if available)."
+        },
+        {
+          "name": "stub_class_id",
+          "type": "JOINID(heap_graph_class.id)",
+          "description": "Class id of the nearest `*$Stub` superclass, or NULL if there is none.",
+          "table": "heap_graph_class",
+          "column": "id"
+        },
+        {
+          "name": "stub_class_name",
+          "type": "STRING",
+          "description": "Nearest `*$Stub` superclass (e.g. `IFoo$Stub` for an AIDL implementation), or NULL if there is none (e.g. direct `android.os.Binder` subclasses)."
+        },
+        {
+          "name": "is_remote_only",
+          "type": "BOOL",
+          "description": "Whether the object is NOT reachable from any of the process's own GC roots, i.e. it is kept alive only by its JNI global reference (typically remote handles)."
+        },
+        {
+          "name": "remote_only_obj_count",
+          "type": "LONG",
+          "description": "Count of remote-only objects (reachable only from remote-only Binder stubs, self inclusive) attributed to this stub instance by a BFS forest (closest stub wins, then first class name). The split between stubs of the same class is arbitrary: compare heap dumps by class, not by instance."
+        },
+        {
+          "name": "remote_only_size_bytes",
+          "type": "LONG",
+          "description": "Java bytes (`self_size`) of remote-only objects attributed to this stub instance. Sum across a dump is exact; an object reachable from several stubs is attributed to the closest one."
+        },
+        {
+          "name": "remote_only_native_size_bytes",
+          "type": "LONG",
+          "description": "Native bytes (`native_size`) of remote-only objects attributed to this stub instance."
+        }
+      ],
+      "transitiveIncludes": [
+        "android.memory.heap_graph.excluded_refs"
+      ]
+    },
+    {
       "id": "stdlib.android.memory.heap_graph.heap_graph_class_aggregation.android_heap_graph_class_aggregation",
       "name": "android_heap_graph_class_aggregation",
       "type": "table",
@@ -10893,6 +11485,7 @@
       ],
       "include": "INCLUDE PERFETTO MODULE android.memory.heap_graph.heap_graph_class_aggregation;",
       "moduleIncludes": [
+        "android.memory.heap_graph.class_classification",
         "android.memory.heap_graph.dominator_tree",
         "graphs.partition"
       ],
@@ -10923,7 +11516,22 @@
         {
           "name": "is_libcore_or_array",
           "type": "BOOL",
-          "description": "Is type an instance of a libcore object (java.*) or array"
+          "description": "Deprecated: use is_language_runtime, is_container, and is_static_class instead."
+        },
+        {
+          "name": "is_language_runtime",
+          "type": "BOOL",
+          "description": "Whether the class is part of standard Java/Kotlin runtime libraries."
+        },
+        {
+          "name": "is_container",
+          "type": "BOOL",
+          "description": "Whether the class is an array or standard collection/container."
+        },
+        {
+          "name": "is_static_class",
+          "type": "BOOL",
+          "description": "Whether the object is a java.lang.Class<*> singleton."
         },
         {
           "name": "obj_count",
@@ -10972,10 +11580,9 @@
         }
       ],
       "transitiveIncludes": [
+        "android.memory.heap_graph.class_classification",
         "android.memory.heap_graph.dominator_tree",
         "android.memory.heap_graph.excluded_refs",
-        "android.memory.heap_graph.raw_dominator_tree",
-        "graphs.dominator_tree",
         "graphs.partition"
       ]
     },
@@ -11090,8 +11697,8 @@
         "android.memory.heap_graph.class_tree",
         "android.memory.heap_graph.excluded_refs",
         "android.memory.heap_graph.helpers",
-        "graphs.scan",
-        "graphs.search"
+        "android.memory.heap_graph.shortest_path_tree",
+        "graphs.scan"
       ]
     },
     {
@@ -11995,7 +12602,7 @@
       "module": "android.cujs.base",
       "package": "android",
       "description": "Resolves the layer name for each CUJ",
-      "fullDescription": "Resolves the layer name for each CUJ. The layer can be identified in two ways: 1. Explicit Marker: The Android framework may log a 'layerId#<id>' instant event. If present, this is extracted into `cuj_layer_id` inside `_cuj_instant_events`. We then filter `_all_frames_in_cuj` to exactly that layer. 2. Fallback Inference: On older versions and when the proper way to report CUJs is not used (e.g. on some apps that copy the same convention to report CUJs), we try to infer the layer name. We check if the app rendered exactly one layer per frame during the CUJ (`HAVING MAX(layers_per_frame) = 1`). If so, we safely use that layer's name (extracted via `MAX(layer_name)`). If multiple layers were rendered simultaneously, we can't safely guess, and return NULL.",
+      "fullDescription": "Resolves the layer name for each CUJ. The layer can be identified in two ways: 1. Explicit Marker: The Android framework may log a 'layerId#<id>' instant event. If present, this is extracted into `cuj_layer_id` inside `_cuj_instant_events`. We then take the name of the layer with that id from FrameTimeline. 2. Fallback Inference: On older versions and when the proper way to report CUJs is not used (e.g. on some apps that copy the same convention to report CUJs), we try to infer the layer name. We check if the app rendered exactly one layer per frame during the CUJ (`HAVING MAX(layers_per_frame) = 1`). If so, we safely use that layer's name (extracted via `MAX(layer_name)`). If multiple layers were rendered simultaneously, we can't safely guess, and return NULL.",
       "visibility": "public",
       "tags": [
         "android",
@@ -12313,10 +12920,8 @@
         "android.suspend",
         "android.user_list",
         "graphs.search",
-        "intervals.fill_gaps",
         "slices.flow",
         "slices.with_context",
-        "std.metasql.unparenthesize",
         "std.thread.with_context"
       ]
     },
@@ -12372,9 +12977,7 @@
         "android.job_scheduler_states_track_events",
         "android.screen_state",
         "counters.intervals",
-        "intervals.fill_gaps",
-        "intervals.intersect",
-        "std.metasql.unparenthesize"
+        "intervals.intersect"
       ]
     },
     {
@@ -12429,9 +13032,7 @@
         "android.job_scheduler_states_track_events",
         "android.screen_state",
         "counters.intervals",
-        "intervals.fill_gaps",
-        "intervals.intersect",
-        "std.metasql.unparenthesize"
+        "intervals.intersect"
       ]
     },
     {
@@ -12596,9 +13197,7 @@
         "android.job_scheduler_states_track_events",
         "android.screen_state",
         "counters.intervals",
-        "intervals.fill_gaps",
-        "intervals.intersect",
-        "std.metasql.unparenthesize"
+        "intervals.intersect"
       ]
     },
     {
@@ -12805,9 +13404,7 @@
         "android.job_scheduler_states_track_events",
         "android.screen_state",
         "counters.intervals",
-        "intervals.fill_gaps",
-        "intervals.intersect",
-        "std.metasql.unparenthesize"
+        "intervals.intersect"
       ]
     },
     {
@@ -12922,6 +13519,16 @@
           "name": "job_start_latency_ms",
           "type": "LONG",
           "description": "The latency in ms between scheduling and starting."
+        },
+        {
+          "name": "pending_queue_wait_ms",
+          "type": "LONG",
+          "description": "Total time in ms the job spent in JobScheduler's pending queue waiting for an execution slot before starting, or -1 if it never entered the queue. Together with `outside_pending_queue_ms` and the time before the job first entered the queue, this adds up to `job_start_latency_ms`. NULL if the device didn't log it."
+        },
+        {
+          "name": "outside_pending_queue_ms",
+          "type": "LONG",
+          "description": "Time in ms between the job first entering the pending queue and starting during which it wasn't in the queue, or -1 if it never entered the queue. NULL if the device didn't log it."
         },
         {
           "name": "num_uncompleted_work_items",
@@ -13098,9 +13705,7 @@
         "android.job_scheduler_states_track_events",
         "android.screen_state",
         "counters.intervals",
-        "intervals.fill_gaps",
-        "intervals.intersect",
-        "std.metasql.unparenthesize"
+        "intervals.intersect"
       ]
     },
     {
@@ -13317,9 +13922,7 @@
         "android.job_scheduler_states_track_events",
         "android.screen_state",
         "counters.intervals",
-        "intervals.fill_gaps",
-        "intervals.intersect",
-        "std.metasql.unparenthesize"
+        "intervals.intersect"
       ]
     },
     {
@@ -13383,9 +13986,7 @@
       ],
       "transitiveIncludes": [
         "android.suspend",
-        "counters.intervals",
-        "intervals.fill_gaps",
-        "std.metasql.unparenthesize"
+        "counters.intervals"
       ]
     },
     {
@@ -13655,7 +14256,6 @@
       "transitiveIncludes": [
         "android.monitor_contention",
         "android.suspend",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "intervals.overlap",
         "slices.with_context",
@@ -13989,9 +14589,7 @@
         }
       ],
       "transitiveIncludes": [
-        "android.suspend",
-        "intervals.fill_gaps",
-        "std.metasql.unparenthesize"
+        "android.suspend"
       ]
     },
     {
@@ -14175,9 +14773,7 @@
         }
       ],
       "transitiveIncludes": [
-        "android.suspend",
-        "intervals.fill_gaps",
-        "std.metasql.unparenthesize"
+        "android.suspend"
       ]
     },
     {
@@ -14223,9 +14819,7 @@
         }
       ],
       "transitiveIncludes": [
-        "android.suspend",
-        "intervals.fill_gaps",
-        "std.metasql.unparenthesize"
+        "android.suspend"
       ]
     },
     {
@@ -14236,8 +14830,8 @@
       "subcategory": "monitor_contention",
       "module": "android.monitor_contention",
       "package": "android",
-      "description": "Contains the span join of the first waiters in the |android_monitor_contention_chain| with their blocking_thread thread state",
-      "fullDescription": "Contains the span join of the first waiters in the |android_monitor_contention_chain| with their blocking_thread thread state. Note that we only span join the duration where the lock was actually held and contended. This can be less than the duration the lock was 'waited on' when a different waiter acquired the lock earlier than the first waiter.",
+      "description": "Contains the intersection of the first waiters in the |android_monitor_contention_chain| with their blocking_thread thread state",
+      "fullDescription": "Contains the intersection of the first waiters in the |android_monitor_contention_chain| with their blocking_thread thread state. Note that we only intersect the duration where the lock was actually held and contended. This can be less than the duration the lock was 'waited on' when a different waiter acquired the lock earlier than the first waiter.",
       "visibility": "public",
       "tags": [
         "android",
@@ -14283,9 +14877,7 @@
         }
       ],
       "transitiveIncludes": [
-        "android.suspend",
-        "intervals.fill_gaps",
-        "std.metasql.unparenthesize"
+        "android.suspend"
       ]
     },
     {
@@ -14331,9 +14923,7 @@
         }
       ],
       "transitiveIncludes": [
-        "android.suspend",
-        "intervals.fill_gaps",
-        "std.metasql.unparenthesize"
+        "android.suspend"
       ]
     },
     {
@@ -14374,9 +14964,7 @@
         }
       ],
       "transitiveIncludes": [
-        "android.suspend",
-        "intervals.fill_gaps",
-        "std.metasql.unparenthesize"
+        "android.suspend"
       ]
     },
     {
@@ -15386,8 +15974,7 @@
       ],
       "include": "INCLUDE PERFETTO MODULE android.screen_state;",
       "moduleIncludes": [
-        "counters.intervals",
-        "intervals.fill_gaps"
+        "counters.intervals"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/screen_state.sql",
       "columns": [
@@ -15430,9 +16017,7 @@
         }
       ],
       "transitiveIncludes": [
-        "counters.intervals",
-        "intervals.fill_gaps",
-        "std.metasql.unparenthesize"
+        "counters.intervals"
       ]
     },
     {
@@ -15633,10 +16218,8 @@
         "android.suspend",
         "android.user_list",
         "graphs.search",
-        "intervals.fill_gaps",
         "slices.flow",
         "slices.with_context",
-        "std.metasql.unparenthesize",
         "std.thread.with_context"
       ]
     },
@@ -15864,7 +16447,6 @@
       "moduleIncludes": [
         "android.startup.startups",
         "intervals.intersect",
-        "intervals.overlap",
         "slices.hierarchy",
         "slices.with_context"
       ],
@@ -15919,10 +16501,8 @@
         "android.user_list",
         "android.version",
         "intervals.intersect",
-        "intervals.overlap",
         "slices.hierarchy",
         "slices.with_context",
-        "std.metasql.unparenthesize",
         "std.thread.with_context"
       ]
     },
@@ -16716,16 +17296,14 @@
       "module": "android.suspend",
       "package": "android",
       "description": "Table of suspended and awake slices",
-      "fullDescription": "Table of suspended and awake slices. Selects either the minimal or full ftrace source depending on what's available, marks suspended periods, and complements them to give awake periods.",
+      "fullDescription": "Table of suspended and awake slices. Selects either the minimal or full ftrace source depending on what's available, marks suspended periods, and complements them to give awake periods: every machine with suspend slices is awake between them. The primary machine is awake throughout if it never suspended, since the trace starting and ending at all says it was awake. Other machines may have been asleep throughout, so nothing is known of them without suspend slices.",
       "visibility": "public",
       "tags": [
         "android",
         "power"
       ],
       "include": "INCLUDE PERFETTO MODULE android.suspend;",
-      "moduleIncludes": [
-        "intervals.fill_gaps"
-      ],
+      "moduleIncludes": [],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/suspend.sql",
       "columns": [
         {
@@ -16751,10 +17329,7 @@
           "column": "id"
         }
       ],
-      "transitiveIncludes": [
-        "intervals.fill_gaps",
-        "std.metasql.unparenthesize"
-      ]
+      "transitiveIncludes": []
     },
     {
       "id": "stdlib.android.binder.android_sync_binder_blocked_functions_by_txn",
@@ -16836,9 +17411,7 @@
         "android.suspend",
         "android.user_list",
         "graphs.search",
-        "intervals.fill_gaps",
-        "slices.flow",
-        "std.metasql.unparenthesize"
+        "slices.flow"
       ]
     },
     {
@@ -16921,9 +17494,7 @@
         "android.suspend",
         "android.user_list",
         "graphs.search",
-        "intervals.fill_gaps",
-        "slices.flow",
-        "std.metasql.unparenthesize"
+        "slices.flow"
       ]
     },
     {
@@ -17039,10 +17610,8 @@
         "android.suspend",
         "android.user_list",
         "graphs.search",
-        "intervals.fill_gaps",
         "slices.flow",
         "slices.with_context",
-        "std.metasql.unparenthesize",
         "std.thread.with_context"
       ]
     },
@@ -17137,10 +17706,8 @@
         "android.suspend",
         "android.user_list",
         "graphs.search",
-        "intervals.fill_gaps",
         "slices.flow",
         "slices.with_context",
-        "std.metasql.unparenthesize",
         "std.thread.with_context"
       ]
     },
@@ -17485,9 +18052,7 @@
         }
       ],
       "transitiveIncludes": [
-        "android.suspend",
-        "intervals.fill_gaps",
-        "std.metasql.unparenthesize"
+        "android.suspend"
       ]
     },
     {
@@ -20023,6 +20588,416 @@
       "transitiveIncludes": []
     },
     {
+      "id": "stdlib.chrome.loadline_2.chrome_loadline2_js_script_slices",
+      "name": "chrome_loadline2_js_script_slices",
+      "type": "table",
+      "category": "chrome",
+      "subcategory": "loadline_2",
+      "module": "chrome.loadline_2",
+      "package": "chrome",
+      "description": "Individual timeline slices for each stage of a JS script lifecycle",
+      "fullDescription": "Individual timeline slices for each stage of a JS script lifecycle.",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE chrome.loadline_2;",
+      "moduleIncludes": [
+        "intervals.intersect",
+        "slices.with_context"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/chrome/loadline_2.sql",
+      "columns": [
+        {
+          "name": "id",
+          "type": "LONG",
+          "description": "Unique slice row identifier"
+        },
+        {
+          "name": "script_id",
+          "type": "LONG",
+          "description": "Foreign key into chrome_loadline2_js_scripts"
+        },
+        {
+          "name": "page",
+          "type": "STRING",
+          "description": "Name of the page"
+        },
+        {
+          "name": "stage",
+          "type": "STRING",
+          "description": "Lifecycle stage ('request', 'response', 'bg_parse', 'compile', 'execute')"
+        },
+        {
+          "name": "ts",
+          "type": "TIMESTAMP",
+          "description": "Stage start timestamp"
+        },
+        {
+          "name": "dur",
+          "type": "DURATION",
+          "description": "Stage duration"
+        },
+        {
+          "name": "script_name",
+          "type": "STRING",
+          "description": "Heuristic human-readable script or bundle name derived from the URL"
+        },
+        {
+          "name": "url",
+          "type": "STRING",
+          "description": "Script URL (or document URL for inline scripts when available, else NULL)"
+        },
+        {
+          "name": "script_kind",
+          "type": "STRING",
+          "description": "Script classification ('streamed', 'external_non_streamed', 'module', 'preloaded_unused', 'inline')"
+        },
+        {
+          "name": "is_inline",
+          "type": "BOOL",
+          "description": "True if inline script, false if external script"
+        },
+        {
+          "name": "is_streamed",
+          "type": "BOOL",
+          "description": "True if parsed on background streaming thread, false otherwise"
+        },
+        {
+          "name": "not_streamed_reason",
+          "type": "STRING",
+          "description": "Reason why script was not streamed (or 'preloaded (never executed)' for unused preloads), or NULL if background-streamed and executed"
+        },
+        {
+          "name": "thread_name",
+          "type": "STRING",
+          "description": "Thread where compilation/execution (or background parse for unused preloads) occurred"
+        },
+        {
+          "name": "milestone_status",
+          "type": "STRING",
+          "description": "Execution timing relative to visual_mark and interactive_mark ('before_visual', 'spanning_visual', 'before_interactive', 'spanning_interactive', 'after_interactive', 'never_executed', or NULL if marks are missing)"
+        }
+      ],
+      "transitiveIncludes": [
+        "intervals.intersect",
+        "slices.with_context",
+        "std.thread.with_context"
+      ]
+    },
+    {
+      "id": "stdlib.chrome.loadline_2.chrome_loadline2_js_scripts",
+      "name": "chrome_loadline2_js_scripts",
+      "type": "table",
+      "category": "chrome",
+      "subcategory": "loadline_2",
+      "module": "chrome.loadline_2",
+      "package": "chrome",
+      "description": "End-to-end JS script lifecycle per page (request -> response -> bg_parse -> compile -> execute)",
+      "fullDescription": "End-to-end JS script lifecycle per page (request -> response -> bg_parse -> compile -> execute).",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE chrome.loadline_2;",
+      "moduleIncludes": [
+        "intervals.intersect",
+        "slices.with_context"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/chrome/loadline_2.sql",
+      "columns": [
+        {
+          "name": "script_id",
+          "type": "LONG",
+          "description": "Unique script identifier"
+        },
+        {
+          "name": "page",
+          "type": "STRING",
+          "description": "Name of the page"
+        },
+        {
+          "name": "script_name",
+          "type": "STRING",
+          "description": "Heuristic human-readable script or bundle name derived from the URL"
+        },
+        {
+          "name": "url",
+          "type": "STRING",
+          "description": "Script URL (or document URL for inline scripts when available, else NULL)"
+        },
+        {
+          "name": "script_kind",
+          "type": "STRING",
+          "description": "Script classification ('streamed', 'external_non_streamed', 'module', 'preloaded_unused', 'inline')"
+        },
+        {
+          "name": "is_inline",
+          "type": "BOOL",
+          "description": "True if inline script, false if external script"
+        },
+        {
+          "name": "is_streamed",
+          "type": "BOOL",
+          "description": "True if parsed on background streaming thread, false otherwise"
+        },
+        {
+          "name": "not_streamed_reason",
+          "type": "STRING",
+          "description": "Reason why script was not streamed (or 'preloaded (never executed)' for unused preloads), or NULL if background-streamed and executed"
+        },
+        {
+          "name": "thread_name",
+          "type": "STRING",
+          "description": "Thread where compilation/execution (or background parse for unused preloads) occurred"
+        },
+        {
+          "name": "milestone_status",
+          "type": "STRING",
+          "description": "Execution timing relative to visual_mark and interactive_mark ('before_visual', 'spanning_visual', 'before_interactive', 'spanning_interactive', 'after_interactive', 'never_executed', or NULL if marks are missing)"
+        },
+        {
+          "name": "request_start_ts",
+          "type": "TIMESTAMP",
+          "description": "Network request start timestamp, or NULL for inline scripts"
+        },
+        {
+          "name": "response_start_ts",
+          "type": "TIMESTAMP",
+          "description": "Network response headers received timestamp, or NULL for inline scripts"
+        },
+        {
+          "name": "response_end_ts",
+          "type": "TIMESTAMP",
+          "description": "Network response completion timestamp, or NULL for inline scripts"
+        },
+        {
+          "name": "request_dur",
+          "type": "DURATION",
+          "description": "Network request-to-response-start duration, or NULL for inline scripts"
+        },
+        {
+          "name": "response_dur",
+          "type": "DURATION",
+          "description": "Network response body transfer duration, or NULL for inline scripts"
+        },
+        {
+          "name": "bg_parse_start_ts",
+          "type": "TIMESTAMP",
+          "description": "Background streaming parse start timestamp, or NULL if not streamed"
+        },
+        {
+          "name": "bg_parse_end_ts",
+          "type": "TIMESTAMP",
+          "description": "Background streaming parse end timestamp, or NULL if not streamed"
+        },
+        {
+          "name": "bg_parse_dur",
+          "type": "DURATION",
+          "description": "Total wall duration of background streaming parse, or NULL if not streamed"
+        },
+        {
+          "name": "bg_parse_cpu_dur",
+          "type": "DURATION",
+          "description": "V8 background parser active parsing duration (v8.parseOnBackgroundParsing), or NULL if not streamed"
+        },
+        {
+          "name": "bg_parse_wait_dur",
+          "type": "DURATION",
+          "description": "V8 background parser stream wait duration (v8.parseOnBackgroundWaiting), or NULL if not streamed"
+        },
+        {
+          "name": "compile_ts",
+          "type": "TIMESTAMP",
+          "description": "Main-thread compilation start timestamp, or NULL if never compiled"
+        },
+        {
+          "name": "compile_dur",
+          "type": "DURATION",
+          "description": "Main-thread compilation duration, or NULL if never compiled"
+        },
+        {
+          "name": "execute_ts",
+          "type": "TIMESTAMP",
+          "description": "Script execution start timestamp, or NULL if never executed"
+        },
+        {
+          "name": "execute_dur",
+          "type": "DURATION",
+          "description": "Script execution duration, or NULL if never executed"
+        },
+        {
+          "name": "end_to_end_dur",
+          "type": "DURATION",
+          "description": "Total end-to-end duration from earliest stage start to latest stage end"
+        }
+      ],
+      "transitiveIncludes": [
+        "intervals.intersect",
+        "slices.with_context",
+        "std.thread.with_context"
+      ]
+    },
+    {
+      "id": "stdlib.chrome.loadline_2.chrome_loadline2_presentation_breakdown",
+      "name": "chrome_loadline2_presentation_breakdown",
+      "type": "table",
+      "category": "chrome",
+      "subcategory": "loadline_2",
+      "module": "chrome.loadline_2",
+      "package": "chrome",
+      "description": "Frame pipeline (PipelineReporter) sub-stage slices during the presentation stage",
+      "fullDescription": "Frame pipeline (PipelineReporter) sub-stage slices during the presentation stage.",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE chrome.loadline_2;",
+      "moduleIncludes": [
+        "intervals.intersect",
+        "slices.with_context"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/chrome/loadline_2.sql",
+      "columns": [
+        {
+          "name": "id",
+          "type": "LONG",
+          "description": "Unique row identifier"
+        },
+        {
+          "name": "page",
+          "type": "STRING",
+          "description": "Name of the page"
+        },
+        {
+          "name": "metric",
+          "type": "STRING",
+          "description": "Metric name ('visual' or 'interactive')"
+        },
+        {
+          "name": "stage_depth",
+          "type": "LONG",
+          "description": "Relative depth in the PipelineReporter hierarchy (1 or 2)"
+        },
+        {
+          "name": "stage",
+          "type": "STRING",
+          "description": "Frame pipeline sub-stage name"
+        },
+        {
+          "name": "ts",
+          "type": "TIMESTAMP",
+          "description": "Start timestamp clamped to the presentation stage"
+        },
+        {
+          "name": "dur",
+          "type": "DURATION",
+          "description": "Duration clamped to the presentation stage"
+        }
+      ],
+      "transitiveIncludes": [
+        "intervals.intersect",
+        "slices.with_context",
+        "std.thread.with_context"
+      ]
+    },
+    {
+      "id": "stdlib.chrome.loadline_2.chrome_loadline2_renderer_breakdown",
+      "name": "chrome_loadline2_renderer_breakdown",
+      "type": "table",
+      "category": "chrome",
+      "subcategory": "loadline_2",
+      "module": "chrome.loadline_2",
+      "package": "chrome",
+      "description": "Breakdown of the LoadLine 2 renderer stage by CrRendererMain subsystem",
+      "fullDescription": "Breakdown of the LoadLine 2 renderer stage by CrRendererMain subsystem.",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE chrome.loadline_2;",
+      "moduleIncludes": [
+        "intervals.intersect",
+        "slices.with_context"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/chrome/loadline_2.sql",
+      "columns": [
+        {
+          "name": "page",
+          "type": "STRING",
+          "description": "Name of the page"
+        },
+        {
+          "name": "metric",
+          "type": "STRING",
+          "description": "Metric name ('visual' or 'interactive')"
+        },
+        {
+          "name": "subsystem",
+          "type": "STRING",
+          "description": "Renderer main-thread activity category ('html_parse', 'js_compile', 'js_execute', 'style_layout', 'paint_compositing', 'navigation_commit', 'gc', 'other_busy', 'runnable', or 'idle_wait')"
+        },
+        {
+          "name": "dur",
+          "type": "DURATION",
+          "description": "Total duration in the renderer stage"
+        },
+        {
+          "name": "percentage",
+          "type": "DOUBLE",
+          "description": "Percentage of the renderer stage duration"
+        }
+      ],
+      "transitiveIncludes": [
+        "intervals.intersect",
+        "slices.with_context",
+        "std.thread.with_context"
+      ]
+    },
+    {
+      "id": "stdlib.chrome.loadline_2.chrome_loadline2_renderer_slices",
+      "name": "chrome_loadline2_renderer_slices",
+      "type": "table",
+      "category": "chrome",
+      "subcategory": "loadline_2",
+      "module": "chrome.loadline_2",
+      "package": "chrome",
+      "description": "Non-overlapping flattened activity slices on CrRendererMain for each LoadLine 2 story",
+      "fullDescription": "Non-overlapping flattened activity slices on CrRendererMain for each LoadLine 2 story.",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE chrome.loadline_2;",
+      "moduleIncludes": [
+        "intervals.intersect",
+        "slices.with_context"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/chrome/loadline_2.sql",
+      "columns": [
+        {
+          "name": "id",
+          "type": "LONG",
+          "description": "Unique slice row identifier"
+        },
+        {
+          "name": "page",
+          "type": "STRING",
+          "description": "Name of the page"
+        },
+        {
+          "name": "ts",
+          "type": "TIMESTAMP",
+          "description": "Interval start timestamp"
+        },
+        {
+          "name": "dur",
+          "type": "DURATION",
+          "description": "Interval duration"
+        },
+        {
+          "name": "subsystem",
+          "type": "STRING",
+          "description": "Renderer main-thread activity category ('html_parse', 'js_compile', 'js_execute', 'style_layout', 'paint_compositing', 'navigation_commit', 'gc', 'other_busy', 'runnable', or 'idle_wait'; uncovered time falls back to 'idle_wait' when scheduler thread_state data is absent)"
+        }
+      ],
+      "transitiveIncludes": [
+        "intervals.intersect",
+        "slices.with_context",
+        "std.thread.with_context"
+      ]
+    },
+    {
       "id": "stdlib.chrome.loadline_2.chrome_loadline2_stages",
       "name": "chrome_loadline2_stages",
       "type": "table",
@@ -20036,6 +21011,7 @@
       "tags": [],
       "include": "INCLUDE PERFETTO MODULE chrome.loadline_2;",
       "moduleIncludes": [
+        "intervals.intersect",
         "slices.with_context"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/chrome/loadline_2.sql",
@@ -20102,6 +21078,7 @@
         }
       ],
       "transitiveIncludes": [
+        "intervals.intersect",
         "slices.with_context",
         "std.thread.with_context"
       ]
@@ -23018,7 +23995,7 @@
       "module": "chrome.chrome_scrolls",
       "package": "chrome",
       "description": "Defines slices for all of the individual scrolls in a trace based on the LatencyInfo-based scroll definition",
-      "fullDescription": "Defines slices for all of the individual scrolls in a trace based on the LatencyInfo-based scroll definition. NOTE: this view of top level scrolls is based on the LatencyInfo definition of a scroll, which differs subtly from the definition based on EventLatencies. TODO(b/278684408): add support for tracking scrolls across multiple Chrome/ WebView instances. Currently gesture_scroll_id unique within an instance, but is not unique across multiple instances. Switching to an EventLatency based definition of scrolls should resolve this.",
+      "fullDescription": "Defines slices for all of the individual scrolls in a trace based on the LatencyInfo-based scroll definition. NOTE: this view of top level scrolls is based on the LatencyInfo definition of a scroll, which differs subtly from the definition based on EventLatencies.",
       "visibility": "public",
       "tags": [
         "chrome",
@@ -26816,6 +27793,7 @@
       ],
       "include": "INCLUDE PERFETTO MODULE prelude.after_eof.events;",
       "moduleIncludes": [
+        "prelude.after_eof.tracks",
         "prelude.after_eof.views"
       ],
       "dataCheckSql": "SELECT EXISTS(SELECT 1 FROM __intrinsic_ftrace_event LIMIT 1) AS has_data",
@@ -26897,6 +27875,7 @@
       ],
       "transitiveIncludes": [
         "prelude.after_eof.casts",
+        "prelude.after_eof.tracks",
         "prelude.after_eof.views"
       ]
     },
@@ -27087,6 +28066,7 @@
       ],
       "include": "INCLUDE PERFETTO MODULE prelude.after_eof.events;",
       "moduleIncludes": [
+        "prelude.after_eof.tracks",
         "prelude.after_eof.views"
       ],
       "dataCheckSql": "SELECT EXISTS(SELECT 1 FROM __intrinsic_ftrace_event LIMIT 1) AS has_data",
@@ -27171,6 +28151,7 @@
       ],
       "transitiveIncludes": [
         "prelude.after_eof.casts",
+        "prelude.after_eof.tracks",
         "prelude.after_eof.views"
       ]
     },
@@ -27190,6 +28171,7 @@
       ],
       "include": "INCLUDE PERFETTO MODULE prelude.after_eof.events;",
       "moduleIncludes": [
+        "prelude.after_eof.tracks",
         "prelude.after_eof.views"
       ],
       "dataCheckSql": "SELECT EXISTS(SELECT 1 FROM __intrinsic_ftrace_event LIMIT 1) AS has_data",
@@ -27240,6 +28222,7 @@
       ],
       "transitiveIncludes": [
         "prelude.after_eof.casts",
+        "prelude.after_eof.tracks",
         "prelude.after_eof.views"
       ]
     },
@@ -27509,6 +28492,7 @@
       ],
       "include": "INCLUDE PERFETTO MODULE prelude.after_eof.events;",
       "moduleIncludes": [
+        "prelude.after_eof.tracks",
         "prelude.after_eof.views"
       ],
       "dataCheckSql": "SELECT EXISTS(SELECT 1 FROM __intrinsic_ftrace_event LIMIT 1) AS has_data",
@@ -27635,6 +28619,7 @@
       ],
       "transitiveIncludes": [
         "prelude.after_eof.casts",
+        "prelude.after_eof.tracks",
         "prelude.after_eof.views"
       ]
     },
@@ -28187,7 +29172,7 @@
       "module": "android.memory.heap_graph.dominator_tree",
       "package": "android",
       "description": "All reachable heap graph objects, their immediate dominators and summary of their dominated sets",
-      "fullDescription": "All reachable heap graph objects, their immediate dominators and summary of their dominated sets. The heap graph dominator tree is calculated by stdlib graphs.dominator_tree. Each reachable object is a node in the dominator tree, their immediate dominator is their parent node in the tree, and their dominated set is all their descendants in the tree. All size information come from the heap_graph_object prelude table.",
+      "fullDescription": "All reachable heap graph objects, their immediate dominators and summary of their dominated sets. The heap graph dominator tree is calculated by GRAPH DOMINATOR TREE. Each reachable object is a node in the dominator tree, their immediate dominator is their parent node in the tree, and their dominated set is all their descendants in the tree. All size information come from the heap_graph_object prelude table.",
       "visibility": "public",
       "tags": [
         "android",
@@ -28195,7 +29180,7 @@
       ],
       "include": "INCLUDE PERFETTO MODULE android.memory.heap_graph.dominator_tree;",
       "moduleIncludes": [
-        "android.memory.heap_graph.raw_dominator_tree"
+        "android.memory.heap_graph.excluded_refs"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/memory/heap_graph/dominator_tree.sql",
       "columns": [
@@ -28231,9 +29216,7 @@
         }
       ],
       "transitiveIncludes": [
-        "android.memory.heap_graph.excluded_refs",
-        "android.memory.heap_graph.raw_dominator_tree",
-        "graphs.dominator_tree"
+        "android.memory.heap_graph.excluded_refs"
       ]
     },
     {
@@ -28544,6 +29527,63 @@
       "transitiveIncludes": [
         "prelude.after_eof.casts",
         "prelude.after_eof.views"
+      ]
+    },
+    {
+      "id": "stdlib.android.memory.heap_graph.shortest_path_tree.heap_graph_shortest_path_tree",
+      "name": "heap_graph_shortest_path_tree",
+      "type": "table",
+      "category": "android",
+      "subcategory": "memory.heap_graph.shortest_path_tree",
+      "module": "android.memory.heap_graph.shortest_path_tree",
+      "package": "android",
+      "description": "All reachable heap graph objects arranged into a shortest-path spanning tree from GC roots via breadth-first search over strong references",
+      "fullDescription": "All reachable heap graph objects arranged into a shortest-path spanning tree from GC roots via breadth-first search over strong references. Every reachable object's path to a root via `parent_id` is a shortest strong-reference path. Where multiple shortest paths exist, roots are ordered by class name and `id` (keeping the tree comparable across heap dumps) and outgoing references are ordered by target `id`. Only reachable objects appear in this table.",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE android.memory.heap_graph.shortest_path_tree;",
+      "moduleIncludes": [
+        "android.memory.heap_graph.excluded_refs"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/memory/heap_graph/shortest_path_tree.sql",
+      "columns": [
+        {
+          "name": "id",
+          "type": "JOINID(heap_graph_object.id)",
+          "description": "Heap graph object id.",
+          "table": "heap_graph_object",
+          "column": "id"
+        },
+        {
+          "name": "parent_id",
+          "type": "JOINID(heap_graph_object.id)",
+          "description": "Parent object id on a shortest strong-reference path from a GC root, or NULL if this object is a GC root.",
+          "table": "heap_graph_object",
+          "column": "id"
+        },
+        {
+          "name": "cumulative_count",
+          "type": "LONG",
+          "description": "Count of all objects in this object's subtree in the shortest-path tree, self inclusive."
+        },
+        {
+          "name": "cumulative_size",
+          "type": "LONG",
+          "description": "Total self_size (in bytes) of all objects in this object's subtree in the shortest-path tree, self inclusive."
+        },
+        {
+          "name": "cumulative_native_size",
+          "type": "LONG",
+          "description": "Total native_size (in bytes) of all objects in this object's subtree in the shortest-path tree, self inclusive."
+        },
+        {
+          "name": "depth",
+          "type": "LONG",
+          "description": "Depth of the object in the shortest-path tree. Depth of GC root objects is 0."
+        }
+      ],
+      "transitiveIncludes": [
+        "android.memory.heap_graph.excluded_refs"
       ]
     },
     {
@@ -29126,7 +30166,7 @@
       "module": "linux.devfreq",
       "package": "linux",
       "description": "ARM DSU device frequency counters",
-      "fullDescription": "ARM DSU device frequency counters. This table will only be populated on traces collected with \"devfreq/devfreq_frequency\" ftrace event enabled, and from ARM devices with the DSU (DynamIQ Shared Unit) hardware.",
+      "fullDescription": "ARM DSU device frequency counters. This table will only be populated on traces collected with \"devfreq/devfreq_frequency\" ftrace event or sys_stats devfreq polling (devfreq_period_ms) enabled, and from ARM devices with the DSU (DynamIQ Shared Unit) hardware.",
       "visibility": "public",
       "tags": [
         "linux",
@@ -32084,6 +33124,7 @@
       ],
       "include": "INCLUDE PERFETTO MODULE prelude.after_eof.events;",
       "moduleIncludes": [
+        "prelude.after_eof.tracks",
         "prelude.after_eof.views"
       ],
       "dataCheckSql": "SELECT EXISTS(SELECT 1 FROM __intrinsic_ftrace_event LIMIT 1) AS has_data",
@@ -32134,6 +33175,7 @@
       ],
       "transitiveIncludes": [
         "prelude.after_eof.casts",
+        "prelude.after_eof.tracks",
         "prelude.after_eof.views"
       ]
     },
@@ -32388,9 +33430,7 @@
         "scheduling"
       ],
       "include": "INCLUDE PERFETTO MODULE sched.thread_level_parallelism;",
-      "moduleIncludes": [
-        "intervals.overlap"
-      ],
+      "moduleIncludes": [],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/sched/thread_level_parallelism.sql",
       "columns": [
         {
@@ -32411,11 +33451,7 @@
           "description": "Number of active CPUs, covering the range from this timestamp to the next row's timestamp."
         }
       ],
-      "transitiveIncludes": [
-        "intervals.intersect",
-        "intervals.overlap",
-        "std.metasql.unparenthesize"
-      ]
+      "transitiveIncludes": []
     },
     {
       "id": "stdlib.sched.latency.sched_latency_for_running_interval",
@@ -32599,9 +33635,7 @@
         "scheduling"
       ],
       "include": "INCLUDE PERFETTO MODULE sched.thread_level_parallelism;",
-      "moduleIncludes": [
-        "intervals.overlap"
-      ],
+      "moduleIncludes": [],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/sched/thread_level_parallelism.sql",
       "columns": [
         {
@@ -32622,11 +33656,7 @@
           "description": "Number of runnable threads, covering the range from this timestamp to the next row's timestamp."
         }
       ],
-      "transitiveIncludes": [
-        "intervals.intersect",
-        "intervals.overlap",
-        "std.metasql.unparenthesize"
-      ]
+      "transitiveIncludes": []
     },
     {
       "id": "stdlib.prelude.after_eof.cpu_scheduling.sched_slice",
@@ -32705,8 +33735,8 @@
       "subcategory": "states",
       "module": "sched.states",
       "package": "sched",
-      "description": "Translates a single-letter scheduling state and IO wait information to a human-readable string",
-      "fullDescription": "Translates a single-letter scheduling state and IO wait information to a human-readable string.",
+      "description": "Translates a scheduling state and IO wait information to a human-readable string",
+      "fullDescription": "Translates a scheduling state and IO wait information to a human-readable string.",
       "visibility": "public",
       "tags": [
         "cpu",
@@ -32721,7 +33751,7 @@
         {
           "name": "sched_state",
           "type": "STRING",
-          "description": "An individual character string representing the scheduling state of the kernel thread at the end of the slice."
+          "description": "A string representing the scheduling state of the kernel thread at the end of the slice: either a single character or a composite state reported by kernels older than 4.14 (e.g. \"DK\")."
         },
         {
           "name": "io_wait",
@@ -32739,8 +33769,8 @@
       "subcategory": "states",
       "module": "sched.states",
       "package": "sched",
-      "description": "Translates a single-letter scheduling state to a human-readable string",
-      "fullDescription": "Translates a single-letter scheduling state to a human-readable string.",
+      "description": "Translates a scheduling state to a human-readable string",
+      "fullDescription": "Translates a scheduling state to a human-readable string.",
       "visibility": "public",
       "tags": [
         "cpu",
@@ -32755,7 +33785,7 @@
         {
           "name": "short_name",
           "type": "STRING",
-          "description": "An individual character string representing the scheduling state of the kernel thread at the end of the slice."
+          "description": "A string representing the scheduling state of the kernel thread at the end of the slice: either a single character or a composite state reported by kernels older than 4.14 (e.g. \"DK\")."
         }
       ],
       "transitiveIncludes": []
@@ -33020,9 +34050,7 @@
         "scheduling"
       ],
       "include": "INCLUDE PERFETTO MODULE sched.thread_level_parallelism;",
-      "moduleIncludes": [
-        "intervals.overlap"
-      ],
+      "moduleIncludes": [],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/sched/thread_level_parallelism.sql",
       "columns": [
         {
@@ -33043,11 +34071,7 @@
           "description": "Number of threads in uninterrutible sleep, covering the range from this timestamp to the next row's timestamp."
         }
       ],
-      "transitiveIncludes": [
-        "intervals.intersect",
-        "intervals.overlap",
-        "std.metasql.unparenthesize"
-      ]
+      "transitiveIncludes": []
     },
     {
       "id": "stdlib.sched.with_context.sched_with_thread_process",
@@ -34382,12 +35406,12 @@
         {
           "name": "key",
           "type": "LONG",
-          "description": "Numeric stat key (stats::KeyIDs enum value)."
+          "description": "Numeric stat key: the stats::KeyIDs enum value, or, for a dynamic stat whose name is only known at runtime, a value from stats::kNumKeys up."
         },
         {
           "name": "idx",
           "type": "LONG",
-          "description": "Per-stat index for kIndexed stats; NULL for kSingle."
+          "description": "Per-stat index for indexed and indexed-histogram stats; NULL for single stats."
         },
         {
           "name": "severity",
@@ -34402,7 +35426,7 @@
         {
           "name": "value",
           "type": "LONG",
-          "description": "Stat value."
+          "description": "Stat value. For indexed-histogram stats this is the total sample count across all buckets; per-bucket counts are in `stats_histogram_bucket`."
         },
         {
           "name": "description",
@@ -34420,6 +35444,52 @@
           "name": "trace_id",
           "type": "LONG",
           "description": "Trace identifier (NULL for kGlobal stats)."
+        }
+      ],
+      "transitiveIncludes": []
+    },
+    {
+      "id": "stdlib.prelude.before_eof.stats.stats_histogram_bucket",
+      "name": "stats_histogram_bucket",
+      "type": "view",
+      "category": "prelude",
+      "subcategory": "before_eof.stats",
+      "module": "prelude.before_eof.stats",
+      "package": "prelude",
+      "description": "Buckets of histogram stats",
+      "fullDescription": "Buckets of histogram stats. One row per bucket of a histogram stat row in the `stats` table (i.e. per (stat, idx) pair).",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE prelude.before_eof.stats;",
+      "moduleIncludes": [],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/prelude/before_eof/stats.sql",
+      "columns": [
+        {
+          "name": "id",
+          "type": "ID",
+          "description": "Unique identifier for this bucket."
+        },
+        {
+          "name": "stat_id",
+          "type": "JOINID(stats.id)",
+          "description": "The histogram stat this bucket belongs to.",
+          "table": "stats",
+          "column": "id"
+        },
+        {
+          "name": "lower_bound",
+          "type": "LONG",
+          "description": "Inclusive lower bound of the bucket."
+        },
+        {
+          "name": "upper_bound",
+          "type": "LONG",
+          "description": "Exclusive upper bound of the bucket."
+        },
+        {
+          "name": "count",
+          "type": "LONG",
+          "description": "Number of samples in [lower_bound, upper_bound)."
         }
       ],
       "transitiveIncludes": []
@@ -35074,7 +36144,6 @@
       ],
       "include": "INCLUDE PERFETTO MODULE slices.cpu_time;",
       "moduleIncludes": [
-        "intervals.intersect",
         "linux.cpu.utilization.slice",
         "slices.with_context"
       ],
@@ -35154,7 +36223,6 @@
       ],
       "include": "INCLUDE PERFETTO MODULE slices.cpu_time;",
       "moduleIncludes": [
-        "intervals.intersect",
         "linux.cpu.utilization.slice",
         "slices.with_context"
       ],
@@ -35228,7 +36296,6 @@
       ],
       "include": "INCLUDE PERFETTO MODULE slices.time_in_state;",
       "moduleIncludes": [
-        "intervals.intersect",
         "slices.with_context"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/slices/time_in_state.sql",
@@ -35291,7 +36358,6 @@
         }
       ],
       "transitiveIncludes": [
-        "intervals.intersect",
         "slices.with_context",
         "std.thread.with_context"
       ]
@@ -36247,7 +37313,7 @@
         {
           "name": "dimension_arg_set_id",
           "type": "ARGSETID",
-          "description": "The dimensions of the track which uniquely identify the track within a given `type`. Join with the `args` table or use the `EXTRACT_ARG` helper function to expand the args."
+          "description": "The dimensions of the track which uniquely identify the track within a given `type`. Producer-declared dimensions use keys prefixed with `custom_dimension.` and include values inherited through `parent_uuid`. Join with the `args` table or use the `EXTRACT_ARG` helper function to expand the args."
         },
         {
           "name": "parent_id",
@@ -36259,7 +37325,7 @@
         {
           "name": "source_arg_set_id",
           "type": "ARGSETID",
-          "description": "Generic key-value pairs containing extra information about the track. Join with the `args` table or use the `EXTRACT_ARG` helper function to expand the args."
+          "description": "Generic key-value pairs containing extra information about the track. Presentation-only custom dimension labels use keys prefixed with `custom_dimension_display_name.`; they are not part of track identity. Join with the `args` table or use the `EXTRACT_ARG` helper function to expand the args."
         },
         {
           "name": "machine_id",
@@ -36677,12 +37743,10 @@
       "tags": [],
       "include": "INCLUDE PERFETTO MODULE wattson.aggregation;",
       "moduleIncludes": [
-        "intervals.intersect",
         "wattson.estimates",
         "wattson.tasks.attribution",
         "wattson.tasks.idle_transitions_attribution",
-        "wattson.tasks.task_slices",
-        "wattson.utils"
+        "wattson.tasks.task_slices"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/wattson/aggregation.sql",
       "columns": [
@@ -36711,13 +37775,10 @@
         "android.suspend",
         "android.user_list",
         "counters.intervals",
-        "intervals.fill_gaps",
         "intervals.intersect",
-        "intervals.overlap",
         "linux.cpu.frequency",
         "linux.devfreq",
         "linux.irqs",
-        "std.metasql.unparenthesize",
         "time.conversion",
         "wattson.cpu.arm_dsu",
         "wattson.cpu.estimates",
@@ -36761,12 +37822,10 @@
       "tags": [],
       "include": "INCLUDE PERFETTO MODULE wattson.aggregation;",
       "moduleIncludes": [
-        "intervals.intersect",
         "wattson.estimates",
         "wattson.tasks.attribution",
         "wattson.tasks.idle_transitions_attribution",
-        "wattson.tasks.task_slices",
-        "wattson.utils"
+        "wattson.tasks.task_slices"
       ],
       "returnType": "TableOrSubquery",
       "returnDescription": "",
@@ -36787,13 +37846,10 @@
         "android.suspend",
         "android.user_list",
         "counters.intervals",
-        "intervals.fill_gaps",
         "intervals.intersect",
-        "intervals.overlap",
         "linux.cpu.frequency",
         "linux.devfreq",
         "linux.irqs",
-        "std.metasql.unparenthesize",
         "time.conversion",
         "wattson.cpu.arm_dsu",
         "wattson.cpu.estimates",
@@ -36837,12 +37893,10 @@
       "tags": [],
       "include": "INCLUDE PERFETTO MODULE wattson.aggregation;",
       "moduleIncludes": [
-        "intervals.intersect",
         "wattson.estimates",
         "wattson.tasks.attribution",
         "wattson.tasks.idle_transitions_attribution",
-        "wattson.tasks.task_slices",
-        "wattson.utils"
+        "wattson.tasks.task_slices"
       ],
       "returnType": "TableOrSubquery",
       "returnDescription": "",
@@ -36863,13 +37917,10 @@
         "android.suspend",
         "android.user_list",
         "counters.intervals",
-        "intervals.fill_gaps",
         "intervals.intersect",
-        "intervals.overlap",
         "linux.cpu.frequency",
         "linux.devfreq",
         "linux.irqs",
-        "std.metasql.unparenthesize",
         "time.conversion",
         "wattson.cpu.arm_dsu",
         "wattson.cpu.estimates",
@@ -37312,6 +38363,10 @@
     "android_cpu_per_uid_track": "android.cpu.cpu_per_uid",
     "android_cpu_time_per_frame": "android.frames.per_frame_metrics",
     "android_cuj_blocking_calls": "android.cujs.sysui_cujs",
+    "android_cuj_frame_blocking_calls": "android.frame_blocking_calls.blocking_calls_aggregation",
+    "android_cuj_frame_blocking_calls_instructions": "android.frame_blocking_calls.instructions",
+    "android_cuj_frame_blocking_calls_instructions_per_cuj": "android.frame_blocking_calls.instructions",
+    "android_cuj_frame_boundaries": "android.frame_blocking_calls.blocking_calls_aggregation",
     "android_deep_idle_state": "android.battery.doze",
     "android_desktop_mode_windows": "android.desktop_mode",
     "android_device_name": "android.device",
@@ -37347,6 +38402,8 @@
     "android_gpu_frequency": "android.gpu.frequency",
     "android_gpu_memory_per_process": "android.gpu.memory",
     "android_gpu_work_period_track": "android.gpu.work_period",
+    "android_heap_graph_binder_proxy": "android.memory.heap_graph.binder_proxy",
+    "android_heap_graph_binder_stub": "android.memory.heap_graph.binder",
     "android_heap_graph_class_aggregation": "android.memory.heap_graph.heap_graph_class_aggregation",
     "android_heap_graph_class_find_descendants": "android.memory.heap_graph.class_relationship",
     "android_heap_graph_class_summary_tree": "android.memory.heap_graph.class_summary_tree",
@@ -37482,6 +38539,11 @@
     "chrome_jetstream_3_measure": "chrome.jetstream_3",
     "chrome_jetstream_3_renderer_main_utid": "chrome.jetstream_3",
     "chrome_jetstream_3_score": "chrome.jetstream_3",
+    "chrome_loadline2_js_script_slices": "chrome.loadline_2",
+    "chrome_loadline2_js_scripts": "chrome.loadline_2",
+    "chrome_loadline2_presentation_breakdown": "chrome.loadline_2",
+    "chrome_loadline2_renderer_breakdown": "chrome.loadline_2",
+    "chrome_loadline2_renderer_slices": "chrome.loadline_2",
     "chrome_loadline2_stages": "chrome.loadline_2",
     "chrome_merged_frame_view": "chrome.scroll_jank.scroll_jank_v3",
     "chrome_page_loads": "chrome.page_loads",
@@ -37599,6 +38661,7 @@
     "heap_graph_object_data": "prelude.after_eof.memory",
     "heap_graph_primitive": "prelude.after_eof.memory",
     "heap_graph_reference": "prelude.after_eof.memory",
+    "heap_graph_shortest_path_tree": "android.memory.heap_graph.shortest_path_tree",
     "heap_graph_thread_callsite": "prelude.after_eof.memory",
     "heap_profile": "prelude.after_eof.memory",
     "heap_profile_allocation": "prelude.after_eof.views",
@@ -37694,6 +38757,7 @@
     "state": "prelude.after_eof.views",
     "state_track": "prelude.after_eof.state",
     "stats": "prelude.before_eof.stats",
+    "stats_histogram_bucket": "prelude.before_eof.stats",
     "surfaceflinger_layer": "prelude.after_eof.views",
     "surfaceflinger_layers_snapshot": "prelude.after_eof.views",
     "surfaceflinger_transactions": "prelude.after_eof.views",

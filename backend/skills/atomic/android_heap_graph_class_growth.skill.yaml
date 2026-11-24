@@ -89,8 +89,9 @@ steps:
       -- One table for every step below, one row per (process, dump, class
       -- name). Counts and shallow sizes come from real objects only; the
       -- stdlib aggregation groups placeholders by type_id 0, which belongs to
-      -- whichever class was inserted first, so it supplies dominated sizes
-      -- only. type_ids are per dump, so class names are the cross-dump key.
+      -- whichever class was inserted first. Use the aggregation for dominated
+      -- sizes and its public class category. Type IDs are per dump, so class
+      -- names are the cross-dump key.
       CREATE OR REPLACE PERFETTO TABLE __sp_heap_class_growth_classes AS
       WITH per_type AS (
         -- Integer keys first; class names are joined on the small result.
@@ -125,6 +126,7 @@ steps:
           upid,
           graph_sample_ts,
           COALESCE(type_name, '[unknown class]') AS class_name,
+          MAX(is_libcore_or_array) AS is_libcore_or_array,
           SUM(dominated_obj_count) AS dominated_obj_count,
           SUM(dominated_size_bytes + dominated_native_size_bytes) AS dominated_bytes
         FROM android_heap_graph_class_aggregation
@@ -132,7 +134,7 @@ steps:
       )
       SELECT
         o.*,
-        _is_libcore_or_array(o.class_name) AS is_libcore_or_array,
+        COALESCE(d.is_libcore_or_array, 0) AS is_libcore_or_array,
         COALESCE(d.dominated_obj_count, 0) AS dominated_obj_count,
         COALESCE(d.dominated_bytes, 0) AS dominated_bytes
       FROM objects AS o

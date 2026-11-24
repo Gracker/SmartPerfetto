@@ -1,7 +1,7 @@
 {
   "version": "2.0",
-  "generatedAt": "2026-11-05T10:20:54.618088",
-  "generatedFrom": "1e9c61e9844affd7dccd3d42d9ea9f3a3d10cf6d",
+  "generatedAt": "2026-11-24T14:02:34.374369",
+  "generatedFrom": "6327533d577b18931bedc48a5d1f83cacfa4e9d9",
   "source": "perfetto/src/trace_processor/perfetto_sql/stdlib",
   "templates": [
     {
@@ -414,6 +414,14 @@
           "type": "LONG"
         }
       ]
+    },
+    {
+      "id": "stdlib.android._android_charging_states_filled",
+      "name": "_android_charging_states_filled",
+      "category": "android",
+      "type": "table",
+      "description": "Charging state intervals per machine, NULL where the state is unknown: every machine with data is filled between its rows, and the primary machine is filled even without data, since the trace says it was there. Other machines without data may not have emitted any, which is not the same as their state being unknown.",
+      "columns": []
     },
     {
       "id": "stdlib.android.android_charging_states",
@@ -1884,7 +1892,7 @@
       "name": "android_jank_cuj_layer_name",
       "category": "android",
       "type": "table",
-      "description": "Resolves the layer name for each CUJ. The layer can be identified in two ways: 1. Explicit Marker: The Android framework may log a 'layerId#<id>' instant event. If present, this is extracted into `cuj_layer_id` inside `_cuj_instant_events`. We then filter `_all_frames_in_cuj` to exactly that layer. 2. Fallback Inference: On older versions and when the proper way to report CUJs is not used (e.g. on some apps that copy the same convention to report CUJs), we try to infer the layer name. We check if the app rendered exactly one layer per frame during the CUJ (`HAVING MAX(layers_per_frame) = 1`). If so, we safely use that layer's name (extracted via `MAX(layer_name)`). If multiple layers were rendered simultaneously, we can't safely guess, and return NULL."
+      "description": "Resolves the layer name for each CUJ. The layer can be identified in two ways: 1. Explicit Marker: The Android framework may log a 'layerId#<id>' instant event. If present, this is extracted into `cuj_layer_id` inside `_cuj_instant_events`. We then take the name of the layer with that id from FrameTimeline. 2. Fallback Inference: On older versions and when the proper way to report CUJs is not used (e.g. on some apps that copy the same convention to report CUJs), we try to infer the layer name. We check if the app rendered exactly one layer per frame during the CUJ (`HAVING MAX(layers_per_frame) = 1`). If so, we safely use that layer's name (extracted via `MAX(layer_name)`). If multiple layers were rendered simultaneously, we can't safely guess, and return NULL."
     },
     {
       "id": "stdlib.android.android_jank_cuj",
@@ -2004,23 +2012,7 @@
       "description": "Extract all counters for Jank CUJ tracks.",
       "columns": [
         {
-          "name": "ts",
-          "type": "UNKNOWN"
-        },
-        {
           "name": "upid",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "cuj_name",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "counter_name",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "value",
           "type": "UNKNOWN"
         }
       ]
@@ -2617,11 +2609,38 @@
       ]
     },
     {
+      "id": "stdlib.android.android_cuj_frame_boundaries",
+      "name": "android_cuj_frame_boundaries",
+      "category": "android",
+      "type": "table",
+      "description": "Extended frame boundaries for distinct frames within completed jank CUJs. Each frame starts at the actual frame start timestamp and extends until the earliest of the next actual frame start or the next `Choreographer#doFrame` start in the CUJ, falling back to the actual frame end on the final frame."
+    },
+    {
+      "id": "stdlib.android._cuj_frame_draw_frames",
+      "name": "_cuj_frame_draw_frames",
+      "category": "android",
+      "type": "table",
+      "description": "`DrawFrames` slices on RenderThread for each frame in `android_cuj_frame_boundaries`. Materialized so that joining `android_frames_draw_frame` by integer `frame_id` and overlapping against `thread_state` for `hwuiTask` executes once.",
+      "columns": [
+        {
+          "name": "ts_end",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android.android_cuj_frame_blocking_calls",
+      "name": "android_cuj_frame_blocking_calls",
+      "category": "android",
+      "type": "table",
+      "description": "Blocking call intervals within extended frame boundaries of completed jank CUJs, including UI thread critical blocking calls, RenderThread critical blocking calls, and `hwuiTask` running intervals during `DrawFrames`. The join between critical blocking calls and frames is split into two branches (UI thread and RenderThread) with `UNION ALL` instead of an `OR` join so SQLite can use indexed equality joins on `utid`, while `bc.utid != frame.ui_thread_utid` keeps the branches disjoint."
+    },
+    {
       "id": "stdlib.android._blocking_calls_frame_cuj",
       "name": "_blocking_calls_frame_cuj",
       "category": "android",
-      "type": "table",
-      "description": "Capture blocking call duration within frames within a CUJ. The join between blocking calls and frames is split into two branches (one for the UI thread, one for the render thread) that are `UNION ALL`-ed together, rather than joining on `bc.utid = frame.ui_thread_utid OR bc.utid = frame.render_thread_utid`. An `OR` in a join condition forces a nested loop over the full cross product; two separate equality joins can each be executed efficiently. The `bc.utid != frame.ui_thread_utid` guard on the render branch keeps the two branches disjoint (so no row is double counted in the rare case where a frame's UI and render threads are the same), making this exactly equivalent to the original `OR` join.",
+      "type": "view",
+      "description": "Retained for backwards compatibility. Prefer `android_cuj_frame_blocking_calls`.",
       "columns": [
         {
           "name": "dur",
@@ -2629,6 +2648,30 @@
         },
         {
           "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "upid",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "name",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "process_name",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "utid",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "frame_id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "layer_id",
           "type": "UNKNOWN"
         },
         {
@@ -2640,6 +2683,95 @@
           "type": "UNKNOWN"
         }
       ]
+    },
+    {
+      "id": "stdlib.android._android_cuj_bc_utid_bounds",
+      "name": "_android_cuj_bc_utid_bounds",
+      "category": "android",
+      "type": "table",
+      "description": "Per-thread time bounds of blocking call (`bc`) intervals in completed jank CUJs. Private helper tables below use `bc` as shorthand for blocking calls. Materialized so `sched` and `counter` scans are bounded to the CUJ window and so `cuj_bounds` remains populated even if all blocking calls slept off-CPU.",
+      "columns": [
+        {
+          "name": "utid",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "min_ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "max_ts_end",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android._android_cuj_bc_active_sched",
+      "name": "_android_cuj_bc_active_sched",
+      "category": "android",
+      "type": "table",
+      "description": "`sched` running intervals filtered to threads and time bounds of CUJ frame blocking calls.",
+      "columns": []
+    },
+    {
+      "id": "stdlib.android._android_cuj_bc_on_cpu",
+      "name": "_android_cuj_bc_on_cpu",
+      "category": "android",
+      "type": "table",
+      "description": "On-CPU segments of each blocking call interval, tagged with the CPU on which the thread executed. Materialized so joining with `_interval_intersect!` uses indexed lookups on `id`.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "bc_id",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android._android_cuj_bc_perf_instruction_intervals",
+      "name": "_android_cuj_bc_perf_instruction_intervals",
+      "category": "android",
+      "type": "table",
+      "description": "Per-CPU hardware instruction counter intervals covering the CUJ blocking call window, including the nearest surrounding boundary samples at or before `min_ts` and at or after `max_ts_end`. Materialized so joining with `_interval_intersect!` uses indexed lookups on `id`.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "cpu",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "instruction_delta",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android.android_cuj_frame_blocking_calls_instructions",
+      "name": "android_cuj_frame_blocking_calls_instructions",
+      "category": "android",
+      "type": "table",
+      "description": "Per-interval blocking call hardware instruction counts within extended frame boundaries of completed jank CUJs. Empty if the trace does not contain Linux perf `instructions` counter intervals covering the CUJ blocking calls. Blocking call intervals that execute entirely off-CPU report `0.0` instructions when perf instruction counters are present."
+    },
+    {
+      "id": "stdlib.android.android_cuj_frame_blocking_calls_instructions_per_cuj",
+      "name": "android_cuj_frame_blocking_calls_instructions_per_cuj",
+      "category": "android",
+      "type": "table",
+      "description": "Per-CUJ per-frame summary of hardware instruction counts and occurrence counts for critical blocking calls (including `hwuiTask`) in completed jank CUJs. Empty if the trace does not contain Linux perf `instructions` counter intervals covering the CUJ blocking calls."
     },
     {
       "id": "stdlib.android.android_is_sf_jank_type",
@@ -3225,6 +3357,56 @@
       ]
     },
     {
+      "id": "stdlib.android._android_freezer_intervals",
+      "name": "_android_freezer_intervals",
+      "category": "android",
+      "type": "table",
+      "description": "FROZEN/UNFROZEN spans of each process over its lifetime. Freezer events and the trace-stop snapshot rows carry an unfreeze_reason only when the process is unfrozen, which is what tells the two states apart.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android._android_freezer_flattened",
+      "name": "_android_freezer_flattened",
+      "category": "android",
+      "type": "table",
+      "description": "A pipeline cannot number its rows, hence the intermediate table.",
+      "columns": []
+    },
+    {
+      "id": "stdlib.android._android_freezer_concurrency",
+      "name": "_android_freezer_concurrency",
+      "category": "android",
+      "type": "table",
+      "description": "Number of processes concurrently frozen and unfrozen over time, 0 where no process is in a state.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "state",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "concurrency",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
       "id": "stdlib.android._gc_slice",
       "name": "_gc_slice",
       "category": "android",
@@ -3302,11 +3484,36 @@
       "id": "stdlib.android._gc_slice_with_final_heap",
       "name": "_gc_slice_with_final_heap",
       "category": "android",
-      "type": "view",
+      "type": "table",
       "description": "Find the last heap counter after the GC slice dur. This is the best effort to find the final heap size after GC. The algorithm is like so: 1. Merge end_ts of the GC events with the start_ts of the heap counters. 2. Find the heap counter value right after each GC event.",
       "columns": [
         {
           "name": "last_value",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android._gc_slice_heap_min_max",
+      "name": "_gc_slice_heap_min_max",
+      "category": "android",
+      "type": "table",
+      "description": "The min and max of the heap counters overlapping each GC event.",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "upid",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "value",
           "type": "UNKNOWN"
         }
       ]
@@ -3371,10 +3578,6 @@
           "type": "UNKNOWN"
         },
         {
-          "name": "value",
-          "type": "UNKNOWN"
-        },
-        {
           "name": "gc_type",
           "type": "UNKNOWN"
         },
@@ -3388,6 +3591,19 @@
         },
         {
           "name": "min_heap_mb",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android._gc_slice_thread_state_dur",
+      "name": "_gc_slice_thread_state_dur",
+      "category": "android",
+      "type": "table",
+      "description": "Time spent by each GC event in each thread state.",
+      "columns": [
+        {
+          "name": "utid",
           "type": "UNKNOWN"
         }
       ]
@@ -4158,6 +4374,91 @@
       ]
     },
     {
+      "id": "stdlib.android._android_input_lifecycle",
+      "name": "_android_input_lifecycle",
+      "category": "android",
+      "type": "table",
+      "description": "Table: _android_input_lifecycle",
+      "columns": [
+        {
+          "name": "input_id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "channel",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "total_latency",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts_reader",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts_dispatch",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts_receive",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts_consume",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "id_reader",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "track_reader",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur_reader",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "id_dispatch",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "track_dispatch",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur_dispatch",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "id_receive",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "track_receive",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur_receive",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "id_consume",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "track_consume",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur_consume",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
       "id": "stdlib.android._android_input_lifecycle_by_slice_id",
       "name": "_android_input_lifecycle_by_slice_id",
       "category": "android",
@@ -4790,6 +5091,14 @@
           "type": "UNKNOWN"
         },
         {
+          "name": "pending_queue_wait_ms",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "outside_pending_queue_ms",
+          "type": "UNKNOWN"
+        },
+        {
           "name": "num_uncompleted_work_items",
           "type": "UNKNOWN"
         },
@@ -5170,6 +5479,171 @@
       ]
     },
     {
+      "id": "stdlib.android._heap_graph_binder_class",
+      "name": "_heap_graph_binder_class",
+      "category": "android",
+      "type": "table",
+      "description": "All subclasses of `android.os.Binder` (including `android.os.Binder` itself), with the nearest `*$Stub` class at or above each, NULL when there is none. The class tree is cut at the stub classes, so accumulating down from each cut picks the closest stub.",
+      "columns": []
+    },
+    {
+      "id": "stdlib.android._heap_graph_binder_roots",
+      "name": "_heap_graph_binder_roots",
+      "category": "android",
+      "type": "table",
+      "description": "`android.os.Binder` objects held by a JNI global reference (`ROOT_JNI_GLOBAL`).",
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android._heap_graph_binder_candidate",
+      "name": "_heap_graph_binder_candidate",
+      "category": "android",
+      "type": "table",
+      "description": "Reachable objects, flagged with whether they are one of the process's own GC roots: every root except the `ROOT_JNI_GLOBAL` Binder stubs.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android._heap_graph_binder_stub_seed",
+      "name": "_heap_graph_binder_stub_seed",
+      "category": "android",
+      "type": "table",
+      "description": "The stubs, by (deobfuscated) class name, which keeps the split between classes comparable across heap dumps. Stubs of one class have nothing stable to tell them apart, so they are in no particular order.",
+      "columns": []
+    },
+    {
+      "id": "stdlib.android._heap_graph_binder_seed",
+      "name": "_heap_graph_binder_seed",
+      "category": "android",
+      "type": "table",
+      "description": "The process's own roots, then the stubs: the order the DFS below searches.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android._heap_graph_binder_remote_only_by_stub",
+      "name": "_heap_graph_binder_remote_only_by_stub",
+      "category": "android",
+      "type": "table",
+      "description": "Remote-only objects (reachable from the `ROOT_JNI_GLOBAL` Binder stubs but not from the process's own roots) as a BFS forest from the stubs. The inner DFS searches own roots first, so an object has no own root above it exactly when own roots cannot reach it. Stubs own roots reach are not nodes, so they drop out, and the forest roots (parent_id IS NULL) are exactly the remote-only stubs. Each object belongs to the closest stub; ties go to the first stub in seed order. The search keeps the stubs' classes in seed order at every depth, so the total per class depends on neither the order of the edges nor the order of the stubs within a class.",
+      "columns": []
+    },
+    {
+      "id": "stdlib.android.android_heap_graph_binder_stub",
+      "name": "android_heap_graph_binder_stub",
+      "category": "android",
+      "type": "table",
+      "description": "`android.os.Binder` objects held by a JNI global reference (`ROOT_JNI_GLOBAL`) in ART heap dumps. For Binder objects this is typically `JavaBBinder` keeping the object alive while other processes hold handles to it. Annotated with the concrete class, the nearest `*$Stub` superclass, and whether the process's own GC roots no longer reach the object (`is_remote_only`). Remote-only does not mean leaked: stubs can be legitimately held by clients, `servicemanager`, in-flight transactions, or peers that have not yet released their handles."
+    },
+    {
+      "id": "stdlib.android._heap_graph_binder_proxy_object",
+      "name": "_heap_graph_binder_proxy_object",
+      "category": "android",
+      "type": "table",
+      "description": "Reachable `android.os.BinderProxy` objects.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android._heap_graph_binder_proxy_death_list",
+      "name": "_heap_graph_binder_proxy_death_list",
+      "category": "android",
+      "type": "table",
+      "description": "The `BinderProxy.mDeathRecipients` list of each proxy that has one.",
+      "columns": [
+        {
+          "name": "proxy_id",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android._heap_graph_remote_callback_list_class",
+      "name": "_heap_graph_remote_callback_list_class",
+      "category": "android",
+      "type": "table",
+      "description": "All subclasses of `android.os.RemoteCallbackList` (including itself).",
+      "columns": []
+    },
+    {
+      "id": "stdlib.android._heap_graph_binder_proxy_wrapper_class",
+      "name": "_heap_graph_binder_proxy_wrapper_class",
+      "category": "android",
+      "type": "table",
+      "description": "Wrapper classes skipped when walking up each proxy's dominator chain: standard containers, AIDL `*$Stub$Proxy` classes, and `android.os.RemoteCallbackList` (plus its subclasses, often anonymous, and its nested callback/interface wrappers).",
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android._heap_graph_binder_proxy_container_class",
+      "name": "_heap_graph_binder_proxy_container_class",
+      "category": "android",
+      "type": "table",
+      "description": "Standard container classes walked inside `BinderProxy.mDeathRecipients`.",
+      "columns": []
+    },
+    {
+      "id": "stdlib.android._heap_graph_binder_proxy_ancestor",
+      "name": "_heap_graph_binder_proxy_ancestor",
+      "category": "android",
+      "type": "table",
+      "description": "Dominator-tree ancestors of every reachable `android.os.BinderProxy` (including the proxies themselves), walking upward from `id` to `idom_id`.",
+      "columns": []
+    },
+    {
+      "id": "stdlib.android._heap_graph_binder_proxy_holder",
+      "name": "_heap_graph_binder_proxy_holder",
+      "category": "android",
+      "type": "table",
+      "description": "Outermost wrapper (`wrapper_top_id`) and nearest non-wrapper dominator (`holder_id`) for each proxy's dominator chain. Cutting the ancestor chain at non-wrappers and accumulating down propagates each chain's topmost wrapper and its immediate dominator (the holder).",
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "wrapper_top_id",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android._heap_graph_binder_proxy_death_container",
+      "name": "_heap_graph_binder_proxy_death_container",
+      "category": "android",
+      "type": "table",
+      "description": "Container objects reachable from `android.os.BinderProxy.mDeathRecipients`, tagged with the root `mDeathRecipients` list `list_id` they belong to. Walking through containers handles both plain `ArrayList` and `Collections$SynchronizedRandomAccessList` -> `ArrayList` -> `Object[]`.",
+      "columns": []
+    },
+    {
+      "id": "stdlib.android.android_heap_graph_binder_proxy",
+      "name": "android_heap_graph_binder_proxy",
+      "category": "android",
+      "type": "table",
+      "description": "Reachable `android.os.BinderProxy` objects in ART heap dumps, annotated with their wrapping AIDL `*$Stub$Proxy` class, their nearest non-wrapper dominator (`holder_*`), and any `IBinder.DeathRecipient` registrations in `BinderProxy.mDeathRecipients`. A holder does not mean a leak: most proxies belong to live sessions, registered callbacks, or process-lifetime service caches. Across heap dumps of peer processes, `replace(proxy_class_name, '$Stub$Proxy', '$Stub')` matches `stub_class_name` in `android_heap_graph_binder_stub`, though a single-process dump cannot tell which remote process owns a stub."
+    },
+    {
       "id": "stdlib.android._android_bitmap_resolve_sender_upid",
       "name": "_android_bitmap_resolve_sender_upid",
       "category": "android",
@@ -5207,6 +5681,13 @@
       "description": "Per-Bitmap-object view over the heap graph, with `mId` and `mSourceId` decoded into their pid / storage-type components and (for parcel-received Bitmaps) the sender resolved to a `upid` and process name at the heap dump's timestamp. One row per `android.graphics.Bitmap` instance per heap dump. Scalar columns derived from `heap_graph_primitive` (width/height/density/...) are populated only when the trace is an ART HPROF dump (`heap_graph_object_data` populated); on proto-format heap graphs (e.g. `android.java_hprof` data source) they are NULL and the row still appears so callers can fall back to size-only analysis."
     },
     {
+      "id": "stdlib.android._heap_graph_class_classification",
+      "name": "_heap_graph_class_classification",
+      "category": "android",
+      "type": "table",
+      "description": "Per heap graph class: display name and type classification."
+    },
+    {
       "id": "stdlib.android.android_heap_graph_class_find_descendants",
       "name": "android_heap_graph_class_find_descendants",
       "category": "android",
@@ -5232,11 +5713,27 @@
       "id": "stdlib.android._heap_graph_object_min_depth_tree",
       "name": "_heap_graph_object_min_depth_tree",
       "category": "android",
-      "type": "table",
-      "description": "Converts the heap graph into a tree by performing a BFS on the graph from the roots. This basically ends up with all paths being the shortest path from the root to the node (with lower ids being picked in the case of ties). Root nodes are sorted by class name before traversal to make the output more deterministic.",
+      "type": "view",
+      "description": "Deprecated alias for `heap_graph_shortest_path_tree`, kept for existing users.",
       "columns": [
         {
-          "name": "node_id",
+          "name": "id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "parent_id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "cumulative_size",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "cumulative_native_size",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "cumulative_count",
           "type": "UNKNOWN"
         }
       ]
@@ -5264,20 +5761,6 @@
       "type": "table",
       "description": "Table: _heap_graph_class_tree",
       "columns": []
-    },
-    {
-      "id": "stdlib.android._heap_graph_retained_object_count_agg",
-      "name": "_heap_graph_retained_object_count_agg",
-      "category": "android",
-      "type": "macro",
-      "description": "Macro: _heap_graph_retained_object_count_agg"
-    },
-    {
-      "id": "stdlib.android._heap_graph_retaining_object_count_agg",
-      "name": "_heap_graph_retaining_object_count_agg",
-      "category": "android",
-      "type": "macro",
-      "description": "Macro: _heap_graph_retaining_object_count_agg"
     },
     {
       "id": "stdlib.android._heap_graph_duplicate_objects_agg",
@@ -5324,7 +5807,7 @@
       "name": "heap_graph_dominator_tree",
       "category": "android",
       "type": "table",
-      "description": "All reachable heap graph objects, their immediate dominators and summary of their dominated sets. The heap graph dominator tree is calculated by stdlib graphs.dominator_tree. Each reachable object is a node in the dominator tree, their immediate dominator is their parent node in the tree, and their dominated set is all their descendants in the tree. All size information come from the heap_graph_object prelude table."
+      "description": "All reachable heap graph objects, their immediate dominators and summary of their dominated sets. The heap graph dominator tree is calculated by GRAPH DOMINATOR TREE. Each reachable object is a node in the dominator tree, their immediate dominator is their parent node in the tree, and their dominated set is all their descendants in the tree. All size information come from the heap_graph_object prelude table."
     },
     {
       "id": "stdlib.android._ref_type_ids",
@@ -5340,19 +5823,18 @@
       ]
     },
     {
-      "id": "stdlib.android._excluded_refs",
-      "name": "_excluded_refs",
+      "id": "stdlib.android._heap_graph_strong_edges",
+      "name": "_heap_graph_strong_edges",
       "category": "android",
       "type": "table",
-      "description": "Table: _excluded_refs",
-      "columns": []
+      "description": "Strong reference edges of the heap graph: references out of reachable objects, minus the referent of weak, phantom and finalizer references."
     },
     {
       "id": "stdlib.android._experimental_flamegraph_heap_graph_frames",
       "name": "_experimental_flamegraph_heap_graph_frames",
       "category": "android",
       "type": "macro",
-      "description": "Expands the heap graph dump at (upid, ts) into its shortest-path object tree and produces one frame row per object: name, mapping, and the value columns (count, size, alloc_count, alloc_size) which the flamegraph pipeline aggregates into self_*/cumulative_* output pairs. The BFS tree is the stdlib's canonical _heap_graph_object_min_depth_tree; the class tree module aggregates differently (path hashes keyed on heap type and root type, no root suffix in names), so the frames are built here to preserve the experimental_flamegraph output shape. Object ids are doubled so synthetic \"[native]\" children (id = 2*object_id + 1) sort after their parent (2*object_id) while staying unique within the tree."
+      "description": "Expands the heap graph dump at (upid, ts) into its shortest-path object tree and produces one frame row per object: name, mapping, and the value columns (count, size, alloc_count, alloc_size) which the flamegraph pipeline aggregates into self_*/cumulative_* output pairs. The BFS tree is the stdlib's canonical heap_graph_shortest_path_tree; the class tree module aggregates differently (path hashes keyed on heap type and root type, no root suffix in names), so the frames are built here to preserve the experimental_flamegraph output shape. Object ids are doubled so synthetic \"[native]\" children (id = 2*object_id + 1) sort after their parent (2*object_id) while staying unique within the tree."
     },
     {
       "id": "stdlib.android._experimental_flamegraph_heap_graph_state",
@@ -5370,41 +5852,58 @@
       "params": [
         {
           "name": "CREATE",
-          "type": "PERFETTO FUNCTION _is_libcore_or_array(obj_name STRING)"
+          "type": "PERFETTO TABLE _heap_graph_class_dominated_roots AS"
+        },
+        {
+          "name": "SELECT",
+          "type": "id, group_key AS type_id"
         }
       ]
     },
     {
-      "id": "stdlib.android._is_libcore_or_array",
-      "name": "_is_libcore_or_array",
-      "category": "android",
-      "type": "function",
-      "description": "Function: _is_libcore_or_array"
-    },
-    {
-      "id": "stdlib.android._heap_graph_dominator_tree_for_partition",
-      "name": "_heap_graph_dominator_tree_for_partition",
+      "id": "stdlib.android._heap_graph_class_dominated_roots",
+      "name": "_heap_graph_class_dominated_roots",
       "category": "android",
       "type": "table",
-      "description": "Table: _heap_graph_dominator_tree_for_partition",
+      "description": "Dominator tree nodes with no ancestor of the same class. Summing the dominated stats of these nodes per class counts every dominated object once.",
       "columns": []
     },
     {
-      "id": "stdlib.android._heap_object_marked_for_dominated_stats",
-      "name": "_heap_object_marked_for_dominated_stats",
+      "id": "stdlib.android._heap_graph_class_dominated_stats",
+      "name": "_heap_graph_class_dominated_stats",
       "category": "android",
       "type": "table",
-      "description": "Table: _heap_object_marked_for_dominated_stats",
+      "description": "Heap graph classes are per heap dump, so type_id alone identifies the (upid, graph_sample_ts) of every per-class aggregate below.",
       "columns": [
         {
-          "name": "id",
+          "name": "dominated_obj_count",
           "type": "UNKNOWN"
         },
         {
-          "name": "marked",
+          "name": "dominated_size_bytes",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dominated_native_size_bytes",
           "type": "UNKNOWN"
         }
       ]
+    },
+    {
+      "id": "stdlib.android._heap_graph_class_obj_stats",
+      "name": "_heap_graph_class_obj_stats",
+      "category": "android",
+      "type": "table",
+      "description": "Table: _heap_graph_class_obj_stats",
+      "columns": []
+    },
+    {
+      "id": "stdlib.android._heap_graph_class_reachable_obj_stats",
+      "name": "_heap_graph_class_reachable_obj_stats",
+      "category": "android",
+      "type": "table",
+      "description": "Table: _heap_graph_class_reachable_obj_stats",
+      "columns": []
     },
     {
       "id": "stdlib.android.android_heap_graph_class_aggregation",
@@ -5419,6 +5918,22 @@
       "category": "android",
       "type": "macro",
       "description": "Returns either the value for the span matching ts exactly, or a data point up to 500ms in the future."
+    },
+    {
+      "id": "stdlib.android._heap_graph_totals",
+      "name": "_heap_graph_totals",
+      "category": "android",
+      "type": "table",
+      "description": "Table: _heap_graph_totals",
+      "columns": []
+    },
+    {
+      "id": "stdlib.android._heap_graph_reachable_totals",
+      "name": "_heap_graph_reachable_totals",
+      "category": "android",
+      "type": "table",
+      "description": "Table: _heap_graph_reachable_totals",
+      "columns": []
     },
     {
       "id": "stdlib.android.android_heap_graph_stats",
@@ -5466,44 +5981,6 @@
       "description": "Given a table containing heap graph tree-table aggregated by path hashes (see _heap_graph_path_hash_aggregate) computes the \"class tree\" by converting the path hashes to ids. Note that |tab| *must* be a Perfetto (e.g. not a subquery) for this macro to work."
     },
     {
-      "id": "stdlib.android._heap_graph_object_tree_cumulatives",
-      "name": "_heap_graph_object_tree_cumulatives",
-      "category": "android",
-      "type": "table",
-      "description": "Table: _heap_graph_object_tree_cumulatives",
-      "columns": [
-        {
-          "name": "self_count",
-          "type": "UNKNOWN"
-        }
-      ]
-    },
-    {
-      "id": "stdlib.android._heap_graph_object_tree_aggregation",
-      "name": "_heap_graph_object_tree_aggregation",
-      "category": "android",
-      "type": "table",
-      "description": "The cumulative size, native size and object count of every object in the heap graph: the totals over the object and everything below it in the min depth tree. Objects which are not part of the tree only count themselves.",
-      "columns": [
-        {
-          "name": "id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "cumulative_size",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "cumulative_native_size",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "cumulative_count",
-          "type": "UNKNOWN"
-        }
-      ]
-    },
-    {
       "id": "stdlib.android._heap_graph_object_references_agg",
       "name": "_heap_graph_object_references_agg",
       "category": "android",
@@ -5542,29 +6019,11 @@
       ]
     },
     {
-      "id": "stdlib.android._heap_graph_super_root_fn",
-      "name": "_heap_graph_super_root_fn",
-      "category": "android",
-      "type": "function",
-      "description": "The assigned id of the \"super root\". Since a Java heap graph is a \"forest\" structure, we need to add a imaginary \"super root\" node which connects all the roots of the forest into a single connected component, so that the dominator tree algorithm can be performed.",
-      "params": [
-        {
-          "name": "CREATE",
-          "type": "PERFETTO TABLE _raw_heap_graph_dominator_tree AS"
-        },
-        {
-          "name": "node_id",
-          "type": "AS id"
-        }
-      ]
-    },
-    {
-      "id": "stdlib.android._raw_heap_graph_dominator_tree",
-      "name": "_raw_heap_graph_dominator_tree",
+      "id": "stdlib.android.heap_graph_shortest_path_tree",
+      "name": "heap_graph_shortest_path_tree",
       "category": "android",
       "type": "table",
-      "description": "Table: _raw_heap_graph_dominator_tree",
-      "columns": []
+      "description": "All reachable heap graph objects arranged into a shortest-path spanning tree from GC roots via breadth-first search over strong references. Every reachable object's path to a root via `parent_id` is a shortest strong-reference path. Where multiple shortest paths exist, roots are ordered by class name and `id` (keeping the tree comparable across heap dumps) and outgoing references are ordered by target `id`. Only reachable objects appear in this table."
     },
     {
       "id": "stdlib.android._android_heap_profile_callstacks_for_allocations",
@@ -6019,40 +6478,11 @@
       "id": "stdlib.android._first_blocked_contention",
       "name": "_first_blocked_contention",
       "category": "android",
-      "type": "view",
-      "description": "First blocked node on a lock, i.e nodes with |waiter_count| = 0. The |dur| here is adjusted to only account for the time between the first thread waiting and the first thread to acquire the lock. That way, the thread state span joins below only compute the thread states where the blocking thread is actually holding the lock. This avoids counting the time when another waiter acquired the lock before the first waiter.",
+      "type": "table",
+      "description": "First blocked node on a lock, i.e nodes with |waiter_count| = 0. The |dur| here is adjusted to only account for the time between the first thread waiting and the first thread to acquire the lock. That way, the thread state intersection below only computes the thread states where the blocking thread is actually holding the lock. This avoids counting the time when another waiter acquired the lock before the first waiter.",
       "columns": [
         {
           "name": "dur",
-          "type": "UNKNOWN"
-        }
-      ]
-    },
-    {
-      "id": "stdlib.android._blocking_thread_state",
-      "name": "_blocking_thread_state",
-      "category": "android",
-      "type": "view",
-      "description": "View: _blocking_thread_state",
-      "columns": [
-        {
-          "name": "blocking_utid",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "state",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "blocked_function",
           "type": "UNKNOWN"
         }
       ]
@@ -6062,7 +6492,7 @@
       "name": "android_monitor_contention_chain_thread_state",
       "category": "android",
       "type": "table",
-      "description": "Contains the span join of the first waiters in the |android_monitor_contention_chain| with their blocking_thread thread state. Note that we only span join the duration where the lock was actually held and contended. This can be less than the duration the lock was 'waited on' when a different waiter acquired the lock earlier than the first waiter.",
+      "description": "Contains the intersection of the first waiters in the |android_monitor_contention_chain| with their blocking_thread thread state. Note that we only intersect the duration where the lock was actually held and contended. This can be less than the duration the lock was 'waited on' when a different waiter acquired the lock earlier than the first waiter.",
       "columns": [
         {
           "name": "pprof",
@@ -6557,6 +6987,48 @@
       ]
     },
     {
+      "id": "stdlib.android._android_process_capability_intervals",
+      "name": "_android_process_capability_intervals",
+      "category": "android",
+      "type": "table",
+      "description": "Intervals where each Android process capability flag was enabled.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android._android_process_capability_count",
+      "name": "_android_process_capability_count",
+      "category": "android",
+      "type": "table",
+      "description": "Number of enabled capabilities for each process over time. The weight 0 background row per process makes INTERVAL FLATTEN also emit the gaps with no capability.",
+      "columns": []
+    },
+    {
+      "id": "stdlib.android._android_process_oom_scores",
+      "name": "_android_process_oom_scores",
+      "category": "android",
+      "type": "table",
+      "description": "OOM adjustment scores of each process over time.",
+      "columns": [
+        {
+          "name": "is_initial",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
       "id": "stdlib.android.android_process_uid_state",
       "name": "android_process_uid_state",
       "category": "android",
@@ -6629,6 +7101,14 @@
       "category": "android",
       "type": "table",
       "description": "Table: _render_thread_per_process"
+    },
+    {
+      "id": "stdlib.android._android_screen_state_filled",
+      "name": "_android_screen_state_filled",
+      "category": "android",
+      "type": "table",
+      "description": "Screen state intervals per machine, NULL where the state is unknown: every machine with data is filled between its rows, and the primary machine is filled even without data, since the trace says it was there. Other machines without data may not have emitted any, which is not the same as their state being unknown.",
+      "columns": []
     },
     {
       "id": "stdlib.android.android_screen_state",
@@ -6893,35 +7373,47 @@
       ]
     },
     {
-      "id": "stdlib.android._startup_slices_breakdown",
-      "name": "_startup_slices_breakdown",
+      "id": "stdlib.android._startup_flat_slices",
+      "name": "_startup_flat_slices",
       "category": "android",
       "type": "table",
-      "description": "Subset of _startup_normalized_slices that occurred during any app startups on the main thread. Their timestamps and durations are chopped to fit within the respective app startup duration.",
-      "columns": []
-    },
-    {
-      "id": "stdlib.android._startup_flat_slices_breakdown",
-      "name": "_startup_flat_slices_breakdown",
-      "category": "android",
-      "type": "table",
-      "description": "Flattened slice version of _startup_slices_breakdown. This selects the leaf slice at every region of the slice stack.",
+      "description": "Flattened slice stack of each startup's main thread: at every point of the startup, the leaf (i.e. deepest) normalized slice, or a NULL slice_id where no normalized slice is active.",
       "columns": [
         {
-          "name": "slice_id",
+          "name": "root_id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "utid",
           "type": "UNKNOWN"
         }
       ]
     },
     {
-      "id": "stdlib.android._startup_thread_states_breakdown",
-      "name": "_startup_thread_states_breakdown",
+      "id": "stdlib.android._startup_thread_states_and_slices_breakdown",
+      "name": "_startup_thread_states_and_slices_breakdown",
       "category": "android",
       "type": "table",
-      "description": "Subset of thread_states that occurred during any app startups on the main thread.",
+      "description": "Intersection of the main thread's thread states with _startup_flat_slices: each row has a single thread state and leaf slice.",
       "columns": [
         {
-          "name": "parent_id",
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "thread_state_id",
           "type": "UNKNOWN"
         }
       ]
@@ -6984,20 +7476,33 @@
       "name": "_mipmap_flat_slice",
       "category": "android",
       "type": "table",
-      "description": "Flatten slices that occur within the startups.",
+      "description": "Flattened slices on the threads of the startups. Stretches with no slice are filled with a NULL slice so that thread states outside of any slice are kept when intersecting below.",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android._mipmap_startup_slice_raw",
+      "name": "_mipmap_startup_slice_raw",
+      "category": "android",
+      "type": "table",
+      "description": "Intersect the thread states, the flattened slices and the startups.",
       "columns": []
     },
     {
-      "id": "stdlib.android._mipmap_flat_slice_thread_states_and_slices",
-      "name": "_mipmap_flat_slice_thread_states_and_slices",
+      "id": "stdlib.android._mipmap_startup_slice",
+      "name": "_mipmap_startup_slice",
       "category": "android",
-      "type": "table",
-      "description": "Create a table from the span join results.",
+      "type": "view",
+      "description": "The slices with thread states that occurred during each startup.",
       "columns": [
-        {
-          "name": "id",
-          "type": "UNKNOWN"
-        },
         {
           "name": "ts",
           "type": "UNKNOWN"
@@ -7023,11 +7528,15 @@
           "type": "UNKNOWN"
         },
         {
-          "name": "state",
+          "name": "synth_name",
           "type": "UNKNOWN"
         },
         {
           "name": "cpu",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "state",
           "type": "UNKNOWN"
         },
         {
@@ -7039,22 +7548,30 @@
           "type": "UNKNOWN"
         },
         {
-          "name": "synth_name",
+          "name": "irq_context",
           "type": "UNKNOWN"
         },
         {
-          "name": "irq_context",
+          "name": "startup_id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "upid",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "startup_type",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "package",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "startup_dur",
           "type": "UNKNOWN"
         }
       ]
-    },
-    {
-      "id": "stdlib.android._mipmap_startup_slice",
-      "name": "_mipmap_startup_slice",
-      "category": "android",
-      "type": "table",
-      "description": "Intersect the slices with thread states with the unique startup intervals. This table contains the slices that occurred during each startup.",
-      "columns": []
     },
     {
       "id": "stdlib.android._mipmap_startup_buckets_1ms",
@@ -7930,7 +8447,7 @@
       "name": "android_suspend_state",
       "category": "android",
       "type": "table",
-      "description": "Table of suspended and awake slices. Selects either the minimal or full ftrace source depending on what's available, marks suspended periods, and complements them to give awake periods."
+      "description": "Table of suspended and awake slices. Selects either the minimal or full ftrace source depending on what's available, marks suspended periods, and complements them to give awake periods: every machine with suspend slices is awake between them. The primary machine is awake throughout if it never suspended, since the trace starting and ending at all says it was awake. Other machines may have been asleep throughout, so nothing is known of them without suspend slices."
     },
     {
       "id": "stdlib.android._extract_duration_without_suspend",
@@ -9034,7 +9551,7 @@
       "name": "chrome_scrolls",
       "category": "chrome",
       "type": "table",
-      "description": "Defines slices for all of the individual scrolls in a trace based on the LatencyInfo-based scroll definition. NOTE: this view of top level scrolls is based on the LatencyInfo definition of a scroll, which differs subtly from the definition based on EventLatencies. TODO(b/278684408): add support for tracking scrolls across multiple Chrome/ WebView instances. Currently gesture_scroll_id unique within an instance, but is not unique across multiple instances. Switching to an EventLatency based definition of scrolls should resolve this."
+      "description": "Defines slices for all of the individual scrolls in a trace based on the LatencyInfo-based scroll definition. NOTE: this view of top level scrolls is based on the LatencyInfo definition of a scroll, which differs subtly from the definition based on EventLatencies."
     },
     {
       "id": "stdlib.chrome.chrome_scroll_update_info",
@@ -9569,6 +10086,152 @@
       "category": "chrome",
       "type": "table",
       "description": "All LoadLine2 stages per page"
+    },
+    {
+      "id": "stdlib.chrome._chrome_loadline2_classify_renderer_slice",
+      "name": "_chrome_loadline2_classify_renderer_slice",
+      "category": "chrome",
+      "type": "macro",
+      "description": "Classifies a CrRendererMain slice into a LoadLine 2 subsystem."
+    },
+    {
+      "id": "stdlib.chrome._chrome_loadline2_renderer_main_utid",
+      "name": "_chrome_loadline2_renderer_main_utid",
+      "category": "chrome",
+      "type": "table",
+      "description": "Maps each LoadLine 2 story to its CrRendererMain thread utid and stage bounds, selecting the most recent CrRendererMain thread active during the story window when multiple process rows share pid or an OS pid is reused.",
+      "columns": [
+        {
+          "name": "utid",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "renderer_start",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.chrome._chrome_loadline2_cr_main_slices",
+      "name": "_chrome_loadline2_cr_main_slices",
+      "category": "chrome",
+      "type": "table",
+      "description": "Clips CrRendererMain thread slices to the story window and assigns each slice a subsystem, inheriting from parent/ancestor slices when unclassified.",
+      "columns": []
+    },
+    {
+      "id": "stdlib.chrome._chrome_loadline2_cr_raw_intervals",
+      "name": "_chrome_loadline2_cr_raw_intervals",
+      "category": "chrome",
+      "type": "table",
+      "description": "Flattens nested CrRendererMain slices into non-overlapping atomic intervals using a sweep line where slice starts (1000 + depth) beat slice ends (-depth) and window boundaries (-1000), and shallower parent slice ends (-d) beat deeper child slice ends (-(d + 1)) at the same timestamp.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "subsystem",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.chrome._chrome_loadline2_cr_gaps",
+      "name": "_chrome_loadline2_cr_gaps",
+      "category": "chrome",
+      "type": "table",
+      "description": "Uncovered intervals on CrRendererMain where no trace slice is active.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "page",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "utid",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.chrome._chrome_loadline2_cr_thread_state",
+      "name": "_chrome_loadline2_cr_thread_state",
+      "category": "chrome",
+      "type": "table",
+      "description": "Classifies CrRendererMain scheduler thread_state intervals into 'runnable', 'other_busy', or 'idle_wait', filling any sub-intervals not covered by thread_state (when sched is absent or partially recorded) with 'idle_wait'.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "page",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "utid",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "subsystem",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.chrome.chrome_loadline2_renderer_slices",
+      "name": "chrome_loadline2_renderer_slices",
+      "category": "chrome",
+      "type": "table",
+      "description": "Non-overlapping flattened activity slices on CrRendererMain for each LoadLine 2 story."
+    },
+    {
+      "id": "stdlib.chrome.chrome_loadline2_renderer_breakdown",
+      "name": "chrome_loadline2_renderer_breakdown",
+      "category": "chrome",
+      "type": "table",
+      "description": "Breakdown of the LoadLine 2 renderer stage by CrRendererMain subsystem."
+    },
+    {
+      "id": "stdlib.chrome.chrome_loadline2_presentation_breakdown",
+      "name": "chrome_loadline2_presentation_breakdown",
+      "category": "chrome",
+      "type": "table",
+      "description": "Frame pipeline (PipelineReporter) sub-stage slices during the presentation stage."
+    },
+    {
+      "id": "stdlib.chrome.chrome_loadline2_js_scripts",
+      "name": "chrome_loadline2_js_scripts",
+      "category": "chrome",
+      "type": "table",
+      "description": "End-to-end JS script lifecycle per page (request -> response -> bg_parse -> compile -> execute)."
+    },
+    {
+      "id": "stdlib.chrome.chrome_loadline2_js_script_slices",
+      "name": "chrome_loadline2_js_script_slices",
+      "category": "chrome",
+      "type": "table",
+      "description": "Individual timeline slices for each stage of a JS script lifecycle."
     },
     {
       "id": "stdlib.chrome.chrome_hardware_class",
@@ -12320,20 +12983,6 @@
       "description": "Given a table of start timestamps and a table of end timestamps, creates intervals by matching each start with the next end timestamp strictly greater than it. Both input tables must have a column named `ts`. Uses an efficient O(n+m) two-pointer algorithm implemented in C++. Example: ``` SELECT * FROM _interval_create!( (SELECT ts FROM starts_table), (SELECT ts FROM ends_table) ) ```"
     },
     {
-      "id": "stdlib.intervals.__ifg_null",
-      "name": "__ifg_null",
-      "category": "intervals",
-      "type": "macro",
-      "description": "Helper for __intrinsic_token_apply to fill in NULLs for a ColumnNameList."
-    },
-    {
-      "id": "stdlib.intervals._intervals_fill_gaps",
-      "name": "_intervals_fill_gaps",
-      "category": "intervals",
-      "type": "macro",
-      "description": "Fills in gaps within a table of slices, so data is present from trace_start to trace_end for each group of columns. Given a table of slices (`ts`, `dur`, `group_cols`, `data_cols`), this macro returns a table where every distinct `group_cols` has contiguous data from trace_start to trace_end. The `data_cols` are carried through from the source and filled with nulls when gaps are found. The input must not have overlaps within a set of `group_cols` Notes: * If grouping is not required, you may pass `(NULL)` for group_cols. * To guarantee a group is present, it is safe to `UNION` a row with the correct `group_cols` and all other columns as NULL. Example: ``` _intervals_fill_gaps!( (uid, package_name), (process_state), process_state_table ) ```"
-    },
-    {
       "id": "stdlib.intervals._ii_df_agg",
       "name": "_ii_df_agg",
       "category": "intervals",
@@ -13579,7 +14228,7 @@
       "name": "_get_devfreq_counters",
       "category": "linux",
       "type": "function",
-      "description": "Gets devfreq frequency counter based on device queried. These counters will only be available if the \"devfreq/devfreq_frequency\" ftrace event is enabled.",
+      "description": "Gets devfreq frequency counter based on device queried. These counters will only be available if the \"devfreq/devfreq_frequency\" ftrace event or sys_stats devfreq polling (devfreq_period_ms) is enabled.",
       "columns": [
         {
           "name": "id",
@@ -13610,7 +14259,7 @@
       "name": "linux_devfreq_dsu_counter",
       "category": "linux",
       "type": "table",
-      "description": "ARM DSU device frequency counters. This table will only be populated on traces collected with \"devfreq/devfreq_frequency\" ftrace event enabled, and from ARM devices with the DSU (DynamIQ Shared Unit) hardware."
+      "description": "ARM DSU device frequency counters. This table will only be populated on traces collected with \"devfreq/devfreq_frequency\" ftrace event or sys_stats devfreq polling (devfreq_period_ms) enabled, and from ARM devices with the DSU (DynamIQ Shared Unit) hardware."
     },
     {
       "id": "stdlib.linux.linux_hard_irqs",
@@ -13717,7 +14366,7 @@
       "name": "_all_counters_per_process",
       "category": "linux",
       "type": "view",
-      "description": "View: _all_counters_per_process",
+      "description": "Of samples sharing a `ts` on one track, the last added gets the duration and the rest get `dur = 0`.",
       "columns": []
     },
     {
@@ -13871,7 +14520,7 @@
       "name": "_memory_rss_and_swap_per_process_table",
       "category": "linux",
       "type": "table",
-      "description": "Table: _memory_rss_and_swap_per_process_table",
+      "description": "Each process's anon RSS, file RSS, shmem RSS and swap over time, split at every change of any of them. No counter overlaps itself within a process, so MAX picks the one value active in each segment.",
       "columns": [
         {
           "name": "ts",
@@ -16636,6 +17285,23 @@
       ]
     },
     {
+      "id": "stdlib.prelude.stats_histogram_bucket",
+      "name": "stats_histogram_bucket",
+      "category": "prelude",
+      "type": "view",
+      "description": "Buckets of histogram stats. One row per bucket of a histogram stat row in the `stats` table (i.e. per (stat, idx) pair).",
+      "columns": [
+        {
+          "name": "id",
+          "type": "ID"
+        },
+        {
+          "name": "stat_id",
+          "type": "JOINID(stats.id)"
+        }
+      ]
+    },
+    {
       "id": "stdlib.prelude.trace_start",
       "name": "trace_start",
       "category": "prelude",
@@ -16751,7 +17417,7 @@
       "name": "sched_state_to_human_readable_string",
       "category": "sched",
       "type": "function",
-      "description": "Translates a single-letter scheduling state to a human-readable string.",
+      "description": "Translates a scheduling state to a human-readable string.",
       "params": [
         {
           "name": "short_name",
@@ -16764,7 +17430,7 @@
       "name": "sched_state_io_to_human_readable_string",
       "category": "sched",
       "type": "function",
-      "description": "Translates a single-letter scheduling state and IO wait information to a human-readable string.",
+      "description": "Translates a scheduling state and IO wait information to a human-readable string.",
       "params": [
         {
           "name": "sched_state",
@@ -16998,20 +17664,46 @@
       ]
     },
     {
+      "id": "stdlib.sched._critical_path_frames",
+      "name": "_critical_path_frames",
+      "category": "sched",
+      "type": "table",
+      "description": "Every critical-path frame: one per root, chain depth and on-CPU blocker. `key` orders frames by depth, then blocker id, so the max key among the frames covering an instant is the deepest blocker.",
+      "columns": [
+        {
+          "name": "root_node_id",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.sched._critical_path_flat",
+      "name": "_critical_path_flat",
+      "category": "sched",
+      "type": "table",
+      "description": "The frames of each root flattened to the deepest blocker at every instant. Stretches of the root's extent which no frame covers are filled with a NULL `key`, i.e. the root itself.",
+      "columns": [
+        {
+          "name": "root_id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
       "id": "stdlib.sched._critical_path_all",
       "name": "_critical_path_all",
       "category": "sched",
       "type": "table",
-      "description": "Critical path rooted at every entry of `_wakeup_graph`, with the on-CPU blocker thread (`utid`) and the root's thread (`root_utid`) joined in. Materialised so the slice-aware tables below can join in id-space.",
+      "description": "Critical path rooted at every entry of `_wakeup_graph`, with the on-CPU blocker thread (`utid`) and the root's thread (`root_utid`) joined in.",
       "columns": [
-        {
-          "name": "id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts_end",
-          "type": "UNKNOWN"
-        },
         {
           "name": "root_utid",
           "type": "UNKNOWN"
@@ -17019,138 +17711,19 @@
       ]
     },
     {
-      "id": "stdlib.sched._span_thread_state_view",
-      "name": "_span_thread_state_view",
+      "id": "stdlib.sched._thread_flat_slice_filled",
+      "name": "_thread_flat_slice_filled",
       "category": "sched",
-      "type": "view",
-      "description": "Limited thread_state view that will later be span joined with the |_thread_executing_span_graph|.",
-      "columns": [
-        {
-          "name": "thread_state_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "utid",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "state",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "function",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "io_wait",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "cpu",
-          "type": "UNKNOWN"
-        }
-      ]
-    },
-    {
-      "id": "stdlib.sched._span_slice_view",
-      "name": "_span_slice_view",
-      "category": "sched",
-      "type": "view",
-      "description": "Slice projection for SPAN_JOIN with thread_state. Carries `slice_id` only; the slice's name is joined on demand at the leaves of `_critical_path_stack` so the materialised cross-product below does not duplicate every slice's name across every blocker region.",
-      "columns": [
-        {
-          "name": "slice_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "slice_depth",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "utid",
-          "type": "UNKNOWN"
-        }
-      ]
+      "type": "table",
+      "description": "Flattened slices of every thread, with the stretches of the trace no slice covers filled with a NULL `slice_id`.",
+      "columns": []
     },
     {
       "id": "stdlib.sched._span_thread_state_slice",
       "name": "_span_thread_state_slice",
       "category": "sched",
       "type": "table",
-      "description": "Table: _span_thread_state_slice",
-      "columns": [
-        {
-          "name": "id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts_end",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "utid",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "thread_state_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "state",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "function",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "cpu",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "io_wait",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "slice_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "slice_depth",
-          "type": "UNKNOWN"
-        }
-      ]
-    },
-    {
-      "id": "stdlib.sched._critical_path_thread_state_slice_raw",
-      "name": "_critical_path_thread_state_slice_raw",
-      "category": "sched",
-      "type": "table",
-      "description": "Table: _critical_path_thread_state_slice_raw",
+      "description": "Thread states split at the boundaries of their thread's flattened slices, in id-space. The slice's name is joined on demand at the leaves of `_critical_path_stack` so the materialised tables below do not duplicate every slice's name across every blocker region.",
       "columns": []
     },
     {
@@ -17159,47 +17732,14 @@
       "category": "sched",
       "type": "table",
       "description": "Critical-path × slice cross product, restricted to id-space columns. Slice names are not stored here; `_critical_path_stack` joins `slice` on `slice_id` for the rows it actually returns.",
-      "columns": [
-        {
-          "name": "thread_state_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "state",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "function",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "cpu",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "io_wait",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "slice_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "slice_depth",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "root_utid",
-          "type": "UNKNOWN"
-        }
-      ]
+      "columns": []
     },
     {
       "id": "stdlib.sched._self_view",
       "name": "_self_view",
       "category": "sched",
       "type": "view",
-      "description": "Projection of |_self_sp| in id-space. Slice names are joined on `self_slice_id` at the leaves of `_critical_path_stack`.",
+      "description": "Flattened slices joined with their thread_states. This contains the 'self' information without 'critical_path' (blocking) information. Slice names are joined on `self_slice_id` at the leaves of `_critical_path_stack`.",
       "columns": [
         {
           "name": "self_thread_state_id",
@@ -17384,6 +17924,23 @@
       ]
     },
     {
+      "id": "stdlib.sched._sched_runnable_thread_intervals",
+      "name": "_sched_runnable_thread_intervals",
+      "category": "sched",
+      "type": "table",
+      "description": "Table: _sched_runnable_thread_intervals",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
       "id": "stdlib.sched.sched_runnable_thread_count",
       "name": "sched_runnable_thread_count",
       "category": "sched",
@@ -17391,11 +17948,41 @@
       "description": "The count of runnable threads over time."
     },
     {
+      "id": "stdlib.sched._sched_uninterruptible_sleep_thread_intervals",
+      "name": "_sched_uninterruptible_sleep_thread_intervals",
+      "category": "sched",
+      "type": "table",
+      "description": "Table: _sched_uninterruptible_sleep_thread_intervals",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
       "id": "stdlib.sched.sched_uninterruptible_sleep_thread_count",
       "name": "sched_uninterruptible_sleep_thread_count",
       "category": "sched",
       "type": "table",
       "description": "The count of threads in uninterruptible sleep over time."
+    },
+    {
+      "id": "stdlib.sched._sched_active_cpu_intervals",
+      "name": "_sched_active_cpu_intervals",
+      "category": "sched",
+      "type": "table",
+      "description": "Sched events of running tasks. Threads with is_idle = 1 are the swapper threads / idle tasks.",
+      "columns": [
+        {
+          "name": "utid",
+          "type": "UNKNOWN"
+        }
+      ]
     },
     {
       "id": "stdlib.sched.sched_active_cpu_count",
@@ -17766,6 +18353,35 @@
         {
           "name": "id",
           "type": "JOINID(slice.id)"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.slices._slice_flat_intervals",
+      "name": "_slice_flat_intervals",
+      "category": "slices",
+      "type": "table",
+      "description": "Each stack flattened to its deepest active slice. Unfinished and instant slices are dropped, along with everything below them.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "parent_id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "own_root_id",
+          "type": "UNKNOWN"
         }
       ]
     },
@@ -19272,6 +19888,56 @@
       "columns": []
     },
     {
+      "id": "stdlib.wattson._wattson_window_active_mw_ns",
+      "name": "_wattson_window_active_mw_ns",
+      "category": "wattson",
+      "type": "function",
+      "description": "Active energy (mW * ns) of each thread over the part of its slices that overlaps [win_ts, win_ts + win_dur), with the same half-open and zero-duration point semantics as interval intersection.",
+      "columns": [
+        {
+          "name": "FROM",
+          "type": "_estimates_w_tasks_attribution"
+        },
+        {
+          "name": "GROUP",
+          "type": "BY"
+        },
+        {
+          "name": "CREATE",
+          "type": "PERFETTO MACRO _wattson_threads_summary("
+        },
+        {
+          "name": "active_table",
+          "type": "TableOrSubquery"
+        },
+        {
+          "name": "window_table",
+          "type": "TableOrSubquery"
+        },
+        {
+          "name": "cpus_table",
+          "type": "TableOrSubquery"
+        }
+      ],
+      "params": [
+        {
+          "name": "win_ts",
+          "type": "TIMESTAMP"
+        },
+        {
+          "name": "win_dur",
+          "type": "LONG"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.wattson._wattson_threads_summary",
+      "name": "_wattson_threads_summary",
+      "category": "wattson",
+      "type": "macro",
+      "description": "Joins per (period_id, utid) active energy with the idle transition cost and the thread metadata."
+    },
+    {
       "id": "stdlib.wattson._wattson_threads_aggregation",
       "name": "_wattson_threads_aggregation",
       "category": "wattson",
@@ -19348,19 +20014,7 @@
       "category": "wattson",
       "type": "table",
       "description": "Combine L3 hit and miss rates into a single table.",
-      "columns": []
-    },
-    {
-      "id": "stdlib.wattson._wattson_dsu_frequency",
-      "name": "_wattson_dsu_frequency",
-      "category": "wattson",
-      "type": "table",
-      "description": "Get nominal devfreq_dsu counter, OR use a dummy one for Pixel 9 VM traces The VM doesn't have a DSU, so the placeholder value of FMin is put in. The DSU frequency is a prerequisite for power estimation on Pixel 9.",
       "columns": [
-        {
-          "name": "id",
-          "type": "UNKNOWN"
-        },
         {
           "name": "ts",
           "type": "UNKNOWN"
@@ -19368,12 +20022,16 @@
         {
           "name": "dur",
           "type": "UNKNOWN"
-        },
-        {
-          "name": "dsu_freq",
-          "type": "UNKNOWN"
         }
       ]
+    },
+    {
+      "id": "stdlib.wattson._wattson_dsu_frequency",
+      "name": "_wattson_dsu_frequency",
+      "category": "wattson",
+      "type": "table",
+      "description": "Gapless DSU frequency slices from trace_start() to trace_end(). Fills any leading gap prior to the first devfreq event (or the entire trace when no devfreq events are present, e.g. on VMs or when DSU frequency is pinned) with the device's minimum DSU frequency.",
+      "columns": []
     },
     {
       "id": "stdlib.wattson._curve_2d_freq_shift",
@@ -19495,10 +20153,22 @@
       "name": "_adjusted_cpu_freq",
       "category": "wattson",
       "type": "table",
-      "description": "Table: _adjusted_cpu_freq",
+      "description": "Every physically present CPU's frequency from trace start to trace end, NULL where no freq event defines it, so that interval_intersect doesn't remove the undefined time region.",
       "columns": [
         {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        },
+        {
           "name": "cpu",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "policy",
           "type": "UNKNOWN"
         }
       ]
@@ -19553,7 +20223,7 @@
       "name": "_idle_freq_materialized",
       "category": "wattson",
       "type": "view",
-      "description": "Start matching CPUs with 1D curves based on combination of freq and idle. Carrying state_id through _w_cpu_slices eliminates 10 table joins.",
+      "description": "Start matching CPUs with 1D curves based on combination of freq and idle. Carrying state_id through _w_cpu_slices_raw eliminates 10 table joins.",
       "columns": [
         {
           "name": "ts",
@@ -19603,7 +20273,7 @@
       "name": "_gapless_hotplug_slices",
       "category": "wattson",
       "type": "table",
-      "description": "Fill gaps from beginning of trace to end of trace so that this table can be used by interval_intersect().",
+      "description": "Every CPU's hotplug state from trace start to trace end, online wherever cpuhp says nothing, so that this table can be used by interval_intersect(): a CPU which is never offline is online throughout.",
       "columns": [
         {
           "name": "ts",
@@ -19663,7 +20333,12 @@
       "category": "wattson",
       "type": "table",
       "description": "Deep idle slices immediately followed by an idle exit, keyed by exit ts.",
-      "columns": []
+      "columns": [
+        {
+          "name": "track_id",
+          "type": "UNKNOWN"
+        }
+      ]
     },
     {
       "id": "stdlib.wattson._adjusted_deep_idle",
@@ -19691,73 +20366,12 @@
       "columns": []
     },
     {
-      "id": "stdlib.wattson._w_cpu_slices",
-      "name": "_w_cpu_slices",
+      "id": "stdlib.wattson._w_config_reps",
+      "name": "_w_config_reps",
       "category": "wattson",
       "type": "table",
-      "description": "Table: _w_cpu_slices",
-      "columns": [
-        {
-          "name": "ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "l3_hit_count",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "l3_miss_count",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "suspended",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dsu_freq",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "config_hash",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "state_id_0",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "state_id_1",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "state_id_2",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "state_id_3",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "state_id_4",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "state_id_5",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "state_id_6",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "state_id_7",
-          "type": "UNKNOWN"
-        }
-      ]
+      "description": "One row per distinct CPU state combination, grouped natively by the pipeline rather than by sorting every interval in SQLite.",
+      "columns": []
     },
     {
       "id": "stdlib.wattson._cpu_state_lut",
@@ -19792,51 +20406,107 @@
       "description": "All UNIQUE configs of independent CPU data.",
       "columns": [
         {
-          "name": "config_hash",
+          "name": "freq_0",
           "type": "UNKNOWN"
         },
         {
-          "name": "dsu_freq",
+          "name": "idle_0",
           "type": "UNKNOWN"
         },
         {
-          "name": "suspended",
+          "name": "freq_1",
           "type": "UNKNOWN"
         },
         {
-          "name": "state_id_0",
+          "name": "idle_1",
           "type": "UNKNOWN"
         },
         {
-          "name": "state_id_1",
+          "name": "freq_2",
           "type": "UNKNOWN"
         },
         {
-          "name": "state_id_2",
+          "name": "idle_2",
           "type": "UNKNOWN"
         },
         {
-          "name": "state_id_3",
+          "name": "freq_3",
           "type": "UNKNOWN"
         },
         {
-          "name": "state_id_4",
+          "name": "idle_3",
           "type": "UNKNOWN"
         },
         {
-          "name": "state_id_5",
+          "name": "freq_4",
           "type": "UNKNOWN"
         },
         {
-          "name": "state_id_6",
+          "name": "idle_4",
           "type": "UNKNOWN"
         },
         {
-          "name": "state_id_7",
+          "name": "freq_5",
           "type": "UNKNOWN"
         },
         {
-          "name": "cpus_on_mask",
+          "name": "idle_5",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "freq_6",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "idle_6",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "freq_7",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "idle_7",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "cpu0_curve",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "cpu1_curve",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "cpu2_curve",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "cpu3_curve",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "cpu4_curve",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "cpu5_curve",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "cpu6_curve",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "cpu7_curve",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "policy_cpus_on_mask",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "static_1d",
           "type": "UNKNOWN"
         }
       ]
@@ -19846,7 +20516,45 @@
       "name": "_w_independent_cpus_calc",
       "category": "wattson",
       "type": "view",
-      "description": "Per-interval CPU data with the configuration columns attached. Consumers that only need the per-interval columns should read `_w_cpu_slices` directly, since this view has to join every interval back to its config.",
+      "description": "Per-interval CPU data with the configuration columns attached. Consumers that only need the per-interval columns should read `_w_cpu_slices_raw` directly, since this view has to join every interval back to its config.",
+      "columns": [
+        {
+          "name": "l3_hit_count",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "l3_miss_count",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.wattson._cpu_dep_class",
+      "name": "_cpu_dep_class",
+      "category": "wattson",
+      "type": "table",
+      "description": "CPUs whose dependency CPUs and voting rule are the same get the same vote, so the vote is only computed for one representative CPU of each class.",
+      "columns": []
+    },
+    {
+      "id": "stdlib.wattson._cpu_dep_rep_row",
+      "name": "_cpu_dep_rep_row",
+      "category": "wattson",
+      "type": "table",
+      "description": "Table: _cpu_dep_rep_row",
+      "columns": [
+        {
+          "name": "rep_cpu",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.wattson._cpu_dep_votes",
+      "name": "_cpu_dep_votes",
+      "category": "wattson",
+      "type": "table",
+      "description": "The (cpu, dependency cpu) pairs to vote over, with everything about them that does not depend on the config. Joined once here rather than once per config.",
       "columns": []
     },
     {
@@ -20213,7 +20921,16 @@
       "category": "wattson",
       "type": "table",
       "description": "Device specific info for deep idle time offsets",
-      "columns": []
+      "columns": [
+        {
+          "name": "device",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "offset_ns",
+          "type": "UNKNOWN"
+        }
+      ]
     },
     {
       "id": "stdlib.wattson._linux_soc_compatible_map",
@@ -20418,7 +21135,16 @@
       "category": "wattson",
       "type": "table",
       "description": "Device specific mapping to GPU ID",
-      "columns": []
+      "columns": [
+        {
+          "name": "device",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "gpu_id",
+          "type": "UNKNOWN"
+        }
+      ]
     },
     {
       "id": "stdlib.wattson._system_state_mw",
@@ -20465,8 +21191,13 @@
       "name": "_gapless_gpu_freq",
       "category": "wattson",
       "type": "table",
-      "description": "Gapless time slices of GPU freq from trace_start() to trace_end()",
-      "columns": []
+      "description": "Gapless time slices of GPU freq from trace_start() to trace_end(), NULL where no freq event defines it.",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        }
+      ]
     },
     {
       "id": "stdlib.wattson._gpu_power_state",
@@ -20494,7 +21225,7 @@
       "name": "_gapless_gpu_power_state",
       "category": "wattson",
       "type": "table",
-      "description": "Gapless time slices of GPU idle from trace_start() to trace_end()",
+      "description": "Gapless time slices of GPU idle from trace_start() to trace_end(), NULL where no power state event defines it.",
       "columns": []
     },
     {
@@ -20547,10 +21278,6 @@
         },
         {
           "name": "uid",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "gpu_id",
           "type": "UNKNOWN"
         },
         {
@@ -20734,7 +21461,7 @@
       "name": "_ii_idle_tasks",
       "category": "wattson",
       "type": "table",
-      "description": "Tasks that ran within each deep idle exit, keyed by the idle exit they belong to. Materialized because the three aggregates in _idle_w_tasks below all read it.",
+      "description": "Tasks that ran within each deep idle exit, keyed by the idle exit they belong to. Materialized because the three aggregates below all read it.",
       "columns": [
         {
           "name": "ts",
@@ -20754,6 +21481,45 @@
         },
         {
           "name": "idle_group",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.wattson._ii_first_swapper_slice",
+      "name": "_ii_first_swapper_slice",
+      "category": "wattson",
+      "type": "table",
+      "description": "Since sorted by time, MIN() is fast aggregate function that will return the first time slice, which will be the utid = 0 slice immediately succeeding the idle to active transition, and immediately preceding the active task",
+      "columns": [
+        {
+          "name": "utid",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.wattson._ii_first_non_swapper_slice",
+      "name": "_ii_first_non_swapper_slice",
+      "category": "wattson",
+      "type": "table",
+      "description": "MIN() here will give the first active task immediately succeeding the idle to active transition slice, which means this the the task that causes the idle exit",
+      "columns": [
+        {
+          "name": "utid",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.wattson._ii_last_swapper_slice",
+      "name": "_ii_last_swapper_slice",
+      "category": "wattson",
+      "type": "table",
+      "description": "MAX() here will give the last time slice in the group. This will be the utid = 0 slice immediately preceding the active to idle transition.",
+      "columns": [
+        {
+          "name": "utid",
           "type": "UNKNOWN"
         }
       ]
@@ -20868,11 +21634,40 @@
       ]
     },
     {
+      "id": "stdlib.wattson._hard_irq_flattened_ids",
+      "name": "_hard_irq_flattened_ids",
+      "category": "wattson",
+      "type": "table",
+      "description": "Flatten hard IRQs, since they can preempt each other: each instant of an IRQ tree goes to the innermost IRQ running then. Trees with a non-positive duration slice on the path from the root are dropped.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "parent_id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "own_root_id",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
       "id": "stdlib.wattson._hard_irq_flattened_slices",
       "name": "_hard_irq_flattened_slices",
       "category": "wattson",
-      "type": "view",
-      "description": "Flatten hard IRQs, since they can preempt each other. Only hard IRQs can use the built-in ancestor_slice() and interval functions",
+      "type": "table",
+      "description": "Table: _hard_irq_flattened_slices",
       "columns": [
         {
           "name": "hard_irq_name",
@@ -20897,7 +21692,7 @@
       "id": "stdlib.wattson._all_irqs_flattened_slices",
       "name": "_all_irqs_flattened_slices",
       "category": "wattson",
-      "type": "view",
+      "type": "table",
       "description": "Replace soft IRQs with hard IRQs if hard IRQs are present. Hard IRQs could preempt soft IRQs, but not the other way around.",
       "columns": [
         {
@@ -21014,6 +21809,31 @@
         {
           "name": "idle_group",
           "type": "UNKNOWN"
+        },
+        {
+          "name": "cpu",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "island_end",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.wattson._wattson_swapper_gaps",
+      "name": "_wattson_swapper_gaps",
+      "category": "wattson",
+      "type": "table",
+      "description": "- Recreate all known tasks in the context of power estimation, meaning that - tasks (usually IRQs) that do not contribute to power attribution are removed - and replaced with swapper. The previous table, _active_state_w_tasks, has - many groups of \"islands\", of which the gaps need to be filled back in with - the swapper task.",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
         }
       ]
     },
@@ -21022,7 +21842,7 @@
       "name": "_wattson_task_slices",
       "category": "wattson",
       "type": "table",
-      "description": "- Recreate all known tasks in the context of power estimation, meaning that - tasks (usually IRQs) that do not contribute to power attribution are removed - and replaced with swapper. The previous table, _active_state_w_tasks, has - many groups of \"islands\", of which the gaps need to be filled back in with - the swapper task.",
+      "description": "Combine the real tasks with the swapper gaps between islands. `idle_group` is carried through for rows from _active_state_w_tasks since they are already clipped to a single idle exit. Synthesized swapper gaps can span multiple idle exits and receive NULL.",
       "columns": [
         {
           "name": "ts",
@@ -21067,7 +21887,7 @@
       "name": "_tpu_freq",
       "category": "wattson",
       "type": "table",
-      "description": "Creates TPU freq counter and cluster based off of slices (gapless from trace_start to trace_end)",
+      "description": "Creates TPU freq counter and cluster based off of slices (gapless from trace_start to trace_end, 0 where no DVFS event defines it) A device without a TPU has no DVFS events, and so no TPU frequency at all.",
       "columns": []
     },
     {
@@ -21277,6 +22097,13 @@
       "category": "wattson",
       "type": "macro",
       "description": "DSU dependency policy"
+    },
+    {
+      "id": "stdlib.wattson._prefer_external_table",
+      "name": "_prefer_external_table",
+      "category": "wattson",
+      "type": "macro",
+      "description": "Merges an external Wattson table with an in-tree table, preferring the external model when present."
     },
     {
       "id": "stdlib.wattson._bitmask8",
@@ -21786,50 +22613,6 @@
       "description": "Metric SQL: android/android_blocking_calls_cuj_metric.sql"
     },
     {
-      "id": "metric.android.android_blocking_calls_cuj_per_frame_draw_frames",
-      "name": "android_blocking_calls_cuj_per_frame_draw_frames",
-      "category": "android",
-      "type": "table",
-      "description": "Table: android_blocking_calls_cuj_per_frame_draw_frames",
-      "columns": [
-        {
-          "name": "process_name",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts_end",
-          "type": "UNKNOWN"
-        }
-      ],
-      "dependencies": [
-        "metric:android/android_blocking_calls_cuj_per_frame_metric.sql"
-      ],
-      "requiredMetric": "android/android_blocking_calls_cuj_per_frame_metric.sql",
-      "setupSql": "SELECT RUN_METRIC('android/android_blocking_calls_cuj_per_frame_metric.sql');"
-    },
-    {
-      "id": "metric.android.android_blocking_calls_cuj_per_frame_hwui_tasks",
-      "name": "android_blocking_calls_cuj_per_frame_hwui_tasks",
-      "category": "android",
-      "type": "table",
-      "description": "Table: android_blocking_calls_cuj_per_frame_hwui_tasks",
-      "columns": [
-        {
-          "name": "name",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        }
-      ],
-      "dependencies": [
-        "metric:android/android_blocking_calls_cuj_per_frame_metric.sql"
-      ],
-      "requiredMetric": "android/android_blocking_calls_cuj_per_frame_metric.sql",
-      "setupSql": "SELECT RUN_METRIC('android/android_blocking_calls_cuj_per_frame_metric.sql');"
-    },
-    {
       "id": "metric.android.android_blocking_calls_cuj_per_frame_calls",
       "name": "android_blocking_calls_cuj_per_frame_calls",
       "category": "android",
@@ -21854,10 +22637,6 @@
         },
         {
           "name": "name",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "upid",
           "type": "UNKNOWN"
         },
         {

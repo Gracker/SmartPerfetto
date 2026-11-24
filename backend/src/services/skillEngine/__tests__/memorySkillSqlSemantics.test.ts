@@ -66,7 +66,7 @@ const heapGraphSchema = `
   CREATE TABLE thread(utid INTEGER, upid INTEGER);
   CREATE TABLE thread_track(id INTEGER, utid INTEGER);
   CREATE TABLE slice(track_id INTEGER, name TEXT, ts INTEGER, dur INTEGER);
-  CREATE TABLE heap_graph_class(id INTEGER, name TEXT, deobfuscated_name TEXT);
+  CREATE TABLE heap_graph_class(id INTEGER, name TEXT, deobfuscated_name TEXT, kind TEXT);
   CREATE TABLE heap_graph_object(
     id INTEGER,
     upid INTEGER,
@@ -84,7 +84,6 @@ const heapGraphSchema = `
     deobfuscated_field_name TEXT,
     field_type_name TEXT
   );
-  CREATE TABLE _excluded_refs(id INTEGER);
   CREATE TABLE stats(name TEXT, idx INTEGER, severity TEXT, value INTEGER);
   CREATE TABLE heap_graph(upid INTEGER, ts INTEGER);
   CREATE TABLE process_counter_track(id INTEGER, upid INTEGER, name TEXT);
@@ -96,19 +95,17 @@ const heapGraphFixture = `
   INSERT INTO thread VALUES (10, 1);
   INSERT INTO thread_track VALUES (100, 10);
 
-  INSERT INTO heap_graph_class VALUES (1, 'com.example.LeakyActivity', NULL);
-  INSERT INTO heap_graph_class VALUES (2, 'com.example.ActiveActivity', NULL);
-  INSERT INTO heap_graph_class VALUES (3, 'com.example.SessionViewModel', NULL);
-  INSERT INTO heap_graph_class VALUES (4, 'com.example.Owner', NULL);
-  INSERT INTO heap_graph_class VALUES (5, 'java.lang.ref.SoftReference', NULL);
-  INSERT INTO heap_graph_class VALUES (6, 'com.example.InProgressDestroyActivity', NULL);
+  INSERT INTO heap_graph_class VALUES (1, 'com.example.LeakyActivity', NULL, 'KIND_NORMAL');
+  INSERT INTO heap_graph_class VALUES (2, 'com.example.ActiveActivity', NULL, 'KIND_NORMAL');
+  INSERT INTO heap_graph_class VALUES (3, 'com.example.SessionViewModel', NULL, 'KIND_NORMAL');
+  INSERT INTO heap_graph_class VALUES (4, 'com.example.Owner', NULL, 'KIND_NORMAL');
+  INSERT INTO heap_graph_class VALUES (6, 'com.example.InProgressDestroyActivity', NULL, 'KIND_NORMAL');
 
   INSERT INTO heap_graph_object VALUES (1, 1, 1000, 1, 1048576, 0, 1);
   INSERT INTO heap_graph_object VALUES (2, 1, 1000, 2, 1048576, 0, 1);
   INSERT INTO heap_graph_object VALUES (3, 1, 1000, 3, 512, 0, 1);
   INSERT INTO heap_graph_object VALUES (4, 1, 1000, 3, 512, 0, 1);
   INSERT INTO heap_graph_object VALUES (50, 1, 1000, 4, 256, 0, 1);
-  INSERT INTO heap_graph_object VALUES (51, 1, 1000, 5, 256, 0, 1);
   INSERT INTO heap_graph_object VALUES (6, 1, 1000, 2, 1048576, 0, 1);
   INSERT INTO heap_graph_object VALUES (7, 1, 1000, 6, 1048576, 0, 1);
 
@@ -117,8 +114,6 @@ const heapGraphFixture = `
   INSERT INTO slice VALUES (100, 'SI$com.example.InProgressDestroyActivity.onDestroy', 900, 200);
 
   INSERT INTO heap_graph_reference VALUES (101, 50, 1, 'owner.leaky', NULL, 'com.example.LeakyActivity');
-  INSERT INTO heap_graph_reference VALUES (102, 51, 1, 'java.lang.ref.Reference.referent', NULL, 'java.lang.Object');
-  INSERT INTO _excluded_refs VALUES (102);
   INSERT INTO heap_graph VALUES (1, 1000);
 `;
 
@@ -164,8 +159,7 @@ describe('memory skill SQL semantic guards', () => {
     expect(sql).toContain('MIN(MAX(COALESCE(${max_rows|500}, 500), 1), 500)');
   });
 
-  it('names the reference kinds the pinned _excluded_refs filters', () => {
-    // android_heap_graph_leak_candidates.eval.ts runs the pinned runtime's module.
+  it('describes which reference kinds the holder query filters', () => {
     const skill = loadYaml('skills/atomic/android_heap_graph_leak_candidates.skill.yaml');
     const holderDescription = skill.output.fields.find((field: any) => field.name === 'reference_holders')?.description;
     expect(holderDescription).toContain('weak/phantom/finalizer');
@@ -220,14 +214,32 @@ describeWithSqlite('android_heap_graph_leak_candidates SQL semantics', () => {
     }));
   });
 
-  it('starts holder lookup from suspect objects and excludes Perfetto excluded_refs', () => {
+  it('filters weak, phantom and finalizer referents while retaining soft and unknown edges', () => {
     const sql = replaceParams(
       loadStepSql('skills/atomic/android_heap_graph_leak_candidates.skill.yaml', 'reference_holders'),
       heapParams
     );
-    const rows = runSqliteJson(`${heapGraphSchema}\n${heapGraphFixture}\n${sql};`);
+    const referenceKinds = [
+      [51, 'Soft', 'KIND_SOFT_REFERENCE'],
+      [52, 'Weak', 'KIND_WEAK_REFERENCE'],
+      [53, 'Phantom', 'KIND_PHANTOM_REFERENCE'],
+      [54, 'Finalizer', 'KIND_FINALIZER_REFERENCE'],
+    ] as const;
+    const references = referenceKinds.map(([id, name, kind]) => `
+      INSERT INTO heap_graph_class VALUES (${id}, 'java.lang.ref.${name}Reference', NULL, '${kind}');
+      INSERT INTO heap_graph_object VALUES (${id}, 1, 1000, ${id}, 256, 0, 1);
+      INSERT INTO heap_graph_reference VALUES (${100 + id}, ${id}, 1, 'java.lang.ref.Reference.referent', NULL, 'java.lang.Object');
+    `).join('\n');
+    const otherFields = `
+      INSERT INTO heap_graph_reference VALUES (201, 52, 1, 'java.lang.ref.Reference.queue', NULL, 'java.lang.Object');
+      INSERT INTO heap_graph_reference VALUES (202, 52, 1, NULL, NULL, 'java.lang.Object');
+      INSERT INTO heap_graph_object VALUES (55, 1, 1000, 999, 256, 0, 1);
+      INSERT INTO heap_graph_reference VALUES (203, 55, 1, 'java.lang.ref.Reference.referent', NULL, 'java.lang.Object');
+    `;
+    const rows = runSqliteJson(`${heapGraphSchema}\n${heapGraphFixture}\n${references}\n${otherFields}\n${sql};`);
 
-    expect(rows).toEqual([
+    expect(rows).toHaveLength(5);
+    expect(rows).toEqual(expect.arrayContaining([
       expect.objectContaining({
         candidate_class: 'com.example.LeakyActivity',
         owned_object_id: 1,
@@ -235,7 +247,23 @@ describeWithSqlite('android_heap_graph_leak_candidates SQL semantics', () => {
         field_display: 'owner.leaky',
         leak_state: 'destroyed_reachable',
       }),
-    ]);
+      expect.objectContaining({
+        owner_class: 'java.lang.ref.SoftReference',
+        field_display: 'java.lang.ref.Reference.referent',
+      }),
+      expect.objectContaining({
+        owner_class: 'java.lang.ref.WeakReference',
+        field_display: 'java.lang.ref.Reference.queue',
+      }),
+      expect.objectContaining({
+        owner_class: 'java.lang.ref.WeakReference',
+        field_display: '<unknown>',
+      }),
+      expect.objectContaining({
+        owner_class: 'owner:55',
+        field_display: 'java.lang.ref.Reference.referent',
+      }),
+    ]));
   });
 
   it('clamps candidate and holder row limits to at least one row', () => {

@@ -19,9 +19,9 @@ official_perfetto:
 runtime_perfetto:
   repository: https://github.com/google/perfetto
   reported_version: v59.1
-  revision: 1e9c61e9844affd7dccd3d42d9ea9f3a3d10cf6d
+  revision: 6327533d577b18931bedc48a5d1f83cacfa4e9d9
   rpc_api_version: 14
-  stdlib_tree: 5a9a1eb9ef4de45444fa2445820405456215c01e
+  stdlib_tree: a995919848d029e1abdeceff91c5feab63635828
 sql_fragments:
   backend/skills/fragments/scene_response_marker_facts.sql:
     disposition: exported

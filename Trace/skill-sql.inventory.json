@@ -535,7 +535,7 @@
     },
     "android_heap_graph_class_growth": {
       "source_file": "backend/skills/atomic/android_heap_graph_class_growth.skill.yaml",
-      "source_sha256": "7f3005702a7a0b160c86748bb1b535119fb9647f5d1bfa60496bf33c11551a55",
+      "source_sha256": "40b459de42bfa853710336f7f47aec2fe849028924a67ebb23858b458a589858",
       "type": "atomic",
       "execution": "steps",
       "declared_modules": [
@@ -556,7 +556,7 @@
           "id": "heap_class_table",
           "at": "steps[0].sql",
           "top_level_index": 0,
-          "sha256": "7415fc6f58b83c242d2dca25899715f2290fb59aed953d557a4d6351a86ff0d8",
+          "sha256": "3a257d48959bced2b7fd78c3b17b67762340303189bdabfe20ca0d0ea651d731",
           "required_columns": [
             "is_libcore_or_array",
             "dominated_obj_count",
@@ -693,12 +693,10 @@
     },
     "android_heap_graph_leak_candidates": {
       "source_file": "backend/skills/atomic/android_heap_graph_leak_candidates.skill.yaml",
-      "source_sha256": "e2af69bca6b92ed9ca91e615637c3e86b5fc9daba767af5db4f2ef7225f98f20",
+      "source_sha256": "c41f0120b9b755668072774b21de95a9e92de6717518aeebbb447c4fceab13c0",
       "type": "atomic",
       "execution": "steps",
-      "declared_modules": [
-        "android.memory.heap_graph.excluded_refs"
-      ],
+      "declared_modules": [],
       "top_level_steps": [
         "leak_candidates",
         "reference_holders"
@@ -739,7 +737,7 @@
           "id": "reference_holders",
           "at": "steps[1].sql",
           "top_level_index": 1,
-          "sha256": "7d6ff2765fa5490d287881a398fc783d4b079803dfc00e369a423a651341f6e5",
+          "sha256": "f3e903aaa0b510bb85f2505f7864662139a56194c95a65d0bae5094efaa7b500",
           "required_columns": [
             "process_name",
             "graph_sample_ts",
