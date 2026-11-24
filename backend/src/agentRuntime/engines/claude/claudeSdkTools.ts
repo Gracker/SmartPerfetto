@@ -25,7 +25,8 @@ export function createClaudeSdkToolFromSharedSpec(
   spec: SharedToolSpec,
 ): SdkMcpToolDefinition {
   const {spec: timedSpec, handler} = delegateRuntimeToolHandler(spec);
-  const sdkTool = createClaudeSdkTool(
+  // The SDK's Zod 3/4 shape union keeps its handler compatible with shared arguments.
+  const sdkTool = createClaudeSdkTool<SdkMcpToolDefinition['inputSchema']>(
     timedSpec.name,
     timedSpec.description,
     timedSpec.inputSchema,
