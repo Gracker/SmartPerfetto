@@ -13,6 +13,25 @@ Detailed commit-level history is available via `git log`.
 
 ## [Unreleased]
 
+## [1.20.0] - 2026-11-24
+
+### Added
+
+- The Perfetto timeline shows Android framework process and freezer states when those events are recorded. Selecting an Android input slice shows its lifecycle arrows and a latency breakdown in the details panel.
+
+### Changed
+
+- Synchronize the Perfetto UI, WASM engine, native Trace Processor and SQL reference assets to Google Perfetto main at `6327533d57`, using its five-platform post-submit processor builds. This includes upstream fixes for Android CUJ frame attribution and Java heap graph root distances.
+- Scrolling analysis shows the selected layer's pacing rating alongside the measured over-budget gaps, FrameTimeline labels and the combined signal. Touch-aligned gaps remain linked to their evidence, and scoped measurements remain available when the model summarizes early.
+- Update CLI and backend dependencies, including the Claude Agent SDK compatibility runtime, Markdown parser, authentication client and TOML parser.
+
+### Fixed
+
+- Keep SQL schema recovery grounded in documented module columns and carry portable SQL guidance into the public export.
+- Restore Java heap leak candidate reference details after the upstream private heap graph table was removed. The filter still excludes weak, phantom and finalizer referent edges and keeps soft referents.
+- Use the public Perfetto class category for multi-dump heap growth reports so library and array rankings work across the old and new processors.
+- Prevent the selection card from querying for a selection replaced or removed before its task starts, while retaining the upstream Perfetto memo lifecycle.
+
 ## [1.19.1] - 2026-11-16
 
 ### Fixed
