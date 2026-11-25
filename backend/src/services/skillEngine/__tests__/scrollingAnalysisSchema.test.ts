@@ -20,6 +20,13 @@ import {SCROLLING_V1_REASON_CODES} from '../../caseDomainPacks';
 const SLOW_RAMP = {ramp_to_high_ms: 5, top_slice_offset_ms: 1};
 const UNOBSERVED_RAMP_EVIDENCE = ['big_core_topology_unknown', 'big_core_freq_incomplete', 'machine_scope_ambiguous', null];
 
+function createInputAtraceTables(db: Database.Database): void {
+  db.exec(`CREATE TABLE process(upid INTEGER, name TEXT);
+    CREATE TABLE thread(utid INTEGER, upid INTEGER, is_main_thread INTEGER);
+    CREATE TABLE thread_track(id INTEGER, utid INTEGER);
+    CREATE TABLE slice(id INTEGER, track_id INTEGER, ts INTEGER, name TEXT)`);
+}
+
 function createScopedSqlFixture(): Database.Database {
   const db = new Database(':memory:');
   const prepare = db.prepare.bind(db);
@@ -1158,6 +1165,7 @@ describe('scrolling_analysis skill schema', () => {
 
       db.exec("ALTER TABLE android_input_events ADD COLUMN upid INTEGER; UPDATE android_input_events SET upid = CASE process_name WHEN 'com.example.app' THEN 1 WHEN 'com.example.app:remote' THEN 2 ELSE 3 END");
       completeAndroidInputEventsFixture(db);
+      createInputAtraceTables(db);
       const row = db.prepare(renderScrollingSql('input_data_check')).get() as {
         total_input_events: number;
         target_processes: number;
@@ -1239,6 +1247,7 @@ describe('scrolling_analysis skill schema', () => {
         `);
         rows.forEach(([frameId, speculative, e2e], index) =>
           insert.run(100 + index * 100, 100 + index * 100, frameId, speculative, e2e));
+        if (stepId === 'input_data_check') createInputAtraceTables(db);
         return db.prepare(renderScrollingSql(stepId)).get() as Record<string, unknown>;
       } finally {
         db.close();
@@ -1274,6 +1283,7 @@ describe('scrolling_analysis skill schema', () => {
   ];
   const createMonitorCopyInputFixture = (deliveries: readonly InputDelivery[]): Database.Database => {
     const db = createScopedSqlFixture();
+    createInputAtraceTables(db);
     db.exec(`
       CREATE TABLE counter_track(id INTEGER, name TEXT);
       CREATE TABLE counter(track_id INTEGER, ts INTEGER);
@@ -2918,12 +2928,12 @@ describe('scrolling_analysis skill schema', () => {
 
 describe('scrolling exact UPID SQL semantics', () => {
   const source = yaml.load(fs.readFileSync(path.join(process.cwd(), 'skills/composite/scrolling_analysis.skill.yaml'), 'utf8')) as any;
-  const render = (stepId: string, upid: number) => {
+  const render = (stepId: string, upid: number, endTs?: number) => {
     const step = source.steps.find((item: any) => item.id === stepId);
     return withStepFragments(String(step.sql), step.sql_fragments)
       .split('${__process_scope.upid}').join(String(upid))
       .split('${package}').join('com.example.app')
-      .split('${start_ts}').join('NULL').split('${end_ts}').join('NULL');
+      .split('${start_ts}').join('NULL').split('${end_ts}').join(endTs === undefined ? 'NULL' : String(endTs));
   };
 
   it('does not count same-name restarts, children or similar prefixes as exact input events', () => {
@@ -2937,7 +2947,31 @@ describe('scrolling exact UPID SQL semantics', () => {
           (44,'com.example.app:child',100,10,90,'MOVE',1),
           (45,'com.example.application',100,10,90,'MOVE',1);`);
       completeAndroidInputEventsFixture(db);
+      createInputAtraceTables(db);
       expect(db.prepare(render('input_data_check', 42)).get()).toMatchObject({ total_input_events: 1, target_processes: 1 });
+    } finally { db.close(); }
+  });
+
+  it('counts scoped main-thread atrace MOVE markers without creating frame matches', () => {
+    const db = new Database(':memory:');
+    try {
+      createInputAtraceTables(db);
+      db.exec(`${androidInputEventsTableDdl()}
+        INSERT INTO android_input_events(upid, process_name, receive_ts, receive_dur, dispatch_ts)
+          VALUES (42,'com.example.app',100,10,90);
+        INSERT INTO process VALUES (42,'com.example.app'), (43,'com.example.app');
+        INSERT INTO thread VALUES (1,42,1), (2,43,1), (3,42,0);
+        INSERT INTO thread_track VALUES (10,1), (20,2), (30,3);
+        INSERT INTO slice VALUES (1,10,100,'dispatchInputEvent MotionEvent ACTION_MOVE deviceId=1'),
+          (2,10,105,'dispatchInputEvent MotionEvent ACTION_DOWN'),
+          (3,20,110,'dispatchInputEvent MotionEvent ACTION_MOVE'),
+          (4,30,110,'dispatchInputEvent MotionEvent ACTION_MOVE'),
+          (5,10,200,'dispatchInputEvent MotionEvent ACTION_MOVE');`);
+      const sql = render('input_data_check', 42, 200);
+      expect(db.prepare(sql).get()).toMatchObject({input_data_status: 'no_frame_match',
+        move_events: 1, move_event_source: 'atrace_main_thread', frame_matched_events: 0});
+      db.exec("UPDATE android_input_events SET event_action = 'DOWN'");
+      expect(db.prepare(sql).get()).toMatchObject({move_events: 0, move_event_source: 'android_input_events'});
     } finally { db.close(); }
   });
 

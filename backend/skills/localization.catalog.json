@@ -11,7 +11,7 @@
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
     "stepCount": 1401,
-    "explicitColumnCount": 5478
+    "explicitColumnCount": 5479
   },
   "skills": {
     "ams_module": {
@@ -37258,6 +37258,12 @@
               "label": {
                 "zh-CN": "MOVE事件",
                 "en": "Move Events"
+              }
+            },
+            "move_event_source": {
+              "label": {
+                "zh-CN": "MOVE事件来源",
+                "en": "MOVE event source"
               }
             },
             "frame_matched_events": {

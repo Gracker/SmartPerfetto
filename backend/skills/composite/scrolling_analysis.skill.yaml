@@ -1881,6 +1881,10 @@ steps:
           label: "MOVE事件"
           type: number
           format: compact
+        - name: move_event_source
+          label: "MOVE事件来源"
+          label_i18n: {en: "MOVE event source"}
+          type: string
         - name: frame_matched_events
           unit: events
           label: "关联帧事件"
@@ -1901,28 +1905,55 @@ steps:
       - fragments/android_input_delivery_roles.sql
       - fragments/android_input_scoped_deliveries.sql
     sql: |
-      SELECT
-        -- frame_matched_events: exact association only (see fragments/android_input_events_normalized.sql); speculative_only = frames matched only speculatively.
-        CASE
-          WHEN COUNT(*) = 0 THEN 'unavailable'
-          WHEN COUNT(exact_frame_id) > 0 THEN 'available'
-          WHEN COUNT(frame_id) > 0 THEN 'speculative_only'
-          ELSE 'no_frame_match'
-        END as input_data_status,
-        COUNT(DISTINCT physical_event_key) as total_input_events,
-        COUNT(DISTINCT CASE WHEN event_action = 'MOVE' THEN physical_event_key END) as move_events,
-        COUNT(DISTINCT CASE WHEN exact_frame_id IS NOT NULL THEN physical_event_key END) as frame_matched_events,
-        COALESCE(
-          NULLIF(COUNT(DISTINCT CASE WHEN monitor_observation = 0 THEN upid END), 0),
-          COUNT(DISTINCT upid)) as target_processes
-      FROM android_input_scoped_deliveries
-      WHERE analyzed_for_upid
-        AND (${__process_scope.upid} IS NULL OR upid = ${__process_scope.upid})
-        AND (
-          ${__process_scope.upid} IS NOT NULL OR '${package}' = ''
-          OR process_name = '${package}'
-          OR process_name GLOB '${package}:*'
-        )
+      WITH native_counts AS (
+        SELECT
+          -- frame_matched_events: exact association only (see fragments/android_input_events_normalized.sql); speculative_only = frames matched only speculatively.
+          CASE
+            WHEN COUNT(*) = 0 THEN 'unavailable'
+            WHEN COUNT(exact_frame_id) > 0 THEN 'available'
+            WHEN COUNT(frame_id) > 0 THEN 'speculative_only'
+            ELSE 'no_frame_match'
+          END as input_data_status,
+          COUNT(DISTINCT physical_event_key) as total_input_events,
+          COUNT(event_action) AS action_rows,
+          COUNT(DISTINCT CASE WHEN event_action = 'MOVE' THEN physical_event_key END) as move_events,
+          COUNT(DISTINCT CASE WHEN exact_frame_id IS NOT NULL THEN physical_event_key END) as frame_matched_events,
+          COALESCE(
+            NULLIF(COUNT(DISTINCT CASE WHEN monitor_observation = 0 THEN upid END), 0),
+            COUNT(DISTINCT upid)) as target_processes
+        FROM android_input_scoped_deliveries
+        WHERE analyzed_for_upid
+          AND (${__process_scope.upid} IS NULL OR upid = ${__process_scope.upid})
+          AND (
+            ${__process_scope.upid} IS NOT NULL OR '${package}' = ''
+            OR process_name = '${package}'
+            OR process_name GLOB '${package}:*'
+          )
+      ),
+      atrace_moves AS (
+        -- Receiver-side markers supply an action count only. They cannot
+        -- establish a join to a dispatcher event or a rendered frame.
+        SELECT COUNT(DISTINCT s.id) AS move_events
+        FROM native_counts n
+        CROSS JOIN process p
+        JOIN thread t ON t.upid = p.upid AND t.is_main_thread = 1
+        JOIN thread_track tt USING (utid)
+        JOIN slice s ON s.track_id = tt.id
+        WHERE n.action_rows = 0 AND n.total_input_events > 0
+          AND (${__process_scope.upid} IS NULL OR p.upid = ${__process_scope.upid})
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' = ''
+            OR p.name = '${package}' OR p.name GLOB '${package}:*')
+          AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR s.ts < ${end_ts})
+          AND (s.name = 'dispatchInputEvent MotionEvent ACTION_MOVE'
+            OR s.name GLOB 'dispatchInputEvent MotionEvent ACTION_MOVE *')
+      )
+      SELECT n.input_data_status, n.total_input_events,
+        CASE WHEN n.action_rows > 0 THEN n.move_events ELSE a.move_events END AS move_events,
+        CASE WHEN n.action_rows > 0 THEN 'android_input_events'
+          WHEN a.move_events > 0 THEN 'atrace_main_thread' ELSE 'unavailable' END AS move_event_source,
+        n.frame_matched_events, n.target_processes
+      FROM native_counts n CROSS JOIN atrace_moves a
     save_as: input_data
 
   - id: input_latency_summary

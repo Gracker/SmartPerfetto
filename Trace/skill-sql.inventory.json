@@ -16957,7 +16957,7 @@
     },
     "scrolling_analysis": {
       "source_file": "backend/skills/composite/scrolling_analysis.skill.yaml",
-      "source_sha256": "28ab527073b73f31df21e96df392569eb42711420a536745c48d0723b47ce0e6",
+      "source_sha256": "7b0f116de4fee46ca07cde499121533e72cd10385a408fe504c192a76b2614a1",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -17477,11 +17477,12 @@
           "id": "input_data_check",
           "at": "steps[19].sql",
           "top_level_index": 19,
-          "sha256": "d934f8314af4524f26ba5b11a09b578b8cbaac85111fadf744e35835feb5f20a",
+          "sha256": "9ad15c5ad125f762f1814e8a4316104ecf48823207c0bad086d6bf8bc0a71412",
           "required_columns": [
             "input_data_status",
             "total_input_events",
             "move_events",
+            "move_event_source",
             "frame_matched_events",
             "target_processes"
           ],
@@ -17489,7 +17490,9 @@
           "read_only": true,
           "placeholders": [
             "${__process_scope.upid}",
-            "${package}"
+            "${package}",
+            "${start_ts}",
+            "${end_ts}"
           ],
           "process_scope_valid": true,
           "forceable": true

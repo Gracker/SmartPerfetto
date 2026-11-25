@@ -11479,11 +11479,12 @@
           },
           {
             "id": "input_data_check",
-            "sha256": "d934f8314af4524f26ba5b11a09b578b8cbaac85111fadf744e35835feb5f20a",
+            "sha256": "9ad15c5ad125f762f1814e8a4316104ecf48823207c0bad086d6bf8bc0a71412",
             "required_columns": [
               "input_data_status",
               "total_input_events",
               "move_events",
+              "move_event_source",
               "frame_matched_events",
               "target_processes"
             ]
