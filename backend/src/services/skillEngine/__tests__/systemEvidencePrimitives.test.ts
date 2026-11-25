@@ -115,6 +115,15 @@ describe('canonical system evidence primitives', () => {
         avg_freq_khz: 2250000, frequency_evidence: 'unsupported'});
     } finally {db.close();}
   });
+  it('ends an unfinished Runnable state at the next same-thread row', () => {
+    const db = fixture();
+    try {
+      db.exec(`INSERT INTO thread_state (id, ts, dur, utid, state) VALUES
+        (6, 1000000, -1, 2, 'R'), (7, 1398000, 2000000, 2, 'S'), (8, 1200000, 10000, 3, 'S')`);
+      const [waiter] = query(db, names[1], {utid: 2, start: 1000000, end: 10000000});
+      expect(waiter).toMatchObject({utid: 2, runnable_ns: 398000, unfinished_state_ns: 398000, sleeping_ns: 2000000});
+    } finally {db.close();}
+  });
   it('distinguishes recorded homogeneous capacity from missing topology without inventing a big core', () => {
     const db=fixture();
     try {

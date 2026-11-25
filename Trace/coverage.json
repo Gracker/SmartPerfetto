@@ -11784,7 +11784,7 @@
           },
           {
             "id": "root_cause_classification",
-            "sha256": "aad23e61096351a712e2f47f436a08789a2f324f89357c7c5d1919168c795b5a",
+            "sha256": "a1cb165e6358a82e7e3fa221bd06e3d246b2f7d122b2c0c886127e52bf1df09b",
             "required_columns": [
               "problem_category",
               "problem_component",

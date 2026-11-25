@@ -38338,7 +38338,7 @@
         },
         "root_cause_classification": {
           "title": {
-            "zh-CN": "🎯 分析结论",
+            "zh-CN": "掉帧相关观测",
             "en": "Root Cause Classification"
           },
           "columns": {

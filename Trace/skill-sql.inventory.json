@@ -16957,7 +16957,7 @@
     },
     "scrolling_analysis": {
       "source_file": "backend/skills/composite/scrolling_analysis.skill.yaml",
-      "source_sha256": "28ae1e97c0d6bd555c4fd126046ae61b56d9b07a264c37a85c5b292e1fb80e74",
+      "source_sha256": "28ab527073b73f31df21e96df392569eb42711420a536745c48d0723b47ce0e6",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -17944,7 +17944,7 @@
           "id": "root_cause_classification",
           "at": "steps[33].sql",
           "top_level_index": 33,
-          "sha256": "aad23e61096351a712e2f47f436a08789a2f324f89357c7c5d1919168c795b5a",
+          "sha256": "a1cb165e6358a82e7e3fa221bd06e3d246b2f7d122b2c0c886127e52bf1df09b",
           "required_columns": [
             "problem_category",
             "problem_component",

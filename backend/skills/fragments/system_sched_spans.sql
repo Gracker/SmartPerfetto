@@ -34,9 +34,13 @@ system_sched_spans AS (
     s.ts AS raw_start_ts, s.dur AS raw_dur,
     CASE WHEN s.dur >= 0 THEN s.ts + s.dur END AS raw_end_ts,
     MAX(s.ts, w.window_start_ts) AS clipped_start_ts,
-    MIN(CASE WHEN s.dur = -1 THEN (SELECT end_ts FROM trace_bounds)
+    MIN(CASE WHEN s.dur = -1 THEN COALESCE(
+        (SELECT MIN(n.ts) FROM sched_slice n WHERE n.ucpu = s.ucpu AND n.ts > s.ts),
+        (SELECT end_ts FROM trace_bounds))
       ELSE s.ts + s.dur END, w.window_end_ts) AS clipped_end_ts,
-    MIN(CASE WHEN s.dur = -1 THEN (SELECT end_ts FROM trace_bounds)
+    MIN(CASE WHEN s.dur = -1 THEN COALESCE(
+        (SELECT MIN(n.ts) FROM sched_slice n WHERE n.ucpu = s.ucpu AND n.ts > s.ts),
+        (SELECT end_ts FROM trace_bounds))
       ELSE s.ts + s.dur END, w.window_end_ts) - MAX(s.ts, w.window_start_ts) AS dur_ns,
     s.dur = -1 AS is_unfinished,
     s.ts < w.window_start_ts AS left_censored,
@@ -47,7 +51,9 @@ system_sched_spans AS (
     COALESCE(ct.topology_source, 'cpu_identity_unavailable') AS topology_source
   FROM system_windows w JOIN sched_slice s
     ON s.ts < w.window_end_ts AND s.dur >= -1 AND s.dur != 0
-      AND CASE WHEN s.dur = -1 THEN (SELECT end_ts FROM trace_bounds)
+      AND CASE WHEN s.dur = -1 THEN COALESCE(
+        (SELECT MIN(n.ts) FROM sched_slice n WHERE n.ucpu = s.ucpu AND n.ts > s.ts),
+        (SELECT end_ts FROM trace_bounds))
         ELSE s.ts + s.dur END > w.window_start_ts
   LEFT JOIN thread t ON t.utid = s.utid
   LEFT JOIN system_cpu_topology ct ON ct.ucpu = s.ucpu

@@ -5492,9 +5492,9 @@ steps:
     condition: "frame_timeline.data[0]?.has_frame_timeline === 1 && (perf_summary?.data?.[0]?.total_frames || 0) > 0"
 
   # ==========================================================================
-  # Root Cause Classification - Aggregate analysis for final conclusion
+  # Root Cause Classification - Observations to validate on the frame critical path
   # ==========================================================================
-  # 综合所有分析数据，给出最终的根因分类和结论
+  # 有正向证据时给出关联观测，否则报告已查帧数与证据缺口。
   # 输出: problem_category, problem_component, confidence, evidence
   - id: root_cause_classification
     type: atomic
@@ -5511,11 +5511,11 @@ steps:
           label: 置信度
           format: "{{value}}%"
       insights:
-        - template: "根因分类：{{problem_category}} - {{problem_component}}"
+        - template: "{{root_cause_summary}}"
     display:
       level: summary
       layer: overview
-      title: "🎯 分析结论"
+      title: "掉帧相关观测"
       columns:
         - name: problem_category
           label: "问题类别"
@@ -5534,7 +5534,6 @@ steps:
           label: "优化建议"
           type: string
     sql_fragments:
-      - fragments/system_sched_spans.sql
       - fragments/system_thread_state_spans.sql
       - fragments/effective_target_processes.sql
     process_scope:
@@ -5542,7 +5541,7 @@ steps:
       binding: effective_target_processes
     sql: |
       WITH
-      -- 双信号混合掉帧检测（与 performance_summary/get_app_jank_frames 保持同口径）
+      -- FrameTimeline 责任标签和与问题帧同窗的可观测证据。
       vsync_intervals AS (
         SELECT c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
         FROM counter c
@@ -5613,25 +5612,6 @@ steps:
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
       ),
-      token_gap_jank AS (
-        SELECT
-          -- 感知掉帧总数：双信号混合检测
-          SUM(CASE
-            WHEN present_type IN ('Late Present', 'Dropped Frame')
-              AND (jank_responsibility != 'BUFFER_STUFFING' OR android_is_missed_frame_type(jank_type)) THEN 1
-            WHEN jank_responsibility = 'BUFFER_STUFFING'
-              AND prev_present_ts IS NOT NULL
-              AND present_ts - prev_present_ts > (SELECT vsync_period_ns FROM vsync_config) * 1.5
-              AND present_ts - prev_present_ts <= (SELECT vsync_period_ns FROM vsync_config) * 6
-              AND (time_gap_ns IS NULL OR time_gap_ns <= (SELECT vsync_period_ns FROM vsync_config) * 6) THEN 1
-            ELSE 0 END) as total_jank_count,
-          -- App 侧掉帧（BS 帧的 jank_type 不可能是 Self Jank/App Deadline Missed/App Resynced Jitter）
-          SUM(CASE WHEN present_type IN ('Late Present', 'Dropped Frame')
-            AND jank_responsibility = 'APP' THEN 1 ELSE 0 END) as app_jank_count,
-          SUM(CASE WHEN present_type IN ('Late Present', 'Dropped Frame')
-            AND jank_responsibility = 'SF' THEN 1 ELSE 0 END) as sf_jank_count
-        FROM frame_jank_data
-      ),
       jank_frame_windows AS (
         SELECT
           frame_start,
@@ -5652,90 +5632,29 @@ steps:
             )
           )
       ),
-      app_frames AS (
-        SELECT
-          COUNT(*) as total_frames,
-          SUM(CASE WHEN jank_type != 'None' THEN 1 ELSE 0 END) as app_reported_jank,
-          AVG(CASE WHEN dur > 0 THEN dur ELSE NULL END) / 1e6 as avg_dur_ms,
-          MAX(CASE WHEN dur > 0 THEN dur ELSE NULL END) / 1e6 as max_dur_ms
-        FROM actual_frame_timeline_slice a
-        JOIN effective_target_processes p ON a.upid = p.upid
-        WHERE (
-          ${__process_scope.upid} IS NOT NULL OR '${package}' = ''
-          OR p.name = '${package}'
-          OR p.name GLOB '${package}:*'
-        )
-          AND p.name NOT LIKE '/system/%'
-          -- With no target package the clause above accepts any process, and
-          -- the system UI is the one most likely to be drawing while the target
-          -- app draws nothing. Its frames are punctual, so they read back as
-          -- flawless scrolling for an app that produced no frames at all: one
-          -- device reported 31fps SystemUI frames as "优秀", another rated a
-          -- 5-frame notification-shade window. Anyone analysing the system UI
-          -- deliberately names it, or selects it by UPID, and keeps these rows.
-          AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
-          AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR a.ts < ${end_ts})
-          AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
-      ),
       jank_stats AS (
-        SELECT
-          (SELECT total_frames FROM app_frames) as total_frames,
-          (SELECT app_reported_jank FROM app_frames) as app_reported_jank,
-          COALESCE((SELECT app_jank_count FROM token_gap_jank), 0) as app_jank,
-          COALESCE((SELECT sf_jank_count FROM token_gap_jank), 0) as sf_jank,
-          COALESCE((SELECT sf_jank_count FROM token_gap_jank), 0) as buffer_jank,
-          (SELECT avg_dur_ms FROM app_frames) as avg_dur_ms,
-          (SELECT max_dur_ms FROM app_frames) as max_dur_ms,
-          ROUND((SELECT vsync_period_ns FROM vsync_config) / 1e6, 2) as frame_budget_ms
+        SELECT COUNT(*) AS total_frames,
+          COUNT(CASE WHEN present_type IN ('Late Present', 'Dropped Frame') AND jank_responsibility = 'APP' THEN 1 END) AS app_jank,
+          COUNT(CASE WHEN present_type IN ('Late Present', 'Dropped Frame') AND jank_responsibility = 'SF' THEN 1 END) AS sf_jank
+        FROM frame_jank_data
       ),
       system_windows AS (
         SELECT 0 AS window_id, COALESCE(${start_ts}, (SELECT start_ts FROM trace_bounds)) AS window_start_ts,
           COALESCE(${end_ts}, (SELECT end_ts FROM trace_bounds)) AS window_end_ts
-      ),system_target_threads AS (
-        SELECT w.window_id,p.upid,t.utid,CASE WHEN t.tid = p.pid THEN 'MainThread' ELSE t.name END AS role
-        FROM system_windows w CROSS JOIN effective_target_processes p JOIN thread t ON t.upid=p.upid
-        WHERE (${__process_scope.upid} IS NOT NULL OR '${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') AND p.name NOT LIKE '/system/%' AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%') AND (t.tid=p.pid OR t.name='RenderThread')
-      ),scene_states AS (
-        SELECT s.*,COALESCE(ct.core_type,'unknown') AS core_type,
-          COALESCE(ct.topology_source,'cpu_identity_unavailable') AS topology_source
-        FROM system_thread_state_spans s LEFT JOIN system_cpu_topology ct ON ct.ucpu=s.ucpu
       ),
-      main_thread_analysis AS (
-        SELECT
-          SUM(CASE WHEN state='Running' AND core_type IN ('prime','big','medium') THEN dur_ns ELSE 0 END) AS q1_big_core_ns,
-          SUM(CASE WHEN state='Running' AND core_type='little' THEN dur_ns ELSE 0 END) AS q2_small_core_ns,
-          SUM(CASE WHEN state IN ('R','R+') THEN dur_ns ELSE 0 END) AS q3_runnable_ns,
-          SUM(CASE WHEN state IN ('S','I','D','DK') THEN dur_ns ELSE 0 END) AS q4_sleep_ns,
-          SUM(dur_ns) AS total_dur_ns
-        FROM scene_states WHERE role='MainThread'
+      system_target_threads AS (
+        SELECT 0 AS window_id, f.upid, t.utid, 'main' AS role
+        FROM (SELECT DISTINCT upid, pid FROM frame_jank_data) f
+        JOIN thread t ON t.upid = f.upid AND t.tid = f.pid
       ),
-      render_thread_analysis AS (
-        SELECT
-          SUM(CASE WHEN state='Running' AND core_type IN ('prime','big','medium') THEN dur_ns ELSE 0 END) AS q1_big_core_ns,
-          SUM(CASE WHEN state='Running' AND core_type='little' THEN dur_ns ELSE 0 END) AS q2_small_core_ns,
-          SUM(CASE WHEN state IN ('R','R+') THEN dur_ns ELSE 0 END) AS q3_runnable_ns,
-          SUM(CASE WHEN state IN ('S','I','D','DK') THEN dur_ns ELSE 0 END) AS q4_sleep_ns,
-          SUM(dur_ns) AS total_dur_ns
-        FROM scene_states WHERE role='RenderThread'
-      ),
-      -- 计算主线程各象限百分比
       main_pct AS (
-        SELECT
-          ROUND(100.0 * q1_big_core_ns / NULLIF(total_dur_ns, 0), 1) as q1_pct,
-          ROUND(100.0 * q2_small_core_ns / NULLIF(total_dur_ns, 0), 1) as q2_pct,
-          ROUND(100.0 * q3_runnable_ns / NULLIF(total_dur_ns, 0), 1) as q3_pct,
-          ROUND(100.0 * q4_sleep_ns / NULLIF(total_dur_ns, 0), 1) as q4_pct
-        FROM main_thread_analysis
-      ),
-      -- 计算 RenderThread 各象限百分比
-      render_pct AS (
-        SELECT
-          ROUND(100.0 * q1_big_core_ns / NULLIF(total_dur_ns, 0), 1) as q1_pct,
-          ROUND(100.0 * q2_small_core_ns / NULLIF(total_dur_ns, 0), 1) as q2_pct,
-          ROUND(100.0 * q3_runnable_ns / NULLIF(total_dur_ns, 0), 1) as q3_pct,
-          ROUND(100.0 * q4_sleep_ns / NULLIF(total_dur_ns, 0), 1) as q4_pct
-        FROM render_thread_analysis
+        -- Missing state spans do not inflate the fraction of the window
+        -- with observed runnable time.
+        SELECT ROUND(100.0 * SUM(CASE WHEN state IN ('R','R+') THEN dur_ns ELSE 0 END)
+          / NULLIF(MAX(window_end_ts - window_start_ts), 0), 1) AS q3_pct
+        FROM system_thread_state_spans
+        HAVING COUNT(DISTINCT utid) = 1
+          AND SUM(dur_ns) <= MAX(window_end_ts - window_start_ts)
       ),
       -- Input 阶段 slice 统计（用于 enable_frame_details 结论面）。
       -- 仅统计 App/HIDDEN 掉帧帧窗口内、主线程上的 input slice，避免把无关长 slice
@@ -5773,131 +5692,53 @@ steps:
         FROM input_stage_overlaps
         WHERE overlap_ns > 0
       ),
-      -- Binder 调用统计
-      binder_stats AS (
-        SELECT
-          COUNT(*) as total_calls,
-          SUM(client_dur) / 1e6 as total_dur_ms,
-          MAX(client_dur) / 1e6 as max_dur_ms,
-          AVG(client_dur) / 1e6 as avg_dur_ms
-        FROM android_binder_txns
-        WHERE (${__process_scope.upid} IS NULL OR client_upid = ${__process_scope.upid})
-          AND (
-          ${__process_scope.upid} IS NOT NULL OR '${package}' = ''
-          OR client_process = '${package}'
-          OR client_process GLOB '${package}:*'
-        )
-          AND (${start_ts} IS NULL OR client_ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR client_ts < ${end_ts})
+      binder_overlap AS (
+        SELECT MAX(MIN(bt.client_ts + bt.client_dur, jfw.frame_end) - MAX(bt.client_ts, jfw.frame_start))
+          / 1e6 AS max_overlap_ms
+        FROM jank_frame_windows jfw
+        JOIN system_target_threads t ON t.upid = jfw.upid
+        JOIN android_binder_txns bt ON bt.client_utid = t.utid AND bt.is_sync = 1
+          AND bt.client_ts < jfw.frame_end AND bt.client_ts + bt.client_dur > jfw.frame_start
+        WHERE jfw.frame_end > jfw.frame_start
       ),
-      -- 综合分析
       analysis AS (
-        SELECT
-          (SELECT total_frames FROM jank_stats) as total_frames,
-          (SELECT app_jank FROM jank_stats) as app_jank,
-          (SELECT sf_jank FROM jank_stats) as sf_jank,
-          (SELECT buffer_jank FROM jank_stats) as buffer_jank,
-          (SELECT avg_dur_ms FROM jank_stats) as avg_dur_ms,
-          (SELECT max_dur_ms FROM jank_stats) as max_dur_ms,
-          (SELECT frame_budget_ms FROM jank_stats) as frame_budget_ms,
-          (SELECT q3_pct FROM main_pct) as main_q3_pct,
-          (SELECT q4_pct FROM main_pct) as main_q4_pct,
-          (SELECT q2_pct FROM main_pct) as main_q2_pct,
-          (SELECT q4_pct FROM render_pct) as render_q4_pct,
-          (SELECT total_dur_ms FROM binder_stats) as binder_total_ms,
-          (SELECT max_dur_ms FROM binder_stats) as binder_max_ms,
-          (SELECT total_input_slices FROM input_stage_stats) as total_input_slices,
-          (SELECT slow_input_slices FROM input_stage_stats) as slow_input_slices,
-          (SELECT max_input_slice_ms FROM input_stage_stats) as input_max_slice_ms,
-          (SELECT avg_input_slice_ms FROM input_stage_stats) as input_avg_slice_ms
+        SELECT total_frames, app_jank, sf_jank,
+          (SELECT q3_pct FROM main_pct) AS main_runnable_pct,
+          (SELECT max_overlap_ms FROM binder_overlap) AS binder_overlap_ms,
+          (SELECT slow_input_slices FROM input_stage_stats) AS slow_input_slices
+        FROM jank_stats
+      ),
+      classification AS (
+        SELECT *, CASE
+          WHEN total_frames < 10 THEN NULL
+          WHEN sf_jank > app_jank * 2 THEN 'SURFACE_FLINGER'
+          WHEN binder_overlap_ms > 5 THEN 'BINDER'
+          WHEN slow_input_slices > 0 THEN 'INPUT_HANDLING'
+          WHEN main_runnable_pct > 15 AND EXISTS (SELECT 1 FROM jank_frame_windows WHERE frame_end > frame_start)
+            THEN 'CPU_SCHEDULING'
+        END AS problem_component
+        FROM analysis
+        WHERE total_frames > 0
       )
       SELECT
-        -- 问题分类: APP / SYSTEM / MIXED
         CASE
-          WHEN (SELECT sf_jank FROM analysis) > (SELECT app_jank FROM analysis) * 2 THEN 'SYSTEM'
-          WHEN (SELECT app_jank FROM analysis) > (SELECT sf_jank FROM analysis) * 2 THEN 'APP'
-          WHEN (SELECT main_q3_pct FROM analysis) > 15 THEN 'SYSTEM'
-          WHEN (SELECT main_q4_pct FROM analysis) > 30 AND (SELECT binder_max_ms FROM analysis) > 5 THEN 'MIXED'
-          WHEN (SELECT slow_input_slices FROM analysis) > 0 THEN 'APP'
-          WHEN (SELECT app_jank FROM analysis) > 0 THEN 'APP'
+          WHEN problem_component = 'BINDER' THEN 'MIXED'
+          WHEN problem_component = 'INPUT_HANDLING' THEN 'APP'
+          WHEN problem_component IS NOT NULL THEN 'SYSTEM'
           ELSE 'UNKNOWN'
-        END as problem_category,
-        -- 问题组件
-        -- 注意：MAIN_THREAD_BLOCKING (休眠/阻塞) 与 MAIN_THREAD (耗时操作) 是互斥的
-        -- Q4 > 30% 表示主线程大部分时间在等待，问题是"阻塞"
-        -- 只有 Q4 <= 30% 且 avg_dur 超过当前 VSync 预算，才判定为"主线程耗时操作"
-        CASE
-          WHEN (SELECT sf_jank FROM analysis) > (SELECT app_jank FROM analysis) * 2 THEN 'SURFACE_FLINGER'
-          WHEN (SELECT main_q3_pct FROM analysis) > 15 THEN 'CPU_SCHEDULING'
-          WHEN (SELECT main_q4_pct FROM analysis) > 30 AND (SELECT binder_max_ms FROM analysis) > 5 THEN 'BINDER'
-          WHEN (SELECT main_q4_pct FROM analysis) > 30 THEN 'MAIN_THREAD_BLOCKING'
-          WHEN (SELECT slow_input_slices FROM analysis) > 0 THEN 'INPUT_HANDLING'
-          WHEN (SELECT render_q4_pct FROM analysis) > 50 THEN 'RENDER_THREAD'
-          WHEN (SELECT main_q2_pct FROM analysis) > 50 THEN 'CPU_AFFINITY'
-          WHEN (SELECT avg_dur_ms FROM analysis) > COALESCE((SELECT frame_budget_ms FROM analysis), 8.33)
-               AND COALESCE((SELECT main_q4_pct FROM analysis), 0) <= 30 THEN 'MAIN_THREAD'
-          ELSE 'UNKNOWN'
-        END as problem_component,
-        -- 置信度 (0-1)
-        CASE
-          WHEN (SELECT total_frames FROM analysis) < 10 THEN 0.3
-          WHEN (SELECT sf_jank FROM analysis) > (SELECT app_jank FROM analysis) * 2 THEN 0.9
-          WHEN (SELECT app_jank FROM analysis) > (SELECT sf_jank FROM analysis) * 2 THEN 0.85
-          WHEN (SELECT main_q3_pct FROM analysis) > 20 THEN 0.8
-          WHEN (SELECT main_q4_pct FROM analysis) > 40 THEN 0.8
-          WHEN (SELECT slow_input_slices FROM analysis) > 0 THEN 0.8
-          ELSE 0.6
-        END as confidence,
-        -- 根因总结
-        CASE
-          WHEN (SELECT sf_jank FROM analysis) > (SELECT app_jank FROM analysis) * 2 THEN
-            '系统级问题: SurfaceFlinger 处理异常，导致 ' || (SELECT sf_jank FROM analysis) || ' 帧掉帧'
-          WHEN (SELECT main_q3_pct FROM analysis) > 15 THEN
-            '系统级问题: CPU 调度拥堵，主线程 ' || (SELECT main_q3_pct FROM analysis) || '% 时间在等待调度'
-          WHEN (SELECT main_q4_pct FROM analysis) > 30 AND (SELECT binder_max_ms FROM analysis) > 5 THEN
-            '跨进程阻塞: Binder 调用最大耗时 ' || ROUND((SELECT binder_max_ms FROM analysis), 1) || 'ms'
-          WHEN (SELECT main_q4_pct FROM analysis) > 30 THEN
-            '主线程阻塞: ' || (SELECT main_q4_pct FROM analysis) || '% 时间在休眠/等待'
-          WHEN (SELECT slow_input_slices FROM analysis) > 0 THEN
-            '输入处理阻塞: ' || (SELECT slow_input_slices FROM analysis) || ' 个输入阶段 slice 超过帧预算阈值，最长相关 slice ' || ROUND((SELECT input_max_slice_ms FROM analysis), 1) || 'ms'
-          WHEN (SELECT render_q4_pct FROM analysis) > 50 THEN
-            'RenderThread 等待: ' || (SELECT render_q4_pct FROM analysis) || '% 时间在休眠'
-          WHEN (SELECT main_q2_pct FROM analysis) > 50 THEN
-            'CPU 亲和性问题: 主线程 ' || (SELECT main_q2_pct FROM analysis) || '% 时间运行在小核'
-          WHEN (SELECT app_jank FROM analysis) > 0 THEN
-            '应用级问题: ' || (SELECT app_jank FROM analysis) || ' 帧因应用原因掉帧，平均帧耗时 ' || ROUND((SELECT avg_dur_ms FROM analysis), 1) || 'ms'
-          ELSE
-            '分析数据不足，建议查看详细帧数据'
-        END as root_cause_summary,
-        -- 证据列表 (JSON 数组)
-        '[' ||
-          '"总帧数: ' || (SELECT total_frames FROM analysis) || '",' ||
-          '"App 掉帧: ' || (SELECT app_jank FROM analysis) || '",' ||
-          '"SF 掉帧: ' || (SELECT sf_jank FROM analysis) || '",' ||
-          '"主线程 Q3 (等待调度): ' || COALESCE((SELECT main_q3_pct FROM analysis), 0) || '%",' ||
-          '"主线程 Q4 (休眠阻塞): ' || COALESCE((SELECT main_q4_pct FROM analysis), 0) || '%",' ||
-          '"慢输入阶段 slice: ' || COALESCE((SELECT slow_input_slices FROM analysis), 0) || '",' ||
-          '"Binder 最大耗时: ' || COALESCE(ROUND((SELECT binder_max_ms FROM analysis), 1), 0) || 'ms"' ||
-        ']' as evidence,
-        -- 优化建议
-        CASE
-          WHEN (SELECT sf_jank FROM analysis) > (SELECT app_jank FROM analysis) * 2 THEN
-            '检查系统负载和 SurfaceFlinger 状态'
-          WHEN (SELECT main_q3_pct FROM analysis) > 15 THEN
-            '减少后台任务，考虑提高主线程优先级'
-          WHEN (SELECT main_q4_pct FROM analysis) > 30 AND (SELECT binder_max_ms FROM analysis) > 5 THEN
-            '优化 Binder 调用，考虑异步化或缓存'
-          WHEN (SELECT main_q4_pct FROM analysis) > 30 THEN
-            '检查主线程阻塞原因 (IO/锁/Binder)'
-          WHEN (SELECT slow_input_slices FROM analysis) > 0 THEN
-            '避免在 dispatchTouchEvent/onTouchEvent/onScrollChanged 中执行耗时同步逻辑，必要时拆分到后台或下一帧'
-          WHEN (SELECT render_q4_pct FROM analysis) > 50 THEN
-            '优化绘制流程，减少主线程耗时操作'
-          WHEN (SELECT main_q2_pct FROM analysis) > 50 THEN
-            '考虑使用 setThreadAffinity 或提高线程优先级'
-          ELSE
-            '查看详细帧分析，定位具体问题'
-        END as suggestion
+        END AS problem_category,
+        COALESCE(problem_component, 'UNKNOWN') AS problem_component,
+        NULL AS confidence,
+        CASE problem_component
+          WHEN 'SURFACE_FLINGER' THEN 'FrameTimeline 将 ' || sf_jank || ' 个晚呈现或丢弃帧标记为 SF 侧'
+          WHEN 'BINDER' THEN '主线程同步 Binder 与掉帧窗口重叠，最长 ' || ROUND(binder_overlap_ms, 1) || 'ms'
+          WHEN 'INPUT_HANDLING' THEN slow_input_slices || ' 个掉帧窗口中的输入处理切片超过输入阶段预算'
+          WHEN 'CPU_SCHEDULING' THEN '窗口内观测到主线程等待调度占 ' || main_runnable_pct || '%'
+          ELSE '已检查 ' || total_frames || ' 帧，现有证据不足以归因'
+        END AS root_cause_summary,
+        json_array('总帧数: ' || total_frames, 'App 掉帧: ' || app_jank, 'SF 掉帧: ' || sf_jank) AS evidence,
+        '结合代表性问题帧确认关键路径' AS suggestion
+      FROM classification
     save_as: conclusion
     condition: "frame_timeline.data[0]?.has_frame_timeline === 1 && (perf_summary?.data?.[0]?.total_frames || 0) > 0 && enable_frame_details === true"
 

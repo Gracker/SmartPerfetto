@@ -3,17 +3,21 @@
 
 -- Inputs: system_windows(window_id, window_start_ts, window_end_ts),
 -- system_target_threads(window_id, upid, utid, role). Half-open intersections.
--- Unfinished states are observed only through the trace bound; clipping never
--- converts that bound into a real switch/wakeup event.
+-- Bound an unfinished state by the thread's next observation or trace end.
+-- Neither bound changes the raw duration or certifies a real switch/wakeup.
 system_thread_state_spans AS (
   SELECT w.window_id, w.window_start_ts, w.window_end_ts,
     tt.upid, tt.utid, tt.role, ts.id AS thread_state_id,
     ts.ts AS raw_start_ts, ts.dur AS raw_dur,
     CASE WHEN ts.dur >= 0 THEN ts.ts + ts.dur END AS raw_end_ts,
     MAX(ts.ts, w.window_start_ts) AS clipped_start_ts,
-    MIN(CASE WHEN ts.dur = -1 THEN (SELECT end_ts FROM trace_bounds)
+    MIN(CASE WHEN ts.dur = -1 THEN COALESCE(
+        (SELECT MIN(n.ts) FROM thread_state n WHERE n.utid = ts.utid AND n.ts > ts.ts),
+        (SELECT end_ts FROM trace_bounds))
       ELSE ts.ts + ts.dur END, w.window_end_ts) AS clipped_end_ts,
-    MIN(CASE WHEN ts.dur = -1 THEN (SELECT end_ts FROM trace_bounds)
+    MIN(CASE WHEN ts.dur = -1 THEN COALESCE(
+        (SELECT MIN(n.ts) FROM thread_state n WHERE n.utid = ts.utid AND n.ts > ts.ts),
+        (SELECT end_ts FROM trace_bounds))
       ELSE ts.ts + ts.dur END, w.window_end_ts) - MAX(ts.ts, w.window_start_ts) AS dur_ns,
     ts.dur = -1 AS is_unfinished,
     ts.ts < w.window_start_ts AS left_censored,
@@ -24,6 +28,8 @@ system_thread_state_spans AS (
   JOIN thread_state ts ON ts.utid = tt.utid
   WHERE w.window_end_ts > w.window_start_ts AND ts.dur != 0 AND ts.dur >= -1
     AND ts.ts < w.window_end_ts
-    AND CASE WHEN ts.dur = -1 THEN (SELECT end_ts FROM trace_bounds)
+    AND CASE WHEN ts.dur = -1 THEN COALESCE(
+        (SELECT MIN(n.ts) FROM thread_state n WHERE n.utid = ts.utid AND n.ts > ts.ts),
+        (SELECT end_ts FROM trace_bounds))
       ELSE ts.ts + ts.dur END > w.window_start_ts
 )

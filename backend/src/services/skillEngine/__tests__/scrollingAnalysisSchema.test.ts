@@ -1562,37 +1562,52 @@ describe('scrolling_analysis skill schema', () => {
     }
   });
 
-  it('scopes Binder statistics to the exact app and colon-delimited children', () => {
-    const cte = extractMarkedCtes(
-      String(getStep('root_cause_classification').sql),
-      '-- Binder 调用统计',
-      '-- 综合分析',
-    );
-    const db = createScopedSqlFixture();
+  it('counts only a synchronous main-thread Binder overlapping an affected frame', () => {
+    const sql = String(getStep('root_cause_classification').sql);
+    const cte = sql.slice(sql.indexOf('binder_overlap AS ('), sql.indexOf('analysis AS (')).trim().replace(/,\s*$/, '');
+    const db = new Database(':memory:');
     try {
-      db.exec(`
-        CREATE TABLE android_binder_txns(client_process TEXT, client_dur INTEGER, client_ts INTEGER);
-        INSERT INTO android_binder_txns VALUES
-          ('com.example.app',          10000000, 100),
-          ('com.example.app:remote',   20000000, 200),
-          ('com.example.application',  30000000, 300),
-          ('com.other',                40000000, 400);
-      `);
-      db.exec("ALTER TABLE android_binder_txns ADD COLUMN client_upid INTEGER; UPDATE android_binder_txns SET client_upid = CASE client_process WHEN 'com.example.app' THEN 1 WHEN 'com.example.app:remote' THEN 2 ELSE 3 END");
-      const renderedCte = cte
-        .split('${package}').join('com.example.app')
-        .split('${start_ts}').join('NULL')
-        .split('${end_ts}').join('NULL');
-      const row = db.prepare(`
-        WITH ${renderedCte}
-        SELECT total_calls, total_dur_ms FROM binder_stats
-      `).get() as {total_calls: number; total_dur_ms: number};
+      const row = db.prepare(`WITH
+        system_target_threads(upid, utid) AS (VALUES (42, 1), (43, 2)),
+        jank_frame_windows(upid, frame_start, frame_end) AS (VALUES (42, 10000000, 20000000)),
+        android_binder_txns(client_utid, is_sync, client_ts, client_dur) AS (VALUES
+          (1, 1, 8000000, 8000000), (1, 0, 6000000, 20000000),
+          (2, 1, 6000000, 20000000), (1, 1, 21000000, 40000000)),
+        ${cte} SELECT * FROM binder_overlap`).get();
+      expect(row).toEqual({max_overlap_ms: 6});
+    } finally { db.close(); }
+  });
 
-      expect(row.total_calls).toBe(2);
-      expect(row.total_dur_ms).toBe(30);
-    } finally {
-      db.close();
-    }
+  it.each([
+    [2.8, 55.1, 0], [0.7, 77.1, 0], [3.1, 45.7, 4.8], [1.2, 79.2, 0.7],
+    [2.4, 49.6, 1], [4.4, 43.3, 40.2], [4.2, 48.4, 27.5],
+  ])('leaves idle/sleep and uncorrelated Binder unclassified (R=%s%% S=%s%% Binder max=%sms)', (runnable, sleeping, binderMax) => {
+    const sql = String(getStep('root_cause_classification').sql);
+    const classification = sql.slice(sql.indexOf('classification AS ('));
+    const db = new Database(':memory:');
+    try {
+      const rows = db.prepare(`WITH
+        jank_frame_windows(frame_start, frame_end) AS (VALUES (0, 10000000)),
+        analysis AS (SELECT 200 AS total_frames, 5 AS app_jank, 0 AS sf_jank, ? AS main_runnable_pct,
+          ? AS sleep_pct, ? AS binder_max_ms, 0 AS binder_overlap_ms, 0 AS slow_input_slices),
+        ${classification}`).all(runnable, sleeping, binderMax);
+      expect(rows).toEqual([expect.objectContaining({problem_category: 'UNKNOWN',
+        problem_component: 'UNKNOWN', confidence: null})]);
+    } finally { db.close(); }
+  });
+
+  it('does not inflate observed Runnable time when thread state coverage is sparse', () => {
+    const sql = String(getStep('root_cause_classification').sql);
+    const mainPct = sql.slice(sql.indexOf('main_pct AS ('), sql.indexOf('-- Input 阶段')).trim().replace(/,\s*$/, '');
+    const db = new Database(':memory:');
+    try {
+      const row = db.prepare(`WITH
+        system_thread_state_spans(utid, state, dur_ns, window_start_ts, window_end_ts) AS (
+          VALUES (1, 'R', 1000000, 0, 1000000000)
+        ),
+        ${mainPct} SELECT * FROM main_pct`).get();
+      expect(row).toEqual({q3_pct: 0.1});
+    } finally { db.close(); }
   });
 
   it('never scopes scrolling SQL or strategy fallback with a bare package prefix', () => {
@@ -2926,22 +2941,6 @@ describe('scrolling exact UPID SQL semantics', () => {
     } finally { db.close(); }
   });
 
-  it('binds Binder client UPID while retaining an external server', () => {
-    const sql = render('root_cause_classification', 42);
-    const begin = sql.indexOf('binder_stats AS (');
-    const end = sql.indexOf('-- 综合分析', begin);
-    const cte = sql.slice(begin, end).trim().replace(/,\s*$/, '');
-    const db = new Database(':memory:');
-    try {
-      db.exec(`CREATE TABLE android_binder_txns(client_upid INTEGER, client_process TEXT,
-        server_upid INTEGER, server_process TEXT, client_dur INTEGER, client_ts INTEGER);
-        INSERT INTO android_binder_txns VALUES
-          (42,'com.example.app',90,'surfaceflinger',10000000,100),
-          (43,'com.example.app',90,'surfaceflinger',50000000,100),
-          (44,'com.example.app:child',90,'surfaceflinger',70000000,100);`);
-      expect(db.prepare(`WITH ${cte} SELECT * FROM binder_stats`).get()).toMatchObject({ total_calls: 1, total_dur_ms: 10 });
-    } finally { db.close(); }
-  });
 
   it('ignores lock events from another UPID even when the process name matches', () => {
     const sql = render('batch_frame_root_cause', 42);
