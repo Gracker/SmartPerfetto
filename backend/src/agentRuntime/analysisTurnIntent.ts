@@ -57,6 +57,8 @@ export type AnalysisTurnIntent = Readonly<AnalysisTurnIntentDecision & {
 
 const OUTPUT_BYTE_LIMIT = 8192;
 const PROMPT_BYTE_LIMIT = 64 * 1024;
+// A whole-turn request with no frame, metric, comparison or selection qualifier.
+const WHOLE_SCROLLING_QUESTION = /^(?:应用(?:[\p{Script=Han}]{1,12}下)?滑动|(?:WebView\s*)?页面滑动|(?:视频)?信息流滑动|朋友圈应用)流畅吗[？?]\s*(?:如有卡顿[，,]?\s*请分析原因[。？?]?|渲染性能如何[？?]?)$/iu;
 
 export function member<T extends string>(value: unknown, values: readonly T[]): value is T {
   return typeof value === 'string' && values.includes(value as T);
@@ -147,6 +149,11 @@ export function createAnalysisTurnIntentResolver(input: AnalysisTurnIntentResolv
   const sceneIds = strategyRegistry.getAllStrategies()
     .filter(scene => scene.strategyKind !== 'contract_only').map(scene => scene.scene);
   const sourceSelected = analysisOptionsSelectSource(input.productRun?.options);
+  const scrolling = !context.hasSelectionContext && !context.hasReferenceTrace &&
+    WHOLE_SCROLLING_QUESTION.test(context.query.trim()) ? strategyRegistry.getStrategy('scrolling') : undefined;
+  const scrollingScope = scrolling && scrolling.strategyKind !== 'contract_only' ? {
+    sceneId: scrolling.scene, taskKind: 'investigation', scope: 'scene_wide', deliverable: 'report',
+  } as const : undefined;
   const requiredProperties = {
     schemaVersion: {type: 'integer', const: 1},
     taskKind: {type: 'string', enum: TASK_KINDS},
@@ -170,7 +177,7 @@ export function createAnalysisTurnIntentResolver(input: AnalysisTurnIntentResolv
         ...(sourceSelected ? {sourceNeed: {const: 'none'}} : {})}},
     }],
   };
-  const unavailable = (reason: NonNullable<AnalysisTurnIntent['unavailableReason']>): AnalysisTurnIntent => Object.freeze({
+  const unavailable = (reason: NonNullable<AnalysisTurnIntent['unavailableReason']>, useScrollingFallback = true): AnalysisTurnIntent => Object.freeze({
     schemaVersion: 1,
     status: 'unavailable',
     source: 'fallback',
@@ -179,6 +186,7 @@ export function createAnalysisTurnIntentResolver(input: AnalysisTurnIntentResolv
     scope: 'bounded_question',
     recommendedComplexity: 'quick',
     deliverable: 'answer',
+    ...(useScrollingFallback && scrollingScope ? {...scrollingScope, status: 'resolved' as const} : {}),
     evidenceAccess: evidenceAccessLimit ?? 'read_new',
     registryFingerprint: strategyRegistry.registryFingerprint,
     unavailableReason: reason,
@@ -187,8 +195,8 @@ export function createAnalysisTurnIntentResolver(input: AnalysisTurnIntentResolv
   let promise: Promise<AnalysisTurnIntent> | undefined;
   const resolve = () => promise ??= (async () => {
     throwIfCancelled();
-    if (!Number.isFinite(deadlineMs)) return unavailable('invalid_configuration');
-    if (Date.now() >= deadlineMs) return unavailable('timeout');
+    if (!Number.isFinite(deadlineMs)) return unavailable('invalid_configuration', false);
+    if (Date.now() >= deadlineMs) return unavailable('timeout', false);
     const product = input.productRun;
     if (product && resolveSceneProductScope(product.options, product)) {
       const scene = strategyRegistry.getStrategy('scene_reconstruction');
@@ -220,6 +228,7 @@ export function createAnalysisTurnIntentResolver(input: AnalysisTurnIntentResolv
     if (!decision) return unavailable('invalid_response');
     return Object.freeze({
       ...decision,
+      ...(scrollingScope && decision.taskKind !== 'comparison' ? scrollingScope : {}),
       ...(evidenceAccessLimit ? {evidenceAccess: evidenceAccessLimit} : {}),
       status: 'resolved' as const,
       source: 'semantic' as const,

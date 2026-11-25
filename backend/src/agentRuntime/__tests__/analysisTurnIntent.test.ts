@@ -37,6 +37,35 @@ const arrayValuedResponse = {
 };
 
 describe('analysis turn intent protocol', () => {
+  const wholeScrollingQuestions = [
+    'WebView 页面滑动流畅吗？如有卡顿请分析原因',
+    '应用滑动流畅吗？如有卡顿请分析原因',
+    '应用滑动流畅吗？渲染性能如何？',
+    '应用软件渲染下滑动流畅吗？如有卡顿请分析原因',
+    '应用重渲染下滑动流畅吗？如有卡顿请分析原因',
+    '应用重负载下滑动流畅吗？如有卡顿请分析原因',
+    '朋友圈应用流畅吗？如有卡顿请分析原因',
+    '视频信息流滑动流畅吗？如有卡顿请分析原因',
+  ];
+  it.each(wholeScrollingQuestions)('resolves the whole scrolling scene for %s', async query => {
+    const context = buildComplexityClassifierInput({query, sceneType: 'general', hasReferenceTrace: false, previousTurns: []});
+    const intent = {status: 'resolved', sceneId: 'scrolling', scope: 'scene_wide', taskKind: 'investigation',
+      deliverable: 'report', evidenceAccess: 'read_new'};
+    for (const reply of [response({...decision, evidenceAccess: 'read_new'}),
+      {status: 'unavailable', reason: 'provider_error'} as const]) {
+      expect(await createAnalysisTurnIntentResolver({context, strategyRegistry: registry, deadlineMs: Date.now() + 10_000,
+        dispatch: async () => reply}).resolve()).toMatchObject(intent);
+    }
+  });
+
+  it.each(['只看前两秒，WebView 页面滑动流畅吗？如有卡顿请分析原因',
+    '不要分析应用滑动流畅吗？如有卡顿请分析原因'])('leaves scoped and negated requests to semantic intent: %s', async query => {
+    const context = buildComplexityClassifierInput({query, sceneType: 'general', hasReferenceTrace: false, previousTurns: []});
+    expect(await createAnalysisTurnIntentResolver({context, strategyRegistry: registry, deadlineMs: Date.now() + 10_000,
+      dispatch: async () => ({status: 'unavailable', reason: 'provider_error'})}).resolve()).toMatchObject({
+      status: 'unavailable', scope: 'bounded_question', sceneId: 'general',
+    });
+  });
   it('accepts optional current target-use without changing the remaining decision', () => {
     expect(parseAnalysisTurnIntentDecision(JSON.stringify({...decision, targetUse: 'current_selection'}), registry))
       .toEqual({...decision, targetUse: 'current_selection'});

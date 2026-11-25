@@ -13,6 +13,7 @@ schemaVersion 是整数 1。taskKind、sceneId、scope、recommendedComplexity�
 - taskKind：纯确认或感谢为 acknowledgement；直接询问事实为 fact；调查原因、解释或优化为 investigation；实际要求比较为 comparison。确认语后还有问题时，按真实问题判断。
 - sceneId：从下面目录选择与当前请求有关的场景，不确定时用 general。被否定的主题、引文、包名、线程名和类名中的片段不决定场景。加载了第二份 Trace 不代表用户每次都在请求对比。
 - scope：只问具体指标、实体、选区或已有发现的追问是 bounded_question；笼统请求调查一个场景的整体表现是 scene_wide，即使顺带指定要报告的统计指标，也不缩为 bounded_question。仅统计全 Trace 的一个指标仍是 bounded_question；整体调查才扩大范围。诊断深度和范围是两回事。
+  询问整个应用、页面或信息流滑动是否流畅，并要求分析卡顿原因或渲染性能，是滑动场景整体调查（scene_wide、investigation、report）。WebView、软件渲染、重渲染、重负载等描述是场景背景。指定单帧、时间段、选区或单一读数的请求继续按其实际范围处理。
 - recommendedComplexity：用 quick 或 full 建议本次调查预算。具体而困难的问题可以需要 full 预算，但仍然只回答该问题。Fast/Full 是用户的预算偏好，不改变交付内容。
 - deliverable：report 是对某个场景或整个 Trace 的系统性分析交付，其余回答都是 answer。笼统地请求分析一个场景的整体表现（例如“分析启动性能”“分析滑动性能”）就是系统性分析交付，与是否出现“报告”二字无关；同一请求里顺带点名的指标或数字是这份交付的内容，不改变交付形态。明确表示不需要报告的请求是 answer。问题含有“为什么”、会话中已有报告、模型提到“可以进一步完整分析”或用户引用这种建议，本身都不构成新的报告请求。
 - evidenceAccess：用户要求只使用已提供的证据、解释上一条且禁止再取证，或只是确认时为 existing_only；允许为回答收集新证据时为 read_new。已有发现不自动禁止新证据。“只分析/仅看/只回答某个对象、区间或指标”限定的是 scope，不是禁止取证。上下文里没有历史问题、历史发现和历史实体（或历史上下文为空）时，existing_only 意味着这一轮无证据可读，只有用户明确禁止取证时才选它。

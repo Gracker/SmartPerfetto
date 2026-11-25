@@ -176,9 +176,6 @@ function sourceRows(resolutions: readonly EvidenceReadResolution[]): ScopeRows[]
 export async function buildScrollingConclusionEvidence(context: RuntimeFinalizationContext, language: OutputLanguage,
   signal: AbortSignal): Promise<AnalysisConclusionEvidence | undefined> {
   const {turnIntent: intent, strategyRegistry} = context;
-  if (intent.status !== 'resolved' || !['investigation', 'fact'].includes(intent.taskKind) ||
-      strategyRegistry.getStrategy(intent.sceneId)?.entrySkill?.id !== SKILL) return undefined;
-
   const records = context.currentSkillResults?.(SKILL, [CADENCE, TOUCH], signal) ?? [];
   const requests = [];
   for (const record of records) {
@@ -215,7 +212,8 @@ export async function buildScrollingConclusionEvidence(context: RuntimeFinalizat
     evidenceRefIds.push(record.meta.evidenceRefId!);
   }
   if (!cadenceSections.size) {
-    if (!touchSections.size && intent.taskKind !== 'investigation') return undefined;
+    if (!touchSections.size && !(intent.status === 'resolved' && intent.taskKind === 'investigation' &&
+        strategyRegistry.getStrategy(intent.sceneId)?.entrySkill?.id === SKILL)) return undefined;
     const unavailable = localize(language, '不可用', 'Unavailable');
     cadenceSections.add([
       localize(language, '**呈现流畅度无法评级** · 本轮没有可用的同范围流畅度读数。', '**Presentation cadence rating unavailable** · No same-scope readout is available in this run.'),

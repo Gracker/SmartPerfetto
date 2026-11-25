@@ -74,6 +74,7 @@ function fixture(options: {
   investigation?: boolean;
   knowledgeUse?: KnowledgeUseRecord;
   scrolling?: (store: ArtifactStore) => void;
+  intentUnavailable?: boolean;
   nativeCompletion?: {status: 'incomplete'; reason: 'output_limit'};
 } = {}) {
   const runId = 'run';
@@ -122,7 +123,8 @@ function fixture(options: {
     isCurrent: () => true, assertAuthorized: () => {}};
   attachFinalizationContext(result, {runId, sessionId: result.sessionId, deadlineMs: Date.now() + 600_000,
     strategyRegistry: pinnedRegistry, traceIdentity: {currentTraceId: 'trace'},
-    turnIntent: {schemaVersion: 1, status: 'resolved', source: 'semantic', registryFingerprint: pinnedRegistry.registryFingerprint,
+    turnIntent: {schemaVersion: 1, status: options.intentUnavailable ? 'unavailable' : 'resolved',
+      source: options.intentUnavailable ? 'fallback' : 'semantic', registryFingerprint: pinnedRegistry.registryFingerprint,
       taskKind: options.investigation || options.scrolling ? 'investigation' : 'fact', sceneId: 'general',
       scope: options.report || options.investigation ? 'scene_wide' : 'bounded_question', recommendedComplexity: 'quick',
       deliverable: options.report ? 'report' : 'answer', evidenceAccess: options.scrolling ? 'read_new' : 'existing_only'},
@@ -475,6 +477,14 @@ const scrollingFrameRow = {
 };
 
 describe('product-owned scrolling conclusion', () => {
+  it('publishes captured scrolling measurements when semantic intent was unavailable', async () => {
+    const {run} = fixture({intentUnavailable: true, scrolling(store) {
+      captureScrollingRows(store, 'smoothness_basis', [scrollingFrameRow]);
+    }});
+    const {result} = await run();
+    expect(result.conclusionEvidence?.markdown).toContain('66/1231 (5.36%)');
+  });
+
   it('ignores an asserted measurement summary from the runtime result', async () => {
     const {result: nativeResult, run} = fixture();
     nativeResult.conclusionEvidence = {
