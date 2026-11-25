@@ -162,7 +162,7 @@ final_report_contract:
 - TextureView 的 `signal_inventory.event_count` 是信号次数，不是帧数；`consumer_notification` cadence gap 只是时序候选。未与 FrameTimeline / present 证据明确关联前，不得称为 hidden jank、producer stall 或根因。
 
 **Required phases**
-1. Overview: 调用 `scrolling_analysis`，先读 `main_thread_work_*` 的实际主线程工作与来源，再读帧结果；整个动画/滑动区间均在范围内，不要求输入手势或 FrameTimeline 存在。
+1. Overview: 先复用场景入口已取到的 `scrolling_analysis`；缺少入口产物时调用该 Skill。先读 `main_thread_work_*` 的实际主线程工作与来源，再读帧结果；整个动画/滑动区间均在范围内。低置信度的 WebView 等架构提示只用于选择后续补充证据，通用宿主测量仍需执行。
 2. Artifact read: 先用 `fetch_artifact(detail="summary")` 读取 batch/root-cause artifact。`aggregate.complete=true` 只表示当前 artifact 行已完整聚合；必须另读 `root_cause_analysis_scope`、`root_cause_analyzed_frame_count`、`root_cause_eligible_frame_count`、`root_cause_coverage_ratio`。只有 `full_frame_set + coverage=1` 才能把 reason_code 当全量分布；截断时只能报告已分析帧样本，禁止外推样本百分比。只有聚合不完整、缺字段或需要代表帧逐项证据时，才读取解决该缺口所需的最少 rows。
 3. Root-cause drill: 同时解释长 doFrame 和帧外主线程任务，按任务来源、exclusive 热点、Running/Runnable/等待选择深钻；任务的时长和出现时机不能被 reason_code 占比阈值排除。复用 batch 帧证据，只有相应缺口才用 `jank_frame_detail` / `frame_blocking_calls` / `blocking_chain_analysis`。workload_heavy 最后兜底，不能替代任务名称及追查方向。
 4. Conditional branches: TextureView/WebView/RN/GL/Compose/Flutter/mixed 命中时，`submit_plan` 必须在 `expectedCalls` 写入对应 producer/embedded/SF skill（Flutter 用 `invoke_skill(flutter_scrolling_analysis)`）；缺信号时执行阶段再 `skipped + reason`，不能在 plan 阶段 waiver 掉。
