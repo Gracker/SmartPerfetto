@@ -1,7 +1,9 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2024-2026 Gracker (Chris) | SmartPerfetto -->
 
-The product displays the scrolling Skill's rating and three rates. Use a neutral
-heading and explain discrepancies, peaks, and causes. Leave the overall rating
-to the product. In Flutter, use the Skill's touch classification. Keep
-between-contact pauses and unknown intervals separate from touch-time jank.
+Use a neutral heading. Leave the overall rating to the product. In the final
+report, cover up to two material discrepancies or peaks using retained evidence.
+Do not make new queries just to explain them. Keep the explanation to at most
+six short paragraphs or bullets. In Flutter, use the Skill's touch
+classification and separate between-contact pauses and unknown intervals from
+touch-time jank.
