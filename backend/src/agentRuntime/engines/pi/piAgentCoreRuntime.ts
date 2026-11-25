@@ -350,8 +350,9 @@ export function piContextNearlyFull(message: {usage?: Usage}, contextWindow: num
  * turn inside the run's budget and deadline. Pi ends the run on an error turn
  * before running any of its tool calls, so the turn re-sends from the same transcript.
  */
-const PI_MAX_TRANSIENT_TURN_RETRIES = 2;
 const PI_TRANSIENT_TURN_RETRY_BASE_MS = 2_000;
+const PI_TRANSIENT_TURN_RETRY_MAX_DELAY_MS = 30_000;
+const PI_TRANSIENT_TURN_RETRY_WINDOW_MS = 240_000;
 
 interface PiAnalysisPreparation {
   systemPrompt: string;
@@ -1894,7 +1895,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const turnBudget = resolveRuntimeTurnBudget(maxTurns);
     let rounds = 0;
     let budgetStop: PiBudgetStop | undefined;
-    let transientTurnRetries = 0;
     // Error updates of a failed turn that may still be re-sent; emitted only if it is not.
     let heldTransientErrors: StreamingUpdate[] = [];
     const classifyFailedTurn = (message: unknown): 'context_overflow' | 'transient' | undefined => {
@@ -2017,6 +2017,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       // A correction is delivered whole by the final conclusion, never as a draft.
       draftController.beginAttempt(correctionInProgress ? SILENT_ANSWER_DRAFT : createProjectedAnswerDraft(answerDraft,
         privateAnalysisContext ? createCodeAwareStreamingTextProjection(sessionId, `pi-answer-${attemptId}`, 'owner') : undefined));
+      let retryWindow: {startedAt: number; checkpoint: number; retries: number} | undefined;
       for (let resume = false; ; resume = true) {
         const beforeTurn = rounds;
         let idleFailure: PiProviderIdleTimeoutError | undefined;
@@ -2060,10 +2061,18 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         const resumeMessages = dropFailedReply ? messages.slice(0, -1) : messages;
         const resumeLast = resumeMessages[resumeMessages.length - 1] as {role?: string} | undefined;
         const canResume = !idleFailure || resumeLast?.role === 'user' || resumeLast?.role === 'toolResult';
-        const backoffMs = PI_TRANSIENT_TURN_RETRY_BASE_MS * 2 ** transientTurnRetries;
+        const now = Date.now();
+        // Pi's continuation can complete more tool turns before another failure.
+        // A longer retained transcript starts a fresh retry window for that turn.
+        if (!retryWindow || resumeMessages.length > retryWindow.checkpoint) {
+          retryWindow = {startedAt: now, checkpoint: resumeMessages.length, retries: 0};
+        }
+        const remainingMs = Math.min(retryWindow.startedAt + PI_TRANSIENT_TURN_RETRY_WINDOW_MS, getRunDeadlineMs()) - now;
+        const backoffMs = Math.min(PI_TRANSIENT_TURN_RETRY_MAX_DELAY_MS,
+          PI_TRANSIENT_TURN_RETRY_BASE_MS * 2 ** retryWindow.retries);
         if (!agent.continue || failure !== 'transient' || !canResume
-          || transientTurnRetries >= PI_MAX_TRANSIENT_TURN_RETRIES || budgetStop || rounds >= turnLimit
-          || maxBudgetUsd > 0 && spentUsd >= maxBudgetUsd || Date.now() + backoffMs >= getRunDeadlineMs()) {
+          || budgetStop || rounds >= turnLimit || backoffMs >= remainingMs
+          || maxBudgetUsd > 0 && spentUsd >= maxBudgetUsd) {
           for (const update of held) this.emit('update', update);
           if (idleFailure) {
             markTimeout('stream_idle', idleFailure.timeoutMs);
@@ -2072,13 +2081,14 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           }
           break;
         }
-        transientTurnRetries++;
+        const retry = ++retryWindow.retries;
+        const remainingSeconds = Math.floor(remainingMs / 1000);
         if (dropFailedReply) agent.state.messages = resumeMessages;
         draftController.boundary();
-        logger.warn('PiAgentCoreRuntime', `Provider turn failed in ${idleFailure ? 'stream idle' : 'transport'}; re-sending it (${transientTurnRetries}/${PI_MAX_TRANSIENT_TURN_RETRIES}) in ${backoffMs}ms`);
-        this.emit('update', {type: 'progress', content: {module: 'pi-agent-core', message: localize(outputLanguage,
-          `模型服务连接中断，${Math.round(backoffMs / 1000)}s 后重发本轮 (${transientTurnRetries}/${PI_MAX_TRANSIENT_TURN_RETRIES})...`,
-          `The model provider connection dropped. Re-sending this turn in ${Math.round(backoffMs / 1000)}s (${transientTurnRetries}/${PI_MAX_TRANSIENT_TURN_RETRIES})...`)},
+        logger.warn('PiAgentCoreRuntime', `Provider turn failed in ${idleFailure ? 'stream idle' : 'transport'}; retry ${retry} in ${backoffMs}ms, window remaining ${remainingMs}ms`);
+        this.emit('update', {type: 'progress', content: {module: 'pi-agent-core', phase: 'provider_retry', message: localize(outputLanguage,
+          `模型服务连接中断，${backoffMs / 1000}s 后第 ${retry} 次重发本轮，重试窗口剩余 ${remainingSeconds}s。`,
+          `Model provider connection interrupted. Retry ${retry} in ${backoffMs / 1000}s. Retry window remaining: ${remainingSeconds}s.`)},
         timestamp: Date.now()});
         try {
           await delay(backoffMs, undefined, {signal: AbortSignal.any([work.signal, work.summarySignal])});

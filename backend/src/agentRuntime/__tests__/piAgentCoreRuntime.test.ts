@@ -4070,7 +4070,9 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(agent.state.messages).not.toContain(failed);
     expect(result).toMatchObject({conclusion: 'Recovered answer', success: true, rounds: 2, completion: {status: 'completed'}});
     expect(errors).toEqual([]);
-    expect(updates.some(update => update.type === 'progress' && JSON.stringify(update.content).includes('1/2'))).toBe(true);
+    expect(updates).toEqual(expect.arrayContaining([expect.objectContaining({
+      type: 'progress', content: expect.objectContaining({phase: 'provider_retry', message: expect.stringContaining('2s')}),
+    })]));
   }, 20_000);
 
   it('lets a progressing default run finish after the former 1200s total deadline', async () => {
@@ -4115,8 +4117,9 @@ describe('experimental Pi agent-core runtime contract', () => {
     sessionContextManager.remove(sessionId);
   });
 
-  it.each(['stream_idle', 'request_timeout'] as const)('retries an injected provider %s and retains completed tools', async failureKind => {
+  it.each(['stream_idle', 'request_timeout', 'outage_60s', 'outage_120s'] as const)('retries an injected provider %s and retains completed tools', async failureKind => {
     const timeoutMs = failureKind === 'stream_idle' ? 300_000 : 1_200_000;
+    const outageMs = failureKind === 'outage_60s' ? 60_000 : failureKind === 'outage_120s' ? 120_000 : 0;
     const sessionId = `native-pi-retry-${failureKind}`;
     piFailedTurnClass = message => (message as any)?.errorMessage === 'Provider request timeout after 1200000ms' ? 'transient' : 'other';
     jest.useFakeTimers({now: 1000, doNotFake: ['nextTick', 'setImmediate']});
@@ -4126,6 +4129,7 @@ describe('experimental Pi agent-core runtime contract', () => {
     const trace = createFakeTraceProcessorService();
     const requests: any[] = [];
     const backoffs: number[] = [];
+    const outageUntil = 1000 + outageMs;
     const sleep = jest.spyOn(require('node:timers/promises'), 'setTimeout').mockImplementation(
       ((ms: number) => {backoffs.push(ms); return new Promise(resolve => setTimeout(resolve, ms));}) as any);
     let sdk: any;
@@ -4191,14 +4195,18 @@ describe('experimental Pi agent-core runtime contract', () => {
               stopReason: index === 1 ? 'toolUse' : 'stop', content: index === 1
                 ? [{type: 'toolCall', id: 'before-idle', name: 'lookup_sql_schema', arguments: {keyword: 'slice'}}]
                 : [{type: 'text', text: 'Recovered after provider idle'}]};
-            if (index === 2) {
+            if (!outageMs && index === 2) {
               options.signal.addEventListener('abort', () => idleDone.resolve({...message,
                 stopReason: 'aborted', errorMessage: 'Aborted', content: []}), {once: true});
               if (failureKind === 'request_timeout') setTimeout(() => idleDone.resolve({...message,
                 stopReason: 'error', errorMessage: 'Provider request timeout after 1200000ms', content: []}), timeoutMs);
               opened.resolve();
             }
-            const result = index === 2 ? idleDone.promise : Promise.resolve(message);
+            if (outageMs && index === 2) opened.resolve();
+            const result = !outageMs && index === 2 ? idleDone.promise : Promise.resolve(
+              index > 1 && Date.now() < outageUntil
+                ? {...message, stopReason: 'error', errorMessage: 'Provider request timeout after 1200000ms', content: []}
+                : message);
             return {result: () => result, async *[Symbol.asyncIterator]() {
               yield {type: 'start', partial: {...message, content: []}};
               const final = await result;
@@ -4213,16 +4221,25 @@ describe('experimental Pi agent-core runtime contract', () => {
     try {
       const pending = runtime.analyze('inspect current trace', sessionId, 'trace-pi', {analysisMode: 'fast'});
       await opened.promise;
-      await jest.advanceTimersByTimeAsync(timeoutMs - 1);
-      expect(requests).toHaveLength(2);
-      expect(backoffs).toEqual([]);
-      await jest.advanceTimersByTimeAsync(2001);
-      expect(await pending).toMatchObject({success: true, conclusion: 'Recovered after provider idle', rounds: 3,
+      if (outageMs) {
+        await jest.advanceTimersByTimeAsync(outageMs + 1);
+        expect(backoffs).toEqual([2000, 4000, 8000, 16000, ...Array(outageMs === 60_000 ? 1 : 3).fill(30000)]);
+      } else {
+        await jest.advanceTimersByTimeAsync(timeoutMs - 1);
+        expect(requests).toHaveLength(2);
+        expect(backoffs).toEqual([]);
+        await jest.advanceTimersByTimeAsync(2001);
+        expect(backoffs).toEqual([2000]);
+      }
+      expect(await pending).toMatchObject({success: true, conclusion: 'Recovered after provider idle', rounds: 2 + backoffs.length,
         completion: {status: 'completed'}, outputOrigin: 'sdk_final'});
-      expect(backoffs).toEqual([2000]);
-      expect(requests).toHaveLength(3);
-      expect(requests[2].filter((message: any) => message.role === 'user')).toHaveLength(1);
-      expect(requests[2].filter((message: any) => message.role === 'toolResult')).toHaveLength(1);
+      expect(requests).toHaveLength(2 + backoffs.length);
+      for (const messages of requests.slice(2)) {
+        expect(messages.filter((message: any) => message.role === 'user')).toHaveLength(1);
+        expect(messages.filter((message: any) => message.role === 'toolResult')).toHaveLength(1);
+      }
+      expect(updates.filter(update => update.type === 'progress' &&
+        (update.content as any)?.phase === 'provider_retry')).toHaveLength(backoffs.length);
       expect(sdk.state.messages.some((message: any) => message.stopReason === 'aborted' || message.stopReason === 'error')).toBe(false);
       expect(toolExecutions).toBe(1);
       expect(updates.filter(update => update.type === 'error')).toEqual([]);
@@ -4455,12 +4472,13 @@ describe('experimental Pi agent-core runtime contract', () => {
     const entered = createDeferred<void>();
     let pending = createDeferred<unknown[]>();
     const backoffs: number[] = [];
+    const exhaustsRetryWindow = scenario === 'retry_cap' || scenario === 'mixed_cap';
     const sleep = jest.spyOn(require('node:timers/promises'), 'setTimeout').mockImplementation(
       ((ms: number, _value: unknown, options: {signal: AbortSignal}) => {
         backoffs.push(ms);
         return scenario.endsWith('_backoff') ? new Promise((_resolve, reject) => {
           options.signal.addEventListener('abort', () => reject(options.signal.reason), {once: true});
-        }) : Promise.resolve();
+        }) : exhaustsRetryWindow ? new Promise(resolve => setTimeout(resolve, ms)) : Promise.resolve();
       }) as any);
     FakePiAgent.promptHandler = async (agent, _prompt, index) => {
       if (index === 1) agent.state.messages.push({role: 'user', content: 'one user prompt'});
@@ -4490,14 +4508,16 @@ describe('experimental Pi agent-core runtime contract', () => {
       await entered.promise;
       if (scenario === 'cancel') await runtime.abortSession(sessionId);
       await jest.advanceTimersByTimeAsync(100);
+      if (exhaustsRetryWindow) await jest.advanceTimersByTimeAsync(240_000);
       if (scenario === 'cancel_backoff') await runtime.abortSession(sessionId);
       if (scenario === 'deadline_backoff') await jest.advanceTimersByTimeAsync(2000);
       const result = await analysis;
       expect(result).toMatchObject({success: false, outputOrigin: 'runtime_fallback',
         completion: {status: scenario.startsWith('cancel') ? 'cancelled' : 'incomplete',
           reason: scenario.startsWith('cancel') ? 'cancelled' : 'timeout'}});
-      expect(FakePiAgent.instances[0].continueCount).toBe(['retry_cap', 'mixed_cap'].includes(scenario) ? 2 : 0);
-      expect(backoffs).toEqual(['retry_cap', 'mixed_cap'].includes(scenario) ? [2000, 4000] : scenario.endsWith('_backoff') ? [2000] : []);
+      expect(FakePiAgent.instances[0].continueCount).toBe(exhaustsRetryWindow ? 10 : 0);
+      expect(backoffs).toEqual(exhaustsRetryWindow ? [2000, 4000, 8000, 16000, ...Array(6).fill(30000)]
+        : scenario.endsWith('_backoff') ? [2000] : []);
       expect(sessionContextManager.getOrCreate(sessionId, 'trace-pi').getAllTurns()).toHaveLength(0);
       if (scenario === 'stuck_cleanup') {
         await expect(runtime.analyze('must not overlap', sessionId, 'trace-pi')).rejects.toThrow('already in progress');
