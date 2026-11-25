@@ -283,7 +283,7 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
     assertOwner(owner);
     if (result.success && context && result.conclusion.trim()) {
       const measurements = await buildScrollingConclusionEvidence(context,
-        input.outputLanguage ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE), owner.signal);
+        input.outputLanguage ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE), owner.signal, result.conclusion);
       assertOwner(owner);
       if (measurements) result.conclusionEvidence = measurements;
     }

@@ -13,3 +13,5 @@ For the three product rates, use the exact counts and scopes from the scrolling
 Skill: over-budget presentation gaps, mixed-signal frames, and FrameTimeline
 tagged frames. Never substitute all-window, per-session, or Buffer Stuffing
 counts. Omit a rate if its matching evidence is unavailable.
+For a whole-scope maximum present gap, use the maximum across the primary-layer
+sessions in smoothness_basis. Label any single-session maximum with its scope.

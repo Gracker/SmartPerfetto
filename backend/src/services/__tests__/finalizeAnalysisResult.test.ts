@@ -75,6 +75,7 @@ function fixture(options: {
   knowledgeUse?: KnowledgeUseRecord;
   scrolling?: (store: ArtifactStore) => void;
   intentUnavailable?: boolean;
+  referenceTraceId?: string;
   nativeCompletion?: {status: 'incomplete'; reason: 'output_limit'};
 } = {}) {
   const runId = 'run';
@@ -122,7 +123,7 @@ function fixture(options: {
   const owner: AnalysisFinalizationOwner = {runId, signal: new AbortController().signal,
     isCurrent: () => true, assertAuthorized: () => {}};
   attachFinalizationContext(result, {runId, sessionId: result.sessionId, deadlineMs: Date.now() + 600_000,
-    strategyRegistry: pinnedRegistry, traceIdentity: {currentTraceId: 'trace'},
+    strategyRegistry: pinnedRegistry, traceIdentity: {currentTraceId: 'trace', referenceTraceId: options.referenceTraceId},
     turnIntent: {schemaVersion: 1, status: options.intentUnavailable ? 'unavailable' : 'resolved',
       source: options.intentUnavailable ? 'fallback' : 'semantic', registryFingerprint: pinnedRegistry.registryFingerprint,
       taskKind: options.investigation || options.scrolling ? 'investigation' : 'fact', sceneId: 'general',
@@ -477,6 +478,60 @@ const scrollingFrameRow = {
 };
 
 describe('product-owned scrolling conclusion', () => {
+  it('flags the Doubao WebView report that treated its first session maximum as the layer maximum', async () => {
+    const body = [
+      '| 主图层混合掉帧 | 20/1609 = 1.24% | 同图层全区间 |',
+      '| 超预算呈现间隔 | 39/1599 = 2.44% | 间隔 >8.33ms |',
+      '| 呈现间隔 p50 / p95 / max | 8.33 / 9.13 / **10.15ms** | 无任何 >1.5×预算（12.5ms）的间隔 |',
+      '**卡顿幅度评估**：最差呈现间隔 10.15ms ≈ 1.22× 预算，最差帧时长 16.23ms。',
+    ].join('\n');
+    const {run} = fixture({body, scrolling(store) {
+      const primary = {...scrollingFrameRow, upid: 932, layer_frames: 1609, layer_hybrid_frames: 20,
+        layer_tagged_frames: 20, layer_present_gap_count: 1599, layer_over_budget_gaps: 39};
+      // The retained primary-layer sessions from the Doubao trace.
+      const sessions: Array<[string, string, number]> = [
+        ['624502021219193', '624502590502007', 10_152_708],
+        ['624502662321797', '624503671263673', 25_957_761],
+        ['624504075560808', '624505410033672', 19_923_022],
+        ['624505480694818', '624506824759609', 19_169_583],
+        ['624506903047838', '624509642567629', 56_503_072],
+        ['624509714283514', '624511047390545', 20_305_834],
+        ['624511102019868', '624512446133357', 17_212_917],
+        ['624512523904399', '624513874235023', 17_489_219],
+        ['624513962168513', '624515296757574', 18_317_343],
+        ['624515367315283', '624516718026844', 19_440_989],
+      ];
+      captureScrollingRows(store, 'smoothness_basis', sessions.map(([start_ts, end_ts, cadence_gap_max_ns]) =>
+        ({...primary, start_ts, end_ts, cadence_gap_max_ns})));
+    }});
+    const {result} = await run();
+    expect(result.conclusion).toBe(body);
+    expect(result.conclusionEvidence?.markdown).toContain('56.50 ms');
+    expect(result.conclusionEvidence?.markdown).toContain('正文中的最长呈现间隔与上方主图层测量不一致');
+  });
+
+  it('flags contradictory count pairs and skips an explicitly scoped session maximum', async () => {
+    const body = ['- 超预算呈现间隔 67/1231', '- FrameTimeline 掉帧标签率 4/1232', '- 主图层混合掉帧 5/1232',
+      '- 第一个会话最长呈现间隔 10.15ms'].join('\n');
+    const {run} = fixture({body, scrolling(store) {
+      captureScrollingRows(store, 'smoothness_basis', [scrollingFrameRow]);
+    }});
+    const {result} = await run();
+    const note = result.conclusionEvidence?.markdown.split('**报告数值提示**')[1];
+    expect(note).toContain('超预算呈现间隔、FrameTimeline 掉帧标签率、混合信号掉帧率');
+    expect(note).not.toContain('最长呈现间隔');
+  });
+
+  it.each(['reference', 'fenced example'])('leaves unmatched scopes out of numeric checks (%s)', async source => {
+    const body = source === 'reference' ? '最长呈现间隔 91.25ms。' : '查询示例\n```text\n最长呈现间隔 91.25ms\n```';
+    const {run} = fixture({body, ...(source === 'reference' ? {referenceTraceId: 'reference'} : {}), scrolling(store) {
+      captureScrollingRows(store, 'smoothness_basis', [scrollingFrameRow]);
+    }});
+    const {result} = await run();
+    expect(result.conclusionEvidence?.markdown).toContain('28.55 ms');
+    expect(result.conclusionEvidence?.markdown).not.toContain('报告数值提示');
+  });
+
   it('publishes captured scrolling measurements when semantic intent was unavailable', async () => {
     const {run} = fixture({intentUnavailable: true, scrolling(store) {
       captureScrollingRows(store, 'smoothness_basis', [scrollingFrameRow]);

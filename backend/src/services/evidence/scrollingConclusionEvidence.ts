@@ -32,6 +32,52 @@ const ratings = {
 
 type Row = Readonly<Record<string, EvidenceScalar>>;
 type ScopeRows = {record: CapturedEvidenceRecord; rows: Row[]};
+type CadenceSummary = {gaps: string; tags: string; hybrid: string; maxPresentMs?: number};
+
+function scrollingReportDiscrepancies(body: string, summary: CadenceSummary, language: OutputLanguage): string | undefined {
+  const mismatches = new Set<string>();
+  const ratioLabels = [
+    [/超预算呈现间隔|呈现间隔超\s*1\.5\s*[×x]\s*预算|over-budget present(?:ation)? gaps|present gaps over\s*1\.5/i,
+      summary.gaps, '超预算呈现间隔', 'over-budget present gaps'],
+    [/FrameTimeline\s*(?:掉帧标签率|jank tag rate)|主图层标签(?:率|帧)/i,
+      summary.tags, 'FrameTimeline 掉帧标签率', 'FrameTimeline jank tag rate'],
+    [/Skill\s*感知掉帧率|主图层混合掉帧|(?:primary.layer|Skill) (?:perceived|hybrid) jank/i,
+      summary.hybrid, '混合信号掉帧率', 'hybrid jank rate'],
+  ] as const;
+  let fence: string | undefined;
+  for (const raw of body.split('\n')) {
+    const marker = raw.trimStart().match(/^(?:`{3,}|~{3,})/)?.[0];
+    if (marker) {
+      if (!fence) fence = marker;
+      else if (marker[0] === fence[0] && marker.length >= fence.length) fence = undefined;
+      continue;
+    }
+    if (fence) continue;
+    const line = raw.replace(/[*_`]/g, '');
+    if (/单个|单段|(?:第[一二三四五六七八九十\d]+|该|此)\s*(?:次手势|段|个会话|个滑动区间)|每(?:段|个会话)|per.session|each session|(?:first|last|this|session\s+\d+)\s+(?:scroll\s+)?(?:session|segment)|全窗口|all.window/i.test(line)) continue;
+    const maximum = line.match(/(?:最长|最大|最差)\s*呈现间隔\s*[:：=]?\s*(\d+(?:\.\d+)?)\s*ms|(?:longest|max(?:imum)?)\s+present(?:ation)?\s+(?:gap|interval)\s*[:=]?\s*(\d+(?:\.\d+)?)\s*ms/i)
+      ?? line.match(/(?:呈现间隔|present(?:ation)? (?:gap|interval))[^|\n]*\bp50\s*\/\s*p95\s*\/\s*max\s*\|\s*\d+(?:\.\d+)?\s*(?:ms)?\s*\/\s*\d+(?:\.\d+)?\s*(?:ms)?\s*\/\s*(\d+(?:\.\d+)?)\s*ms/i);
+    const reportedMaximum = maximum?.slice(1).find(Boolean);
+    if (reportedMaximum && summary.maxPresentMs !== undefined) {
+      const precision = reportedMaximum.split('.')[1]?.length ?? 0;
+      if (Math.abs(Number(reportedMaximum) - summary.maxPresentMs) > 0.5 / 10 ** precision + 1e-9) {
+        mismatches.add(localize(language, '最长呈现间隔', 'longest present gap'));
+      }
+    }
+    for (const [label, expected, zh, en] of ratioLabels) {
+      const match = line.match(label);
+      if (!match || !/^\d+\/\d+ /.test(expected)) continue;
+      const reported = line.slice(match.index! + match[0].length).match(/\b(\d+)\s*\/\s*(\d+)\b/);
+      if (reported && `${reported[1]}/${reported[2]}` !== expected.split(' ')[0]) {
+        mismatches.add(localize(language, zh, en));
+      }
+    }
+  }
+  if (!mismatches.size) return undefined;
+  return localize(language,
+    `**报告数值提示** · 正文中的${[...mismatches].join('、')}与上方主图层测量不一致，以测量为准。`,
+    `**Report measurement check** · The report's ${[...mismatches].join(', ')} differ from the primary-layer measurements above. Use the measured values.`);
+}
 
 function count(value: EvidenceScalar | undefined): number | undefined {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
@@ -70,7 +116,8 @@ function measurementRates(language: OutputLanguage, gaps: string, tags: string, 
   ];
 }
 
-function cadenceReadout(rows: Row[], touchUpids: ReadonlySet<EvidenceScalar>, language: OutputLanguage): string[] {
+function cadenceReadout(rows: Row[], touchUpids: ReadonlySet<EvidenceScalar>, language: OutputLanguage,
+  summaries: Map<string, CadenceSummary>): string[] {
   const unavailable = localize(language, '不可用', 'Unavailable');
   const groups = new Map<string, Row[]>();
   for (const row of rows) {
@@ -107,8 +154,9 @@ function cadenceReadout(rows: Row[], touchUpids: ReadonlySet<EvidenceScalar>, la
     lines.push(`**${localize(language, '呈现流畅度评级', 'Presentation cadence rating')}** ${rating} · ${frameScope} (UPID ${row.upid}, ${start}–${end} ns)`);
     const supportedBudget = group.every(item => item.budget_status === 'measured' || item.budget_status === 'derived_from_expected_frames');
     const gaps = supportedBudget ? ratio(row.layer_over_budget_gaps, row.layer_present_gap_count, unavailable) : unavailable;
-    lines.push(...measurementRates(language, gaps, ratio(row.layer_tagged_frames, row.layer_frames, unavailable),
-      ratio(row.layer_hybrid_frames, row.layer_frames, unavailable)));
+    const tags = ratio(row.layer_tagged_frames, row.layer_frames, unavailable);
+    const hybrid = ratio(row.layer_hybrid_frames, row.layer_frames, unavailable);
+    lines.push(...measurementRates(language, gaps, tags, hybrid));
     if (row.presentation_status === 'unmeasured') {
       if (touchUpids.has(row.upid)) {
         lines.push(`- ${localize(language, '替代观测见按触摸时间归类的 Flutter 换帧间隔。', 'See the Flutter swap gaps classified by touch state for the proxy measurement.')}`);
@@ -119,7 +167,11 @@ function cadenceReadout(rows: Row[], touchUpids: ReadonlySet<EvidenceScalar>, la
     } else {
       const maxima = group.map(item => item.cadence_gap_max_ns)
         .filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0);
-      if (maxima.length) lines.push(`- ${localize(language, '最长呈现间隔', 'Longest present gap')} ${millis(Math.max(...maxima))}`);
+      const maxPresentNs = maxima.length ? Math.max(...maxima) : undefined;
+      if (maxPresentNs !== undefined) lines.push(`- ${localize(language, '最长呈现间隔', 'Longest present gap')} ${millis(maxPresentNs)}`);
+      const summary: CadenceSummary = {gaps, tags, hybrid,
+        ...(maxPresentNs === undefined ? {} : {maxPresentMs: maxPresentNs / 1e6})};
+      summaries.set(JSON.stringify([row.upid, row.layer_name, String(start), String(end), summary]), summary);
       lines.push('', localize(language,
         '评级采用呈现间隔超预算率。混合信号按帧计数，包含呈现间隔未超预算时的部分 Late Present。',
         'The rating uses the over-budget present gap rate. The hybrid signal counts frames, including some Late Present frames with on-budget gaps.'));
@@ -174,7 +226,7 @@ function sourceRows(resolutions: readonly EvidenceReadResolution[]): ScopeRows[]
 
 /** Produce the official measurement section from retained, scoped Skill captures. */
 export async function buildScrollingConclusionEvidence(context: RuntimeFinalizationContext, language: OutputLanguage,
-  signal: AbortSignal): Promise<AnalysisConclusionEvidence | undefined> {
+  signal: AbortSignal, reportBody?: string): Promise<AnalysisConclusionEvidence | undefined> {
   const {turnIntent: intent, strategyRegistry} = context;
   const records = context.currentSkillResults?.(SKILL, [CADENCE, TOUCH], signal) ?? [];
   const requests = [];
@@ -194,6 +246,7 @@ export async function buildScrollingConclusionEvidence(context: RuntimeFinalizat
   const captured = sourceRows(resolved);
   const evidenceRefIds: string[] = [];
   const cadenceSections = new Set<string>();
+  const summaries = new Map<string, CadenceSummary>();
   const touchSections = new Set<string>();
   const touchUpidsByInvocation = new Map<string, Set<EvidenceScalar>>();
   for (const {record, rows} of captured.filter(item => item.record.meta.stepId === TOUCH)) {
@@ -206,7 +259,7 @@ export async function buildScrollingConclusionEvidence(context: RuntimeFinalizat
   }
   for (const {record, rows} of captured.filter(item => item.record.meta.stepId === CADENCE)) {
     const touchUpids = touchUpidsByInvocation.get(record.meta.sourceToolCallId ?? '') ?? new Set<EvidenceScalar>();
-    const lines = cadenceReadout(rows, touchUpids, language);
+    const lines = cadenceReadout(rows, touchUpids, language, summaries);
     if (!lines.length) continue;
     cadenceSections.add(lines.join('\n').trim());
     evidenceRefIds.push(record.meta.evidenceRefId!);
@@ -220,9 +273,13 @@ export async function buildScrollingConclusionEvidence(context: RuntimeFinalizat
       ...measurementRates(language, unavailable, unavailable, unavailable),
     ].join('\n'));
   }
+  // A generic report-wide claim is only comparable when it has one measured scope.
+  const summary = !context.traceIdentity.referenceTraceId && intent.taskKind !== 'comparison' &&
+    summaries.size === 1 ? summaries.values().next().value : undefined;
+  const discrepancy = summary && reportBody ? scrollingReportDiscrepancies(reportBody, summary, language) : undefined;
   return {
     schemaVersion: 'scrolling_conclusion@1',
-    markdown: `## ${localize(language, '滑动流畅度测量', 'Scrolling smoothness measurements')}\n\n${[...cadenceSections, ...touchSections].join('\n\n')}`,
+    markdown: `## ${localize(language, '滑动流畅度测量', 'Scrolling smoothness measurements')}\n\n${[...cadenceSections, ...touchSections, ...(discrepancy ? [discrepancy] : [])].join('\n\n')}`,
     evidenceRefIds: [...new Set(evidenceRefIds)],
   };
 }
