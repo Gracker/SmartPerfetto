@@ -11385,7 +11385,7 @@
           },
           {
             "id": "smoothness_basis",
-            "sha256": "73ed16d865979ea9d0cb79aac3b1aa4d1ef1ba2fa8bd8c4fdd437a4bc8a028d1",
+            "sha256": "b250dec9271b9623beb97801c32be763c0dc3f7988b8af2df697c4c551140d72",
             "required_columns": [
               "process_name",
               "session_id",

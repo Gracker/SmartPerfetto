@@ -3795,10 +3795,11 @@ describe('smoothness_basis puts present cadence beside frame duration', () => {
     } finally { db.close(); }
   });
 
-  it('aggregates every doFrame start gap and leaves presentation unmeasured without FrameTimeline', () => {
+  it.each(['DELETE FROM actual_frame_timeline_slice', 'UPDATE actual_frame_timeline_slice SET dur = -1'])
+  ('uses doFrame and leaves presentation unmeasured when there are no usable presents: %s', statement => {
     const db = fixture();
     try {
-      db.exec('DELETE FROM actual_frame_timeline_slice');
+      db.exec(statement);
       const insert = db.prepare("INSERT INTO slice VALUES (?, 10, ?, 5000000, 'Choreographer#doFrame', NULL, NULL)");
       // 40 starts one VSync apart except one skipped VSync: more gaps than the top-K list returns.
       for (let i = 0; i < 40; i++) insert.run(i + 1, (i < 20 ? i : i + 1) * VSYNC);
