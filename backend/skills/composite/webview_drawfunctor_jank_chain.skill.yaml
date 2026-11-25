@@ -101,7 +101,7 @@ steps:
           COALESCE(${end_ts}, (SELECT COALESCE(MAX(ts + dur), 0) FROM slice)) AS end_ts
       ),
       -- WEBVIEW_CHROMIUM_SCOPE_CTES_BEGIN
-      functor_events AS (
+      functor_events AS MATERIALIZED (
         SELECT s.id, s.track_id, s.ts, s.dur,
           CASE
             WHEN s.name GLOB 'WebViewFunctor::postDraw*' OR s.name GLOB '*DrawFn_PostDraw*' THEN 'host_renderthread_functor_post_draw'
@@ -115,14 +115,13 @@ steps:
           END AS phase
         FROM slice s
         CROSS JOIN input i
-        WHERE s.ts >= i.start_ts AND s.ts < i.end_ts AND s.dur > 0
+        WHERE s.ts >= i.start_ts AND s.ts < i.end_ts AND s.dur > 0 AND phase IS NOT NULL
       ),
-      functor_slices AS (
+      functor_slices AS MATERIALIZED (
         -- Nested wrappers describe one invocation, not additional output frames.
         SELECT event.*
         FROM functor_events event
-        WHERE event.phase IS NOT NULL
-          AND NOT EXISTS (
+        WHERE NOT EXISTS (
             SELECT 1 FROM functor_events wrapper
             WHERE wrapper.track_id = event.track_id AND wrapper.phase = event.phase
               AND wrapper.ts <= event.ts
@@ -130,7 +129,7 @@ steps:
               AND (wrapper.dur > event.dur OR (wrapper.dur = event.dur AND wrapper.id < event.id))
           )
       ),
-      scoped_processes AS (
+      scoped_processes AS MATERIALIZED (
         SELECT p.upid, p.name AS process_name
         FROM process p
         CROSS JOIN input i
@@ -162,7 +161,7 @@ steps:
             )
           )
       ),
-      chromium_identity AS (
+      chromium_identity AS MATERIALIZED (
         SELECT CASE WHEN EXISTS (
           SELECT 1
           FROM slice s
@@ -180,7 +179,7 @@ steps:
             )
         ) THEN 1 ELSE 0 END AS has_chromium_identity
       ),
-      webview_processes AS (
+      webview_processes AS MATERIALIZED (
         SELECT DISTINCT p.upid
         FROM slice s
         JOIN thread_track tt ON s.track_id = tt.id
@@ -312,7 +311,7 @@ steps:
           COALESCE(${end_ts}, (SELECT COALESCE(MAX(ts + dur), 0) FROM slice)) AS end_ts
       ),
       -- WEBVIEW_CHROMIUM_SCOPE_CTES_BEGIN
-      functor_events AS (
+      functor_events AS MATERIALIZED (
         SELECT s.id, s.track_id, s.ts, s.dur,
           CASE
             WHEN s.name GLOB 'WebViewFunctor::postDraw*' OR s.name GLOB '*DrawFn_PostDraw*' THEN 'host_renderthread_functor_post_draw'
@@ -326,14 +325,13 @@ steps:
           END AS phase
         FROM slice s
         CROSS JOIN input i
-        WHERE s.ts >= i.start_ts AND s.ts < i.end_ts AND s.dur > 0
+        WHERE s.ts >= i.start_ts AND s.ts < i.end_ts AND s.dur > 0 AND phase IS NOT NULL
       ),
-      functor_slices AS (
+      functor_slices AS MATERIALIZED (
         -- Nested wrappers describe one invocation, not additional output frames.
         SELECT event.*
         FROM functor_events event
-        WHERE event.phase IS NOT NULL
-          AND NOT EXISTS (
+        WHERE NOT EXISTS (
             SELECT 1 FROM functor_events wrapper
             WHERE wrapper.track_id = event.track_id AND wrapper.phase = event.phase
               AND wrapper.ts <= event.ts
@@ -341,7 +339,7 @@ steps:
               AND (wrapper.dur > event.dur OR (wrapper.dur = event.dur AND wrapper.id < event.id))
           )
       ),
-      scoped_processes AS (
+      scoped_processes AS MATERIALIZED (
         SELECT p.upid, p.name AS process_name
         FROM process p
         CROSS JOIN input i
@@ -373,7 +371,7 @@ steps:
             )
           )
       ),
-      chromium_identity AS (
+      chromium_identity AS MATERIALIZED (
         SELECT CASE WHEN EXISTS (
           SELECT 1
           FROM slice s
@@ -391,7 +389,7 @@ steps:
             )
         ) THEN 1 ELSE 0 END AS has_chromium_identity
       ),
-      webview_processes AS (
+      webview_processes AS MATERIALIZED (
         SELECT DISTINCT p.upid
         FROM slice s
         JOIN thread_track tt ON s.track_id = tt.id

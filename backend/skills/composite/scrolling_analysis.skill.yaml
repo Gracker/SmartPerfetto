@@ -4090,7 +4090,7 @@ steps:
       ),
       -- BATCH_ROOT_CAUSE_SCOPE_CTES_END
       -- 截断后重新编号（与 get_app_jank_frames 的 frame_index 完全对齐）
-      jank_frame_list AS (
+      jank_frame_list AS MATERIALIZED (
         SELECT
           frame_key, display_frame_token, surface_frame_token, timeline_frame_id, frame_start, frame_end, frame_dur, jank_type, upid, session_id,
           pid, process_name, layer_name, dur_ms, jank_responsibility, vsync_missed, present_interval_ms,
@@ -4105,7 +4105,7 @@ steps:
       -- Main thread:   t.tid = p.pid (standard Android) OR t.name GLOB '*.ui' (Flutter)
       -- RenderThread:  t.name = 'RenderThread' (standard Android) OR t.name GLOB '*.raster' (Flutter)
       -- Aligned with the jank_frame_detail.skill.yaml proven approach.
-      per_frame_thread_roles AS (
+      per_frame_thread_roles AS MATERIALIZED (
         SELECT
           fl.frame_key,
           fl.frame_start,
@@ -4172,7 +4172,7 @@ steps:
         UNION ALL
         SELECT frame_key,'render',NULL,frame_start,frame_end FROM jank_frame_list
       ),
-      frame_system_states AS (
+      frame_system_states AS MATERIALIZED (
         SELECT s.*,COALESCE(ct.core_type,'unknown') AS core_type
         FROM system_thread_state_spans s LEFT JOIN system_cpu_topology ct ON ct.ucpu=s.ucpu
       ),

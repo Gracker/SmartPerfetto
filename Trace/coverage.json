@@ -6294,7 +6294,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "b50397433404ca7419f61778a8586da145efec1fa567508b112fb07903336774",
+            "sha256": "bf18e39e913e4f3f31c7bcbf02e7cd11c88d25543eadcf93ec6d8020f8768267",
             "required_columns": [
               "window_id",
               "window_start_ts",
@@ -11612,7 +11612,7 @@
           },
           {
             "id": "batch_frame_root_cause",
-            "sha256": "c806bacbc68f741ed7d7ccdb210f207d22b5280110f9fdd19fdde9c7bfb1141b",
+            "sha256": "154a92c537d0bfbf5c1c8ae63d59cd6b8738e270167d68daefbaf3e1b255acd3",
             "required_columns": [
               "system_evidence_json",
               "frame_id",
@@ -12717,7 +12717,7 @@
         "steps": [
           {
             "id": "drawfunctor_signal_summary",
-            "sha256": "5348baa53595dcfd4865d774e0faa58b9ba7efdc4aa386e05b263ae7da3a3fa2",
+            "sha256": "c8febf5b089c9ceebbf74fa545748cda2b4ae122224be4e490ed6cb256d94e64",
             "required_columns": [
               "phase",
               "process_name",
@@ -12730,7 +12730,7 @@
           },
           {
             "id": "drawfunctor_frame_overlap",
-            "sha256": "22ac1b6119a0c6f51c6fc4faf2ed30f5b82789c30cabae73be38f521112f80a6",
+            "sha256": "cd7f82efc8c90b49c1bbc01f485e2b3aafbba98ed8efa7649abfd404e733eaab",
             "required_columns": [
               "ts",
               "dur_ns",

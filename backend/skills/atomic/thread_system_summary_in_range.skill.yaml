@@ -137,7 +137,7 @@ sql: |
       SUM(CASE WHEN is_unfinished THEN dur_ns ELSE 0 END) AS unfinished_state_ns
     FROM system_thread_state_spans GROUP BY window_id,utid
   ),
-  sched AS (
+  sched AS MATERIALIZED (
     SELECT s.*, tt.role,
       LAG(s.ucpu) OVER (PARTITION BY s.window_id,s.utid ORDER BY s.raw_start_ts,s.sched_id) AS prev_ucpu
     FROM system_sched_spans s JOIN system_target_threads tt
@@ -155,15 +155,49 @@ sql: |
       SUM(CASE WHEN prev_ucpu IS NOT NULL AND prev_ucpu != ucpu THEN 1 ELSE 0 END) AS migrations
     FROM sched GROUP BY window_id,utid
   ),
+  -- Integrate both the active interval count and the sum of active frequencies.
+  -- The difference at both endpoints of each sched slice equals its overlap sum,
+  -- including additive contributions from overlapping frequency tracks.
+  frequency_spans AS MATERIALIZED (
+    SELECT window_id, ucpu, clipped_start_ts, clipped_end_ts, freq_khz
+    FROM system_cpu_frequency_spans
+    WHERE clipped_end_ts > clipped_start_ts
+  ),
+  frequency_edges AS (
+    SELECT window_id, ucpu, clipped_start_ts AS ts, 1 AS count_delta, freq_khz AS freq_delta FROM frequency_spans
+    UNION ALL
+    SELECT window_id, ucpu, clipped_end_ts, -1, -freq_khz FROM frequency_spans
+    UNION ALL
+    SELECT window_id, ucpu, clipped_start_ts, 0, 0 FROM sched
+    UNION ALL
+    SELECT window_id, ucpu, clipped_end_ts, 0, 0 FROM sched
+  ),
+  frequency_segments AS (
+    SELECT window_id, ucpu, ts,
+      LEAD(ts) OVER cpu_timeline - ts AS dur_ns,
+      SUM(SUM(count_delta)) OVER cpu_timeline AS active_count,
+      SUM(SUM(freq_delta)) OVER cpu_timeline AS active_freq_khz
+    FROM frequency_edges
+    GROUP BY window_id, ucpu, ts
+    WINDOW cpu_timeline AS (PARTITION BY window_id, ucpu ORDER BY ts ROWS UNBOUNDED PRECEDING)
+  ),
+  frequency_integrals AS MATERIALIZED (
+    SELECT window_id, ucpu, ts,
+      COALESCE(SUM(dur_ns * active_count) OVER preceding_segments, 0) AS covered_ns,
+      COALESCE(SUM(dur_ns * 1.0 * active_freq_khz) OVER preceding_segments, 0) AS weighted_khz_ns
+    FROM frequency_segments
+    WINDOW preceding_segments AS (PARTITION BY window_id, ucpu ORDER BY ts
+      ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)
+  ),
   frequency AS (
-    SELECT s.window_id,s.utid,
-      SUM(MIN(s.clipped_end_ts,f.clipped_end_ts)-MAX(s.clipped_start_ts,f.clipped_start_ts)) AS frequency_covered_ns,
-      SUM(f.freq_khz*1.0*(MIN(s.clipped_end_ts,f.clipped_end_ts)-MAX(s.clipped_start_ts,f.clipped_start_ts))) /
-        SUM(MIN(s.clipped_end_ts,f.clipped_end_ts)-MAX(s.clipped_start_ts,f.clipped_start_ts)) AS avg_freq_khz
-    FROM sched s JOIN system_cpu_frequency_spans f
-      ON f.window_id=s.window_id AND f.ucpu=s.ucpu
-        AND f.clipped_start_ts<s.clipped_end_ts AND f.clipped_end_ts>s.clipped_start_ts
-    GROUP BY s.window_id,s.utid
+    SELECT s.window_id, s.utid,
+      SUM(hi.covered_ns - lo.covered_ns) AS frequency_covered_ns,
+      SUM(hi.weighted_khz_ns - lo.weighted_khz_ns) / SUM(hi.covered_ns - lo.covered_ns) AS avg_freq_khz
+    FROM sched s
+    JOIN frequency_integrals lo ON lo.window_id = s.window_id AND lo.ucpu = s.ucpu AND lo.ts = s.clipped_start_ts
+    JOIN frequency_integrals hi ON hi.window_id = s.window_id AND hi.ucpu = s.ucpu AND hi.ts = s.clipped_end_ts
+    WHERE hi.covered_ns > lo.covered_ns
+    GROUP BY s.window_id, s.utid
   ),
   preemptions AS (
     SELECT w.window_id,s.utid,COUNT(*) AS preemption_count

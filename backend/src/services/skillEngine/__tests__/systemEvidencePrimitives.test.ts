@@ -103,6 +103,18 @@ describe('canonical system evidence primitives', () => {
         .toMatchObject({avg_freq_khz:null,frequency_covered_ns:0,frequency_evidence:'unavailable'});
     } finally {db.close();}
   });
+  it('preserves overlapping frequency samples and clips open intervals at the observation boundary', () => {
+    const db = fixture();
+    try {
+      db.exec(`INSERT INTO cpu_frequency_counters VALUES (7, 12000000, -1, 2500000, 10, 77, 7);
+        INSERT INTO sched_slice VALUES (5, 36000000, -1, 7, 7, 2, NULL, 120)`);
+      const [main, waiter] = query(db, names[1]);
+      expect(main).toMatchObject({utid: 1, frequency_covered_ns: 13000000});
+      expect(main.avg_freq_khz).toBeCloseTo(22500000 / 13);
+      expect(waiter).toMatchObject({utid: 2, frequency_covered_ns: 8000000,
+        avg_freq_khz: 2250000, frequency_evidence: 'unsupported'});
+    } finally {db.close();}
+  });
   it('distinguishes recorded homogeneous capacity from missing topology without inventing a big core', () => {
     const db=fixture();
     try {

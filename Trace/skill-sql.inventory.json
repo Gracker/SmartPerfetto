@@ -16957,7 +16957,7 @@
     },
     "scrolling_analysis": {
       "source_file": "backend/skills/composite/scrolling_analysis.skill.yaml",
-      "source_sha256": "c3bfb5e36f7fbe0b81ad785d34faae0df4a67ae130f3d4995c54596268d22103",
+      "source_sha256": "28ae1e97c0d6bd555c4fd126046ae61b56d9b07a264c37a85c5b292e1fb80e74",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -17709,7 +17709,7 @@
           "id": "batch_frame_root_cause",
           "at": "steps[28].sql",
           "top_level_index": 28,
-          "sha256": "c806bacbc68f741ed7d7ccdb210f207d22b5280110f9fdd19fdde9c7bfb1141b",
+          "sha256": "154a92c537d0bfbf5c1c8ae63d59cd6b8738e270167d68daefbaf3e1b255acd3",
           "required_columns": [
             "system_evidence_json",
             "frame_id",
@@ -21581,7 +21581,7 @@
     },
     "thread_system_summary_in_range": {
       "source_file": "backend/skills/atomic/thread_system_summary_in_range.skill.yaml",
-      "source_sha256": "e6358509d8a9a3186ecf03f06c455ee186afe0bab18fb1b34f58173e2ac3584a",
+      "source_sha256": "9d692a4bd1145d6fc1e2aa3c2f797d801f5d4ec12b48be553970d629b539fc06",
       "type": "atomic",
       "execution": "root",
       "declared_modules": [
@@ -21594,7 +21594,7 @@
           "id": "root",
           "at": "sql",
           "top_level_index": null,
-          "sha256": "b50397433404ca7419f61778a8586da145efec1fa567508b112fb07903336774",
+          "sha256": "bf18e39e913e4f3f31c7bcbf02e7cd11c88d25543eadcf93ec6d8020f8768267",
           "required_columns": [
             "window_id",
             "window_start_ts",
@@ -22279,7 +22279,7 @@
     },
     "webview_drawfunctor_jank_chain": {
       "source_file": "backend/skills/composite/webview_drawfunctor_jank_chain.skill.yaml",
-      "source_sha256": "f955143f2e4366b68abd38648cac6d652dbd08240aecca385340a151f984ca93",
+      "source_sha256": "9a4f57e03a4b9d5b87c89e9d05046d4520832b43bcd747d37309589b207bd6ef",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -22297,7 +22297,7 @@
           "id": "drawfunctor_signal_summary",
           "at": "steps[0].sql",
           "top_level_index": 0,
-          "sha256": "5348baa53595dcfd4865d774e0faa58b9ba7efdc4aa386e05b263ae7da3a3fa2",
+          "sha256": "c8febf5b089c9ceebbf74fa545748cda2b4ae122224be4e490ed6cb256d94e64",
           "required_columns": [
             "phase",
             "process_name",
@@ -22322,7 +22322,7 @@
           "id": "drawfunctor_frame_overlap",
           "at": "steps[1].sql",
           "top_level_index": 1,
-          "sha256": "22ac1b6119a0c6f51c6fc4faf2ed30f5b82789c30cabae73be38f521112f80a6",
+          "sha256": "cd7f82efc8c90b49c1bbc01f485e2b3aafbba98ed8efa7649abfd404e733eaab",
           "required_columns": [
             "ts",
             "dur_ns",

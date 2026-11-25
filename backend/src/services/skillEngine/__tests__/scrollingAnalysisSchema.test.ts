@@ -2382,7 +2382,7 @@ describe('scrolling_analysis skill schema', () => {
       'per_frame_input_detail',
       'per_frame_input_slice_detail',
     ]) {
-      expect(sql).toMatch(new RegExp(`${cte}\\s+AS\\s*\\([\\s\\S]*?frame_key`, 'm'));
+      expect(sql).toMatch(new RegExp(`${cte}\\s+AS(?:\\s+MATERIALIZED)?\\s*\\([\\s\\S]*?frame_key`, 'm'));
     }
   });
 
