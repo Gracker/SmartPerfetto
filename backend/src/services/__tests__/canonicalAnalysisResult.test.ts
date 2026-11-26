@@ -94,6 +94,22 @@ const control = '<!-- smartperfetto:conversation-control {"kind":"needs_user_inp
 
 
 describe('canonical analysis result projection', () => {
+  it('removes a process-only report preamble and binds completion to the projected body', () => {
+    const body = '# 滑动分析报告\n\n## 结论\n主线程持锁等待。';
+    for (const intro of ['所有必需证据已齐。整理成最终报告。', '证据已完整，给出最终分析报告。', '所有关键证据已齐备。现在整理最终报告。',
+      '证据链已完整。汇总最终报告。']) {
+      const source = result(intro + '\n\n---\n\n' + body);
+      const projected = canonicalizeAnalysisResult(source, {context: contextFor(source, 'completed', 'report')});
+      expect(projected.result.conclusion).toBe(body);
+      expect(projected.projection.disposition).toBe('report_preamble_removed');
+      expect(projected.result.completion?.conclusionFingerprint).toBe(analysisDeliveryFingerprint(body));
+      expect(canonicalizeAnalysisResult(source, {context: contextFor(source)}).result.conclusion).toBe(source.conclusion);
+    }
+    const withEvidence = result('证据链已闭环：主线程在窗口内睡眠 90%。现在输出完整报告。\n\n---\n\n' + body);
+    expect(canonicalizeAnalysisResult(withEvidence, {context: contextFor(withEvidence, 'completed', 'report')})
+      .result.conclusion).toBe(withEvidence.conclusion);
+  });
+
   it('quarantines a malformed reserved declaration without supplying claims or authorizing its raw payload', () => {
     const payload = declaration();
     const raw = `Visible body.\n<!-- smartperfetto:conclusion_contract@1\n${JSON.stringify(payload)}\n-->`;

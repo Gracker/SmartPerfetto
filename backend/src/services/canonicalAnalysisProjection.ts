@@ -5,7 +5,7 @@ import type {AnalysisCandidateIdentity} from '../types/analysisDelivery';
 
 /** Internal receipt; neither this object nor its private manifest enters result JSON. */
 export interface CanonicalAnalysisProjection {
-  readonly disposition: 'preserved' | 'protocol_projection';
+  readonly disposition: 'preserved' | 'protocol_projection' | 'report_preamble_removed';
   readonly inputFingerprint: string;
   readonly outputFingerprint: string;
   readonly sourceCandidate?: Readonly<AnalysisCandidateIdentity>;

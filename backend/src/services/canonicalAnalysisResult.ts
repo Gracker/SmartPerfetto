@@ -390,8 +390,13 @@ export function canonicalizeAnalysisResult(
   const conversation = options.conversation ? parseConversationResponseWithProjection(
     raw, options.conversation.fallbackQuestion, options.conversation.evidence,
   ) : undefined;
-  const narrative = removeMachineSegments(raw, [...conclusionMachineSegments(raw), ...(conversation?.machineSegments ?? [])]);
+  const decoded = removeMachineSegments(raw, [...conclusionMachineSegments(raw), ...(conversation?.machineSegments ?? [])]);
   const intent = options.context?.turnIntent;
+  // Drop only a complete process-only line before a report heading. A prefix
+  // containing findings, artifact references or qualifications belongs to the report.
+  const narrative = intent?.status === 'resolved' && intent.deliverable === 'report'
+    ? decoded.replace(/^\s*(?:所有)?(?:必需|关键)?证据(?:链)?已(?:齐备|齐|完整|闭环)[。，,]\s*(?:现在)?(?:整理成?|汇总|给出|输出|出具)(?:最终|完整)?(?:分析)?报告[。.]\s*(?:---\s*)?(?=#{1,2}[ \t]+\S)/u, '')
+    : decoded;
   // Only the server's retrieval supplies case recommendations; finalization adds those.
   const derived = deriveConclusionContract(narrative, {
     mode: intent?.status === 'resolved' && intent.deliverable === 'answer' ? 'focused_answer' : 'initial_report',
@@ -412,7 +417,7 @@ export function canonicalizeAnalysisResult(
       conclusionFingerprint: analysisDeliveryFingerprint(narrative)} : sourceCandidate
     : undefined;
   const projection = issueCanonicalAnalysisProjection({
-    disposition: bodyChanged ? 'protocol_projection' : 'preserved',
+    disposition: narrative !== decoded ? 'report_preamble_removed' : bodyChanged ? 'protocol_projection' : 'preserved',
     inputFingerprint: analysisDeliveryFingerprint(raw), outputFingerprint: analysisDeliveryFingerprint(narrative),
     ...(sourceMatches ? {sourceCandidate} : {}), ...(candidate ? {candidate} : {}),
   });
