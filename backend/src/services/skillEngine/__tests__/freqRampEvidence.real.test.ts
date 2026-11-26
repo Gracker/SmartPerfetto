@@ -20,6 +20,7 @@
 import {afterAll, beforeAll, describe, expect, it, jest} from '@jest/globals';
 import path from 'path';
 import {TraceProcessorService} from '../../traceProcessorService';
+import {builtInSkillFragment} from '../skillFragments';
 import {createSkillExecutor} from '../skillExecutor';
 import {ensureSkillRegistryInitialized, skillRegistry} from '../skillLoader';
 import {queryRows} from '../../../utils/traceProcessorRowUtils';
@@ -66,7 +67,9 @@ describe('freq_ramp_slow evidence on the real trace processor', () => {
         out = out.split(TOPOLOGY_INPUT).join(`    FROM (SELECT id, cpu, machine_id, cluster_id,
       CASE WHEN cpu = ${inputs.bigCpu} THEN 1024 ELSE 512 END AS capacity FROM cpu) cpu\n  ) c`);
       }
-      if (inputs.dropBigSamplesBefore !== undefined && out.includes(FREQUENCY_INPUT)) {
+      if (inputs.dropBigSamplesBefore !== undefined) {
+        out = out.replace('FROM cpu_frequency_counters f JOIN cpu c',
+          `FROM (SELECT * FROM cpu_frequency_counters WHERE NOT (ucpu = ${inputs.bigCpu} AND ts < ${inputs.dropBigSamplesBefore})) f JOIN cpu c`);
         out = out.split(FREQUENCY_INPUT).join(`FROM system_windows w JOIN (SELECT * FROM cpu_frequency_counters
           WHERE NOT (ucpu = ${inputs.bigCpu} AND ts < ${inputs.dropBigSamplesBefore})) f`);
       }
@@ -98,6 +101,35 @@ describe('freq_ramp_slow evidence on the real trace processor', () => {
     };
     return {N: byLayer('SyntheticFreqLimitN'), N1: byLayer('SyntheticFreqLimitN1')};
   };
+
+  it('preserves scoped intersections of open, overlapping and boundary-touching spans', async () => {
+    const inputs = `system_windows(window_id, window_start_ts, window_end_ts) AS (
+        VALUES ('a', 10, 25), ('b', 20, 30), ('empty', 20, 20)),
+      system_target_threads(window_id, upid, utid, role) AS (
+        VALUES ('a', 1, 11, 'main'), ('a', 1, 12, 'render'), ('b', 1, 11, 'main')),
+      trace_bounds(end_ts) AS (VALUES (40)),
+      cpu(id, cpu, machine_id) AS (VALUES (2, 0, 0), (3, 0, 1)),
+      thread_state(id, utid, ts, dur, state, cpu, ucpu, io_wait, blocked_function, waker_utid, irq_context) AS (
+        VALUES (1,11,0,10,'S',0,2,NULL,NULL,NULL,NULL), (2,11,9,-1,'R',0,2,NULL,NULL,NULL,NULL),
+          (3,11,20,10,'Running',0,2,NULL,NULL,NULL,NULL), (4,12,23,-1,'S',0,3,NULL,NULL,NULL,NULL)),
+      cpu_frequency_counters(id, track_id, ts, dur, cpu, ucpu, freq) AS (
+        VALUES (5,1,9,-1,0,2,0), (6,1,22,8,0,2,1000), (7,2,20,7,0,3,1200),
+          (8,3,15,11,0,2,900), (9,1,30,10,0,2,1300))`;
+    const batched = builtInSkillFragment('scrolling_frame_system_spans.sql');
+    for (const [canonical, projection, expectedCount] of [
+      ['system_thread_state_spans', 'utid, role, state', 4],
+      ['system_cpu_frequency_spans', 'counter_id, ucpu, track_id, freq_khz', 8],
+    ] as const) {
+      const read = (relation: string) => queryRows(service, traceId, `
+        INCLUDE PERFETTO MODULE intervals.intersect;
+        WITH ${inputs}, ${relation}
+        SELECT window_id, ${projection}, clipped_start_ts, clipped_end_ts, dur_ns
+        FROM ${canonical} ORDER BY window_id, clipped_start_ts, 2, clipped_end_ts`);
+      const original = await read(builtInSkillFragment(canonical + '.sql'));
+      expect(original).toHaveLength(expectedCount);
+      expect(await read(batched)).toEqual(original);
+    }
+  });
 
   it('names no ramp reason without a big tier (the corpus trace as recorded)', async () => {
     const {result, ramp} = await detail('SyntheticFreqLimitN');

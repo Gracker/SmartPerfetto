@@ -24,6 +24,7 @@ triggers:
 
 prerequisites:
   modules:
+    - intervals.intersect
     - android.input
     - android.frames.timeline
     - android.frames.jank_type
@@ -2576,9 +2577,10 @@ steps:
           SUM(new_session) OVER (PARTITION BY upid ORDER BY ts) as session_id
         FROM session_markers
       ),
-      session_bounds AS (
+      session_bounds AS MATERIALIZED (
         SELECT
           upid, session_id, process_name,
+          CAST(upid AS TEXT) || ':' || CAST(session_id AS TEXT) AS window_id,
           MIN(ts) as start_ts,
           MAX(ts + dur) as end_ts
         FROM sessions_raw
@@ -2587,23 +2589,23 @@ steps:
           AND (MAX(ts + dur) - MIN(ts)) > 200000000
       ),
       system_windows AS (
-        SELECT CAST(upid AS TEXT)||':'||CAST(session_id AS TEXT) AS window_id,start_ts AS window_start_ts,end_ts AS window_end_ts
+        SELECT window_id,start_ts AS window_start_ts,end_ts AS window_end_ts
         FROM session_bounds
       ),
       system_target_threads AS (
-        SELECT w.window_id,sb.upid,t.utid,CASE WHEN t.tid=p.pid THEN 'MainThread' ELSE t.name END AS role
-        FROM system_windows w JOIN session_bounds sb ON w.window_id=CAST(sb.upid AS TEXT)||':'||CAST(sb.session_id AS TEXT)
+        SELECT sb.window_id,sb.upid,t.utid,CASE WHEN t.tid=p.pid THEN 'MainThread' ELSE t.name END AS role
+        FROM session_bounds sb
         JOIN effective_target_processes p ON p.upid=sb.upid JOIN thread t ON t.upid=sb.upid
         WHERE t.tid=p.pid OR t.name IN ('RenderThread','GPU completion','hwuiTask0','hwuiTask1')
       ),
-      thread_detail AS (
+      thread_detail AS MATERIALIZED (
         SELECT sb.session_id,sb.process_name,s.upid,s.utid,s.role AS thread_name,s.state,
           COALESCE(ct.core_type,'unknown') AS core_type,s.dur_ns AS dur
-        FROM system_thread_state_spans s JOIN session_bounds sb ON s.window_id=CAST(sb.upid AS TEXT)||':'||CAST(sb.session_id AS TEXT)
+        FROM system_thread_state_spans s JOIN session_bounds sb ON s.window_id=sb.window_id
         LEFT JOIN system_cpu_topology ct ON ct.ucpu=s.ucpu
       ),
       -- 4. 四象限聚合 (MainThread + RenderThread)
-      quadrant_agg AS (
+      quadrant_agg AS MATERIALIZED (
         SELECT
           session_id, process_name, upid, utid,
           thread_name as thread,
@@ -2627,7 +2629,7 @@ steps:
         GROUP BY session_id, process_name, upid, utid, thread_name, core_type
         HAVING SUM(CASE WHEN state = 'Running' THEN dur ELSE 0 END) > 0
       ),
-      core_aff_with_pct AS (
+      core_aff_with_pct AS MATERIALIZED (
         SELECT ca.*,
           ROUND(100.0 * ca.run_dur_ns / NULLIF(
             SUM(ca.run_dur_ns) OVER (PARTITION BY ca.session_id, ca.upid, ca.utid), 0
@@ -2635,13 +2637,13 @@ steps:
         FROM core_aff_raw ca
       ),
       -- 6. CPU 频率聚合 (一次 counter 扫描)
-      cpu_freq_agg AS (
+      cpu_freq_agg AS MATERIALIZED (
         SELECT sb.session_id,sb.process_name,sb.upid,COALESCE(ct.core_type,'unknown') AS core_type,
           COUNT(DISTINCT f.ucpu) AS num_cores,
           ROUND(SUM(f.freq_khz*1.0*f.dur_ns)/NULLIF(SUM(f.dur_ns),0)/1000,0) AS avg_freq_mhz,
           ROUND(MAX(f.freq_khz)/1000,0) AS max_freq_mhz,ROUND(MIN(f.freq_khz)/1000,0) AS min_freq_mhz,
           SUM(f.dur_ns) AS frequency_covered_ns
-        FROM system_cpu_frequency_spans f JOIN session_bounds sb ON f.window_id=CAST(sb.upid AS TEXT)||':'||CAST(sb.session_id AS TEXT)
+        FROM system_cpu_frequency_spans f JOIN session_bounds sb ON f.window_id=sb.window_id
         LEFT JOIN system_cpu_topology ct ON ct.ucpu=f.ucpu
         GROUP BY sb.session_id,sb.process_name,sb.upid,ct.core_type
       )
@@ -3267,10 +3269,9 @@ steps:
     optional: true
     sql_fragments:
       - fragments/android_input_events_normalized.sql
-      - fragments/system_cpu_frequency_spans.sql
+      - fragments/scrolling_frame_system_spans.sql
       - fragments/system_sched_spans.sql
       - fragments/system_cpu_big_freq_coverage.sql
-      - fragments/system_thread_state_spans.sql
       - fragments/effective_target_processes.sql
       - fragments/vsync_config.sql
       - fragments/root_cause_sample_cap.sql
@@ -3966,11 +3967,9 @@ steps:
           ptr.utid as slice_utid,
           ROW_NUMBER() OVER (PARTITION BY fl.frame_key ORDER BY s.dur DESC) as rn
         FROM jank_frame_list fl
-        JOIN per_frame_thread_roles ptr ON ptr.frame_key = fl.frame_key AND ptr.role = 'main'
-        JOIN thread_track tt ON tt.utid = ptr.utid
-        JOIN slice s ON s.track_id = tt.id
-          AND s.ts >= fl.frame_start - 5000000
-          AND s.ts < fl.frame_end
+        CROSS JOIN slice s ON s.ts >= fl.frame_start - 5000000 AND s.ts < fl.frame_end
+        CROSS JOIN thread_track tt ON tt.id = s.track_id
+        JOIN per_frame_thread_roles ptr ON ptr.frame_key = fl.frame_key AND ptr.role = 'main' AND ptr.utid = tt.utid
           AND s.dur >= 1000000
           AND s.name NOT GLOB '*resynced*'
       ),
@@ -4117,6 +4116,7 @@ steps:
         GROUP BY ts_top.frame_key, ts_top.frame_start
       ),
       -- ========== 9.5. Per-frame: GPU fence 等待检测 ==========
+      -- Drive the slice scan from the indexed frame timestamp range before joining thread identity.
       gpu_fence_per_frame AS (
         SELECT
           fl.frame_key,
@@ -4126,9 +4126,9 @@ steps:
           SUM(CASE WHEN s.name GLOB '*Fence*' OR s.name GLOB '*fence*' OR s.name GLOB '*eglSwapBuffers*' OR s.name GLOB '*dequeueBuffer*'
                THEN s.dur ELSE 0 END) as total_fence_dur_ns
         FROM jank_frame_list fl
-        JOIN slice s ON s.ts >= fl.frame_start AND s.ts < fl.frame_end
-        JOIN thread_track tk ON s.track_id = tk.id
-        JOIN thread t ON tk.utid = t.utid
+        CROSS JOIN slice s ON s.ts >= fl.frame_start AND s.ts < fl.frame_end
+        CROSS JOIN thread_track tk ON s.track_id = tk.id
+        CROSS JOIN thread t ON tk.utid = t.utid
         WHERE t.upid = fl.upid  -- same process only (no thread name filter needed)
         GROUP BY fl.frame_key, fl.frame_start
       ),
@@ -4140,9 +4140,9 @@ steps:
           COUNT(*) as shader_count,
           SUM(s.dur) as total_shader_dur_ns
         FROM jank_frame_list fl
-        JOIN slice s ON s.ts >= fl.frame_start AND s.ts < fl.frame_end
-        JOIN thread_track tk ON s.track_id = tk.id
-        JOIN thread t ON tk.utid = t.utid
+        CROSS JOIN slice s ON s.ts >= fl.frame_start AND s.ts < fl.frame_end
+        CROSS JOIN thread_track tk ON s.track_id = tk.id
+        CROSS JOIN thread t ON tk.utid = t.utid
         WHERE t.upid = fl.upid  -- same process only (no thread name filter needed)
           AND (s.name GLOB '*shader*' OR s.name GLOB '*Shader*' OR s.name GLOB '*compile*' OR s.name GLOB '*Compile*')
         GROUP BY fl.frame_key, fl.frame_start
@@ -4236,11 +4236,9 @@ steps:
             printf('%d', MIN(s.ts)) as ts_str,
             ROW_NUMBER() OVER (PARTITION BY fl.frame_key ORDER BY SUM(s.dur) DESC) as rn
           FROM jank_frame_list fl
-          JOIN per_frame_thread_roles ptr ON ptr.frame_key = fl.frame_key AND ptr.role = 'main'
-          JOIN thread_track tt ON tt.utid = ptr.utid
-          JOIN slice s ON s.track_id = tt.id
-            AND s.ts >= fl.frame_start - 5000000
-            AND s.ts < fl.frame_end
+          CROSS JOIN slice s ON s.ts >= fl.frame_start - 5000000 AND s.ts < fl.frame_end
+          CROSS JOIN thread_track tt ON tt.id = s.track_id
+          JOIN per_frame_thread_roles ptr ON ptr.frame_key = fl.frame_key AND ptr.role = 'main' AND ptr.utid = tt.utid
             AND s.dur >= 500000
             AND s.name NOT GLOB '*resynced*'
           GROUP BY fl.frame_key, fl.frame_start, s.name
@@ -4270,11 +4268,9 @@ steps:
             printf('%d', MIN(s.ts)) as ts_str,
             ROW_NUMBER() OVER (PARTITION BY fl.frame_key ORDER BY SUM(s.dur) DESC) as rn
           FROM jank_frame_list fl
-          JOIN per_frame_thread_roles ptr ON ptr.frame_key = fl.frame_key AND ptr.role = 'render'
-          JOIN thread_track tt ON tt.utid = ptr.utid
-          JOIN slice s ON s.track_id = tt.id
-            AND s.ts >= fl.frame_start - 5000000
-            AND s.ts < fl.frame_end
+          CROSS JOIN slice s ON s.ts >= fl.frame_start - 5000000 AND s.ts < fl.frame_end
+          CROSS JOIN thread_track tt ON tt.id = s.track_id
+          JOIN per_frame_thread_roles ptr ON ptr.frame_key = fl.frame_key AND ptr.role = 'render' AND ptr.utid = tt.utid
             AND s.dur >= 500000
           GROUP BY fl.frame_key, fl.frame_start, s.name
           HAVING dur_ms > 0.5
@@ -4402,22 +4398,28 @@ steps:
       -- Q4b(S/I) 只是可中断睡眠观察值；同步 slice 先裁剪到帧窗口并做区间并集，
       -- 避免 syncAndDrawFrame/postAndWait 等父子 slice 被重复计时。
       -- BATCH_RENDER_SYNC_CTES_BEGIN
+      batch_sync_slices AS MATERIALIZED (
+        SELECT s.name,s.ts,s.dur,t.utid
+        FROM slice s JOIN thread_track t ON t.id=s.track_id
+        WHERE s.dur>0 AND (s.name GLOB '*postAndWait*' OR s.name GLOB '*syncAndDrawFrame*'
+          OR s.name GLOB '*syncFrameState*' OR s.name GLOB '*DrawFrame*')
+          AND t.utid IN (SELECT utid FROM per_frame_thread_roles)
+      ),
       per_frame_render_sync_intervals AS (
         SELECT
           fl.frame_key,
           fl.frame_start,
-          MAX(s.ts, fl.frame_start) as sync_start,
-          MIN(s.ts + s.dur, fl.frame_end) as sync_end
+          MAX(sync_slice.ts, fl.frame_start) as sync_start,
+          MIN(sync_slice.ts + sync_slice.dur, fl.frame_end) as sync_end
         FROM jank_frame_list fl
         JOIN per_frame_thread_roles ptr ON ptr.frame_key = fl.frame_key AND ptr.role = 'main'
-        JOIN thread_track tt ON tt.utid = ptr.utid
-        JOIN slice s ON s.track_id = tt.id
-          AND s.ts < fl.frame_end
-          AND s.ts + s.dur > fl.frame_start
+        JOIN batch_sync_slices sync_slice ON sync_slice.utid = ptr.utid
+          AND sync_slice.ts < fl.frame_end
+          AND sync_slice.ts + sync_slice.dur > fl.frame_start
           AND (
-            s.name GLOB '*postAndWait*'
-            OR s.name GLOB '*syncAndDrawFrame*'
-            OR s.name GLOB '*syncFrameState*'
+            sync_slice.name GLOB '*postAndWait*'
+            OR sync_slice.name GLOB '*syncAndDrawFrame*'
+            OR sync_slice.name GLOB '*syncFrameState*'
           )
       ),
       per_frame_render_sync_ordered AS (
@@ -4470,17 +4472,16 @@ steps:
           fl.frame_key,
           fl.frame_start,
           ROUND(COALESCE(MAX(
-            MAX(MIN(s.ts + s.dur, fl.frame_end) - MAX(s.ts, fl.frame_start), 0)
+            MAX(MIN(sync_slice.ts + sync_slice.dur, fl.frame_end) - MAX(sync_slice.ts, fl.frame_start), 0)
           ), 0) / 1e6, 2) as render_sync_rt_work_ms
         FROM jank_frame_list fl
         JOIN per_frame_thread_roles ptr ON ptr.frame_key = fl.frame_key AND ptr.role = 'render'
-        JOIN thread_track tt ON tt.utid = ptr.utid
-        JOIN slice s ON s.track_id = tt.id
-          AND s.ts < fl.frame_end
-          AND s.ts + s.dur > fl.frame_start
+        JOIN batch_sync_slices sync_slice ON sync_slice.utid = ptr.utid
+          AND sync_slice.ts < fl.frame_end
+          AND sync_slice.ts + sync_slice.dur > fl.frame_start
           AND (
-            s.name GLOB '*syncFrameState*'
-            OR s.name GLOB '*DrawFrame*'
+            sync_slice.name GLOB '*syncFrameState*'
+            OR sync_slice.name GLOB '*DrawFrame*'
           )
         GROUP BY fl.frame_key, fl.frame_start
       ),

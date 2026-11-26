@@ -50,6 +50,9 @@ sql_fragments:
   backend/skills/fragments/scene_screen_facts.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/scene_screen_facts.sql
+  backend/skills/fragments/scrolling_frame_system_spans.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/scrolling_frame_system_spans.sql
   backend/skills/fragments/system_thread_state_spans.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/system_thread_state_spans.sql

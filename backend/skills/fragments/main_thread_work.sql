@@ -86,10 +86,6 @@ mtw_events AS (
   UNION ALL SELECT utid, end_ts, kind, -1 FROM mtw_intervals
   UNION ALL SELECT utid, window_start_ts, 'boundary', 0 FROM mtw_threads
   UNION ALL SELECT utid, window_end_ts, 'boundary', 0 FROM mtw_threads
-  -- Zero-delta annotation endpoints let task/hotspot integrals use equality
-  -- joins. This adds O(scoped slices) events, never endpoints x all slices.
-  UNION ALL SELECT utid, start_ts, 'boundary', 0 FROM mtw_slices
-  UNION ALL SELECT utid, end_ts, 'boundary', 0 FROM mtw_slices
 ),
 mtw_event_deltas AS (
   SELECT utid, ts,
@@ -136,18 +132,25 @@ mtw_segments AS MATERIALIZED (
   FROM mtw_sweep s LEFT JOIN mtw_frame_bounds f USING (utid)
   WHERE s.end_ts > s.start_ts
 ),
-mtw_segment_integrals AS (
-  SELECT utid, start_ts, end_ts,
-    SUM(CASE WHEN phase != 'inside_doFrame' THEN end_ts - start_ts ELSE 0 END)
-      OVER (PARTITION BY utid ORDER BY start_ts ROWS UNBOUNDED PRECEDING) AS outside_at_end_ns,
-    CASE WHEN phase != 'inside_doFrame' THEN end_ts - start_ts ELSE 0 END AS outside_ns
-  FROM mtw_segments
+-- Task ranking needs outside-doFrame time at slice endpoints. Keep this
+-- one-dimensional union integral separate from the thread-state sweep.
+mtw_frame_events AS (
+  SELECT utid, start_ts AS ts, 1 AS delta FROM mtw_frames
+  UNION ALL SELECT utid, end_ts, -1 FROM mtw_frames
+  UNION ALL SELECT utid, start_ts, 0 FROM mtw_slices
+  UNION ALL SELECT utid, end_ts, 0 FROM mtw_slices
+  UNION ALL SELECT utid, window_start_ts, 0 FROM mtw_threads
+  UNION ALL SELECT utid, window_end_ts, 0 FROM mtw_threads
+),
+mtw_frame_endpoints AS (
+  SELECT utid, ts, SUM(SUM(delta)) OVER w AS depth, LEAD(ts) OVER w AS next_ts
+  FROM mtw_frame_events GROUP BY utid, ts
+  WINDOW w AS (PARTITION BY utid ORDER BY ts ROWS UNBOUNDED PRECEDING)
 ),
 mtw_outside_integrals AS MATERIALIZED (
-  SELECT utid, start_ts AS ts, outside_at_end_ns - outside_ns AS outside_ns FROM mtw_segment_integrals
-  UNION ALL
-  SELECT s.utid, s.end_ts, s.outside_at_end_ns FROM mtw_segment_integrals s
-    JOIN mtw_threads t ON s.utid = t.utid AND s.end_ts = t.window_end_ts
+  SELECT utid, ts, COALESCE(SUM(CASE WHEN depth = 0 THEN next_ts - ts ELSE 0 END)
+    OVER (PARTITION BY utid ORDER BY ts ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS outside_ns
+  FROM mtw_frame_endpoints
 ),
 mtw_summary_segments AS (
   SELECT *, phase AS summary_phase FROM mtw_segments

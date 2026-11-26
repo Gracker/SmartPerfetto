@@ -11171,6 +11171,10 @@
           {
             "name": "android.monitor_contention",
             "source_path": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/monitor_contention.sql"
+          },
+          {
+            "name": "intervals.intersect",
+            "source_path": "perfetto/src/trace_processor/perfetto_sql/stdlib/intervals/intersect.sql"
           }
         ],
         "steps": [
@@ -11583,7 +11587,7 @@
           },
           {
             "id": "session_stats_batch",
-            "sha256": "8a77327164ed551625d6b38915b0d029a1e7398ac0c23728f904ee277834dfd5",
+            "sha256": "97b3c87a8a020539af3b9c5e2343737e9d268cc1b85570f3fe2b5e1f33cdbb0d",
             "required_columns": [
               "upid",
               "session_id",
@@ -11646,7 +11650,7 @@
           },
           {
             "id": "batch_frame_root_cause",
-            "sha256": "154a92c537d0bfbf5c1c8ae63d59cd6b8738e270167d68daefbaf3e1b255acd3",
+            "sha256": "f93c5b9499ff65977a412b1037a8788f774551c204f70f8ef4abfd4953bda5b6",
             "required_columns": [
               "system_evidence_json",
               "frame_id",

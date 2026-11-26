@@ -17020,7 +17020,7 @@
     },
     "scrolling_analysis": {
       "source_file": "backend/skills/composite/scrolling_analysis.skill.yaml",
-      "source_sha256": "7dead7472b65b2b0bee9ea2d5ee3990f66b23cd55b82599e413465aa5df8ab2f",
+      "source_sha256": "c7d38659cf020fa50e1c777c98df8e0b9e0c1ef011b720c722468412416532dc",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -17029,7 +17029,8 @@
         "android.frames.timeline",
         "android.garbage_collection",
         "android.input",
-        "android.monitor_contention"
+        "android.monitor_contention",
+        "intervals.intersect"
       ],
       "top_level_steps": [
         "system_context_window",
@@ -17674,7 +17675,7 @@
           "id": "session_stats_batch",
           "at": "steps[25].sql",
           "top_level_index": 25,
-          "sha256": "8a77327164ed551625d6b38915b0d029a1e7398ac0c23728f904ee277834dfd5",
+          "sha256": "97b3c87a8a020539af3b9c5e2343737e9d268cc1b85570f3fe2b5e1f33cdbb0d",
           "required_columns": [
             "upid",
             "session_id",
@@ -17773,7 +17774,7 @@
           "id": "batch_frame_root_cause",
           "at": "steps[28].sql",
           "top_level_index": 28,
-          "sha256": "154a92c537d0bfbf5c1c8ae63d59cd6b8738e270167d68daefbaf3e1b255acd3",
+          "sha256": "f93c5b9499ff65977a412b1037a8788f774551c204f70f8ef4abfd4953bda5b6",
           "required_columns": [
             "system_evidence_json",
             "frame_id",

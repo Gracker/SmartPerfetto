@@ -522,7 +522,7 @@ describe('scrolling_analysis skill schema', () => {
       const sql = batchSql();
       // The main interval belongs to the thread that ran the top slice, not to every main-role thread.
       expect(sql).toMatch(/system_work_intervals AS \(\s*SELECT ts_top\.frame_key AS window_id,'main' AS role,ts_top\.slice_utid AS utid,\s*MAX\(ts_top\.slice_ts,fl\.frame_start\) AS work_start_ts,\s*MIN\(ts_top\.slice_ts\+ts_top\.slice_dur_ns,fl\.frame_end\) AS work_end_ts/);
-      expect(sql).toMatch(/ptr\.utid as slice_utid,\s*ROW_NUMBER\(\) OVER \(PARTITION BY fl\.frame_key ORDER BY s\.dur DESC\) as rn\s*FROM jank_frame_list fl\s*JOIN per_frame_thread_roles ptr ON ptr\.frame_key = fl\.frame_key AND ptr\.role = 'main'/);
+      expect(sql).toMatch(/ptr\.utid as slice_utid,\s*ROW_NUMBER\(\) OVER \(PARTITION BY fl\.frame_key ORDER BY s\.dur DESC\) as rn\s*FROM jank_frame_list fl\s*CROSS JOIN slice s[^\n]+\s*CROSS JOIN thread_track tt[^\n]+\s*JOIN per_frame_thread_roles ptr ON ptr\.frame_key = fl\.frame_key AND ptr\.role = 'main'/);
       expect(sql).toContain("SELECT frame_key,'render',NULL,frame_start,frame_end FROM jank_frame_list");
       expect(sql).toContain("flm.window_id=fl.frame_key AND flm.role='main'");
       expect(sql).toContain("flr.window_id=fl.frame_key AND flr.role='render'");
@@ -3340,6 +3340,23 @@ describe('main_thread_frame_work continuous-window SQL behavior', () => {
     db.prepare(sql(id, options)).all() as Record<string, any>[];
   const windowRow = (db: Database.Database, options: Parameters<typeof sql>[1] = {}) =>
     rows(db, 'main_thread_work_summary', options).find(row => row.phase === 'window')!;
+
+  it('anchors outside-doFrame integrals at the thread window boundaries', () => {
+    const db = fixture();
+    try {
+      db.exec(`INSERT INTO slice VALUES
+        (1,10,10000000,10000000,'earlyTask',NULL,11),
+        (2,10,40000000,20000000,'Choreographer#doFrame 1',NULL,12),
+        (3,10,70000000,10000000,'lateTask',NULL,13)`);
+      const points = rows(db, 'main_thread_work_tasks', {
+        projection: 'SELECT ts, outside_ns FROM mtw_outside_integrals ORDER BY ts',
+      });
+      expect(points.map(({ts, outside_ns}) => [ts, outside_ns])).toEqual([
+        [0, 0], [10e6, 10e6], [20e6, 20e6], [40e6, 40e6],
+        [60e6, 40e6], [70e6, 50e6], [80e6, 60e6], [100e6, 80e6],
+      ]);
+    } finally { db.close(); }
+  });
 
   it('finds a 30ms initialization task between 22ms and 24ms doFrames without FrameTimeline', () => {
     const db = fixture();

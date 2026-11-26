@@ -516,7 +516,8 @@ describe('cross-scene canonical system consumers', () => {
     for (const id of ['session_stats_batch','batch_frame_root_cause','session_quadrant_summary']) {
       const step = load('scrolling_analysis', id);
       expect(step.type).toBe('atomic');
-      expect(step.sql_fragments).toContain('fragments/system_thread_state_spans.sql');
+      expect(step.sql_fragments).toContain(id === 'batch_frame_root_cause'
+        ? 'fragments/scrolling_frame_system_spans.sql' : 'fragments/system_thread_state_spans.sql');
       expect(step.sql).toContain('system_windows AS');
       expect(step.sql).toContain('system_target_threads AS');
       expect(step.sql).not.toContain("state = 'R'");
