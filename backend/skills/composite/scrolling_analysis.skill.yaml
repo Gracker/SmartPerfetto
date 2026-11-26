@@ -5371,6 +5371,10 @@ steps:
       -- 掉帧检测：双信号混合策略
       frame_jank_data AS (
         SELECT
+          CASE WHEN a.display_frame_token IS NOT NULL
+            THEN 'display:' || CAST(a.display_frame_token AS TEXT)
+            ELSE 'surface:' || COALESCE(a.layer_name, '') || ':' || CAST(a.surface_frame_token AS TEXT)
+          END AS frame_key,
           a.ts as frame_start,
           a.ts + CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END as frame_end,
           a.upid,
@@ -5431,6 +5435,17 @@ steps:
             )
           )
       ),
+      input_frame_windows AS (
+        SELECT
+          frame_key, frame_start, frame_end,
+          upid,
+          pid,
+          process_name
+        FROM frame_jank_data
+        WHERE jank_responsibility IN ('APP', 'HIDDEN')
+          AND present_type IN ('Late Present', 'Dropped Frame')
+          AND (time_gap_ns IS NULL OR time_gap_ns <= (SELECT vsync_period_ns FROM vsync_config) * 6)
+      ),
       jank_stats AS (
         SELECT COUNT(*) AS total_frames,
           COUNT(CASE WHEN present_type IN ('Late Present', 'Dropped Frame') AND jank_responsibility = 'APP' THEN 1 END) AS app_jank,
@@ -5460,10 +5475,9 @@ steps:
       -- 误归因为最终根因。
       input_stage_overlaps AS (
         SELECT
-          jfw.frame_start,
-          s.name,
+          jfw.upid, jfw.frame_key,
           MAX(MIN(s.ts + s.dur, jfw.frame_end) - MAX(s.ts, jfw.frame_start), 0) as overlap_ns
-        FROM jank_frame_windows jfw
+        FROM input_frame_windows jfw
         JOIN thread t ON t.upid = jfw.upid
           AND (t.tid = jfw.pid OR t.name GLOB '[0-9]*.ui')
         JOIN thread_track tt ON tt.utid = t.utid
@@ -5481,15 +5495,11 @@ steps:
           OR s.name GLOB '*RecyclerView*Prefetch*'
       ),
       input_stage_stats AS (
-        SELECT
-          COUNT(*) as total_input_slices,
-          SUM(CASE
-            WHEN overlap_ns > (SELECT vsync_period_ns FROM vsync_config) * ${input_handling_budget_ratio|0.5}
-            THEN 1 ELSE 0 END) as slow_input_slices,
-          MAX(overlap_ns) / 1e6 as max_input_slice_ms,
-          AVG(overlap_ns) / 1e6 as avg_input_slice_ms
-        FROM input_stage_overlaps
-        WHERE overlap_ns > 0
+        SELECT COUNT(*) AS input_frames FROM (
+          SELECT upid, frame_key FROM input_stage_overlaps
+          WHERE overlap_ns > (SELECT vsync_period_ns FROM vsync_config) * ${input_handling_budget_ratio|0.5}
+          GROUP BY upid, frame_key
+        )
       ),
       binder_overlap AS (
         SELECT MAX(MIN(bt.client_ts + bt.client_dur, jfw.frame_end) - MAX(bt.client_ts, jfw.frame_start))
@@ -5504,7 +5514,8 @@ steps:
         SELECT total_frames, app_jank, sf_jank,
           (SELECT q3_pct FROM main_pct) AS main_runnable_pct,
           (SELECT max_overlap_ms FROM binder_overlap) AS binder_overlap_ms,
-          (SELECT slow_input_slices FROM input_stage_stats) AS slow_input_slices
+          (SELECT input_frames FROM input_stage_stats) AS input_frames,
+          (SELECT COUNT(*) FROM (SELECT DISTINCT upid, frame_key FROM input_frame_windows)) AS affected_app_frames
         FROM jank_stats
       ),
       classification AS (
@@ -5512,7 +5523,7 @@ steps:
           WHEN total_frames < 10 THEN NULL
           WHEN sf_jank > app_jank * 2 THEN 'SURFACE_FLINGER'
           WHEN binder_overlap_ms > 5 THEN 'BINDER'
-          WHEN slow_input_slices > 0 THEN 'INPUT_HANDLING'
+          WHEN input_frames * 2 > affected_app_frames THEN 'INPUT_HANDLING'
           WHEN main_runnable_pct > 15 AND EXISTS (SELECT 1 FROM jank_frame_windows WHERE frame_end > frame_start)
             THEN 'CPU_SCHEDULING'
         END AS problem_component
@@ -5531,7 +5542,7 @@ steps:
         CASE problem_component
           WHEN 'SURFACE_FLINGER' THEN 'FrameTimeline 将 ' || sf_jank || ' 个晚呈现或丢弃帧标记为 SF 侧'
           WHEN 'BINDER' THEN '主线程同步 Binder 与掉帧窗口重叠，最长 ' || ROUND(binder_overlap_ms, 1) || 'ms'
-          WHEN 'INPUT_HANDLING' THEN slow_input_slices || ' 个掉帧窗口中的输入处理切片超过输入阶段预算'
+          WHEN 'INPUT_HANDLING' THEN input_frames || '/' || affected_app_frames || ' 个 App 侧问题帧中有输入处理切片超过阶段预算'
           WHEN 'CPU_SCHEDULING' THEN '窗口内观测到主线程等待调度占 ' || main_runnable_pct || '%'
           ELSE '已检查 ' || total_frames || ' 帧，现有证据不足以归因'
         END AS root_cause_summary,

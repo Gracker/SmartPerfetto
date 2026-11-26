@@ -1602,12 +1602,33 @@ describe('scrolling_analysis skill schema', () => {
       const rows = db.prepare(`WITH
         jank_frame_windows(frame_start, frame_end) AS (VALUES (0, 10000000)),
         analysis AS (SELECT 200 AS total_frames, 5 AS app_jank, 0 AS sf_jank, ? AS main_runnable_pct,
-          ? AS sleep_pct, ? AS binder_max_ms, 0 AS binder_overlap_ms, 0 AS slow_input_slices),
+          ? AS sleep_pct, ? AS binder_max_ms, 0 AS binder_overlap_ms, 0 AS input_frames, 5 AS affected_app_frames),
         ${classification}`).all(runnable, sleeping, binderMax);
       expect(rows).toEqual([expect.objectContaining({problem_category: 'UNKNOWN',
         problem_component: 'UNKNOWN', confidence: null})]);
     } finally { db.close(); }
   });
+
+  it.each([[42, 'UNKNOWN'], [43, 'INPUT_HANDLING']])(
+    'counts distinct input-affected frames before classifying the primary component',
+    (secondUpid: number | string, component: number | string) => {
+      const sql = String(getStep('root_cause_classification').sql);
+      const stats = sql.slice(sql.indexOf('input_stage_stats AS ('), sql.indexOf('binder_overlap AS ('))
+        .replace('${input_handling_budget_ratio|0.5}', '0.5');
+      const classification = sql.slice(sql.indexOf('classification AS ('));
+      const db = new Database(':memory:');
+      try {
+        const row = db.prepare(`WITH
+          vsync_config(vsync_period_ns) AS (VALUES (100)),
+          jank_frame_windows(frame_start, frame_end) AS (VALUES (0, 100), (100, 200)),
+          input_stage_overlaps(upid, frame_key, overlap_ns) AS (VALUES (42, 1, 60), (42, 1, 70), (?, 1, 55)),
+          ${stats}
+          analysis AS (SELECT 100 AS total_frames, 2 AS app_jank, 0 AS sf_jank, 2 AS affected_app_frames,
+            0 AS main_runnable_pct, 0 AS binder_overlap_ms, input_frames FROM input_stage_stats),
+          ${classification}`).get(secondUpid);
+        expect(row).toMatchObject({problem_component: component});
+      } finally { db.close(); }
+    });
 
   it('does not inflate observed Runnable time when thread state coverage is sparse', () => {
     const sql = String(getStep('root_cause_classification').sql);

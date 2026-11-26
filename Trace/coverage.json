@@ -11822,7 +11822,7 @@
           },
           {
             "id": "root_cause_classification",
-            "sha256": "bc57129262b145bd0a2bbf51bea415cb8143d4e7aabd97389601e56f2b591a98",
+            "sha256": "0b79067fd67fa79e2895e52b4a5d169e8b3922aa19059af0b61dfb0722c74c47",
             "required_columns": [
               "problem_category",
               "problem_component",
