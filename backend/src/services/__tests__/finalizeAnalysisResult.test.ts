@@ -598,6 +598,25 @@ describe('product-owned scrolling conclusion', () => {
     expect(markdown).toMatch(/假定|假设/);
   });
 
+  it('places a sparse primary layer and its full-window doFrame proxy under one rating', async () => {
+    const {run} = fixture({scrolling(store) {
+      captureScrollingRows(store, 'smoothness_basis', [
+        {...scrollingFrameRow, smoothness_rating: 'unrated', layer_present_gap_count: 0, layer_over_budget_gaps: 0,
+          layer_frames: 30, layer_tagged_frames: 2, layer_hybrid_frames: 29, cadence_gap_max_ns: null},
+        {...scrollingFrameRow, smoothness_rating: 'unrated', primary_layer: null, layer_name: null,
+          presentation_status: 'unmeasured', start_ts: '50', end_ts: '400',
+          cadence_gap_count: 2027, cadence_gaps_over_1_5x_budget: 241},
+      ]);
+    }});
+    const {result} = await run();
+    const markdown = result.conclusionEvidence?.markdown ?? '';
+    expect(markdown.match(/呈现流畅度评级/g)).toHaveLength(1);
+    expect(markdown).toContain('FrameTimeline 覆盖不足');
+    expect(markdown).toContain('2/30 (6.67%)');
+    expect(markdown).toContain('29/30 (96.67%)');
+    expect(markdown).toContain('241/2027 (11.89%) (50–400 ns)');
+  });
+
   it('keeps unavailable presentation and unknown Flutter touch state separate from causal analysis', async () => {
     const {run} = fixture({scrolling(store) {
       captureScrollingRows(store, 'smoothness_basis', [{

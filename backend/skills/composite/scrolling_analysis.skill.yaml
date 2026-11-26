@@ -1492,15 +1492,24 @@ steps:
         CROSS JOIN vsync_config v
         GROUP BY r.upid, r.session_id, r.layer_name
       ),
-      -- A FrameTimeline row without a usable present timestamp cannot
-      -- establish presentation cadence. Keep doFrame as a start-gap proxy.
+      layer_totals AS (
+        SELECT l.upid, l.layer_name, SUM(l.frames) AS frames,
+          SUM(l.tagged_frames) AS tagged_frames, SUM(l.hybrid_frames) AS hybrid_frames,
+          SUM(g.gap_count) AS present_gap_count, SUM(g.gaps_over_budget) AS over_budget_gaps
+        FROM layer_stats l LEFT JOIN gap_stats g USING (upid, session_id, layer_name)
+        GROUP BY l.upid, l.layer_name
+      ),
+      layer_samples AS (
+        SELECT *,
+          ROW_NUMBER() OVER (PARTITION BY upid ORDER BY frames DESC, layer_name) = 1 AS primary_layer,
+          COALESCE(present_gap_count, 0) >= 19 AS sufficient_sample
+        FROM layer_totals
+      ),
       doframe_starts AS (
         SELECT f.utid, f.raw_ts - f.previous_start_ts AS gap_ns,
           CASE WHEN f.marker_count = 1 THEN f.execution_end_ts - f.raw_ts END AS dur_ns
         FROM mtw_frame_sequence f
-        WHERE NOT EXISTS (
-          SELECT 1 FROM ft_frames WHERE dur > 0 AND present_type != 'Dropped Frame' AND layer_name IS NOT NULL
-        )
+        WHERE f.upid NOT IN (SELECT upid FROM layer_samples WHERE primary_layer AND sufficient_sample)
       ),
       doframe_stats AS (
         SELECT t.upid, t.process_name, t.window_start_ts, t.window_end_ts,
@@ -1577,29 +1586,22 @@ steps:
           GROUP BY upid
         ) app_cadence ON app_cadence.upid = r.upid
       ),
-      layer_totals AS (
-        SELECT b.upid, b.layer_name,
-          SUM(l.frames) AS frames,
-          SUM(l.tagged_frames) AS tagged_frames,
-          SUM(l.hybrid_frames) AS hybrid_frames,
-          SUM(b.gap_count) AS present_gap_count,
-          SUM(b.gaps_over_budget) AS over_budget_gaps,
-          MIN(b.budget_status IN ('measured', 'derived_from_expected_frames')) AS has_supported_budget
-        FROM budgeted_rows b
-        JOIN layer_stats l USING (upid, session_id, layer_name)
-        GROUP BY b.upid, b.layer_name
+      layer_budgets AS (
+        SELECT upid, layer_name,
+          MIN(budget_status IN ('measured', 'derived_from_expected_frames')) AS has_supported_budget
+        FROM budgeted_rows WHERE layer_name IS NOT NULL
+        GROUP BY upid, layer_name
       ),
       rated_layers AS (
         SELECT *,
-          ROW_NUMBER() OVER (PARTITION BY upid ORDER BY frames DESC, layer_name) = 1 AS primary_layer,
           CASE
-            WHEN COALESCE(has_supported_budget, 0) != 1 OR COALESCE(present_gap_count, 0) < 19 THEN 'unrated'
+            WHEN COALESCE(has_supported_budget, 0) != 1 OR NOT sufficient_sample THEN 'unrated'
             WHEN over_budget_gaps * 100.0 < present_gap_count THEN 'excellent'
             WHEN over_budget_gaps * 100.0 < present_gap_count * 5 THEN 'good'
             WHEN over_budget_gaps * 100.0 < present_gap_count * 15 THEN 'fair'
             ELSE 'poor'
           END AS smoothness_rating
-        FROM layer_totals
+        FROM layer_samples JOIN layer_budgets USING (upid, layer_name)
       )
       SELECT r.upid, r.process_name, r.session_id, r.layer_name,
         printf('%d', r.start_ts) AS start_ts, printf('%d', r.end_ts) AS end_ts, r.frames,

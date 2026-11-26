@@ -119,21 +119,23 @@ function measurementRates(language: OutputLanguage, gaps: string, tags: string, 
 function cadenceReadout(rows: Row[], touchUpids: ReadonlySet<EvidenceScalar>, language: OutputLanguage,
   summaries: Map<string, CadenceSummary>): string[] {
   const unavailable = localize(language, '不可用', 'Unavailable');
-  const groups = new Map<string, Row[]>();
+  const groups = new Map<EvidenceScalar, Row[]>();
   for (const row of rows) {
     const primaryLayer = row.primary_layer === 1 || row.primary_layer === true;
     const presentationProxy = row.primary_layer === null && row.presentation_status === 'unmeasured';
     if (!count(row.upid) || (!primaryLayer && !presentationProxy)) continue;
-    const key = JSON.stringify([row.upid, row.layer_name]);
-    const group = groups.get(key) ?? [];
+    const group = groups.get(row.upid) ?? [];
     group.push(row);
-    groups.set(key, group);
+    groups.set(row.upid, group);
   }
   const lines: string[] = [];
-  for (const group of groups.values()) {
+  for (const processRows of groups.values()) {
+    const primary = processRows.filter(item => item.primary_layer === 1 || item.primary_layer === true);
+    const proxies = processRows.filter(item => item.primary_layer === null);
+    const group = primary.length ? primary : proxies;
     const [row] = group;
     const totals = [
-      'smoothness_rating', 'layer_frames', 'layer_tagged_frames', 'layer_hybrid_frames',
+      'layer_name', 'smoothness_rating', 'layer_frames', 'layer_tagged_frames', 'layer_hybrid_frames',
       'layer_present_gap_count', 'layer_over_budget_gaps',
     ];
     // Repeated layer totals describe the same population, including when the
@@ -157,15 +159,24 @@ function cadenceReadout(rows: Row[], touchUpids: ReadonlySet<EvidenceScalar>, la
     const tags = ratio(row.layer_tagged_frames, row.layer_frames, unavailable);
     const hybrid = ratio(row.layer_hybrid_frames, row.layer_frames, unavailable);
     lines.push(...measurementRates(language, gaps, tags, hybrid));
-    if (row.presentation_status === 'unmeasured') {
+    if (proxies.length) {
+      lines.push('', localize(language, 'FrameTimeline 覆盖不足，主图层的呈现间隔样本不足以评级。',
+        'Insufficient FrameTimeline coverage for a primary-layer presentation cadence rating.'));
       if (touchUpids.has(row.upid)) {
         lines.push(`- ${localize(language, '替代观测见按触摸时间归类的 Flutter 换帧间隔。', 'See the Flutter swap gaps classified by touch state for the proxy measurement.')}`);
       } else {
-        const assumed = row.budget_status === 'assumed_default_no_trace_timing';
-        const proxy = supportedBudget || assumed ? ratio(row.cadence_gaps_over_1_5x_budget, row.cadence_gap_count, unavailable) : unavailable;
-        lines.push(`- ${localize(language, '替代观测 · doFrame 起点间隔超 1.5× 预算', 'Proxy · doFrame start gaps over 1.5× budget')} ${proxy}${assumed ? localize(language, '（假定预算）', ' (assumed budget)') : ''}`);
+        for (const item of proxies) {
+          const from = timeBound(item.start_ts);
+          const to = timeBound(item.end_ts);
+          if (from === undefined || to === undefined || to < from) continue;
+          const assumed = item.budget_status === 'assumed_default_no_trace_timing';
+          const usable = assumed || item.budget_status === 'measured' || item.budget_status === 'derived_from_expected_frames';
+          const proxy = usable ? ratio(item.cadence_gaps_over_1_5x_budget, item.cadence_gap_count, unavailable) : unavailable;
+          lines.push(`- ${localize(language, '替代观测 · doFrame 起点间隔超 1.5× 预算', 'Proxy · doFrame start gaps over 1.5× budget')} ${proxy}${assumed ? localize(language, '（假定预算）', ' (assumed budget)') : ''}${from === start && to === end ? '' : ` (${from}–${to} ns)`}`);
+        }
       }
-    } else {
+    }
+    if (primary.length) {
       const maxima = group.map(item => item.cadence_gap_max_ns)
         .filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0);
       const maxPresentNs = maxima.length ? Math.max(...maxima) : undefined;

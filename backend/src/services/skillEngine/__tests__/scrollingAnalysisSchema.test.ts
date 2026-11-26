@@ -3867,7 +3867,12 @@ describe('smoothness_basis puts present cadence beside frame duration', () => {
     } finally { db.close(); }
   });
 
-  it.each(['DELETE FROM actual_frame_timeline_slice', 'UPDATE actual_frame_timeline_slice SET dur = -1'])
+  it.each([
+    'DELETE FROM actual_frame_timeline_slice',
+    'UPDATE actual_frame_timeline_slice SET dur = -1',
+    // Two short bursts contain usable presents but neither spans a scrolling session.
+    'UPDATE actual_frame_timeline_slice SET ts = ts + 500000000 WHERE id > 15',
+  ])
   ('uses doFrame and leaves presentation unmeasured when there are no usable presents: %s', statement => {
     const db = fixture();
     try {
@@ -3884,6 +3889,30 @@ describe('smoothness_basis puts present cadence beside frame duration', () => {
         presentation_status: 'unmeasured', smoothness_rating: 'unrated', layer_over_budget_pct: null,
         verdict_basis: 'doframe_start_gaps_presentation_unmeasured',
       })]);
+    } finally { db.close(); }
+  });
+
+  it('keeps primary-layer counts and a process-local proxy when a qualifying session has only one present', () => {
+    const db = fixture();
+    try {
+      db.exec(`INSERT INTO process VALUES (2, 200, 'com.example.app:other', NULL, NULL);
+        INSERT INTO thread VALUES (2, 2, 200, 'main', NULL, NULL);
+        INSERT INTO thread_track VALUES (20, 2);
+        INSERT INTO actual_frame_timeline_slice
+          SELECT id + 100, 2, display_frame_token, surface_frame_token, layer_name, ts, dur, jank_type, present_type
+          FROM actual_frame_timeline_slice WHERE upid = 1;
+        UPDATE actual_frame_timeline_slice SET present_type = 'Dropped Frame' WHERE upid = 1 AND id > 1;
+        INSERT INTO slice VALUES (1, 10, 0, 1000000, 'doFrame', NULL, NULL),
+          (2, 10, 20000000, 1000000, 'doFrame', NULL, NULL),
+          (3, 20, 0, 1000000, 'doFrame', NULL, NULL), (4, 20, 20000000, 1000000, 'doFrame', NULL, NULL)`);
+      const rows = basis(db);
+      expect(rows).toHaveLength(3);
+      expect(rows).toEqual(expect.arrayContaining([
+        expect.objectContaining({upid: 1, primary_layer: 1, layer_present_gap_count: 0,
+          layer_frames: 30, layer_hybrid_frames: 29, smoothness_rating: 'unrated'}),
+        expect.objectContaining({upid: 1, cadence_metric: 'doframe_start_gap', cadence_gap_count: 1}),
+        expect.objectContaining({upid: 2, primary_layer: 1, layer_present_gap_count: 29}),
+      ]));
     } finally { db.close(); }
   });
 
