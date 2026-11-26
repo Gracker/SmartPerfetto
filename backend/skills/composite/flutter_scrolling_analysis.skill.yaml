@@ -68,18 +68,11 @@ steps:
       title: "Flutter 帧渲染概览"
       format: table
     sql_fragments:
+      - fragments/vsync_config.sql
+      - fragments/scoped_panel_counter.sql
       - fragments/flutter_process_identity.sql
     sql: |
       WITH
-      vsync_intervals AS (
-        SELECT
-          c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
-        FROM counter c
-        JOIN counter_track t ON c.track_id = t.id
-        WHERE t.name = 'VSYNC-sf'
-          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
-      ),
       flutter_timing AS (
         SELECT CASE
           WHEN raw_ns BETWEEN 5500000 AND 6500000 THEN 6060606
@@ -93,9 +86,7 @@ steps:
         FROM (
           SELECT CAST(COALESCE(
             ${vsync_period_ns},
-            (SELECT PERCENTILE(interval_ns, 50)
-             FROM vsync_intervals
-             WHERE interval_ns > 5500000 AND interval_ns < 50000000),
+            (SELECT period_ns FROM preferred_panel_counter),
             (SELECT CAST(PERCENTILE(dur, 50) AS INTEGER)
              FROM expected_frame_timeline_slice
              WHERE dur > 5000000 AND dur < 50000000
@@ -320,19 +311,12 @@ steps:
           label: "结论边界"
           type: string
     sql_fragments:
+      - fragments/vsync_config.sql
+      - fragments/scoped_panel_counter.sql
       - fragments/flutter_process_identity.sql
     sql: |
       WITH
-      vsync_intervals AS (
-        SELECT
-          c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
-        FROM counter c
-        JOIN counter_track t ON c.track_id = t.id
-        WHERE t.name = 'VSYNC-sf'
-          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
-      ),
-      vsync_config AS (
+      local_budget AS (
         SELECT CASE
           WHEN raw_ns BETWEEN 5500000 AND 6500000 THEN 6060606
           WHEN raw_ns BETWEEN 6500001 AND 7500000 THEN 6944444
@@ -344,9 +328,7 @@ steps:
         END AS vsync_period_ns
         FROM (
           SELECT CAST(COALESCE(
-            (SELECT PERCENTILE(interval_ns, 50)
-             FROM vsync_intervals
-             WHERE interval_ns > 5500000 AND interval_ns < 50000000),
+            (SELECT period_ns FROM preferred_panel_counter),
             16666667
           ) AS INTEGER) AS raw_ns
         )
@@ -393,8 +375,8 @@ steps:
               AND (jank_responsibility != 'BUFFER_STUFFING' OR android_is_missed_frame_type(jank_type)) THEN 1
             WHEN jank_responsibility = 'BUFFER_STUFFING'
               AND prev_present_ts IS NOT NULL
-              AND present_ts - prev_present_ts > (SELECT vsync_period_ns FROM vsync_config) * 1.5
-              AND present_ts - prev_present_ts <= (SELECT vsync_period_ns FROM vsync_config) * 6 THEN 1
+              AND present_ts - prev_present_ts > (SELECT vsync_period_ns FROM local_budget) * 1.5
+              AND present_ts - prev_present_ts <= (SELECT vsync_period_ns FROM local_budget) * 6 THEN 1
             ELSE 0
           END as row_is_consumer_jank
         FROM flutter_app_frames

@@ -5296,7 +5296,7 @@
     },
     "consumer_jank_detection": {
       "source_file": "backend/skills/atomic/consumer_jank_detection.skill.yaml",
-      "source_sha256": "1cabbcaffac2059d6095ba3df586dcd0990a0a9879057a8e8d44f7c3bf3756fc",
+      "source_sha256": "ac3d4d860b931680d35242d13c0c406d5c5f51d5a908725f4f80130a9f622bfa",
       "type": "atomic",
       "execution": "steps",
       "declared_modules": [
@@ -5316,17 +5316,14 @@
           "id": "vsync_config",
           "at": "steps[0].sql",
           "top_level_index": 0,
-          "sha256": "2431c412b476a5318c7ec508cae22e8a0cd8558b43f50cd4378c79aebca4f695",
+          "sha256": "5f8f47fae493fc5fa572239b23b27795a274ea28fe768286dd6807de4014aec0",
           "required_columns": [
             "vsync_period_ns",
             "refresh_rate_hz"
           ],
           "has_condition": false,
           "read_only": true,
-          "placeholders": [
-            "${start_ts}",
-            "${end_ts}"
-          ],
+          "placeholders": [],
           "process_scope_valid": null,
           "forceable": true
         },
@@ -5334,7 +5331,7 @@
           "id": "presentation_cadence_audit",
           "at": "steps[1].sql",
           "top_level_index": 1,
-          "sha256": "cb50b6ccf30bea95bdd1947f67ac62170e2dbeef8b41b09e5133976464136550",
+          "sha256": "f95f8a278910c772228cd619f6fe3fcdf1d66080b856904072a5c13cad6ce46f",
           "required_columns": [
             "layer_name",
             "burst_id",
@@ -5357,10 +5354,10 @@
           "has_condition": false,
           "read_only": true,
           "placeholders": [
-            "${start_ts}",
-            "${end_ts}",
             "${package}",
-            "${layer_name}"
+            "${layer_name}",
+            "${start_ts}",
+            "${end_ts}"
           ],
           "process_scope_valid": null,
           "forceable": true
@@ -5369,7 +5366,7 @@
           "id": "consumer_jank_frames",
           "at": "steps[2].sql",
           "top_level_index": 2,
-          "sha256": "c8b174d3ef075528b507c1a43e2fee7265831a27abaa6e273d3ddcf0fedb9532",
+          "sha256": "17e32bbf71c268557894650e755c4966292f00843977a3162bd783d9674eb069",
           "required_columns": [
             "frame_id",
             "layer_name",
@@ -5389,10 +5386,10 @@
           "has_condition": false,
           "read_only": true,
           "placeholders": [
-            "${start_ts}",
-            "${end_ts}",
             "${package}",
-            "${layer_name}"
+            "${layer_name}",
+            "${start_ts}",
+            "${end_ts}"
           ],
           "process_scope_valid": null,
           "forceable": true
@@ -5401,7 +5398,7 @@
           "id": "consumer_jank_summary",
           "at": "steps[3].sql",
           "top_level_index": 3,
-          "sha256": "b06bd8bfa5baa49433da698b454996591f3c00062e6685a32126c9638cf03b6a",
+          "sha256": "288d7a9af61a7da26fb2122aaea8d0b2823c4990415f2aa1263d412b5e796355",
           "required_columns": [
             "total_frames",
             "consumer_jank_frames",
@@ -5418,10 +5415,10 @@
           "has_condition": false,
           "read_only": true,
           "placeholders": [
-            "${start_ts}",
-            "${end_ts}",
             "${package}",
-            "${layer_name}"
+            "${layer_name}",
+            "${start_ts}",
+            "${end_ts}"
           ],
           "process_scope_valid": null,
           "forceable": true
@@ -5430,7 +5427,7 @@
           "id": "jank_severity_distribution",
           "at": "steps[4].sql",
           "top_level_index": 4,
-          "sha256": "bc1c349c857c7beb56e1a1462ef80f12b3fb081acf96737ec639e212237e0628",
+          "sha256": "f6a217e3499abc1b6d870f9f7eae1c0c292575216bbf8665e7ed92f6fecf668b",
           "required_columns": [
             "severity",
             "count",
@@ -5439,10 +5436,10 @@
           "has_condition": false,
           "read_only": true,
           "placeholders": [
-            "${start_ts}",
-            "${end_ts}",
             "${package}",
-            "${layer_name}"
+            "${layer_name}",
+            "${start_ts}",
+            "${end_ts}"
           ],
           "process_scope_valid": null,
           "forceable": true
@@ -8250,7 +8247,7 @@
     },
     "flutter_scrolling_analysis": {
       "source_file": "backend/skills/composite/flutter_scrolling_analysis.skill.yaml",
-      "source_sha256": "1f345fc088535bbce0d3edac849ed979ebf199178b142f2f24cc08d716a5a5f0",
+      "source_sha256": "bc1a9d090640264149bc238944236a8eb8f3553859be2e91b54923b49f92a6b4",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -8271,7 +8268,7 @@
           "id": "flutter_frame_overview",
           "at": "steps[0].sql",
           "top_level_index": 0,
-          "sha256": "8b4ec07ab4e461be0594c6abb4fe77b3c34c27ac990d5b82711f1dcdcf2339a1",
+          "sha256": "6258d6d6d242360253323e1bf5950cdf68ab9dfbed4db982c33599dfbd8636b3",
           "required_columns": [
             "total_frames",
             "avg_frame_ms",
@@ -8289,9 +8286,9 @@
           "has_condition": false,
           "read_only": true,
           "placeholders": [
+            "${vsync_period_ns}",
             "${start_ts}",
-            "${end_ts}",
-            "${vsync_period_ns}"
+            "${end_ts}"
           ],
           "process_scope_valid": null,
           "forceable": true
@@ -8323,7 +8320,7 @@
           "id": "flutter_consumer_jank",
           "at": "steps[2].sql",
           "top_level_index": 2,
-          "sha256": "a445d1e6fff5b699790ed22eddbd0729c5eebfa48afde01ecc7de2d7a0197a7f",
+          "sha256": "b9586bcff8f47c4aeb52bb13b3ad2d8414df9b941fea91c202fd85457e73c5e0",
           "required_columns": [
             "jank_type",
             "count",
@@ -8549,7 +8546,7 @@
     },
     "frame_production_gap": {
       "source_file": "backend/skills/atomic/frame_production_gap.skill.yaml",
-      "source_sha256": "221c153dbac8c5a1a4efd28a5c917e2ab50b05b1f9d7f87eab25292fd01ddff0",
+      "source_sha256": "103da5d1b61303209c3b80ca8d1dc120063e65d708967f4bf3ca1fd62cef18b6",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [],
@@ -8563,7 +8560,7 @@
           "id": "gap_summary",
           "at": "steps[0].sql",
           "top_level_index": 0,
-          "sha256": "044dc7bbd1a7ce94b2904caef3e749a7d113d11f79eaf8d53ddea26fc8392fb1",
+          "sha256": "107ff8ebe3aa7c60d787a7dd37b1d1b8fad414ac7eaca17f0ac94f2c491613a9",
           "required_columns": [
             "total_frames",
             "total_gaps",
@@ -8588,7 +8585,7 @@
           "id": "gap_list",
           "at": "steps[1].sql",
           "top_level_index": 1,
-          "sha256": "c3649d18880875042b0170f7d91b9369ba0fdd164637311240672854d4ef205e",
+          "sha256": "250c426764d5198ba03b03c64e359063971a823ccddaf7a507e834ad8437cb15",
           "required_columns": [
             "gap_start",
             "gap_ns",
@@ -9728,7 +9725,7 @@
     },
     "gpu_metrics": {
       "source_file": "backend/skills/atomic/gpu_metrics.skill.yaml",
-      "source_sha256": "80fe51882560c325dcd072ed62a0c07db6b43a2fdf215b072b366077ec1fbf51",
+      "source_sha256": "71bd759c1a90cfe6fde88b3906c27dc1ebc64dea33be751e5e07ae346935ccf1",
       "type": "atomic",
       "execution": "steps",
       "declared_modules": [
@@ -9813,7 +9810,7 @@
           "id": "gpu_fence_waits",
           "at": "steps[3].sql",
           "top_level_index": 3,
-          "sha256": "2989a8832533a7a6fb2fb06fcf2cf195346735050b6d6d4f76f16b162be12388",
+          "sha256": "0ee8e0c10dad9be71e3a970eb3cde5fa93e97d22fc006ee4a9f3357a627bc162",
           "required_columns": [
             "total_fence_waits",
             "total_wait_ms",
@@ -15085,7 +15082,7 @@
     },
     "present_fence_timing": {
       "source_file": "backend/skills/atomic/present_fence_timing.skill.yaml",
-      "source_sha256": "9e5adfaae742b5ab37687acc966a57565c867df82c5a3c63c794d89bf486b258",
+      "source_sha256": "10b97eb7befeb22eb6bbecffde0247df0ad4d74d2b781bfcc26441f3367aa93e",
       "type": "atomic",
       "execution": "steps",
       "declared_modules": [
@@ -15100,7 +15097,7 @@
           "id": "present_fence_stats",
           "at": "steps[0].sql",
           "top_level_index": 0,
-          "sha256": "3fb78595c3d6c36e01a64b918d63c2ee7e6e8c0547f2c3eb8a40fa69c2284d22",
+          "sha256": "1a57d5da6d051ddf7649e1b38212b57e9828b3f51701ecbcf2f974b3d1a9fd67",
           "required_columns": [
             "total_fences",
             "avg_wait_ms",
@@ -16957,7 +16954,7 @@
     },
     "scrolling_analysis": {
       "source_file": "backend/skills/composite/scrolling_analysis.skill.yaml",
-      "source_sha256": "7b0f116de4fee46ca07cde499121533e72cd10385a408fe504c192a76b2614a1",
+      "source_sha256": "949c47c1d64aa80aa813cdcc9d9f378d03d15e7e5f684166674abdaad72ffb8c",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -17287,7 +17284,7 @@
           "id": "performance_summary",
           "at": "steps[14].sql",
           "top_level_index": 14,
-          "sha256": "31398bf663268be726e402f375c474ad6a514726a641472b9e44bcc5859ee6d4",
+          "sha256": "bf921564d6057f353e232f0a48641cf27c3f06f414b83b4b7bbcfac6bec8b727",
           "required_columns": [
             "total_frames",
             "perceived_jank_frames",
@@ -17305,10 +17302,10 @@
           "has_condition": true,
           "read_only": true,
           "placeholders": [
-            "${start_ts}",
-            "${end_ts}",
             "${__process_scope.upid}",
-            "${package}"
+            "${package}",
+            "${start_ts}",
+            "${end_ts}"
           ],
           "process_scope_valid": true,
           "forceable": true
@@ -17351,7 +17348,7 @@
           "id": "smoothness_basis",
           "at": "steps[16].sql",
           "top_level_index": 16,
-          "sha256": "b250dec9271b9623beb97801c32be763c0dc3f7988b8af2df697c4c551140d72",
+          "sha256": "9db36d3858a1d0c779eefd4adeda751e76a5b1187eef032030e9ea740388e18f",
           "required_columns": [
             "process_name",
             "session_id",
@@ -17501,7 +17498,7 @@
           "id": "input_latency_summary",
           "at": "steps[20].sql",
           "top_level_index": 20,
-          "sha256": "a49f419a9e11ab1e1aecc1dded9ea39881f18e1c061a23d54ba9546d4c720234",
+          "sha256": "130a3396934ea271b34b0c175db06dfd01e78103e1c54fd440d6523d20f3f6e1",
           "required_columns": [
             "target_process",
             "total_input_events",
@@ -17518,8 +17515,6 @@
           "has_condition": true,
           "read_only": true,
           "placeholders": [
-            "${start_ts}",
-            "${end_ts}",
             "${__process_scope.upid}",
             "${package}",
             "${input_handling_budget_ratio|0.5}",
@@ -17554,7 +17549,7 @@
           "id": "jank_type_stats",
           "at": "steps[23].sql",
           "top_level_index": 23,
-          "sha256": "3837cde5f9bdb0dc460f7bb790bca9e1684c03f78f9214e2047b8d339c0aea46",
+          "sha256": "5716b123b8e7bdb0f9a462547060e304bbd061d3426673ad6d3838b9d8479183",
           "required_columns": [
             "jank_type",
             "count",
@@ -17570,10 +17565,10 @@
           "has_condition": true,
           "read_only": true,
           "placeholders": [
-            "${start_ts}",
-            "${end_ts}",
             "${__process_scope.upid}",
             "${package}",
+            "${start_ts}",
+            "${end_ts}",
             "${buffer_tx_coverage.data[0].coverage_status|probe_unavailable}",
             "${buffer_tx_coverage.data[0].frame_timeline_to_buffer_tx_ratio|NULL}",
             "${buffer_tx_coverage.data[0].root_cause_evidence_scope|coverage_unverified}"
@@ -17585,7 +17580,7 @@
           "id": "scroll_sessions",
           "at": "steps[24].sql",
           "top_level_index": 24,
-          "sha256": "28180efed37ab407fceb9a606b5538e24061885aecb95ccfe9ec720de391a7f4",
+          "sha256": "9a973ae967445e0a2655f1542d819f2c3db1b2bc6088df0bbcae6fc4fe08b985",
           "required_columns": [
             "session_id",
             "process_name",
@@ -17601,10 +17596,10 @@
           "has_condition": true,
           "read_only": true,
           "placeholders": [
-            "${start_ts}",
-            "${end_ts}",
             "${__process_scope.upid}",
-            "${package}"
+            "${package}",
+            "${start_ts}",
+            "${end_ts}"
           ],
           "process_scope_valid": true,
           "forceable": true
@@ -17613,7 +17608,7 @@
           "id": "session_stats_batch",
           "at": "steps[25].sql",
           "top_level_index": 25,
-          "sha256": "2ae328e81205028c807027454acead4d8314d26602dc47d55369fdfbdbdb5253",
+          "sha256": "8a77327164ed551625d6b38915b0d029a1e7398ac0c23728f904ee277834dfd5",
           "required_columns": [
             "upid",
             "session_id",
@@ -17626,10 +17621,10 @@
           "has_condition": true,
           "read_only": true,
           "placeholders": [
-            "${start_ts}",
-            "${end_ts}",
             "${__process_scope.upid}",
-            "${package}"
+            "${package}",
+            "${start_ts}",
+            "${end_ts}"
           ],
           "process_scope_valid": true,
           "forceable": true
@@ -17638,7 +17633,7 @@
           "id": "session_jank",
           "at": "steps[26].sql",
           "top_level_index": 26,
-          "sha256": "c9538360f442d987631f482bcde5c3b84356d69f3a32baf0f7588524eb07e09c",
+          "sha256": "f86c7d6b81601ae82c6f2844b05073ca688f9fd3e3b73ebca2e1dbf42ad1f952",
           "required_columns": [
             "session_id",
             "frame_count",
@@ -17652,10 +17647,10 @@
           "has_condition": true,
           "read_only": true,
           "placeholders": [
-            "${start_ts}",
-            "${end_ts}",
             "${__process_scope.upid}",
-            "${package}"
+            "${package}",
+            "${start_ts}",
+            "${end_ts}"
           ],
           "process_scope_valid": true,
           "forceable": true
@@ -17664,7 +17659,7 @@
           "id": "get_app_jank_frames",
           "at": "steps[27].sql",
           "top_level_index": 27,
-          "sha256": "845c88b99118261cbb0defbc26de912fdb61f8ca32cbe4182d0614f1486549e9",
+          "sha256": "577004435c7e4b5f2ecf5d828a017fab956f0257631aca98a7a8960146db9dd0",
           "required_columns": [
             "frame_id",
             "frame_identity_key",
@@ -17700,10 +17695,10 @@
           "has_condition": true,
           "read_only": true,
           "placeholders": [
-            "${start_ts}",
-            "${end_ts}",
             "${__process_scope.upid}",
-            "${package}"
+            "${package}",
+            "${start_ts}",
+            "${end_ts}"
           ],
           "process_scope_valid": true,
           "forceable": true
@@ -17947,7 +17942,7 @@
           "id": "root_cause_classification",
           "at": "steps[33].sql",
           "top_level_index": 33,
-          "sha256": "a1cb165e6358a82e7e3fa221bd06e3d246b2f7d122b2c0c886127e52bf1df09b",
+          "sha256": "bc57129262b145bd0a2bbf51bea415cb8143d4e7aabd97389601e56f2b591a98",
           "required_columns": [
             "problem_category",
             "problem_component",
@@ -17958,10 +17953,10 @@
           "has_condition": true,
           "read_only": true,
           "placeholders": [
-            "${start_ts}",
-            "${end_ts}",
             "${__process_scope.upid}",
             "${package}",
+            "${start_ts}",
+            "${end_ts}",
             "${input_handling_budget_ratio|0.5}"
           ],
           "process_scope_valid": true,
@@ -19767,7 +19762,7 @@
     },
     "surfaceflinger_analysis": {
       "source_file": "backend/skills/composite/surfaceflinger_analysis.skill.yaml",
-      "source_sha256": "4d6e1ad9bf86293bfb2b3488cd30b3ff6d382e7560b18a6923e32b2150de4e27",
+      "source_sha256": "a794835994fbefb7b094d38dec6a447e5c5c3229d7e61937ddc1ce792b3653dd",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -19807,7 +19802,7 @@
           "id": "vsync_config",
           "at": "steps[1].sql",
           "top_level_index": 1,
-          "sha256": "5599f05a55c289539b7a439bef32d586a6e1fd6cb5bedb792caa490862f349ff",
+          "sha256": "0079400522cd0896bd24f04f84b129eadd7a4313bb5bde36a13e06500bd7c9ca",
           "required_columns": [
             "refresh_rate_hz",
             "vsync_period_ms",
@@ -19815,10 +19810,7 @@
           ],
           "has_condition": true,
           "read_only": true,
-          "placeholders": [
-            "${start_ts}",
-            "${end_ts}"
-          ],
+          "placeholders": [],
           "process_scope_valid": null,
           "forceable": true
         },
@@ -21874,7 +21866,7 @@
     },
     "vsync_config": {
       "source_file": "backend/skills/atomic/vsync_config.skill.yaml",
-      "source_sha256": "858c68177948578c7ae8c5322363a3a413fa92c30afdf297fc3bd64f41a80bef",
+      "source_sha256": "70dde981c9e1419f313fa5afc605115e10f4b4acc4cffc13b945673151f61d0a",
       "type": "atomic",
       "execution": "steps",
       "declared_modules": [
@@ -21889,7 +21881,7 @@
           "id": "detect_vsync_config",
           "at": "steps[0].sql",
           "top_level_index": 0,
-          "sha256": "957e39bff2ebb84256f4f1e501bc11b8a6f6cfc3542969d81b7f7bbae94104d1",
+          "sha256": "e886d501d6db05706bc11c9128c73fb85818178b3c4cda81856f7a307a5adfa0",
           "required_columns": [
             "vsync_period_ns",
             "refresh_rate_hz",
@@ -21910,7 +21902,7 @@
     },
     "vsync_period_detection": {
       "source_file": "backend/skills/atomic/vsync_period_detection.skill.yaml",
-      "source_sha256": "3e6fef81b5490d36eb957296b47334e49b8c55adb5509d01ad7dae8765c6bec1",
+      "source_sha256": "bc6d252098fae01ef88bf0a09c4a47cebfd6b4d8793de3aeaabc983a7deae16e",
       "type": "atomic",
       "execution": "steps",
       "declared_modules": [
@@ -21925,7 +21917,7 @@
           "id": "detect_vsync_period",
           "at": "steps[0].sql",
           "top_level_index": 0,
-          "sha256": "a8ceacd60f9bf8c893d825e6c8abee0f7de63bdd5ce1509968acc1e6603510fa",
+          "sha256": "06f49e1fa298670cd76f125011880aff69e26465c91c9fdef6cfb8bf8f5d2578",
           "required_columns": [
             "vsync_period_ns",
             "detected_refresh_rate_hz",

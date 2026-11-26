@@ -460,6 +460,7 @@ describe('cross-scene canonical system consumers', () => {
         UPDATE trace_bounds SET end_ts=300000000;
         CREATE TABLE counter(ts INTEGER,track_id INTEGER,value INTEGER);
         CREATE TABLE counter_track(id INTEGER,name TEXT);
+        CREATE TABLE expected_frame_timeline_slice(ts INTEGER,dur INTEGER);
         CREATE TABLE actual_frame_timeline_slice(ts INTEGER,dur INTEGER,upid INTEGER,display_frame_token INTEGER,surface_frame_token INTEGER);
       `);
       const insert = db.prepare('INSERT INTO actual_frame_timeline_slice VALUES(?,15000000,42,?,?)');

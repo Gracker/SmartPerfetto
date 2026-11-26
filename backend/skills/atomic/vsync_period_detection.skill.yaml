@@ -9,7 +9,7 @@
 # multiple composite skills to avoid code duplication.
 #
 # Resolution Priority:
-# 1. VSYNC-sf counter intervals median (most accurate)
+# 1. In-window VSYNC-app counter intervals, then VSYNC-sf
 # 2. expected_frame_timeline_slice duration median
 # 3. Default 60Hz (16666667 ns)
 #
@@ -19,7 +19,7 @@ name: vsync_period_detection
 type: atomic
 version: "1.0.0"
 description: |
-  Detect VSync period from trace data using median of VSYNC-sf intervals.
+  Detect VSync period from trace data using in-window VSync counter intervals.
   Returns detected period, refresh rate (computed dynamically), and confidence score.
 
 category: frame
@@ -48,41 +48,19 @@ steps:
   - id: detect_vsync_period
     type: atomic
     description: Detect VSync period using multiple data sources
+    sql_fragments:
+      - fragments/vsync_config.sql
+      - fragments/scoped_panel_counter.sql
     sql: |
-      -- VSync Period Detection with Multiple Sources
-      --
-      -- Strategy:
-      -- 1. Try VSYNC-sf counter median (most reliable)
-      -- 2. Fall back to expected_frame_timeline_slice median
-      -- 3. Default 60Hz fallback
-
       WITH params AS (
         SELECT
           COALESCE(${start_ts}, 0) AS start_ts,
           COALESCE(${end_ts}, (SELECT MAX(ts) FROM counter)) AS end_ts
       ),
 
-      -- Source 1: VSYNC-sf counter intervals
-      vsync_sf_raw AS (
-        SELECT
-          c.ts,
-          c.ts - LAG(c.ts) OVER (ORDER BY c.ts) AS interval_ns
-        FROM counter c
-        JOIN counter_track t ON c.track_id = t.id
-        CROSS JOIN params p
-        WHERE t.name = 'VSYNC-sf'
-          AND c.ts >= p.start_ts
-          AND c.ts <= p.end_ts
-      ),
-
-      vsync_sf_stats AS (
-        SELECT
-          CAST(PERCENTILE(interval_ns, 50) AS INTEGER) AS median_period_ns,
-          COUNT(*) AS sample_count
-        FROM vsync_sf_raw
-        WHERE interval_ns IS NOT NULL
-          AND interval_ns > 5500000
-          AND interval_ns < 50000000
+      eligible_counter AS (
+        SELECT * FROM panel_counter_stats WHERE sample_count >= 10
+        ORDER BY (track_name = 'VSYNC-app') DESC LIMIT 1
       ),
 
       -- Source 2: expected_frame_timeline_slice durations (fallback)
@@ -116,26 +94,26 @@ steps:
         FROM (
           SELECT
             CASE
-              WHEN (SELECT sample_count FROM vsync_sf_stats) >= 10
-                THEN (SELECT median_period_ns FROM vsync_sf_stats)
+              WHEN (SELECT sample_count FROM eligible_counter) >= 10
+                THEN (SELECT period_ns FROM eligible_counter)
               WHEN (SELECT sample_count FROM frame_timeline_stats) >= 10
                 THEN (SELECT median_period_ns FROM frame_timeline_stats)
               ELSE 16666667
             END AS raw_ns,
             CASE
-              WHEN (SELECT sample_count FROM vsync_sf_stats) >= 10 THEN 'vsync_sf'
+              WHEN (SELECT sample_count FROM eligible_counter) >= 10 THEN (SELECT CASE track_name WHEN 'VSYNC-app' THEN 'vsync_app' ELSE 'vsync_sf' END FROM eligible_counter)
               WHEN (SELECT sample_count FROM frame_timeline_stats) >= 10 THEN 'frame_timeline'
               ELSE 'default'
             END AS detection_method,
             CASE
-              WHEN (SELECT sample_count FROM vsync_sf_stats) >= 100 THEN 0.95
-              WHEN (SELECT sample_count FROM vsync_sf_stats) >= 10 THEN 0.85
+              WHEN (SELECT sample_count FROM eligible_counter) >= 100 THEN 0.95
+              WHEN (SELECT sample_count FROM eligible_counter) >= 10 THEN 0.85
               WHEN (SELECT sample_count FROM frame_timeline_stats) >= 100 THEN 0.80
               WHEN (SELECT sample_count FROM frame_timeline_stats) >= 10 THEN 0.70
               ELSE 0.50
             END AS confidence,
             COALESCE(
-              (SELECT sample_count FROM vsync_sf_stats),
+              (SELECT sample_count FROM eligible_counter),
               (SELECT sample_count FROM frame_timeline_stats),
               0
             ) AS sample_count
@@ -167,7 +145,7 @@ steps:
           description: Raw measured period before snapping
         - name: detection_method
           type: string
-          description: Method used for detection (vsync_sf, frame_timeline, default)
+          description: Method used for detection (vsync_app, vsync_sf, frame_timeline, default)
         - name: confidence
           type: number
           description: Confidence score (0-1)

@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import fs from 'fs';
+import {withStepFragments} from '../../../../tests/helpers/skillFragmentSql';
 import path from 'path';
 import Database from 'better-sqlite3';
 import yaml from 'js-yaml';
@@ -14,14 +15,7 @@ const skillPath = path.join(
   'composite',
   'flutter_scrolling_analysis.skill.yaml',
 );
-const fragmentPath = path.join(
-  process.cwd(),
-  'skills',
-  'fragments',
-  'flutter_process_identity.sql',
-);
 const skill = yaml.load(fs.readFileSync(skillPath, 'utf8')) as any;
-const processIdentityFragment = fs.readFileSync(fragmentPath, 'utf8');
 
 function getStep(id: string): any {
   const step = skill.steps?.find((candidate: any) => candidate.id === id);
@@ -41,12 +35,7 @@ function substitute(sql: string, packageName = ''): string {
 function renderedStepSql(id: string, packageName = ''): string {
   const step = getStep(id);
   expect(step.sql_fragments).toContain('fragments/flutter_process_identity.sql');
-  const sql = substitute(String(step.sql), packageName).trim();
-  const fragment = substitute(processIdentityFragment, packageName).trim();
-  const withMatch = /^(\s*(?:--[^\n]*\n\s*)*)WITH\b/i.exec(sql);
-  if (!withMatch) return `WITH\n${fragment}\n${sql}`;
-  const withEnd = withMatch.index + withMatch[0].length;
-  return `${sql.slice(0, withEnd)}\n${fragment}\n,\n${sql.slice(withEnd)}`;
+  return substitute(withStepFragments(String(step.sql), step.sql_fragments), packageName);
 }
 
 function createFixture(): Database.Database {

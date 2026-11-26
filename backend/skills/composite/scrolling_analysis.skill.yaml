@@ -836,6 +836,7 @@ steps:
           label: "呈现间隔来源"
           type: string
     sql_fragments:
+      - fragments/vsync_config.sql
       - fragments/effective_target_processes.sql
     process_scope:
       role: target
@@ -844,35 +845,6 @@ steps:
         global_context: [refresh_rate, vsync_period_ms, vsync_source]
     sql: |
       WITH
-      -- 获取 VSync 周期（从 VSYNC-sf 信号计算，限定在分析区间内）
-      vsync_intervals AS (
-        SELECT
-          c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
-        FROM counter c
-        JOIN counter_track t ON c.track_id = t.id
-        WHERE t.name = 'VSYNC-sf'
-          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
-      ),
-      timing_config AS (
-        SELECT CASE
-          WHEN raw_ns BETWEEN 5500000 AND 6500000 THEN 6060606
-          WHEN raw_ns BETWEEN 6500001 AND 7500000 THEN 6944444
-          WHEN raw_ns BETWEEN 7500001 AND 9500000 THEN 8333333
-          WHEN raw_ns BETWEEN 9500001 AND 12500000 THEN 11111111
-          WHEN raw_ns BETWEEN 12500001 AND 20000000 THEN 16666667
-          WHEN raw_ns BETWEEN 20000001 AND 35000000 THEN 33333333
-          ELSE raw_ns
-        END AS vsync_period_ns
-        FROM (
-          SELECT CAST(COALESCE(
-            (SELECT PERCENTILE(interval_ns, 50)
-             FROM vsync_intervals
-             WHERE interval_ns > 5500000 AND interval_ns < 50000000),
-            16666667
-          ) AS INTEGER) AS raw_ns
-        )
-      ),
       -- APP_FRAME_DEDUP_CTES_BEGIN
       app_frame_rows AS (
         SELECT
@@ -933,7 +905,7 @@ steps:
           COALESCE(SUM(
             CASE
               WHEN prev_present_ts IS NOT NULL
-                AND frame_ts - prev_present_ts > (SELECT vsync_period_ns * 6 FROM timing_config)
+                AND frame_ts - prev_present_ts > (SELECT vsync_period_ns * 6 FROM vsync_config)
               THEN frame_ts - prev_present_ts
               ELSE 0
             END
@@ -941,7 +913,7 @@ steps:
           COALESCE(SUM(
             CASE
               WHEN prev_present_ts IS NOT NULL
-                AND frame_ts - prev_present_ts > (SELECT vsync_period_ns * 6 FROM timing_config)
+                AND frame_ts - prev_present_ts > (SELECT vsync_period_ns * 6 FROM vsync_config)
               THEN 1
               ELSE 0
             END
@@ -957,10 +929,10 @@ steps:
           session_break_count,
           CASE
             WHEN raw_duration_ns IS NULL OR raw_duration_ns <= 0
-              THEN (SELECT vsync_period_ns FROM timing_config)
+              THEN (SELECT vsync_period_ns FROM vsync_config)
             ELSE MAX(
               raw_duration_ns - inter_session_idle_ns,
-              (SELECT vsync_period_ns FROM timing_config)
+              (SELECT vsync_period_ns FROM vsync_config)
             )
           END as duration_ns
         FROM frame_time_range_stats
@@ -979,8 +951,8 @@ steps:
         FROM app_frame_intervals
         WHERE prev_present_ts IS NOT NULL
           AND present_ts > prev_present_ts
-          AND present_ts - prev_present_ts >= (SELECT vsync_period_ns FROM timing_config) * 0.5
-          AND present_ts - prev_present_ts <= (SELECT vsync_period_ns FROM timing_config) * 6
+          AND present_ts - prev_present_ts >= (SELECT vsync_period_ns FROM vsync_config) * 0.5
+          AND present_ts - prev_present_ts <= (SELECT vsync_period_ns FROM vsync_config) * 6
       ),
       -- App 报告的掉帧（旧逻辑，仅供参考）
       -- Present-interval columns come from present gaps only. Without a valid
@@ -1036,8 +1008,8 @@ steps:
               AND (jank_responsibility != 'BUFFER_STUFFING' OR android_is_missed_frame_type(jank_type)) THEN 1
             WHEN jank_responsibility = 'BUFFER_STUFFING'
               AND prev_present_ts IS NOT NULL
-              AND present_ts - prev_present_ts > (SELECT vsync_period_ns FROM timing_config) * 1.5
-              AND present_ts - prev_present_ts <= (SELECT vsync_period_ns FROM timing_config) * 6 THEN 1
+              AND present_ts - prev_present_ts > (SELECT vsync_period_ns FROM vsync_config) * 1.5
+              AND present_ts - prev_present_ts <= (SELECT vsync_period_ns FROM vsync_config) * 6 THEN 1
             ELSE 0
           END as consumer_jank,
           CASE
@@ -1051,11 +1023,11 @@ steps:
               (present_type IN ('Late Present', 'Dropped Frame')
                 AND (jank_responsibility != 'BUFFER_STUFFING' OR android_is_missed_frame_type(jank_type)))
               OR (jank_responsibility = 'BUFFER_STUFFING' AND prev_present_ts IS NOT NULL
-                  AND present_ts - prev_present_ts > (SELECT vsync_period_ns FROM timing_config) * 1.5
-                  AND present_ts - prev_present_ts <= (SELECT vsync_period_ns FROM timing_config) * 6)
+                  AND present_ts - prev_present_ts > (SELECT vsync_period_ns FROM vsync_config) * 1.5
+                  AND present_ts - prev_present_ts <= (SELECT vsync_period_ns FROM vsync_config) * 6)
             ) AND prev_present_ts IS NOT NULL
-              AND present_ts - prev_present_ts > (SELECT vsync_period_ns FROM timing_config) * 1.5
-            THEN MAX(CAST(ROUND((present_ts - prev_present_ts) * 1.0 / (SELECT vsync_period_ns FROM timing_config) - 1, 0) AS INTEGER), 0)
+              AND present_ts - prev_present_ts > (SELECT vsync_period_ns FROM vsync_config) * 1.5
+            THEN MAX(CAST(ROUND((present_ts - prev_present_ts) * 1.0 / (SELECT vsync_period_ns FROM vsync_config) - 1, 0) AS INTEGER), 0)
             ELSE 0
           END as vsync_missed
         FROM consumer_layer_frames
@@ -1129,13 +1101,13 @@ steps:
         ROUND((SELECT duration_ns FROM time_range) / 1e9, 2) as duration_sec,
         MIN(
           ROUND(1e9 * (SELECT total FROM app_stats) / NULLIF((SELECT duration_ns FROM time_range), 0), 1),
-          CAST(ROUND(1e9 / (SELECT vsync_period_ns FROM timing_config)) AS INTEGER)
+          CAST(ROUND(1e9 / (SELECT vsync_period_ns FROM vsync_config)) AS INTEGER)
         ) as actual_fps,
-        CAST(ROUND(1e9 / (SELECT vsync_period_ns FROM timing_config)) AS INTEGER) as refresh_rate,
+        CAST(ROUND(1e9 / (SELECT vsync_period_ns FROM vsync_config)) AS INTEGER) as refresh_rate,
         (SELECT fps_source FROM resolved_jank) as fps_source,
         (SELECT max_vsync_missed FROM resolved_jank) as max_vsync_missed,
         (SELECT total_vsync_missed FROM resolved_jank) as total_vsync_missed,
-        ROUND((SELECT vsync_period_ns FROM timing_config) / 1e6, 2) as vsync_period_ms,
+        ROUND((SELECT vsync_period_ns FROM vsync_config) / 1e6, 2) as vsync_period_ms,
         -- Producer-bound ledger columns. The window is the analysed frame range
         -- rather than the requested range, so a later requirement binds to what
         -- was actually measured. Status is `unavailable` rather than a zero rate
@@ -1359,7 +1331,7 @@ steps:
   # over 6 VSync per process; at least 10 frames and 200ms). The budget is the
   # shared vsync_config. cadence_status applies the rule of
   # consumer_jank_detection.presentation_cadence_audit to each session layer,
-  # only against a measured VSYNC-sf budget; the audit itself groups by 500ms
+  # only against a measured counter budget; the audit itself groups by 500ms
   # bursts and reads the unsnapped in-window median, so the two can differ at
   # the edges. Without usable target presentation frames, every doFrame start gap of
   # the main thread is aggregated and presentation is unmeasured: a start gap
@@ -1438,39 +1410,10 @@ steps:
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
       ),
-      -- The split period of scroll_sessions (VSYNC-sf median in the window,
-      -- else 60Hz), so session ids and bounds match that list.
-      session_split_intervals AS (
-        SELECT c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
-        FROM counter c
-        JOIN counter_track t ON c.track_id = t.id
-        WHERE t.name = 'VSYNC-sf'
-          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
-      ),
-      session_split_config AS (
-        SELECT CASE
-          WHEN raw_ns BETWEEN 5500000 AND 6500000 THEN 6060606
-          WHEN raw_ns BETWEEN 6500001 AND 7500000 THEN 6944444
-          WHEN raw_ns BETWEEN 7500001 AND 9500000 THEN 8333333
-          WHEN raw_ns BETWEEN 9500001 AND 12500000 THEN 11111111
-          WHEN raw_ns BETWEEN 12500001 AND 20000000 THEN 16666667
-          WHEN raw_ns BETWEEN 20000001 AND 35000000 THEN 33333333
-          ELSE raw_ns
-        END AS vsync_period_ns
-        FROM (
-          SELECT CAST(COALESCE(
-            (SELECT PERCENTILE(interval_ns, 50)
-             FROM session_split_intervals
-             WHERE interval_ns > 5500000 AND interval_ns < 50000000),
-            16666667
-          ) AS INTEGER) AS raw_ns
-        )
-      ),
       session_markers AS (
         SELECT upid, ts, dur,
           CASE WHEN ts - LAG(ts + dur) OVER (PARTITION BY upid ORDER BY ts)
-              <= (SELECT vsync_period_ns * 6 FROM session_split_config)
+              <= (SELECT vsync_period_ns * 6 FROM vsync_config)
             THEN 0 ELSE 1 END AS new_session
         FROM ft_frames WHERE dur > 0
       ),
@@ -1620,9 +1563,19 @@ steps:
             WHEN v.vsync_source NOT IN ('scoped_vsync_counter', 'trace_wide_vsync_counter')
               THEN 'derived_from_expected_frames'
             WHEN r.gap_p50_ns * 1.5 < v.vsync_period_ns THEN 'contradicted_by_observed_cadence'
+            WHEN v.counter_source = 'VSYNC-sf' AND v.vsync_period_ns BETWEEN
+              0.8 * app_cadence.gap_ns AND 1.25 * app_cadence.gap_ns
+              THEN 'unverified_app_cadence'
             ELSE 'measured'
           END AS budget_status
         FROM basis_rows r CROSS JOIN vsync_config v
+        LEFT JOIN (
+          SELECT upid, PERCENTILE(raw_ts - previous_start_ts, 50) AS gap_ns
+          FROM mtw_frame_sequence
+          WHERE previous_start_ts IS NOT NULL
+            AND (SELECT counter_source FROM vsync_config) = 'VSYNC-sf'
+          GROUP BY upid
+        ) app_cadence ON app_cadence.upid = r.upid
       ),
       layer_totals AS (
         SELECT b.upid, b.layer_name,
@@ -2044,38 +1997,12 @@ steps:
       context_fields:
         global_context: [frame_budget_ms]
     sql_fragments:
+      - fragments/vsync_config.sql
       - fragments/android_input_events_normalized.sql
       - fragments/android_input_delivery_roles.sql
       - fragments/android_input_scoped_deliveries.sql
     sql: |
       WITH
-      vsync_intervals AS (
-        SELECT c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
-        FROM counter c
-        JOIN counter_track t ON c.track_id = t.id
-        WHERE t.name = 'VSYNC-sf'
-          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
-      ),
-      timing_config AS (
-        SELECT CASE
-          WHEN raw_ns BETWEEN 5500000 AND 6500000 THEN 6060606
-          WHEN raw_ns BETWEEN 6500001 AND 7500000 THEN 6944444
-          WHEN raw_ns BETWEEN 7500001 AND 9500000 THEN 8333333
-          WHEN raw_ns BETWEEN 9500001 AND 12500000 THEN 11111111
-          WHEN raw_ns BETWEEN 12500001 AND 20000000 THEN 16666667
-          WHEN raw_ns BETWEEN 20000001 AND 35000000 THEN 33333333
-          ELSE raw_ns
-        END AS vsync_period_ns
-        FROM (
-          SELECT CAST(COALESCE(
-            (SELECT PERCENTILE(interval_ns, 50)
-             FROM vsync_intervals
-             WHERE interval_ns > 5500000 AND interval_ns < 50000000),
-            16666667
-          ) AS INTEGER) AS raw_ns
-        )
-      ),
       scoped_events AS (
         SELECT *
         FROM android_input_scoped_deliveries
@@ -2134,15 +2061,15 @@ steps:
         ROUND(AVG(exact_end_to_end_latency_dur) / 1e6, 2) as avg_e2e_ms,
         ROUND(MAX(exact_end_to_end_latency_dur) / 1e6, 2) as max_e2e_ms,
         COUNT(DISTINCT CASE
-          WHEN handling_latency_dur > (SELECT vsync_period_ns FROM timing_config) * ${input_handling_budget_ratio|0.5}
+          WHEN handling_latency_dur > (SELECT vsync_period_ns FROM vsync_config) * ${input_handling_budget_ratio|0.5}
           THEN physical_event_key END) as slow_handling_events,
         (SELECT COUNT(*) FROM frame_backlog WHERE event_count >= ${input_event_backlog_threshold|3}) as input_backlog_frames,
         COUNT(DISTINCT CASE WHEN frame_association = 'speculative' THEN physical_event_key END) as speculative_frame_matches,
-        ROUND((SELECT vsync_period_ns FROM timing_config) / 1e6, 2) as frame_budget_ms,
+        ROUND((SELECT vsync_period_ns FROM vsync_config) / 1e6, 2) as frame_budget_ms,
         CASE
           WHEN COUNT(*) = 0 THEN '无 input 事件'
-          WHEN SUM(CASE WHEN handling_latency_dur > (SELECT vsync_period_ns FROM timing_config) * ${input_handling_budget_ratio|0.5} THEN 1 ELSE 0 END) = 0 THEN '正常'
-          WHEN MAX(handling_latency_dur) > (SELECT vsync_period_ns FROM timing_config) * 2 THEN '严重'
+          WHEN SUM(CASE WHEN handling_latency_dur > (SELECT vsync_period_ns FROM vsync_config) * ${input_handling_budget_ratio|0.5} THEN 1 ELSE 0 END) = 0 THEN '正常'
+          WHEN MAX(handling_latency_dur) > (SELECT vsync_period_ns FROM vsync_config) * 2 THEN '严重'
           ELSE '需关注'
         END as input_latency_rating
       FROM target_events
@@ -2326,40 +2253,13 @@ steps:
           type: string
           hidden: true
     sql_fragments:
+      - fragments/vsync_config.sql
       - fragments/effective_target_processes.sql
     process_scope:
       role: target
       binding: effective_target_processes
     sql: |
       WITH
-      vsync_intervals AS (
-        SELECT
-          c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
-        FROM counter c
-        JOIN counter_track t ON c.track_id = t.id
-        WHERE t.name = 'VSYNC-sf'
-          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
-      ),
-      vsync_config AS (
-        SELECT CASE
-          WHEN raw_ns BETWEEN 5500000 AND 6500000 THEN 6060606
-          WHEN raw_ns BETWEEN 6500001 AND 7500000 THEN 6944444
-          WHEN raw_ns BETWEEN 7500001 AND 9500000 THEN 8333333
-          WHEN raw_ns BETWEEN 9500001 AND 12500000 THEN 11111111
-          WHEN raw_ns BETWEEN 12500001 AND 20000000 THEN 16666667
-          WHEN raw_ns BETWEEN 20000001 AND 35000000 THEN 33333333
-          ELSE raw_ns
-        END AS vsync_period_ns
-        FROM (
-          SELECT CAST(COALESCE(
-            (SELECT PERCENTILE(interval_ns, 50)
-             FROM vsync_intervals
-             WHERE interval_ns > 5500000 AND interval_ns < 50000000),
-            16666667
-          ) AS INTEGER) AS raw_ns
-        )
-      ),
       app_frames AS (
         SELECT
           CASE
@@ -2544,40 +2444,13 @@ steps:
           label: "FPS"
           type: number
     sql_fragments:
+      - fragments/vsync_config.sql
       - fragments/effective_target_processes.sql
     process_scope:
       role: target
       binding: effective_target_processes
     sql: |
       WITH
-      -- 动态 VSync 周期检测用于 session 切分（限定在分析区间内）
-      vsync_intervals AS (
-        SELECT c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
-        FROM counter c
-        JOIN counter_track t ON c.track_id = t.id
-        WHERE t.name = 'VSYNC-sf'
-          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
-      ),
-      vsync_config AS (
-        SELECT CASE
-          WHEN raw_ns BETWEEN 5500000 AND 6500000 THEN 6060606
-          WHEN raw_ns BETWEEN 6500001 AND 7500000 THEN 6944444
-          WHEN raw_ns BETWEEN 7500001 AND 9500000 THEN 8333333
-          WHEN raw_ns BETWEEN 9500001 AND 12500000 THEN 11111111
-          WHEN raw_ns BETWEEN 12500001 AND 20000000 THEN 16666667
-          WHEN raw_ns BETWEEN 20000001 AND 35000000 THEN 33333333
-          ELSE raw_ns
-        END AS vsync_period_ns
-        FROM (
-          SELECT CAST(COALESCE(
-            (SELECT PERCENTILE(interval_ns, 50)
-             FROM vsync_intervals
-             WHERE interval_ns > 5500000 AND interval_ns < 50000000),
-            16666667
-          ) AS INTEGER) AS raw_ns
-        )
-      ),
       frame_gaps AS (
         SELECT
           COALESCE(a.display_frame_token, a.surface_frame_token) as frame_id,
@@ -2652,6 +2525,7 @@ steps:
     save_as: session_stats
     condition: "scroll_sessions.data?.length > 0"
     sql_fragments:
+      - fragments/vsync_config.sql
       - fragments/system_cpu_frequency_spans.sql
       - fragments/system_sched_spans.sql
       - fragments/system_thread_state_spans.sql
@@ -2663,34 +2537,6 @@ steps:
         global_context: [cpu_freq_json]
     sql: |
       WITH
-      -- 1. VSync config (同 scroll_sessions)
-      vsync_intervals AS (
-        SELECT c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
-        FROM counter c
-        JOIN counter_track t ON c.track_id = t.id
-        WHERE t.name = 'VSYNC-sf'
-          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
-      ),
-      vsync_config AS (
-        SELECT CASE
-          WHEN raw_ns BETWEEN 5500000 AND 6500000 THEN 6060606
-          WHEN raw_ns BETWEEN 6500001 AND 7500000 THEN 6944444
-          WHEN raw_ns BETWEEN 7500001 AND 9500000 THEN 8333333
-          WHEN raw_ns BETWEEN 9500001 AND 12500000 THEN 11111111
-          WHEN raw_ns BETWEEN 12500001 AND 20000000 THEN 16666667
-          WHEN raw_ns BETWEEN 20000001 AND 35000000 THEN 33333333
-          ELSE raw_ns
-        END AS vsync_period_ns
-        FROM (
-          SELECT CAST(COALESCE(
-            (SELECT PERCENTILE(interval_ns, 50)
-             FROM vsync_intervals
-             WHERE interval_ns > 5500000 AND interval_ns < 50000000),
-            16666667
-          ) AS INTEGER) AS raw_ns
-        )
-      ),
       -- 2. Session boundaries (同 scroll_sessions)
       frame_gaps AS (
         SELECT
@@ -2893,40 +2739,13 @@ steps:
           type: string
           format: truncate
     sql_fragments:
+      - fragments/vsync_config.sql
       - fragments/effective_target_processes.sql
     process_scope:
       role: target
       binding: effective_target_processes
     sql: |
       WITH
-      -- 动态 VSync 周期检测（限定在分析区间内，仅用于 session 切分）
-      vsync_intervals_for_session AS (
-        SELECT c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
-        FROM counter c
-        JOIN counter_track t ON c.track_id = t.id
-        WHERE t.name = 'VSYNC-sf'
-          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
-      ),
-      vsync_config_for_session AS (
-        SELECT CASE
-          WHEN raw_ns BETWEEN 5500000 AND 6500000 THEN 6060606
-          WHEN raw_ns BETWEEN 6500001 AND 7500000 THEN 6944444
-          WHEN raw_ns BETWEEN 7500001 AND 9500000 THEN 8333333
-          WHEN raw_ns BETWEEN 9500001 AND 12500000 THEN 11111111
-          WHEN raw_ns BETWEEN 12500001 AND 20000000 THEN 16666667
-          WHEN raw_ns BETWEEN 20000001 AND 35000000 THEN 33333333
-          ELSE raw_ns
-        END AS vsync_period_ns
-        FROM (
-          SELECT CAST(COALESCE(
-            (SELECT PERCENTILE(interval_ns, 50)
-             FROM vsync_intervals_for_session
-             WHERE interval_ns > 5500000 AND interval_ns < 50000000),
-            16666667
-          ) AS INTEGER) AS raw_ns
-        )
-      ),
       frame_gaps AS (
         SELECT
           COALESCE(a.display_frame_token, a.surface_frame_token) as display_frame_token,
@@ -2970,7 +2789,7 @@ steps:
       ),
       session_markers AS (
         SELECT *,
-          CASE WHEN time_gap_ns IS NULL OR time_gap_ns > (SELECT vsync_period_ns * 6 FROM vsync_config_for_session) THEN 1 ELSE 0 END as new_session
+          CASE WHEN time_gap_ns IS NULL OR time_gap_ns > (SELECT vsync_period_ns * 6 FROM vsync_config) THEN 1 ELSE 0 END as new_session
         FROM frame_gaps
       ),
       sessions_raw AS (
@@ -3000,8 +2819,8 @@ steps:
               AND (sr.jank_responsibility != 'BUFFER_STUFFING' OR android_is_missed_frame_type(sr.jank_type)) THEN 1
             WHEN sr.jank_responsibility = 'BUFFER_STUFFING'
               AND sr.prev_present_ts IS NOT NULL
-              AND sr.present_ts - sr.prev_present_ts > (SELECT vsync_period_ns FROM vsync_config_for_session) * 1.5
-              AND sr.present_ts - sr.prev_present_ts <= (SELECT vsync_period_ns FROM vsync_config_for_session) * 6 THEN 1
+              AND sr.present_ts - sr.prev_present_ts > (SELECT vsync_period_ns FROM vsync_config) * 1.5
+              AND sr.present_ts - sr.prev_present_ts <= (SELECT vsync_period_ns FROM vsync_config) * 6 THEN 1
             ELSE 0 END) as consumer_jank_count,
           SUM(CASE WHEN sr.present_type IN ('Late Present', 'Dropped Frame')
             AND sr.jank_responsibility = 'APP' THEN 1 ELSE 0 END) as app_jank_count,
@@ -3012,17 +2831,17 @@ steps:
               (sr.present_type IN ('Late Present', 'Dropped Frame')
                 AND (sr.jank_responsibility != 'BUFFER_STUFFING' OR android_is_missed_frame_type(sr.jank_type)))
               OR (sr.jank_responsibility = 'BUFFER_STUFFING' AND sr.prev_present_ts IS NOT NULL
-                  AND sr.present_ts - sr.prev_present_ts > (SELECT vsync_period_ns FROM vsync_config_for_session) * 1.5
-                  AND sr.present_ts - sr.prev_present_ts <= (SELECT vsync_period_ns FROM vsync_config_for_session) * 6)
+                  AND sr.present_ts - sr.prev_present_ts > (SELECT vsync_period_ns FROM vsync_config) * 1.5
+                  AND sr.present_ts - sr.prev_present_ts <= (SELECT vsync_period_ns FROM vsync_config) * 6)
             ) AND sr.prev_present_ts IS NOT NULL
-              AND sr.present_ts - sr.prev_present_ts > (SELECT vsync_period_ns FROM vsync_config_for_session) * 1.5
-            THEN MAX(CAST(ROUND((sr.present_ts - sr.prev_present_ts) * 1.0 / (SELECT vsync_period_ns FROM vsync_config_for_session) - 1, 0) AS INTEGER), 0)
+              AND sr.present_ts - sr.prev_present_ts > (SELECT vsync_period_ns FROM vsync_config) * 1.5
+            THEN MAX(CAST(ROUND((sr.present_ts - sr.prev_present_ts) * 1.0 / (SELECT vsync_period_ns FROM vsync_config) - 1, 0) AS INTEGER), 0)
             ELSE 0 END) as max_vsync_missed,
           GROUP_CONCAT(DISTINCT CASE
             WHEN (sr.present_type IN ('Late Present', 'Dropped Frame')
               AND (sr.jank_responsibility != 'BUFFER_STUFFING' OR android_is_missed_frame_type(sr.jank_type)))
               OR (sr.jank_responsibility = 'BUFFER_STUFFING' AND sr.prev_present_ts IS NOT NULL
-                  AND sr.present_ts - sr.prev_present_ts > (SELECT vsync_period_ns FROM vsync_config_for_session) * 1.5)
+                  AND sr.present_ts - sr.prev_present_ts > (SELECT vsync_period_ns FROM vsync_config) * 1.5)
             THEN COALESCE(sr.jank_type, 'None') END) as jank_types
         FROM sessions_raw sr
         GROUP BY sr.session_id
@@ -3056,6 +2875,7 @@ steps:
     type: atomic
     name: "获取真正掉帧帧"
     sql_fragments:
+      - fragments/vsync_config.sql
       - fragments/effective_target_processes.sql
       - fragments/root_cause_sample_cap.sql
     synthesize:
@@ -3071,34 +2891,6 @@ steps:
       binding: effective_target_processes
     sql: |
       WITH
-      -- VSync 周期（限定在分析区间内，避免 VRR 省电时段干扰）
-      vsync_intervals AS (
-        SELECT c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
-        FROM counter c
-        JOIN counter_track t ON c.track_id = t.id
-        WHERE t.name = 'VSYNC-sf'
-          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
-      ),
-      timing_config AS (
-        SELECT CASE
-          WHEN raw_ns BETWEEN 5500000 AND 6500000 THEN 6060606
-          WHEN raw_ns BETWEEN 6500001 AND 7500000 THEN 6944444
-          WHEN raw_ns BETWEEN 7500001 AND 9500000 THEN 8333333
-          WHEN raw_ns BETWEEN 9500001 AND 12500000 THEN 11111111
-          WHEN raw_ns BETWEEN 12500001 AND 20000000 THEN 16666667
-          WHEN raw_ns BETWEEN 20000001 AND 35000000 THEN 33333333
-          ELSE raw_ns
-        END AS vsync_period_ns
-        FROM (
-          SELECT CAST(COALESCE(
-            (SELECT PERCENTILE(interval_ns, 50)
-             FROM vsync_intervals
-             WHERE interval_ns > 5500000 AND interval_ns < 50000000),
-            16666667
-          ) AS INTEGER) AS raw_ns
-        )
-      ),
       -- Per-layer 帧序列：按 layer_name 分组，计算 token gap + 时间 gap
       layer_frames AS (
         SELECT
@@ -3159,7 +2951,7 @@ steps:
       session_markers AS (
         SELECT
           *,
-          CASE WHEN time_gap_ns IS NULL OR time_gap_ns > (SELECT vsync_period_ns * 6 FROM timing_config) THEN 1 ELSE 0 END as new_session
+          CASE WHEN time_gap_ns IS NULL OR time_gap_ns > (SELECT vsync_period_ns * 6 FROM vsync_config) THEN 1 ELSE 0 END as new_session
         FROM layer_frames
       ),
       sessions_map AS (
@@ -3198,7 +2990,7 @@ steps:
           -- 隐形掉帧标记
           CASE WHEN sm.jank_type = 'None' OR sm.jank_type IS NULL THEN 1 ELSE 0 END as is_hidden_jank
         FROM sessions_map sm
-        CROSS JOIN timing_config tc
+        CROSS JOIN vsync_config tc
         WHERE (
           -- 非 BS：present_type 为权威信号
           (sm.present_type IN ('Late Present', 'Dropped Frame')
@@ -3229,7 +3021,7 @@ steps:
             ORDER BY prev.dur DESC
           ) AS guilt_rank
         FROM jank_frames jf
-        CROSS JOIN timing_config tc
+        CROSS JOIN vsync_config tc
         JOIN sessions_map prev
           ON prev.layer_name = jf.layer_name
           AND prev.session_id = jf.session_id
@@ -5565,6 +5357,7 @@ steps:
           label: "优化建议"
           type: string
     sql_fragments:
+      - fragments/vsync_config.sql
       - fragments/system_thread_state_spans.sql
       - fragments/effective_target_processes.sql
     process_scope:
@@ -5572,34 +5365,6 @@ steps:
       binding: effective_target_processes
     sql: |
       WITH
-      -- FrameTimeline 责任标签和与问题帧同窗的可观测证据。
-      vsync_intervals AS (
-        SELECT c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
-        FROM counter c
-        JOIN counter_track t ON c.track_id = t.id
-        WHERE t.name = 'VSYNC-sf'
-          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
-      ),
-      vsync_config AS (
-        SELECT CASE
-          WHEN raw_ns BETWEEN 5500000 AND 6500000 THEN 6060606
-          WHEN raw_ns BETWEEN 6500001 AND 7500000 THEN 6944444
-          WHEN raw_ns BETWEEN 7500001 AND 9500000 THEN 8333333
-          WHEN raw_ns BETWEEN 9500001 AND 12500000 THEN 11111111
-          WHEN raw_ns BETWEEN 12500001 AND 20000000 THEN 16666667
-          WHEN raw_ns BETWEEN 20000001 AND 35000000 THEN 33333333
-          ELSE raw_ns
-        END AS vsync_period_ns
-        FROM (
-          SELECT CAST(COALESCE(
-            (SELECT PERCENTILE(interval_ns, 50)
-             FROM vsync_intervals
-             WHERE interval_ns > 5500000 AND interval_ns < 50000000),
-            16666667
-          ) AS INTEGER) AS raw_ns
-        )
-      ),
       -- 掉帧检测：双信号混合策略
       frame_jank_data AS (
         SELECT

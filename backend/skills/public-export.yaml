@@ -188,6 +188,9 @@ sql_fragments:
   backend/skills/fragments/thread_states_quadrant.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/thread_states_quadrant.sql
+  backend/skills/fragments/scoped_panel_counter.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/scoped_panel_counter.sql
   backend/skills/fragments/vsync_config.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/vsync_config.sql

@@ -305,6 +305,8 @@ steps:
         - name: gpu_status
           label: "GPU状态"
           type: string
+    sql_fragments:
+      - fragments/vsync_config.sql
     sql: |
       WITH
       time_bounds AS (
@@ -313,18 +315,15 @@ steps:
           COALESCE(${end_ts}, MAX(ts)) as end_ts
         FROM slice
       ),
-      -- 动态检测 VSync 周期（VSYNC-sf 中位数优先，expected_frame 回退）
-      vsync_config AS (
+      -- 动态检测 VSync 周期（窗口内应用 VSync 优先，expected_frame 回退）
+      fence_budget AS (
         SELECT CAST(COALESCE(
           (SELECT PERCENTILE(interval_ns, 50)
-           FROM (
-             SELECT c.ts - LAG(c.ts) OVER (ORDER BY c.ts) AS interval_ns
-             FROM counter c
-             JOIN counter_track t ON c.track_id = t.id
-             WHERE t.name = 'VSYNC-sf'
-               AND c.ts >= (SELECT start_ts FROM time_bounds)
-               AND c.ts <= (SELECT end_ts FROM time_bounds)
-           ) WHERE interval_ns > 5500000 AND interval_ns < 50000000),
+           FROM vsync_counter_intervals
+           WHERE ts - interval_ns >= (SELECT start_ts FROM time_bounds)
+             AND ts <= (SELECT end_ts FROM time_bounds)
+             AND interval_ns > 5500000 AND interval_ns < 50000000
+           GROUP BY track_name ORDER BY (track_name = 'VSYNC-app') DESC LIMIT 1),
           (SELECT CAST(PERCENTILE(dur, 50) AS INTEGER)
            FROM expected_frame_timeline_slice
            WHERE dur > 5000000 AND dur < 50000000
@@ -354,13 +353,13 @@ steps:
         ROUND(AVG(dur) / 1e6, 2) as avg_wait_ms,
         ROUND(MAX(dur) / 1e6, 2) as max_wait_ms,
         ROUND(PERCENTILE(dur, 95) / 1e6, 2) as p95_wait_ms,
-        ROUND((SELECT vsync_period_ns FROM vsync_config) / 1e6, 2) as vsync_period_ms,
+        ROUND((SELECT vsync_period_ns FROM fence_budget) / 1e6, 2) as vsync_period_ms,
         -- 使用动态 VSync 周期
-        COUNT(CASE WHEN dur > (SELECT vsync_period_ns FROM vsync_config) THEN 1 END) as waits_over_vsync,
+        COUNT(CASE WHEN dur > (SELECT vsync_period_ns FROM fence_budget) THEN 1 END) as waits_over_vsync,
         CASE
           -- 平均等待超过 VSync 周期的 50%
-          WHEN AVG(dur) > (SELECT vsync_period_ns FROM vsync_config) * 0.5 THEN 'GPU_BOUND'
-          WHEN COUNT(CASE WHEN dur > (SELECT vsync_period_ns FROM vsync_config) THEN 1 END) > COUNT(*) * 0.1 THEN 'GPU_OCCASIONAL_SLOW'
+          WHEN AVG(dur) > (SELECT vsync_period_ns FROM fence_budget) * 0.5 THEN 'GPU_BOUND'
+          WHEN COUNT(CASE WHEN dur > (SELECT vsync_period_ns FROM fence_budget) THEN 1 END) > COUNT(*) * 0.1 THEN 'GPU_OCCASIONAL_SLOW'
           ELSE 'NORMAL'
         END as gpu_status
       FROM fence_slices

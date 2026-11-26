@@ -161,8 +161,9 @@ function cadenceReadout(rows: Row[], touchUpids: ReadonlySet<EvidenceScalar>, la
       if (touchUpids.has(row.upid)) {
         lines.push(`- ${localize(language, '替代观测见按触摸时间归类的 Flutter 换帧间隔。', 'See the Flutter swap gaps classified by touch state for the proxy measurement.')}`);
       } else {
-        const proxy = supportedBudget ? ratio(row.cadence_gaps_over_1_5x_budget, row.cadence_gap_count, unavailable) : unavailable;
-        lines.push(`- ${localize(language, '替代观测 · doFrame 起点间隔超 1.5× 预算', 'Proxy · doFrame start gaps over 1.5× budget')} ${proxy}`);
+        const assumed = row.budget_status === 'assumed_default_no_trace_timing';
+        const proxy = supportedBudget || assumed ? ratio(row.cadence_gaps_over_1_5x_budget, row.cadence_gap_count, unavailable) : unavailable;
+        lines.push(`- ${localize(language, '替代观测 · doFrame 起点间隔超 1.5× 预算', 'Proxy · doFrame start gaps over 1.5× budget')} ${proxy}${assumed ? localize(language, '（假定预算）', ' (assumed budget)') : ''}`);
       }
     } else {
       const maxima = group.map(item => item.cadence_gap_max_ns)

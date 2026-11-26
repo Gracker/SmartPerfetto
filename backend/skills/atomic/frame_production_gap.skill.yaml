@@ -104,21 +104,18 @@ steps:
     process_scope:
       role: target
       binding: native_upid
+    sql_fragments:
+      - fragments/vsync_config.sql
     sql: |
       WITH
-      vsync_intervals AS (
-        SELECT c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
-        FROM counter c
-        JOIN counter_track t ON c.track_id = t.id
-        WHERE t.name = 'VSYNC-sf'
-          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
-      ),
-      vsync_config AS (
+      local_budget AS (
         SELECT COALESCE(
           (SELECT CAST(PERCENTILE(interval_ns, 50) AS INTEGER)
-           FROM vsync_intervals
-           WHERE interval_ns BETWEEN 4000000 AND 50000000),
+           FROM vsync_counter_intervals
+           WHERE interval_ns BETWEEN 4000000 AND 50000000
+             AND (${start_ts} IS NULL OR ts - interval_ns >= ${start_ts})
+             AND (${end_ts} IS NULL OR ts < ${end_ts})
+           GROUP BY track_name ORDER BY (track_name = 'VSYNC-app') DESC LIMIT 1),
           16666667
         ) as period_ns
       ),
@@ -160,7 +157,7 @@ steps:
           ROUND((fs.frame_start - fs.prev_frame_end) * 1.0 / vc.period_ns, 1) as gap_vsync_count,
           fs.upid, fs.layer_name
         FROM frame_seq fs
-        CROSS JOIN vsync_config vc
+        CROSS JOIN local_budget vc
         WHERE fs.prev_frame_end IS NOT NULL
           AND (fs.frame_start - fs.prev_frame_end) > vc.period_ns * COALESCE(${min_gap_vsync}, 1.5)
           AND (fs.frame_start - fs.prev_frame_end) < vc.period_ns * 30  -- 排除非滑动 gap
@@ -214,7 +211,7 @@ steps:
         SUM(CASE WHEN gap_type = 'rt_no_drawframe' THEN 1 ELSE 0 END) as rt_no_drawframe_count,
         SUM(CASE WHEN gap_type = 'drawframe_observed' THEN 1 ELSE 0 END) as drawframe_observed_count,
         MAX(gap_ms) as max_gap_ms,
-        (SELECT ROUND(period_ns / 1e6, 2) FROM vsync_config) as vsync_period_ms
+        (SELECT ROUND(period_ns / 1e6, 2) FROM local_budget) as vsync_period_ms
       FROM classified_gaps
     save_as: gap_overview
 
@@ -266,21 +263,18 @@ steps:
     process_scope:
       role: target
       binding: native_upid
+    sql_fragments:
+      - fragments/vsync_config.sql
     sql: |
       WITH
-      vsync_intervals AS (
-        SELECT c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
-        FROM counter c
-        JOIN counter_track t ON c.track_id = t.id
-        WHERE t.name = 'VSYNC-sf'
-          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
-      ),
-      vsync_config AS (
+      local_budget AS (
         SELECT COALESCE(
           (SELECT CAST(PERCENTILE(interval_ns, 50) AS INTEGER)
-           FROM vsync_intervals
-           WHERE interval_ns BETWEEN 4000000 AND 50000000),
+           FROM vsync_counter_intervals
+           WHERE interval_ns BETWEEN 4000000 AND 50000000
+             AND (${start_ts} IS NULL OR ts - interval_ns >= ${start_ts})
+             AND (${end_ts} IS NULL OR ts < ${end_ts})
+           GROUP BY track_name ORDER BY (track_name = 'VSYNC-app') DESC LIMIT 1),
           16666667
         ) as period_ns
       ),
@@ -318,7 +312,7 @@ steps:
           ROUND((fs.frame_start - fs.prev_frame_end) * 1.0 / vc.period_ns, 1) as gap_vsync_count,
           fs.upid, fs.layer_name
         FROM frame_seq fs
-        CROSS JOIN vsync_config vc
+        CROSS JOIN local_budget vc
         WHERE fs.prev_frame_end IS NOT NULL
           AND (fs.frame_start - fs.prev_frame_end) > vc.period_ns * COALESCE(${min_gap_vsync}, 1.5)
           AND (fs.frame_start - fs.prev_frame_end) < vc.period_ns * 30

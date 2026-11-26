@@ -1182,6 +1182,7 @@ describe('scrolling_analysis skill schema', () => {
     const db = createScopedSqlFixture();
     try {
       db.exec(`
+        CREATE TABLE expected_frame_timeline_slice(ts INTEGER, dur INTEGER);
         CREATE TABLE counter_track(id INTEGER, name TEXT);
         CREATE TABLE counter(track_id INTEGER, ts INTEGER);
         CREATE TABLE android_input_events(
@@ -1236,6 +1237,7 @@ describe('scrolling_analysis skill schema', () => {
       const db = createScopedSqlFixture();
       try {
         db.exec(`
+          CREATE TABLE expected_frame_timeline_slice(ts INTEGER, dur INTEGER);
           CREATE TABLE counter_track(id INTEGER, name TEXT);
           CREATE TABLE counter(track_id INTEGER, ts INTEGER);
           ${androidInputEventsTableDdl()}
@@ -1285,6 +1287,7 @@ describe('scrolling_analysis skill schema', () => {
     const db = createScopedSqlFixture();
     createInputAtraceTables(db);
     db.exec(`
+      CREATE TABLE expected_frame_timeline_slice(ts INTEGER, dur INTEGER);
       CREATE TABLE counter_track(id INTEGER, name TEXT);
       CREATE TABLE counter(track_id INTEGER, ts INTEGER);
       CREATE TABLE android_input_events(
@@ -1657,7 +1660,7 @@ describe('scrolling_analysis skill schema', () => {
     try {
       const row = db.prepare(`
         WITH
-        timing_config(vsync_period_ns) AS (VALUES (10000000)),
+        vsync_config(vsync_period_ns) AS (VALUES (10000000)),
         app_frame_rows(frame_key, ts, dur) AS (
           VALUES
             ('display:1',          0, 1000000),
@@ -1713,7 +1716,7 @@ describe('scrolling_analysis skill schema', () => {
     try {
       const row = db.prepare(`
         WITH
-        timing_config(vsync_period_ns) AS (VALUES (10000000)),
+        vsync_config(vsync_period_ns) AS (VALUES (10000000)),
         app_frame_rows(frame_key, ts, dur) AS (
           VALUES
             ('display:1',         0,   1000000),
@@ -2798,10 +2801,13 @@ describe('scrolling_analysis skill schema', () => {
         step: (values: number[], value: number) => { values.push(value); return values; },
         result: (values: number[]) => values.length ? values.sort((a, b) => a - b)[Math.floor(values.length / 2)] : null,
       });
-      const render = (step: string) => String(getSkillStep(consumerJankSkill, step).sql)
-        .split("'${start_ts}'").join("''").split("'${end_ts}'").join("''")
-        .split('${start_ts}').join('NULL').split('${end_ts}').join('NULL')
-        .split('${package}').join('com.example.app').split('${layer_name}').join('');
+      const render = (id: string) => {
+        const step = getSkillStep(consumerJankSkill, id);
+        return withStepFragments(String(step.sql), step.sql_fragments)
+          .split("'${start_ts}'").join("''").split("'${end_ts}'").join("''")
+          .split('${start_ts}').join('NULL').split('${end_ts}').join('NULL')
+          .split('${package}').join('com.example.app').split('${layer_name}').join('');
+      };
       expect(db.prepare(render('vsync_config')).get()).toEqual({vsync_period_ns: null, refresh_rate_hz: null});
       const summary = db.prepare(render('consumer_jank_summary')).get();
       expect(summary).toMatchObject({consumer_jank_frames: 0, smooth_frames: 0, unassessed_frames: 10,
@@ -2809,6 +2815,10 @@ describe('scrolling_analysis skill schema', () => {
       expect(db.prepare(render('presentation_cadence_audit')).get()).toMatchObject({
         vsync_period_ns: null, steady_late_frames: 0, cadence_status: 'insufficient_cadence_evidence',
       });
+      db.exec(`INSERT INTO counter_track VALUES (1, 'VSYNC-app'), (2, 'VSYNC-sf');
+        INSERT INTO counter VALUES (0,1),(8333333,1),(16666666,1),(0,2),(16666666,2);`);
+      expect(db.prepare(render('vsync_config')).get()).toEqual({vsync_period_ns: 8333333, refresh_rate_hz: 120});
+      expect(db.prepare(render('presentation_cadence_audit')).get()).toMatchObject({vsync_period_ns: 8333333});
     } finally { db.close(); }
   });
 
@@ -2901,7 +2911,7 @@ describe('scrolling_analysis skill schema', () => {
 
       const rows = db.prepare(`
         WITH
-        vsync_config(vsync_period_ns) AS (VALUES (8333333)),
+        local_budget(vsync_period_ns) AS (VALUES (8333333)),
         flutter_processes(upid) AS (VALUES (1)),
         ${flutterCtes}
         SELECT
@@ -3707,11 +3717,8 @@ describe('FrameTimeline gap observation boundary', () => {
       const query = (id: string) => {
         const values: Record<string, string> = {process_name:'com.example.app',
           '__process_scope.upid':'1',start_ts:'NULL',end_ts:'NULL',min_gap_vsync:'1.5'};
-        return db.prepare(skill.steps.find((step: any) => step.id === id).sql.replace(
-          /\$\{([^}]+)\}/g, (_: string, key: string) => {
-            if (!(key in values)) throw new Error(`Unexpected gap parameter ${key}`);
-            return values[key];
-          })).all() as any[];
+        const step = skill.steps.find((candidate: any) => candidate.id === id);
+        return db.prepare(renderStepSql(step.sql, step.sql_fragments, values)).all() as any[];
       };
       expect(query('gap_list')).toEqual([expect.objectContaining({upid:1,gap_ms:40,
         doframe_count:1,drawframe_count:0,gap_type:'rt_no_drawframe'})]);
@@ -3776,10 +3783,10 @@ describe('smoothness_basis puts present cadence beside frame duration', () => {
       INSERT INTO process VALUES (1, 100, 'com.example.app', NULL, NULL);
       INSERT INTO thread VALUES (1, 1, 100, 'main', NULL, NULL);
       INSERT INTO thread_track VALUES (10, 1);
-      INSERT INTO counter_track VALUES (1, 'VSYNC-sf');
+      INSERT INTO counter_track VALUES (1, 'VSYNC-sf'), (2, 'VSYNC-app');
     `);
-    const tick = db.prepare('INSERT INTO counter VALUES (?, 1)');
-    for (let i = 0; i < 240; i++) tick.run(i * VSYNC);
+    const tick = db.prepare('INSERT INTO counter VALUES (?, 1), (?, 2)');
+    for (let i = 0; i < 240; i++) tick.run(i * VSYNC, i * VSYNC);
     // A steady pipeline one buffer deep: every frame presents one VSync
     // apart, two VSyncs after its expected present, with a three-VSync dur.
     const actual = db.prepare('INSERT INTO actual_frame_timeline_slice VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?)');
@@ -3798,8 +3805,10 @@ describe('smoothness_basis puts present cadence beside frame duration', () => {
     const step = stepOf(scrolling, 'smoothness_basis');
     return db.prepare(bind(String(step.sql), step.sql_fragments)).all() as Record<string, any>[];
   };
-  const audit = (db: Database.Database) => db.prepare(bind(String(
-    stepOf(consumer, 'presentation_cadence_audit').sql))).all() as Record<string, any>[];
+  const audit = (db: Database.Database) => {
+    const step = stepOf(consumer, 'presentation_cadence_audit');
+    return db.prepare(bind(String(step.sql), step.sql_fragments)).all() as Record<string, any>[];
+  };
 
   it('reads a steady late pipeline as one-VSync presents beside a three-VSync dur', () => {
     const db = fixture();
@@ -3814,6 +3823,36 @@ describe('smoothness_basis puts present cadence beside frame duration', () => {
         verdict_basis: 'present_gaps_vs_budget',
       });
       expect(audit(db).map(item => item.cadence_status)).toEqual([row.cadence_status]);
+    } finally { db.close(); }
+  });
+
+  it('measures the panel budget when SF wakes once per slow application frame', () => {
+    const db = fixture();
+    try {
+      db.exec(`DELETE FROM counter WHERE track_id = 1 AND (ts / ${VSYNC}) % 2 != 0;
+        UPDATE actual_frame_timeline_slice SET ts = ts * 2;
+        DELETE FROM expected_frame_timeline_slice;`);
+      expect(basis(db)[0]).toMatchObject({
+        budget_ns: VSYNC, budget_status: 'measured', smoothness_rating: 'poor',
+        layer_present_gap_count: 29, layer_over_budget_gaps: 29,
+      });
+      db.exec('DELETE FROM counter WHERE track_id = 1');
+      expect(basis(db)[0]).toMatchObject({budget_ns: VSYNC, budget_status: 'measured'});
+    } finally { db.close(); }
+  });
+
+  it('does not treat SF waking at the doFrame cadence alone as a measured budget', () => {
+    const db = fixture();
+    try {
+      db.exec(`DELETE FROM actual_frame_timeline_slice;
+        DELETE FROM expected_frame_timeline_slice;
+        DELETE FROM counter WHERE track_id = 2 OR (ts / ${VSYNC}) % 2 != 0;
+        INSERT INTO slice(track_id, ts, dur, name)
+          SELECT 10, ts, 1000000, 'Choreographer#doFrame' FROM counter;`);
+      const [row] = basis(db);
+      expect(row.cadence_metric).toBe('doframe_start_gap');
+      expect(row.budget_ns).toBe(16666667);
+      expect(row.budget_status).toBe('unverified_app_cadence');
     } finally { db.close(); }
   });
 
@@ -3967,7 +4006,7 @@ describe('smoothness_basis puts present cadence beside frame duration', () => {
       // One frame per layer: no gap at all, while every dur is three VSyncs.
       db.exec("UPDATE actual_frame_timeline_slice SET layer_name = 'layer-' || id");
       const result = db.prepare(`WITH
-        timing_config(vsync_period_ns) AS (VALUES (${VSYNC})),
+        vsync_config(vsync_period_ns) AS (VALUES (${VSYNC})),
         app_frame_rows AS (SELECT *, 'display:' || display_frame_token AS frame_key FROM actual_frame_timeline_slice),
         ${ctes} SELECT * FROM app_stats`).get();
       expect(result).toMatchObject({total: 30, avg_present_interval: null, p95_present_interval: null,

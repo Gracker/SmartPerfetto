@@ -8,7 +8,7 @@
 # 从 trace 中解析实际的 Vsync 周期和刷新率设置
 #
 # 数据来源 (按优先级):
-#   1. VSYNC-sf counter track 间隔的中位数 (PERCENTILE 0.5, 直接反映显示侧消费节奏)
+#   1. 优先使用窗口内 VSYNC-app 的周期，缺失时采用 VSYNC-sf
 #   2. expected_frame_timeline_slice 的帧 duration 中位数 (作为回退)
 #   3. 默认 60Hz (16.67ms)
 #
@@ -58,6 +58,9 @@ steps:
   - id: detect_vsync_config
     type: atomic
     name: "检测 Vsync 配置"
+    sql_fragments:
+      - fragments/vsync_config.sql
+      - fragments/scoped_panel_counter.sql
     sql: |
       WITH
       -- 方法1: 从 expected_frame_timeline_slice 获取 vsync 周期（回退来源）
@@ -71,19 +74,6 @@ steps:
           AND (${start_ts} IS NULL OR ts >= ${start_ts})
           AND (${end_ts} IS NULL OR ts < ${end_ts})
       ),
-      -- 方法2: 从 VSYNC-sf counter track 推算周期 (优先来源)
-      -- counter 值在 0/1 间交替，每次变化代表一个 vsync tick
-      sf_vsync_intervals AS (
-        SELECT
-          c.ts,
-          c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
-        FROM counter c
-        JOIN counter_track t ON c.track_id = t.id
-        WHERE t.name = 'VSYNC-sf'
-          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
-      ),
-      -- 合并结果，sf_vsync 优先，expected_frame 回退
       vsync_median AS (
         SELECT
           CASE
@@ -99,14 +89,12 @@ steps:
         FROM (
           SELECT
             CAST(COALESCE(
-              (SELECT PERCENTILE(interval_ns, 50)
-               FROM sf_vsync_intervals
-               WHERE interval_ns > 5500000 AND interval_ns < 50000000),
+              (SELECT period_ns FROM preferred_panel_counter),
               (SELECT vsync_period_ns FROM expected_frame_vsync WHERE vsync_period_ns > 0),
               16666667
             ) AS INTEGER) as raw_period,
             CASE
-              WHEN (SELECT COUNT(*) FROM sf_vsync_intervals WHERE interval_ns > 5500000 AND interval_ns < 50000000) > 0 THEN 'sf_vsync_counter'
+              WHEN (SELECT period_ns FROM preferred_panel_counter) IS NOT NULL THEN (SELECT CASE track_name WHEN 'VSYNC-app' THEN 'app_vsync_counter' ELSE 'sf_vsync_counter' END FROM preferred_panel_counter)
               WHEN (SELECT vsync_period_ns FROM expected_frame_vsync WHERE vsync_period_ns > 0) IS NOT NULL THEN 'expected_frame_dur'
               ELSE 'default_60hz'
             END as source

@@ -49123,7 +49123,7 @@
       },
       "description": {
         "zh-CN": "基于 Trace 指标与证据分析VsyncPeriod检测。",
-        "en": "Detect VSync period from trace data using median of VSYNC-sf intervals."
+        "en": "Detect VSync period from trace data using in-window VSync counter intervals."
       },
       "type": "atomic",
       "steps": {

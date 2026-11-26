@@ -77,17 +77,11 @@ steps:
   - id: vsync_config
     type: atomic
     name: "VSync 配置"
+    sql_fragments:
+      - fragments/vsync_config.sql
+      - fragments/scoped_panel_counter.sql
     sql: |
       WITH
-      sf_vsync_intervals AS (
-        SELECT
-          c.ts - LAG(c.ts) OVER (PARTITION BY c.track_id ORDER BY c.ts) as interval_ns
-        FROM counter c
-        JOIN counter_track t ON c.track_id = t.id
-        WHERE t.name = 'VSYNC-sf'
-          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
-      ),
       vsync_median AS (
         SELECT CASE
           WHEN raw_ns BETWEEN 5500000 AND 6500000 THEN 6060606
@@ -99,10 +93,7 @@ steps:
           ELSE raw_ns
         END AS vsync_period_ns
         FROM (
-          SELECT CAST((SELECT PERCENTILE(interval_ns, 50)
-            FROM sf_vsync_intervals
-            WHERE interval_ns > 5500000 AND interval_ns < 50000000
-          ) AS INTEGER) AS raw_ns
+          SELECT (SELECT period_ns FROM preferred_panel_counter) AS raw_ns
         )
       )
       SELECT
@@ -137,18 +128,13 @@ steps:
         - {name: max_late_vsyncs, label: "正向晚拍最大 VSync", type: number}
         - {name: manual_review_required, label: "需要机制复核", type: number}
         - {name: claim_boundary, label: "结论边界", type: string}
+    sql_fragments:
+      - fragments/vsync_config.sql
+      - fragments/scoped_panel_counter.sql
     sql: |
       WITH
-      timing_intervals AS (
-        SELECT c.ts - LAG(c.ts) OVER (PARTITION BY c.track_id ORDER BY c.ts) AS interval_ns
-        FROM counter c JOIN counter_track t ON t.id = c.track_id
-        WHERE t.name = 'VSYNC-sf'
-          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
-      ),
       cadence_timing AS (
-        SELECT (SELECT PERCENTILE(interval_ns, 50) FROM timing_intervals
-          WHERE interval_ns BETWEEN 5500000 AND 50000000) AS vsync_period_ns
+        SELECT (SELECT period_ns FROM preferred_panel_counter) AS vsync_period_ns
       ),
       -- PRESENTATION_CADENCE_CTES_BEGIN
       expected_frames AS (
@@ -229,7 +215,7 @@ steps:
           ELSE 'variable_cadence'
         END AS cadence_status,
         CASE WHEN s.raw_buffer_stuffing_frames * 2 > s.presented_frames THEN 1 ELSE 0 END AS manual_review_required,
-        'vsync_period_from_measured_VSYNC_sf_only; steady_late_requires_5_intervals_and_unique_expected_lateness_at_least_0.5_vsync_and_both_adjacent_intervals_0.75_to_1.25_vsync; cadence_is_not_pipeline_health; preserve_deadline_and_drop_evidence; late_vsyncs_require_unique_expected_match; burst_gaps_and_layer_wide_drop_counts_require_separate_review' AS claim_boundary
+        'vsync_period_from_measured_VSYNC_counter_only; steady_late_requires_5_intervals_and_unique_expected_lateness_at_least_0.5_vsync_and_both_adjacent_intervals_0.75_to_1.25_vsync; cadence_is_not_pipeline_health; preserve_deadline_and_drop_evidence; late_vsyncs_require_unique_expected_match; burst_gaps_and_layer_wide_drop_counts_require_separate_review' AS claim_boundary
       FROM cadence_stats s JOIN layer_exclusions x USING (upid, layer_name)
       ORDER BY s.upid, s.layer_name, s.burst_id
     save_as: presentation_cadence_audit
@@ -291,22 +277,13 @@ steps:
         - name: claim_boundary
           label: "结论边界"
           type: string
+    sql_fragments:
+      - fragments/vsync_config.sql
+      - fragments/scoped_panel_counter.sql
     sql: |
       WITH
-      vsync_ticks AS (
-        SELECT
-          c.ts - LAG(c.ts) OVER (PARTITION BY c.track_id ORDER BY c.ts) as interval_ns
-        FROM counter c
-        JOIN counter_track t ON c.track_id = t.id
-        WHERE t.name = 'VSYNC-sf'
-          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
-      ),
       vsync_period AS (
-        SELECT CAST((SELECT PERCENTILE(interval_ns, 50)
-          FROM vsync_ticks
-          WHERE interval_ns > 5500000 AND interval_ns < 50000000
-        ) AS INTEGER) as vsync_period_ns
+        SELECT (SELECT period_ns FROM preferred_panel_counter) as vsync_period_ns
       ),
       -- CONSUMER_JANK_FRAME_CTES_BEGIN
       app_frame_rows AS (
@@ -517,22 +494,13 @@ steps:
         - name: claim_boundary
           label: "结论边界"
           type: string
+    sql_fragments:
+      - fragments/vsync_config.sql
+      - fragments/scoped_panel_counter.sql
     sql: |
       WITH
-      vsync_ticks AS (
-        SELECT
-          c.ts - LAG(c.ts) OVER (PARTITION BY c.track_id ORDER BY c.ts) as interval_ns
-        FROM counter c
-        JOIN counter_track t ON c.track_id = t.id
-        WHERE t.name = 'VSYNC-sf'
-          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
-      ),
       vsync_period AS (
-        SELECT CAST((SELECT PERCENTILE(interval_ns, 50)
-          FROM vsync_ticks
-          WHERE interval_ns > 5500000 AND interval_ns < 50000000
-        ) AS INTEGER) as vsync_period_ns
+        SELECT (SELECT period_ns FROM preferred_panel_counter) as vsync_period_ns
       ),
       -- CONSUMER_JANK_SUMMARY_CTES_BEGIN
       app_frame_rows AS (
@@ -715,22 +683,13 @@ steps:
           label: "占比"
           type: percentage
           format: percentage
+    sql_fragments:
+      - fragments/vsync_config.sql
+      - fragments/scoped_panel_counter.sql
     sql: |
       WITH
-      vsync_ticks AS (
-        SELECT
-          c.ts - LAG(c.ts) OVER (PARTITION BY c.track_id ORDER BY c.ts) as interval_ns
-        FROM counter c
-        JOIN counter_track t ON c.track_id = t.id
-        WHERE t.name = 'VSYNC-sf'
-          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
-      ),
       vsync_period AS (
-        SELECT CAST((SELECT PERCENTILE(interval_ns, 50)
-          FROM vsync_ticks
-          WHERE interval_ns > 5500000 AND interval_ns < 50000000
-        ) AS INTEGER) as vsync_period_ns
+        SELECT (SELECT period_ns FROM preferred_panel_counter) as vsync_period_ns
       ),
       -- CONSUMER_JANK_SEVERITY_CTES_BEGIN
       app_frame_rows AS (

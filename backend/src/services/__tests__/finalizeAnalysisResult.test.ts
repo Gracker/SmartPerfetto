@@ -581,6 +581,23 @@ describe('product-owned scrolling conclusion', () => {
     expect(report.indexOf('66/1231 (5.36%)')).toBeLessThan(report.indexOf(result.conclusion));
   });
 
+  it('labels an assumed budget when presenting doFrame gaps without display timing', async () => {
+    const {run} = fixture({scrolling(store) {
+      captureScrollingRows(store, 'smoothness_basis', [{
+        ...scrollingFrameRow, layer_name: null, primary_layer: null, presentation_status: 'unmeasured',
+        smoothness_rating: 'unrated', budget_ns: 16_666_667, budget_status: 'assumed_default_no_trace_timing',
+        layer_frames: null, layer_tagged_frames: null, layer_hybrid_frames: null,
+        layer_present_gap_count: null, layer_over_budget_gaps: null,
+        cadence_gap_count: 20, cadence_gaps_over_1_5x_budget: 3,
+      }]);
+    }});
+    const {result} = await run();
+    const markdown = result.conclusionEvidence?.markdown ?? '';
+    expect(markdown).toContain('无法评级');
+    expect(markdown).toContain('3/20 (15.00%)');
+    expect(markdown).toMatch(/假定|假设/);
+  });
+
   it('keeps unavailable presentation and unknown Flutter touch state separate from causal analysis', async () => {
     const {run} = fixture({scrolling(store) {
       captureScrollingRows(store, 'smoothness_basis', [{

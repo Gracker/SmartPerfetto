@@ -76,6 +76,8 @@ steps:
         - name: gpu_status
           label: "GPU 状态"
           type: string
+    sql_fragments:
+      - fragments/vsync_config.sql
     sql: |
       WITH
       time_bounds AS (
@@ -84,18 +86,15 @@ steps:
           COALESCE(${end_ts}, MAX(ts + dur)) as end_ts
         FROM actual_frame_timeline_slice
       ),
-      -- 动态检测 VSync 周期（VSYNC-sf 中位数优先，expected_frame 回退）
-      vsync_config AS (
+      -- 动态检测 VSync 周期（窗口内应用 VSync 优先，expected_frame 回退）
+      fence_budget AS (
         SELECT CAST(COALESCE(
           (SELECT PERCENTILE(interval_ns, 50)
-           FROM (
-             SELECT c.ts - LAG(c.ts) OVER (ORDER BY c.ts) AS interval_ns
-             FROM counter c
-             JOIN counter_track t ON c.track_id = t.id
-             WHERE t.name = 'VSYNC-sf'
-               AND c.ts >= (SELECT start_ts FROM time_bounds)
-               AND c.ts <= (SELECT end_ts FROM time_bounds)
-           ) WHERE interval_ns > 5500000 AND interval_ns < 50000000),
+           FROM vsync_counter_intervals
+           WHERE ts - interval_ns >= (SELECT start_ts FROM time_bounds)
+             AND ts <= (SELECT end_ts FROM time_bounds)
+             AND interval_ns > 5500000 AND interval_ns < 50000000
+           GROUP BY track_name ORDER BY (track_name = 'VSYNC-app') DESC LIMIT 1),
           (SELECT CAST(PERCENTILE(dur, 50) AS INTEGER)
            FROM expected_frame_timeline_slice
            WHERE dur > 5000000 AND dur < 50000000
@@ -128,11 +127,11 @@ steps:
           AVG(dur) as avg_wait_ns,
           MAX(dur) as max_wait_ns,
           MIN(dur) as min_wait_ns,
-          (SELECT vsync_period_ns FROM vsync_config) as vsync_period_ns,
+          (SELECT vsync_period_ns FROM fence_budget) as vsync_period_ns,
           COUNT(CASE WHEN dur > 1000000 THEN 1 END) as slow_fences_1ms,
           COUNT(CASE WHEN dur > 5000000 THEN 1 END) as slow_fences_5ms,
           -- 使用动态 VSync 周期
-          COUNT(CASE WHEN dur > (SELECT vsync_period_ns FROM vsync_config) THEN 1 END) as slow_fences_vsync
+          COUNT(CASE WHEN dur > (SELECT vsync_period_ns FROM fence_budget) THEN 1 END) as slow_fences_vsync
         FROM fence_data
       )
       SELECT
