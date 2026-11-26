@@ -38,6 +38,9 @@ const arrayValuedResponse = {
 
 describe('analysis turn intent protocol', () => {
   const wholeScrollingQuestions = [
+    '滑动卡顿吗',
+    '流畅度怎么样？',
+    '页面滑动流畅度怎么样?',
     'WebView 页面滑动流畅吗？如有卡顿请分析原因',
     '应用滑动流畅吗？如有卡顿请分析原因',
     '应用滑动流畅吗？渲染性能如何？',
@@ -65,6 +68,17 @@ describe('analysis turn intent protocol', () => {
       dispatch: async () => ({status: 'unavailable', reason: 'provider_error'})}).resolve()).toMatchObject({
       status: 'unavailable', scope: 'bounded_question', sceneId: 'general',
     });
+  });
+  it.each([
+    {sceneType: 'startup', previousTurns: []},
+    {sceneType: 'general', previousTurns: [{query: '分析视频播放'}]},
+    {sceneType: 'general', previousTurns: [], hasReferenceTrace: true},
+  ] as const)('preserves contextual scope for a short smoothness follow-up', async item => {
+    const context = buildComplexityClassifierInput({
+      hasReferenceTrace: false, ...item, query: '流畅度怎么样', previousTurns: [...item.previousTurns],
+    });
+    expect(await createAnalysisTurnIntentResolver({context, strategyRegistry: registry, deadlineMs: Date.now() + 10_000,
+      dispatch: async () => response(decision)}).resolve()).toMatchObject(decision);
   });
   it('accepts optional current target-use without changing the remaining decision', () => {
     expect(parseAnalysisTurnIntentDecision(JSON.stringify({...decision, targetUse: 'current_selection'}), registry))

@@ -60,6 +60,8 @@ const PROMPT_BYTE_LIMIT = 64 * 1024;
 // A whole-turn request with no frame, metric, comparison or selection qualifier.
 const WHOLE_SCROLLING_QUESTION = /^(?:应用(?:[\p{Script=Han}]{1,12}下)?滑动|(?:WebView\s*)?页面滑动|(?:视频)?信息流滑动|朋友圈应用)流畅吗[？?]\s*(?:如有卡顿[，,]?\s*请分析原因[。？?]?|渲染性能如何[？?]?)$/iu;
 
+const SHORT_SCROLLING_QUESTION = /^(?:(?:应用|页面)?滑动(?:卡顿吗|流畅吗|流畅度怎么样)|流畅度怎么样)[？?]?$/u;
+
 export function member<T extends string>(value: unknown, values: readonly T[]): value is T {
   return typeof value === 'string' && values.includes(value as T);
 }
@@ -149,8 +151,13 @@ export function createAnalysisTurnIntentResolver(input: AnalysisTurnIntentResolv
   const sceneIds = strategyRegistry.getAllStrategies()
     .filter(scene => scene.strategyKind !== 'contract_only').map(scene => scene.scene);
   const sourceSelected = analysisOptionsSelectSource(input.productRun?.options);
+  const query = context.query.trim();
+  // Short questions can refer back to a preceding investigation or a different selected scene.
+  const shortScrolling = (context.sceneType === 'general' || context.sceneType === 'scrolling')
+    && !context.historyContext && !context.previousQueries?.length && !context.hasExistingFindings
+    && SHORT_SCROLLING_QUESTION.test(query);
   const scrolling = !context.hasSelectionContext && !context.hasReferenceTrace &&
-    WHOLE_SCROLLING_QUESTION.test(context.query.trim()) ? strategyRegistry.getStrategy('scrolling') : undefined;
+    (WHOLE_SCROLLING_QUESTION.test(query) || shortScrolling) ? strategyRegistry.getStrategy('scrolling') : undefined;
   const scrollingScope = scrolling && scrolling.strategyKind !== 'contract_only' ? {
     sceneId: scrolling.scene, taskKind: 'investigation', scope: 'scene_wide', deliverable: 'report',
   } as const : undefined;
