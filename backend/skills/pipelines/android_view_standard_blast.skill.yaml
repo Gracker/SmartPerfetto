@@ -43,8 +43,6 @@ detection:
   required_signals:
     - thread: RenderThread
       min_count: 1
-    - thread: main
-      min_count: 1
 
   scoring_signals:
     - signal: has_draw_frame
@@ -57,7 +55,7 @@ detection:
       slice_pattern: "*syncFrameState*"
       weight: 15
     - signal: has_queue_buffer
-      slice_pattern: "*queueBuffer*"
+      slice_pattern: "queueBuffer*"
       weight: 12
     - signal: has_blast_buffer_queue_hint
       slice_pattern: "*BLASTBufferQueue*"
@@ -68,13 +66,6 @@ detection:
     - signal: has_apply_transaction
       slice_pattern: "*applyTransaction*"
       weight: 12  # BLAST 强信号：Transaction 应用是 BLAST 提交的关键证据（S02）
-
-  exclude_if:
-    - thread: "1.ui"           # Flutter
-    - thread: "1.raster"       # Flutter
-    - thread: CrRendererMain   # WebView
-    - thread: UnityMain        # Game Engine
-    - thread: UnityGfx         # Game Engine
 
 # ==========================================================================
 # Teaching Content

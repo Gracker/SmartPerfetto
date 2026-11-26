@@ -953,7 +953,7 @@ Pipeline Skills identify and teach Android rendering pipelines, but a "type"
 and a "detector entry" are different layers:
 
 - `backend/skills/pipelines/index.yaml` owns concise product teaching cards and detector mappings;
-- a `variant` may become the primary type; a `feature` only adds evidence;
+- a primary classification requires the target app’s matching `output_path`; other variant and feature signals guide further checks;
 - each Pipeline Skill keeps signals, auto-pin guidance and analysis recommendations,
   and points `teaching.source` to its catalog card;
 - original reference articles are not committed, bundled or publicly projected.
@@ -961,8 +961,7 @@ and a "detector entry" are different layers:
 Use `slice_patterns: [old_pattern, new_pattern]` for OR aliases of one signal;
 the group contributes its weight once. Overlapping patterns do not count the
 same concrete name twice, while different names retain their event counts.
-Required signals use the group count; any matching exclude alias excludes the
-pipeline. Event counts are not produced or displayed frame counts.
+Required and excluded signals govern candidate scores. The primary classification checks the target app’s production and consumption path independently. `primary_confidence` reports that path’s share of the applicable observed population.
 
 How the catalog and a single definition relate:
 
@@ -972,6 +971,7 @@ pipelines:
   FLUTTER_TEXTUREVIEW:
     classification_role: variant
     rendering_type_id: S10_FLUTTER
+    output_path: flutter_texture
     primary_eligible: true
   ANGLE_GLES_VULKAN:
     classification_role: feature
@@ -979,16 +979,16 @@ pipelines:
     primary_eligible: false
 
 # backend/skills/pipelines/flutter_textureview.skill.yaml
-name: FLUTTER_TEXTUREVIEW
+name: pipeline_flutter_textureview
 type: pipeline_definition
 detection:
-  signals:
-    - { name: "SurfaceTexture", source: "slice" }
+  scoring_signals:
+    - { signal: has_surface_texture, slice_pattern: "*SurfaceTexture*", weight: 30 }
 teaching:
   source: "skills/pipelines/index.yaml#rendering_types.S10_FLUTTER"
 ```
 
-Detection results keep the primary rendering type, detector subpath and features separate.
+Detection results keep the primary rendering type, detector subpath and features separate. A standard host whose submission variant is unresolved returns `AOSP_STANDARD`. Insufficient evidence of the target app’s output returns `UNKNOWN`. The teaching API retains observed events and supplies pipeline-specific cards and pins only for a confirmed path.
 `PipelineDocService` preserves its response shape but reads structured cards rather than
 article files. CLI, Docker and portable consume the same cards with Skills; builds remove
 obsolete article caches. On-demand `rendering-outputs` knowledge covers dual outputs,

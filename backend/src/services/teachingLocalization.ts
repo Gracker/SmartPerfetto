@@ -147,7 +147,9 @@ export function localizeTeachingPipelineResponse(
       : response.observedFlow,
     warnings: response.warnings?.map(warning => ({
       ...warning,
-      message: genericWarning(warning.message, outputLanguage),
+      message: warning.code === 'PIPELINE_UNDETERMINED' && outputLanguage === 'zh-CN'
+        ? '当前 trace 缺少确认目标应用出图路径的证据。'
+        : genericWarning(warning.message, outputLanguage),
     })),
     pinInstructions: response.pinInstructions.map(instruction => ({
       ...instruction,

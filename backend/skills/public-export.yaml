@@ -1382,6 +1382,11 @@ skills:
     workflow: rendering-pipeline
     disposition: exported
     destination: references/generated/skills/pipeline_android_view_software.md
+  pipeline_aosp_standard:
+    source: backend/skills/pipelines/aosp_standard.skill.yaml
+    workflow: rendering-pipeline
+    disposition: exported
+    destination: references/generated/skills/pipeline_aosp_standard.md
   pipeline_android_view_standard_blast:
     source: backend/skills/pipelines/android_view_standard_blast.skill.yaml
     workflow: rendering-pipeline
@@ -1417,6 +1422,11 @@ skills:
     workflow: rendering-pipeline
     disposition: exported
     destination: references/generated/skills/pipeline_compose_standard.md
+  pipeline_flutter_surfaceview:
+    source: backend/skills/pipelines/flutter_surfaceview.skill.yaml
+    workflow: rendering-pipeline
+    disposition: exported
+    destination: references/generated/skills/pipeline_flutter_surfaceview.md
   pipeline_flutter_surfaceview_impeller:
     source: backend/skills/pipelines/flutter_surfaceview_impeller.skill.yaml
     workflow: rendering-pipeline
@@ -1477,6 +1487,11 @@ skills:
     workflow: rendering-pipeline
     disposition: exported
     destination: references/generated/skills/pipeline_surface_control_api.md
+  pipeline_surfaceview:
+    source: backend/skills/pipelines/surfaceview.skill.yaml
+    workflow: rendering-pipeline
+    disposition: exported
+    destination: references/generated/skills/pipeline_surfaceview.md
   pipeline_surfaceview_blast:
     source: backend/skills/pipelines/surfaceview_blast.skill.yaml
     workflow: rendering-pipeline
@@ -1492,6 +1507,11 @@ skills:
     workflow: rendering-pipeline
     disposition: exported
     destination: references/generated/skills/pipeline_variable_refresh_rate.md
+  pipeline_video_playback:
+    source: backend/skills/pipelines/video_playback.skill.yaml
+    workflow: rendering-pipeline
+    disposition: exported
+    destination: references/generated/skills/pipeline_video_playback.md
   pipeline_video_overlay_hwc:
     source: backend/skills/pipelines/video_overlay_hwc.skill.yaml
     workflow: rendering-pipeline

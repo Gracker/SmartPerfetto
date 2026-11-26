@@ -959,21 +959,21 @@
       "parameters": {},
       "required_steps": [
         "score_pipelines",
+        "layer_signals",
         "determine_pipeline",
         "subvariants",
         "trace_requirements",
         "active_rendering_processes",
-        "layer_signals",
         "extra_rhythm_signals",
         "bufferqueue_path_signals"
       ],
       "required_sql_steps": [
         "score_pipelines",
+        "layer_signals",
         "determine_pipeline",
         "subvariants",
         "trace_requirements",
         "active_rendering_processes",
-        "layer_signals",
         "extra_rhythm_signals",
         "bufferqueue_path_signals"
       ],
@@ -985,13 +985,37 @@
         "primary_pipeline_id",
         "primary_rendering_type_id",
         "primary_confidence",
+        "primary_basis",
+        "target_process",
+        "hwui_draw_frames",
+        "host_submissions",
+        "surfaceview_submissions",
+        "texture_submissions",
+        "sf_host_frames",
+        "sf_surfaceview_frames",
+        "sf_surface_latches",
+        "camera_latches",
+        "video_latches",
+        "webview_draw_frames",
         "candidates_list",
         "rendering_type_candidates_list",
         "related_rendering_type_candidates_list",
         "features_list",
         "doc_path"
       ],
-      "required_marker": "SmartPerfetto::CASE::rendering-jank"
+      "required_marker": "SmartPerfetto::CASE::rendering-jank",
+      "assertions": [
+        {
+          "column": "primary_pipeline_id",
+          "operator": "eq",
+          "value": "UNKNOWN"
+        },
+        {
+          "column": "primary_confidence",
+          "operator": "eq",
+          "value": 0
+        }
+      ]
     },
     {
       "id": "execute-rn_bridge_to_frame_jank",

@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2024-2026 Gracker (Chris)
+# This file is part of SmartPerfetto. See LICENSE for details.
+
+name: pipeline_surfaceview
+version: "1.0"
+type: pipeline_definition
+category: rendering
+meta:
+  pipeline_id: SURFACEVIEW
+  display_name: 独立 SurfaceView 输出
+  description: 生产者向目标应用的独立 SurfaceView 提交内容。
+  icon: surface
+  family: surface
+  doc_path: skills/pipelines/index.yaml#rendering_types.S03_SURFACEVIEW
+teaching:
+  source: skills/pipelines/index.yaml#rendering_types.S03_SURFACEVIEW
+auto_pin:
+  instructions:
+    - pattern: 'SurfaceView'
+      match_by: name
+      priority: 1
+      reason: 查看独立输出的生产与消费
+      smart_filter:
+        enabled: true
+    - pattern: '^[sS]urface[fF]linger'
+      match_by: name
+      priority: 2
+      reason: 查看目标层消费与合成
+      main_thread_only: true

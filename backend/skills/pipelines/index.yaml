@@ -252,9 +252,20 @@ rendering_types:
       - queueBuffer
       - setTransactionState
 default:
-  pipeline_id: ANDROID_VIEW_STANDARD_BLAST
+  pipeline_id: AOSP_STANDARD
   rendering_type_id: S02_AOSP_STANDARD
 pipelines:
+  AOSP_STANDARD:
+    file: aosp_standard.skill.yaml
+    family: hwui
+    classification_role: variant
+    teaching_type_id: S02_AOSP_STANDARD
+    rendering_type_id: S02_AOSP_STANDARD
+    architecture_type: STANDARD
+    signal_scope: app
+    output_path: hwui
+    primary_eligible: true
+    feature_visible: false
   ANDROID_VIEW_STANDARD_BLAST:
     file: android_view_standard_blast.skill.yaml
     family: hwui
@@ -263,6 +274,7 @@ pipelines:
     rendering_type_id: S02_AOSP_STANDARD
     architecture_type: STANDARD
     signal_scope: app
+    output_path: hwui_blast
     primary_eligible: true
     feature_visible: false
   ANDROID_VIEW_STANDARD_LEGACY:
@@ -273,7 +285,7 @@ pipelines:
     rendering_type_id: S02_AOSP_STANDARD
     architecture_type: STANDARD
     signal_scope: app
-    primary_eligible: true
+    primary_eligible: false
     feature_visible: false
   COMPOSE_STANDARD:
     file: compose_standard.skill.yaml
@@ -283,6 +295,17 @@ pipelines:
     rendering_type_id: S02_AOSP_STANDARD
     architecture_type: COMPOSE
     signal_scope: app
+    primary_eligible: false
+    feature_visible: false
+  SURFACEVIEW:
+    file: surfaceview.skill.yaml
+    family: surface
+    classification_role: variant
+    teaching_type_id: S03_SURFACEVIEW
+    rendering_type_id: S03_SURFACEVIEW
+    architecture_type: SURFACEVIEW
+    signal_scope: app
+    output_path: surfaceview
     primary_eligible: true
     feature_visible: false
   SURFACEVIEW_BLAST:
@@ -293,6 +316,7 @@ pipelines:
     rendering_type_id: S03_SURFACEVIEW
     architecture_type: SURFACEVIEW
     signal_scope: app
+    output_path: surfaceview_blast
     primary_eligible: true
     feature_visible: false
   TEXTUREVIEW_STANDARD:
@@ -303,6 +327,7 @@ pipelines:
     rendering_type_id: S04_TEXTUREVIEW
     architecture_type: STANDARD
     signal_scope: app
+    output_path: texture
     primary_eligible: true
     feature_visible: false
   ANDROID_VIEW_MIXED:
@@ -313,7 +338,7 @@ pipelines:
     rendering_type_id: S05_MIXED_RENDERING
     architecture_type: MIXED
     signal_scope: app
-    primary_eligible: true
+    primary_eligible: false
     feature_visible: false
   ANDROID_VIEW_MULTI_WINDOW:
     file: android_view_multi_window.skill.yaml
@@ -345,6 +370,7 @@ pipelines:
     rendering_type_id: S07_SOFTWARE_OFFSCREEN
     architecture_type: SOFTWARE
     signal_scope: app
+    output_path: software
     primary_eligible: true
     feature_visible: false
   HARDWARE_BUFFER_RENDERER:
@@ -388,6 +414,7 @@ pipelines:
     rendering_type_id: S08_NATIVE_GRAPHICS
     architecture_type: GLSURFACEVIEW
     signal_scope: app
+    output_path: gl_surface
     primary_eligible: true
     feature_visible: false
   VULKAN_NATIVE:
@@ -398,6 +425,7 @@ pipelines:
     rendering_type_id: S08_NATIVE_GRAPHICS
     architecture_type: GLSURFACEVIEW
     signal_scope: app
+    output_path: vulkan_surface
     primary_eligible: true
     feature_visible: false
   ANGLE_GLES_VULKAN:
@@ -419,6 +447,7 @@ pipelines:
     rendering_type_id: S09_WEBVIEW
     architecture_type: WEBVIEW
     signal_scope: app
+    output_path: webview_functor
     primary_eligible: true
     feature_visible: false
   WEBVIEW_SURFACE_CONTROL:
@@ -429,7 +458,7 @@ pipelines:
     rendering_type_id: S09_WEBVIEW
     architecture_type: WEBVIEW
     signal_scope: app
-    primary_eligible: true
+    primary_eligible: false
     feature_visible: false
   WEBVIEW_SURFACEVIEW_WRAPPER:
     file: webview_surfaceview_wrapper.skill.yaml
@@ -439,7 +468,7 @@ pipelines:
     rendering_type_id: S09_WEBVIEW
     architecture_type: WEBVIEW
     signal_scope: app
-    primary_eligible: true
+    primary_eligible: false
     feature_visible: false
   WEBVIEW_TEXTUREVIEW_CUSTOM:
     file: webview_textureview_custom.skill.yaml
@@ -449,7 +478,7 @@ pipelines:
     rendering_type_id: S09_WEBVIEW
     architecture_type: WEBVIEW
     signal_scope: app
-    primary_eligible: true
+    primary_eligible: false
     feature_visible: false
   CHROME_BROWSER_VIZ:
     file: chrome_browser_viz.skill.yaml
@@ -459,6 +488,17 @@ pipelines:
     rendering_type_id: S16_CHROMIUM_BROWSER
     architecture_type: WEBVIEW
     signal_scope: app
+    primary_eligible: false
+    feature_visible: false
+  FLUTTER_SURFACEVIEW:
+    file: flutter_surfaceview.skill.yaml
+    family: flutter
+    classification_role: variant
+    teaching_type_id: S10_FLUTTER
+    rendering_type_id: S10_FLUTTER
+    architecture_type: FLUTTER
+    signal_scope: app
+    output_path: flutter_surface
     primary_eligible: true
     feature_visible: false
   FLUTTER_SURFACEVIEW_IMPELLER:
@@ -469,6 +509,7 @@ pipelines:
     rendering_type_id: S10_FLUTTER
     architecture_type: FLUTTER
     signal_scope: app
+    output_path: flutter_surface_impeller
     primary_eligible: true
     feature_visible: false
   FLUTTER_SURFACEVIEW_SKIA:
@@ -479,6 +520,7 @@ pipelines:
     rendering_type_id: S10_FLUTTER
     architecture_type: FLUTTER
     signal_scope: app
+    output_path: flutter_surface_skia
     primary_eligible: true
     feature_visible: false
   FLUTTER_TEXTUREVIEW:
@@ -489,6 +531,7 @@ pipelines:
     rendering_type_id: S10_FLUTTER
     architecture_type: FLUTTER
     signal_scope: app
+    output_path: flutter_texture
     primary_eligible: true
     feature_visible: false
   CAMERA_PIPELINE:
@@ -499,6 +542,18 @@ pipelines:
     rendering_type_id: S11_CAMERA
     architecture_type: CAMERA
     signal_scope: app
+    output_path: camera_preview
+    primary_eligible: true
+    feature_visible: false
+  VIDEO_PLAYBACK:
+    file: video_playback.skill.yaml
+    family: specialized
+    classification_role: variant
+    teaching_type_id: S12_VIDEO_OVERLAY_HWC
+    rendering_type_id: S12_VIDEO_OVERLAY_HWC
+    architecture_type: VIDEO_PLAYBACK
+    signal_scope: app
+    output_path: video_playback
     primary_eligible: true
     feature_visible: false
   VIDEO_OVERLAY_HWC:
@@ -511,7 +566,7 @@ pipelines:
     architecture_type: VIDEO_OVERLAY
     signal_scope: global
     primary_eligible: false
-    feature_visible: true
+    feature_visible: false
   GAME_ENGINE:
     file: game_engine.skill.yaml
     family: specialized
@@ -520,6 +575,7 @@ pipelines:
     rendering_type_id: S13_GAME
     architecture_type: GAME_ENGINE
     signal_scope: app
+    output_path: game_surface
     primary_eligible: true
     feature_visible: false
   RN_OLD_ARCH_HWUI:
@@ -530,7 +586,7 @@ pipelines:
     rendering_type_id: S14_REACT_NATIVE
     architecture_type: REACT_NATIVE
     signal_scope: app
-    primary_eligible: true
+    primary_eligible: false
     feature_visible: false
   RN_NEW_ARCH_HWUI:
     file: rn_new_arch.skill.yaml
@@ -540,7 +596,7 @@ pipelines:
     rendering_type_id: S14_REACT_NATIVE
     architecture_type: REACT_NATIVE
     signal_scope: app
-    primary_eligible: true
+    primary_eligible: false
     feature_visible: false
   RN_SKIA_RENDERER:
     file: rn_skia.skill.yaml
@@ -550,7 +606,7 @@ pipelines:
     rendering_type_id: S14_REACT_NATIVE
     architecture_type: REACT_NATIVE
     signal_scope: app
-    primary_eligible: true
+    primary_eligible: false
     feature_visible: false
   VARIABLE_REFRESH_RATE:
     file: variable_refresh_rate.skill.yaml

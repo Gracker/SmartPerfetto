@@ -30,6 +30,7 @@ fixtures:
     capture_config: embedded_in_trace
     assertions:
       - {query_id: scrolling_analysis/frame_timeline_check, kind: field_equals, field: has_frame_timeline, value: 1}
+      - {query_id: rendering_pipeline_detection/layer_signals, kind: field_equals, field: observed_path, value: hwui_blast, params: {package: com.example.wechatfriendforcustomscroller}}
   - id: smart-flutter-texture-api35
     source: Trace/real/flutter-scroll-texture-view/trace.pftrace
     sha256: 645deaa9fc564e0ea33072c83f5ecf1d0a6f53a97055cc98c640e8294deb315e
@@ -40,6 +41,7 @@ fixtures:
     assertions:
       - {query_id: rendering_pipeline_detection/active_rendering_processes, kind: field_positive, field: frame_count, params: {package: com.example.friendscircle.v27.textureview}}
       - {query_id: rendering_pipeline_detection/bufferqueue_path_signals, kind: field_positive, field: queue_buffer_count, params: {package: com.example.friendscircle.v27.textureview}}
+      - {query_id: rendering_pipeline_detection/layer_signals, kind: field_positive, field: texture_submissions, params: {package: com.example.friendscircle.v27.textureview}}
   - id: smart-flutter-surface-api35
     source: Trace/real/flutter-scroll-surface-view/trace.pftrace
     sha256: e876c56b5d7290acda596e73929c1a127df4255e9ca6951605dad40833e67a53
@@ -47,7 +49,8 @@ fixtures:
     android: {api: 35, qpr: unknown, oem: Nubia, build_type: user}
     kernel: 6.6.56-android15-8-g1b3a8e682e47-ab101-4k
     capture_config: embedded_in_trace
-    assertions: []
+    assertions:
+      - {query_id: rendering_pipeline_detection/layer_signals, kind: field_equals, field: observed_path, value: flutter_surface, params: {package: com.tencent.mm}}
   - id: smart-oppo-scroll-api36
     source: Trace/real/android-scroll-customer/trace.pftrace
     sha256: 1015ba963c49cd57d08d8997c4c48027026f2d6e41f7eb72b4b1356e39f7af3a

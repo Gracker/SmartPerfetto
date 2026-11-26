@@ -6,7 +6,7 @@
  * Architecture Detector
  *
  * Delegates to the YAML skill `rendering_pipeline_detection` as the single
- * source of truth for architecture detection (24-type fine-grained detection).
+ * source of truth for architecture detection.
  *
  * The YAML skill executes thread/slice signal collection, pipeline scoring,
  * subvariant determination, and pin instruction generation -- all in SQL.
@@ -27,6 +27,7 @@ import {
 import { parseCandidates } from '../../types/teaching.types';
 import {
   ensurePipelineSkillsInitialized,
+  matchesPipelineTarget,
   pipelineSkillLoader,
 } from '../../services/pipelineSkillLoader';
 import {
@@ -38,8 +39,8 @@ import {
 // Catalog-backed pipeline ID -> ArchitectureInfo.type mapping
 // =============================================================================
 
-export function resolvePipelineArchitectureType(pipelineId: string): RenderingArchitectureType {
-  return pipelineSkillLoader.getPipelineCatalogEntry(pipelineId)?.architecture_type || 'STANDARD';
+export function resolvePipelineArchitectureType(pipelineId: string, observedPath: unknown): RenderingArchitectureType {
+  return pipelineSkillLoader.getObservedPipelineEntry(pipelineId, observedPath)?.architecture_type ?? 'UNKNOWN';
 }
 
 // =============================================================================
@@ -79,63 +80,59 @@ export async function detectArchitectureViaSkill(
 
     // Extract step results via rawResults (keyed by step id)
     const pipelineRow = extractFirstRow(result.rawResults, 'determine_pipeline');
-    const subvariantRow = extractFirstRow(result.rawResults, 'subvariants');
 
-    const pipelineId = pipelineRow?.primary_pipeline_id;
-    if (typeof pipelineId !== 'string' || !pipelineId.trim()) {
+    if (!pipelineRow || typeof pipelineRow.primary_pipeline_id !== 'string' || !pipelineRow.primary_pipeline_id.trim()) {
       throw new Error('Architecture detection did not produce a pipeline ID');
     }
-    const confidence: number = typeof pipelineRow?.primary_confidence === 'number'
-      ? pipelineRow.primary_confidence
-      : 0.5;
-
-    const type = resolvePipelineArchitectureType(pipelineId);
-
+    const {primary_pipeline_id: pipelineId, primary_basis: basis, primary_confidence: share} = pipelineRow;
+    const targetProcess = pipelineRow.target_process;
+    const scopeMatches = matchesPipelineTarget(targetProcess, packageName);
+    const type = scopeMatches ? resolvePipelineArchitectureType(pipelineId, basis) : 'UNKNOWN';
+    const confidence = type !== 'UNKNOWN' && Number.isFinite(share) ? share : 0;
+    const evidence: ArchitectureInfo['evidence'] = [];
+    for (const metric of [
+      'hwui_draw_frames', 'host_submissions', 'surfaceview_submissions',
+      'texture_submissions', 'sf_host_frames', 'sf_surfaceview_frames',
+      'sf_surface_latches', 'camera_latches', 'video_latches', 'webview_draw_frames',
+    ]) {
+      const value = pipelineRow[metric];
+      if (scopeMatches && Number.isSafeInteger(value) && value >= 0) {
+        evidence.push({type: 'count', metric, value, source: 'rendering_pipeline_detection/determine_pipeline'});
+      }
+    }
     const info: ArchitectureInfo = {
       type,
       confidence,
-      evidence: parseCandidates(pipelineRow?.candidates_list).map(c => ({
-        type: 'slice' as const,
-        value: c.id,
-        weight: c.confidence,
-      })),
+      evidence,
+      detectorScope: {version: 1, traceId, packageName: packageName || null},
       additionalInfo: {
-        pipelineId,
-        featuresList: pipelineRow?.features_list,
-        docPath: pipelineRow?.doc_path,
+        pipelineId: type === 'UNKNOWN' ? 'UNKNOWN' : pipelineId,
+        pipelineLabel: type === 'UNKNOWN' ? undefined : pipelineSkillLoader.getPipeline(pipelineId)?.meta.display_name,
+        primaryBasis: type === 'UNKNOWN' ? 'unknown' : basis,
+        confidenceMeaning: 'observed_output_share',
+        targetProcess: scopeMatches ? targetProcess : undefined,
+        candidates: type === 'UNKNOWN' ? [] : parseCandidates(pipelineRow.candidates_list),
+        featuresList: type === 'UNKNOWN' ? undefined : pipelineRow.features_list,
+        docPath: type === 'UNKNOWN' ? undefined : pipelineRow.doc_path,
       },
     };
 
     // Type-specific extras
     if (type === 'FLUTTER') {
-      const flutterEngine = subvariantRow?.flutter_engine;
       info.flutter = {
-        engine: flutterEngine === 'IMPELLER' ? 'IMPELLER'
-              : flutterEngine === 'SKIA' ? 'SKIA'
-              : 'UNKNOWN',
+        engine: pipelineId.endsWith('_IMPELLER') ? 'IMPELLER'
+              : pipelineId.endsWith('_SKIA') ? 'SKIA' : 'UNKNOWN',
         surfaceType: pipelineId.includes('SURFACEVIEW') ? 'SURFACEVIEW'
-                   : pipelineId.includes('TEXTUREVIEW') ? 'TEXTUREVIEW'
-                   : 'UNKNOWN',
+                   : pipelineId.includes('TEXTUREVIEW') ? 'TEXTUREVIEW' : 'UNKNOWN',
       };
     }
 
     if (type === 'WEBVIEW') {
-      const webviewMode: string = subvariantRow?.webview_mode || '';
       info.webview = {
-        engine: webviewMode === 'TEXTUREVIEW_CUSTOM' ? 'X5' : 'CHROMIUM',
-        surfaceType: webviewMode === 'SURFACE_CONTROL' ? 'SURFACECONTROL'
-                   : webviewMode === 'GL_FUNCTOR' ? 'TEXTUREVIEW'
-                   : webviewMode === 'SURFACEVIEW_WRAPPER' ? 'SURFACEVIEW'
-                   : 'UNKNOWN',
-      };
-    }
-
-    if (type === 'COMPOSE') {
-      info.compose = {
-        hasRecomposition: true,
-        hasLazyLists: false,
-        isHybridView: false,
-        features: [],
+        engine: pipelineId === 'CHROME_BROWSER_VIZ' ? 'CHROMIUM' : 'UNKNOWN',
+        surfaceType: pipelineId === 'WEBVIEW_SURFACE_CONTROL' ? 'SURFACECONTROL'
+                   : pipelineId === 'WEBVIEW_SURFACEVIEW_WRAPPER' ? 'SURFACEVIEW'
+                   : pipelineId === 'WEBVIEW_TEXTUREVIEW_CUSTOM' ? 'TEXTUREVIEW' : 'UNKNOWN',
       };
     }
 

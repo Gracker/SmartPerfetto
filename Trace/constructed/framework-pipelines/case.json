@@ -65,8 +65,10 @@
       "pipeline_android_view_software",
       "pipeline_android_view_standard_blast",
       "pipeline_android_view_standard_legacy",
+      "pipeline_aosp_standard",
       "pipeline_chrome_browser_viz",
       "pipeline_compose_standard",
+      "pipeline_flutter_surfaceview",
       "pipeline_flutter_surfaceview_impeller",
       "pipeline_flutter_surfaceview_skia",
       "pipeline_game_engine",
@@ -77,9 +79,11 @@
       "pipeline_rn_skia",
       "pipeline_software_compositing",
       "pipeline_surface_control_api",
+      "pipeline_surfaceview",
       "pipeline_surfaceview_blast",
       "pipeline_variable_refresh_rate",
       "pipeline_video_overlay_hwc",
+      "pipeline_video_playback",
       "pipeline_webview_gl_functor",
       "pipeline_webview_surface_control",
       "pipeline_webview_surfaceview_wrapper",
@@ -329,6 +333,14 @@
         "required_marker": "SmartPerfetto::CASE::framework-pipelines"
       },
       {
+        "id": "definition-pipeline_aosp_standard",
+        "type": "skill",
+        "target": "pipeline_aosp_standard",
+        "mode": "definition",
+        "source_file": "backend/skills/pipelines/aosp_standard.skill.yaml",
+        "required_marker": "SmartPerfetto::CASE::framework-pipelines"
+      },
+      {
         "id": "definition-pipeline_chrome_browser_viz",
         "type": "skill",
         "target": "pipeline_chrome_browser_viz",
@@ -342,6 +354,14 @@
         "target": "pipeline_compose_standard",
         "mode": "definition",
         "source_file": "backend/skills/pipelines/compose_standard.skill.yaml",
+        "required_marker": "SmartPerfetto::CASE::framework-pipelines"
+      },
+      {
+        "id": "definition-pipeline_flutter_surfaceview",
+        "type": "skill",
+        "target": "pipeline_flutter_surfaceview",
+        "mode": "definition",
+        "source_file": "backend/skills/pipelines/flutter_surfaceview.skill.yaml",
         "required_marker": "SmartPerfetto::CASE::framework-pipelines"
       },
       {
@@ -450,6 +470,14 @@
         "required_marker": "SmartPerfetto::CASE::framework-pipelines"
       },
       {
+        "id": "definition-pipeline_surfaceview",
+        "type": "skill",
+        "target": "pipeline_surfaceview",
+        "mode": "definition",
+        "source_file": "backend/skills/pipelines/surfaceview.skill.yaml",
+        "required_marker": "SmartPerfetto::CASE::framework-pipelines"
+      },
+      {
         "id": "definition-pipeline_surfaceview_blast",
         "type": "skill",
         "target": "pipeline_surfaceview_blast",
@@ -471,6 +499,14 @@
         "target": "pipeline_video_overlay_hwc",
         "mode": "definition",
         "source_file": "backend/skills/pipelines/video_overlay_hwc.skill.yaml",
+        "required_marker": "SmartPerfetto::CASE::framework-pipelines"
+      },
+      {
+        "id": "definition-pipeline_video_playback",
+        "type": "skill",
+        "target": "pipeline_video_playback",
+        "mode": "definition",
+        "source_file": "backend/skills/pipelines/video_playback.skill.yaml",
         "required_marker": "SmartPerfetto::CASE::framework-pipelines"
       },
       {

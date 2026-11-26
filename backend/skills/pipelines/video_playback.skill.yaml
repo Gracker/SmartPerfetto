@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2024-2026 Gracker (Chris)
+# This file is part of SmartPerfetto. See LICENSE for details.
+
+name: pipeline_video_playback
+version: "1.0"
+type: pipeline_definition
+category: rendering
+meta:
+  pipeline_id: VIDEO_PLAYBACK
+  display_name: 视频播放输出
+  description: 解码器输出视频帧，沿目标视频层追踪 SurfaceFlinger 消费。合成方式需查看该层逐帧的合成记录。
+  icon: video
+  family: specialized
+  doc_path: skills/pipelines/index.yaml#rendering_types.S12_VIDEO_OVERLAY_HWC
+teaching:
+  source: skills/pipelines/index.yaml#rendering_types.S12_VIDEO_OVERLAY_HWC
+auto_pin:
+  instructions:
+    - pattern: 'MediaCodec'
+      match_by: name
+      priority: 1
+      reason: 查看解码器输出
+      smart_filter:
+        enabled: true
+    - pattern: '^[sS]urface[fF]linger'
+      match_by: name
+      priority: 2
+      reason: 查看目标层消费与合成
+      main_thread_only: true

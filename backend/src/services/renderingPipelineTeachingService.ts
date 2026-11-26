@@ -5,12 +5,12 @@
 import {loadCriticalPathChain} from './criticalPathAnalyzer';
 import { warningText } from './criticalPathText';
 import { resolveDirectWaker, type WakerChainResult } from './criticalPathWakerChain';
-import { getPipelineDocService } from './pipelineDocService';
+import {buildPipelineTeachingBundle, type PipelineBundle} from './pipelineTeachingBundle';
 import {
   ensurePipelineSkillsInitialized,
+  matchesPipelineTarget,
   pipelineSkillLoader,
   renderingTypeSource,
-  type PinInstruction,
 } from './pipelineSkillLoader';
 import { SkillExecutor } from './skillEngine/skillExecutor';
 import { ensureSkillRegistryInitialized, skillRegistry } from './skillEngine/skillLoader';
@@ -29,7 +29,6 @@ import {
 import {
   parseCandidates,
   parseFeatures,
-  transformPinInstruction,
   validateActiveProcesses,
   validateConfidence,
   type ActiveProcess,
@@ -42,7 +41,6 @@ import {
   type ObservedFlowTrackHint,
   type PipelineDetectionResult,
   type PinInstructionResponse,
-  type RawPinInstruction,
   type RenderingPipelineSubvariants,
   type TeachingContentResponse,
   type TeachingDetectionResponse,
@@ -53,19 +51,10 @@ import {
   type TeachingWarning,
 } from '../types/teaching.types';
 import {
-  TEACHING_DEFAULTS,
   TEACHING_LIMITS,
   TEACHING_STEP_IDS,
 } from '../config/teaching.config';
 import type {CriticalPathSegment} from '../types/criticalPathContract';
-
-interface PipelineBundle {
-  detection: PipelineDetectionResult;
-  teachingContent: TeachingContentResponse | null;
-  pinInstructions: PinInstructionResponse[];
-  activeRenderingProcesses: ActiveProcess[];
-  docPath: string;
-}
 
 interface DetectionBundleResult {
   bundle: PipelineBundle;
@@ -153,20 +142,6 @@ const POINT_SELECTION_CONTEXT_NS = 50_000_000;
 const MAX_CRITICAL_TASK_ROOTS = 6;
 const MAX_CRITICAL_PATH_SEGMENTS_PER_ROOT = 12;
 const MAX_CRITICAL_TASKS = 40;
-
-const PRODUCER_PIPELINE_PATTERNS: Array<{
-  test: RegExp;
-  title: string;
-  role: ObservedFlowLaneRole;
-}> = [
-  { test: /WEBVIEW|CHROME/i, title: 'WebView/Chromium producer', role: 'producer' },
-  { test: /FLUTTER|IMPELLER/i, title: 'Flutter producer', role: 'producer' },
-  { test: /RN_|REACT_NATIVE|SKIA_RENDERER/i, title: 'React Native producer', role: 'producer' },
-  { test: /TEXTUREVIEW/i, title: 'TextureView producer', role: 'producer' },
-  { test: /SURFACEVIEW/i, title: 'SurfaceView producer', role: 'producer' },
-  { test: /OPENGL|VULKAN|ANGLE|GAME/i, title: 'GL/Vulkan producer', role: 'producer' },
-  { test: /CAMERA|VIDEO|IMAGEREADER|HARDWARE_BUFFER/i, title: 'Media producer', role: 'producer' },
-];
 
 function teachingWarning(
   code: string,
@@ -276,13 +251,14 @@ function buildDetectionResponse(
       id: detection.primaryRenderingTypeId,
       docPath: renderingType
         ? renderingTypeSource(detection.primaryRenderingTypeId)
-        : pipelineSkillLoader.getDefaultSelection().docPath,
+        : '',
     },
     candidates: detection.candidates,
     renderingTypeCandidates: detection.renderingTypeCandidates,
     relatedRenderingTypes: detection.relatedRenderingTypes,
     features: detection.features,
-    subvariants,
+    subvariants: detection.detected && detection.primaryPipelineId !== pipelineSkillLoader.getDefaultSelection().pipelineId
+      ? subvariants : DEFAULT_SUBVARIANTS,
     traceRequirementsMissing: detection.traceRequirementsMissing,
     trace_requirements_missing: detection.traceRequirementsMissing,
   };
@@ -385,8 +361,8 @@ function roleForStage(stage: string, processName?: string, threadName?: string):
   return 'producer';
 }
 
-function laneIdFor(role: ObservedFlowLaneRole, processName?: string, threadName?: string, suffix?: string): string {
-  const stable = [role, processName, threadName, suffix]
+function laneIdFor(role: ObservedFlowLaneRole, processName?: string, threadName?: string): string {
+  const stable = [role, processName, threadName]
     .filter(Boolean)
     .join(':')
     .replace(/[^a-zA-Z0-9_-]+/g, '_')
@@ -468,9 +444,9 @@ export class RenderingPipelineTeachingService {
       detectionBundle.bundle.detection,
       detectionBundle.subvariants
     );
-    const teachingContent =
-      detectionBundle.bundle.teachingContent ||
-      fallbackTeachingContent(detection.primaryPipelineId, detectionBundle.bundle.docPath);
+    const teachingContent = detection.detected
+      ? detectionBundle.bundle.teachingContent ?? fallbackTeachingContent(detection.primaryPipelineId, detectionBundle.bundle.docPath)
+      : null;
     const observed = await this.buildObservedFlow(input, detectionBundle.bundle, detection);
     const pinPlan = this.buildPinPlan(detectionBundle.bundle.pinInstructions, observed.observedFlow);
     const overlayPlan = this.buildOverlayPlan(teachingContent, observed.observedFlow);
@@ -505,8 +481,9 @@ export class RenderingPipelineTeachingService {
     const skillExecutor = new SkillExecutor(this.traceProcessorService);
     skillExecutor.registerSkills(skillRegistry.getAllSkills());
 
+    const target = input.packageName || input.processName;
     const result = await skillExecutor.execute('rendering_pipeline_detection', input.traceId, {
-      package: input.packageName || input.processName || '',
+      package: target || '',
     });
 
     if (!result.success) {
@@ -514,7 +491,7 @@ export class RenderingPipelineTeachingService {
     }
 
     const subvariants = normalizeSubvariants(result.rawResults);
-    const pipelineBundle = this.extractPipelineBundle(result);
+    const pipelineBundle = this.extractPipelineBundle(result, target);
     if (pipelineBundle) {
       return {
         bundle: pipelineBundle,
@@ -524,7 +501,7 @@ export class RenderingPipelineTeachingService {
     }
 
     return {
-      bundle: await this.buildFallbackBundle(result),
+      bundle: this.buildFallbackBundle(result, target),
       subvariants,
       warnings: [
         teachingWarning(
@@ -537,35 +514,27 @@ export class RenderingPipelineTeachingService {
     };
   }
 
-  private extractPipelineBundle(result: SkillExecutionResult): PipelineBundle | null {
-    const defaultSelection = pipelineSkillLoader.getDefaultSelection();
+  private extractPipelineBundle(result: SkillExecutionResult, packageName?: string): PipelineBundle | null {
     const data = result.rawResults?.pipeline_bundle?.data;
     if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
     const bundle = data as Record<string, unknown>;
     const detectionRaw = bundle.detection as Record<string, unknown> | undefined;
     if (!detectionRaw || typeof detectionRaw.primaryPipelineId !== 'string') return null;
 
-    const primaryPipelineId = String(detectionRaw.primaryPipelineId || defaultSelection.pipelineId);
-    const primaryConfidence = validateConfidence(
-      detectionRaw.primaryConfidence,
-      TEACHING_DEFAULTS.confidence
-    );
+    const selectedId = detectionRaw.primaryPipelineId;
+    const source = this.firstObjectRow(result.rawResults?.determine_pipeline);
+    const entry = source?.primary_pipeline_id === selectedId && matchesPipelineTarget(source.target_process, packageName)
+      ? pipelineSkillLoader.getObservedPipelineEntry(selectedId, source.primary_basis) : null;
+    const detected = detectionRaw.detected !== false && entry !== null;
+    const primaryConfidence = detected ? validateConfidence(source?.primary_confidence, 0) : 0;
     const detection: PipelineDetectionResult = {
-      detected: detectionRaw.detected !== false,
-      primaryPipelineId,
-      primaryRenderingTypeId: String(
-        detectionRaw.primaryRenderingTypeId ||
-        pipelineSkillLoader.getPipelineCatalogEntry(primaryPipelineId)?.rendering_type_id ||
-        defaultSelection.renderingTypeId
-      ),
+      detected,
+      primaryPipelineId: detected ? selectedId : 'UNKNOWN',
+      primaryRenderingTypeId: detected ? entry.rendering_type_id! : 'UNKNOWN',
       primaryConfidence,
-      candidates: Array.isArray(detectionRaw.candidates)
-        ? parseCandidates(detectionRaw.candidates, TEACHING_LIMITS.maxCandidates)
-        : [{ id: primaryPipelineId, confidence: primaryConfidence }],
-      renderingTypeCandidates: Array.isArray(detectionRaw.renderingTypeCandidates)
-        ? parseCandidates(detectionRaw.renderingTypeCandidates, TEACHING_LIMITS.maxCandidates)
-        : [],
-      relatedRenderingTypes: Array.isArray(detectionRaw.relatedRenderingTypes)
+      candidates: detected ? parseCandidates(detectionRaw.candidates, TEACHING_LIMITS.maxCandidates) : [],
+      renderingTypeCandidates: detected ? parseCandidates(detectionRaw.renderingTypeCandidates, TEACHING_LIMITS.maxCandidates) : [],
+      relatedRenderingTypes: detected && Array.isArray(detectionRaw.relatedRenderingTypes)
         ? pipelineSkillLoader.resolveRelatedRenderingTypes(
             parseCandidates(
               detectionRaw.relatedRenderingTypes,
@@ -573,7 +542,7 @@ export class RenderingPipelineTeachingService {
             ),
           )
         : [],
-      features: Array.isArray(detectionRaw.features) ? parseFeatures(detectionRaw.features) : [],
+      features: detected && Array.isArray(detectionRaw.features) ? parseFeatures(detectionRaw.features) : [],
       traceRequirementsMissing: Array.isArray(detectionRaw.traceRequirementsMissing)
         ? detectionRaw.traceRequirementsMissing.map((value) => String(value))
         : [],
@@ -581,110 +550,24 @@ export class RenderingPipelineTeachingService {
 
     return {
       detection,
-      teachingContent: this.normalizeTeachingContent(bundle.teachingContent, bundle.docPath),
-      pinInstructions: normalizePinInstructions(bundle.pinInstructions),
+      teachingContent: detected ? this.normalizeTeachingContent(bundle.teachingContent, bundle.docPath) : null,
+      pinInstructions: detected ? normalizePinInstructions(bundle.pinInstructions) : [],
       activeRenderingProcesses: normalizeActiveProcesses(bundle.activeRenderingProcesses),
-      docPath: String(bundle.docPath || defaultSelection.docPath),
+      docPath: detected ? String(bundle.docPath || '') : '',
     };
   }
 
-  private async buildFallbackBundle(result: SkillExecutionResult): Promise<PipelineBundle> {
-    const defaultSelection = pipelineSkillLoader.getDefaultSelection();
+  private buildFallbackBundle(result: SkillExecutionResult, packageName?: string): PipelineBundle {
     const rawResults = result.rawResults || {};
     const pipelineRow = this.firstObjectRow(rawResults.determine_pipeline);
     const traceRequirementsRow = this.firstObjectRow(rawResults.trace_requirements);
     const activeRenderingProcesses = validateActiveProcesses(rawResults[TEACHING_STEP_IDS.activeProcesses]);
 
-    const primaryPipelineId = String(
-      pipelineRow?.primary_pipeline_id || defaultSelection.pipelineId
-    );
-    const primaryConfidence = validateConfidence(
-      pipelineRow?.primary_confidence,
-      TEACHING_DEFAULTS.confidence
-    );
-    const candidates = pipelineRow?.candidates_list
-      ? parseCandidates(pipelineRow.candidates_list, TEACHING_LIMITS.maxCandidates)
-      : [{ id: primaryPipelineId, confidence: primaryConfidence }];
-    const primaryRenderingTypeId = String(
-      pipelineRow?.primary_rendering_type_id ||
-      pipelineSkillLoader.getPipelineCatalogEntry(primaryPipelineId)?.rendering_type_id ||
-      defaultSelection.renderingTypeId
-    );
-    const renderingTypeCandidates = pipelineRow?.rendering_type_candidates_list
-      ? parseCandidates(
-          pipelineRow.rendering_type_candidates_list,
-          TEACHING_LIMITS.maxCandidates
-        )
-      : [{ id: primaryRenderingTypeId, confidence: primaryConfidence }];
-    const relatedRenderingTypes = pipelineSkillLoader.resolveRelatedRenderingTypes(
-      parseCandidates(
-        pipelineRow?.related_rendering_type_candidates_list,
-        TEACHING_LIMITS.maxCandidates,
-      ),
-    );
-    const features = parseFeatures(pipelineRow?.features_list);
-    const traceRequirementsMissing = traceRequirementsRow
-      ? Object.values(traceRequirementsRow)
-          .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-          .map((value) => value.trim())
-      : [];
-    const docPath = String(pipelineRow?.doc_path || defaultSelection.docPath);
-
-    const mdTeaching = getPipelineDocService().getTeachingContent(primaryPipelineId);
-    const teachingContent = mdTeaching
-      ? {
-          title: mdTeaching.title,
-          summary: mdTeaching.summary,
-          mermaidBlocks: mdTeaching.mermaidBlocks,
-          threadRoles: mdTeaching.threadRoles,
-          keySlices: mdTeaching.keySlices,
-          docPath: mdTeaching.docPath,
-        }
-      : null;
-
-    const smartFilterConfigs = pipelineSkillLoader.getSmartFilterConfigs(primaryPipelineId);
-    const pinInstructions = pipelineSkillLoader
-      .getAutoPinInstructions(primaryPipelineId)
-      .slice(0, TEACHING_LIMITS.maxPinInstructions)
-      .map((inst: PinInstruction) => {
-        const hasSmartFilter = inst.smart_filter?.enabled ?? smartFilterConfigs.has(inst.pattern);
-        const rawInstruction: RawPinInstruction = {
-          pattern: inst.pattern,
-          match_by: inst.match_by,
-          priority: inst.priority,
-          reason: inst.reason,
-          expand: inst.expand,
-          main_thread_only: inst.main_thread_only,
-          smart_filter: hasSmartFilter ? (inst.smart_filter || { enabled: true }) : undefined,
-        };
-        const transformed = transformPinInstruction(rawInstruction, activeRenderingProcesses);
-        if (transformed.smartPin && !transformed.skipPin) {
-          transformed.reason = `${inst.reason} (${activeRenderingProcesses.length} 活跃进程)`;
-        }
-        return transformed;
-      });
-
-    return {
-      detection: {
-        detected: !!pipelineRow,
-        primaryPipelineId,
-        primaryRenderingTypeId,
-        primaryConfidence,
-        candidates,
-        renderingTypeCandidates,
-        relatedRenderingTypes,
-        features,
-        traceRequirementsMissing,
-      },
-      teachingContent,
-      pinInstructions,
-      activeRenderingProcesses,
-      docPath,
-    };
+    return buildPipelineTeachingBundle(pipelineRow, activeRenderingProcesses, traceRequirementsRow, {packageName});
   }
 
   private firstObjectRow(step: StepResult | undefined): Record<string, unknown> | null {
-    if (!step?.data) return null;
+    if (!step?.data || step.success === false) return null;
     if (Array.isArray(step.data)) {
       const row = step.data.find((item) => item && typeof item === 'object' && !Array.isArray(item));
       return row ? (row as Record<string, unknown>) : null;
@@ -763,7 +646,7 @@ export class RenderingPipelineTeachingService {
       evidenceSource: 'observed_slice_query',
       confidence: 0.9,
     }));
-    let lanes = this.buildLanes(input, bundle, detection, events);
+    let lanes = this.buildLanes(bundle, detection, events);
     let eventsWithLanes = events.map((event) => ({
       ...event,
       laneId: this.matchEventLane(event, lanes),
@@ -921,26 +804,21 @@ export class RenderingPipelineTeachingService {
   }
 
   private buildLanes(
-    input: TeachingPipelineRequest,
     bundle: PipelineBundle,
     detection: TeachingDetectionResponse,
     events: ObservedFlowEvent[]
   ): ObservedFlowLane[] {
     const lanes = new Map<string, ObservedFlowLane>();
-    const pipelineIds = detection.candidates.length > 0
-      ? detection.candidates.map((candidate) => candidate.id)
-      : [detection.primaryPipelineId];
+    const pipelineIds = detection.detected ? [detection.primaryPipelineId] : [];
 
     const addLane = (
       role: ObservedFlowLaneRole,
       processName: string | undefined,
       threadName: string | undefined,
       confidence: number,
-      evidenceSource: string,
-      title?: string,
-      suffix?: string
+      evidenceSource: string
     ) => {
-      const id = laneIdFor(role, processName, threadName, suffix);
+      const id = laneIdFor(role, processName, threadName);
       const existing = lanes.get(id);
       if (existing) {
         existing.confidence = Math.max(existing.confidence, confidence);
@@ -949,7 +827,7 @@ export class RenderingPipelineTeachingService {
       lanes.set(id, {
         id,
         role,
-        title: title || laneTitle(role, processName, threadName),
+        title: laneTitle(role, processName, threadName),
         processName,
         threadName,
         trackHint: makeTrackHint(role, processName, threadName),
@@ -969,24 +847,6 @@ export class RenderingPipelineTeachingService {
     for (const event of events) {
       const role = roleForStage(event.stage, event.processName, event.threadName);
       addLane(role, event.processName, event.threadName, 0.9, 'observed_slice_query');
-    }
-
-    const detectionText = [
-      detection.primaryPipelineId,
-      ...detection.candidates.map((candidate) => candidate.id),
-      ...detection.features.map((feature) => feature.name),
-    ].join(' ');
-    for (const pattern of PRODUCER_PIPELINE_PATTERNS) {
-      if (!pattern.test.test(detectionText)) continue;
-      addLane(
-        pattern.role,
-        input.packageName || input.processName || bundle.activeRenderingProcesses[0]?.processName,
-        undefined,
-        0.55,
-        'detection_features',
-        pattern.title,
-        pattern.title
-      );
     }
 
     return Array.from(lanes.values()).sort((a, b) => {
@@ -1416,7 +1276,7 @@ export class RenderingPipelineTeachingService {
   }
 
   private buildOverlayPlan(
-    teachingContent: TeachingContentResponse,
+    teachingContent: TeachingContentResponse | null,
     observedFlow: ObservedFlow
   ): TeachingOverlayPlan {
     const keySliceNames = collectKeySliceNames(teachingContent);
@@ -1444,18 +1304,21 @@ export class RenderingPipelineTeachingService {
     detectionBundle: DetectionBundleResult,
     observedFlow: ObservedFlow,
     queryWarnings: string[],
-    teachingContent: TeachingContentResponse,
+    teachingContent: TeachingContentResponse | null,
     pinPlan: TeachingPinPlan,
     overlayPlan: TeachingOverlayPlan
   ): TeachingWarning[] {
     const warnings: TeachingWarning[] = [...detectionBundle.warnings];
     const detection = detectionBundle.bundle.detection;
-    if (detection.primaryConfidence < 0.6) {
+    if (!detection.detected) {
+      warnings.push(teachingWarning('PIPELINE_UNDETERMINED', 'info',
+        'The trace does not establish a rendering path for the target.', 'detection'));
+    } else if (detection.primaryConfidence < 0.6) {
       warnings.push(
         teachingWarning(
           'LOW_PIPELINE_CONFIDENCE',
           'warning',
-          `Primary pipeline confidence is ${Math.round(detection.primaryConfidence * 100)}%.`,
+          `The primary path accounts for ${Math.round(detection.primaryConfidence * 100)}% of the applicable output observations.`,
           'detection'
         )
       );
@@ -1479,7 +1342,7 @@ export class RenderingPipelineTeachingService {
         )
       );
     }
-    if (!teachingContent.keySlices.length) {
+    if (teachingContent && !teachingContent.keySlices.length) {
       warnings.push(
         teachingWarning(
           'TEACHING_KEY_SLICES_EMPTY',

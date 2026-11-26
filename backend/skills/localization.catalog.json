@@ -7,10 +7,10 @@
     "authoredNarrativeRemainsVerbatim": true
   },
   "inventory": {
-    "skillCount": 254,
-    "pipelineDefinitionCount": 31,
+    "skillCount": 258,
+    "pipelineDefinitionCount": 35,
     "moduleExpertCount": 18,
-    "stepCount": 1401,
+    "stepCount": 1409,
     "explicitColumnCount": 5479
   },
   "skills": {
@@ -31587,6 +31587,35 @@
         }
       }
     },
+    "pipeline_aosp_standard": {
+      "displayName": {
+        "zh-CN": "标准 Android 窗口",
+        "en": "Pipeline Aosp Standard"
+      },
+      "description": {
+        "zh-CN": "目标应用由 HWUI 绘制并提交宿主窗口。",
+        "en": "Analyzes Pipeline Aosp Standard using trace metrics and supporting evidence."
+      },
+      "type": "pipeline_definition",
+      "steps": {
+        "__synthesize_summary__": {
+          "title": {
+            "zh-CN": "洞见摘要",
+            "en": "Insight Summary"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        },
+        "root": {
+          "title": {
+            "zh-CN": "标准 Android 窗口",
+            "en": "Pipeline Aosp Standard"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        }
+      }
+    },
     "pipeline_camera_pipeline": {
       "displayName": {
         "zh-CN": "相机管线",
@@ -31668,6 +31697,35 @@
           "title": {
             "zh-CN": "管线ComposeStandard",
             "en": "Jetpack Compose (Standard)"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        }
+      }
+    },
+    "pipeline_flutter_surfaceview": {
+      "displayName": {
+        "zh-CN": "Flutter SurfaceView 输出",
+        "en": "Pipeline Flutter Surfaceview"
+      },
+      "description": {
+        "zh-CN": "Flutter raster 路径向独立 SurfaceView 提交图像。",
+        "en": "Analyzes Pipeline Flutter Surfaceview using trace metrics and supporting evidence."
+      },
+      "type": "pipeline_definition",
+      "steps": {
+        "__synthesize_summary__": {
+          "title": {
+            "zh-CN": "洞见摘要",
+            "en": "Insight Summary"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        },
+        "root": {
+          "title": {
+            "zh-CN": "Flutter SurfaceView 输出",
+            "en": "Pipeline Flutter Surfaceview"
           },
           "columns": {},
           "synthesizeLabels": {}
@@ -32120,6 +32178,35 @@
         }
       }
     },
+    "pipeline_surfaceview": {
+      "displayName": {
+        "zh-CN": "独立 SurfaceView 输出",
+        "en": "Pipeline Surfaceview"
+      },
+      "description": {
+        "zh-CN": "生产者向目标应用的独立 SurfaceView 提交内容。",
+        "en": "Analyzes Pipeline Surfaceview using trace metrics and supporting evidence."
+      },
+      "type": "pipeline_definition",
+      "steps": {
+        "__synthesize_summary__": {
+          "title": {
+            "zh-CN": "洞见摘要",
+            "en": "Insight Summary"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        },
+        "root": {
+          "title": {
+            "zh-CN": "独立 SurfaceView 输出",
+            "en": "Pipeline Surfaceview"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        }
+      }
+    },
     "pipeline_surfaceview_blast": {
       "displayName": {
         "zh-CN": "管线SurfaceviewBlast",
@@ -32230,6 +32317,35 @@
           "title": {
             "zh-CN": "视频 Overlay (HWC)",
             "en": "Pipeline Video Overlay HWC"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        }
+      }
+    },
+    "pipeline_video_playback": {
+      "displayName": {
+        "zh-CN": "视频播放输出",
+        "en": "Pipeline Video Playback"
+      },
+      "description": {
+        "zh-CN": "解码器输出视频帧，沿目标视频层追踪 SurfaceFlinger 消费。合成方式需查看该层逐帧的合成记录。",
+        "en": "Analyzes Pipeline Video Playback using trace metrics and supporting evidence."
+      },
+      "type": "pipeline_definition",
+      "steps": {
+        "__synthesize_summary__": {
+          "title": {
+            "zh-CN": "洞见摘要",
+            "en": "Insight Summary"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        },
+        "root": {
+          "title": {
+            "zh-CN": "视频播放输出",
+            "en": "Pipeline Video Playback"
           },
           "columns": {},
           "synthesizeLabels": {}
@@ -33625,7 +33741,7 @@
         },
         "layer_signals": {
           "title": {
-            "zh-CN": "Layer 信号",
+            "zh-CN": "目标图层与缓冲区",
             "en": "Layer Signals"
           },
           "columns": {},
@@ -33704,7 +33820,7 @@
         },
         "score_pipelines": {
           "title": {
-            "zh-CN": "管线类型评分",
+            "zh-CN": "候选特征评分",
             "en": "Score Pipelines"
           },
           "columns": {},

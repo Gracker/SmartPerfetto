@@ -74,7 +74,7 @@ describe('runtime dual-trace comparison context', () => {
 
   it('keeps the reference package only for a confident inference and carries the candidates', async () => {
     const detect = jest.spyOn(focusAppDetector, 'detectFocusApps');
-    jest.spyOn(architectureDetector, 'createArchitectureDetector').mockReturnValue({
+    const factory = jest.spyOn(architectureDetector, 'createArchitectureDetector').mockReturnValue({
       detect: jest.fn(async () => undefined),
     } as any);
     const traceProcessorService = {query: jest.fn(async () => ({columns: ['name'], rows: [], durationMs: 1}))} as any;
@@ -85,6 +85,7 @@ describe('runtime dual-trace comparison context', () => {
     const ambiguous = await buildRuntimeTracePairComparisonContext({traceProcessorService,
       currentTraceId: 'trace-current', referenceTraceId: 'trace-reference'});
     expect(ambiguous?.referencePackageName).toBeUndefined();
+    expect(factory).not.toHaveBeenCalled();
     expect(ambiguous?.referenceFocusTarget).toMatchObject({source: 'none', confidence: 'ambiguous',
       candidates: [{packageName: 'com.example.a'}, {packageName: 'com.example.b'}]});
 
@@ -102,9 +103,8 @@ describe('runtime dual-trace comparison context', () => {
       method: 'frame_timeline',
       primaryApp: 'com.example.reference',
     });
-    jest.spyOn(architectureDetector, 'createArchitectureDetector').mockReturnValue({
-      detect: jest.fn(async () => ({type: 'FLUTTER', confidence: 0.9, evidence: []})),
-    } as any);
+    const detect = jest.fn(async (_context: unknown) => ({type: 'FLUTTER', confidence: 0.9, evidence: []}));
+    jest.spyOn(architectureDetector, 'createArchitectureDetector').mockReturnValue({detect} as any);
     const traceProcessorService = {
       query: jest.fn(async (traceId: string) => ({
         columns: ['name'],
@@ -121,6 +121,7 @@ describe('runtime dual-trace comparison context', () => {
       referenceTraceId: 'trace-reference',
     });
 
+    expect(detect).toHaveBeenCalledWith(expect.objectContaining({traceId: 'trace-reference', packageName: 'com.example.reference'}));
     expect(context).toEqual(expect.objectContaining({
       referenceTraceId: 'trace-reference',
       referencePackageName: 'com.example.reference',

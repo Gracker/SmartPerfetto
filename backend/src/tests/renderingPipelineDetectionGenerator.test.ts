@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { describe, it, expect, jest } from '@jest/globals';
+import { afterEach, beforeEach, describe, it, expect, jest } from '@jest/globals';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import yaml from 'js-yaml';
@@ -46,12 +46,6 @@ describe('rendering_pipeline_detection generator', () => {
     expect(scoreStep.sql).not.toContain('COALESCE((SELECT SUM(');
     expect(Buffer.byteLength(scoreStep.sql, 'utf8')).toBeLessThan(45_000);
     expect(Buffer.byteLength(determineStep.sql, 'utf8')).toBeLessThan(10_000);
-    expect(determineStep.sql).toContain('SELECT * FROM ${pipeline_scores}');
-    expect(determineStep.sql).toContain('candidate_list AS');
-    expect(determineStep.sql).toContain("GROUP BY 'all_candidates'");
-    expect(determineStep.sql).toContain('SELECT pipeline_id, rendering_type_id, score, rank');
-    expect(determineStep.sql).toContain('ORDER BY rank ASC');
-
     // Non-primary / feature-only pipelines should not win primary selection.
     // Keep these checks stable to prevent regressions where a backend/impl-detail pipeline
     // becomes the primary pipeline by accident.
@@ -75,7 +69,8 @@ describe('rendering_pipeline_detection generator', () => {
 
     const layerSignalsStep = skill.steps?.find((s) => s.id === 'layer_signals') as any;
     expect(layerSignalsStep).toBeTruthy();
-    expect(layerSignalsStep.sql).toContain('android_frames_layers');
+    expect(layerSignalsStep.sql).toContain('actual_frame_timeline_slice');
+    expect(skill.steps!.indexOf(layerSignalsStep)).toBeLessThan(skill.steps!.indexOf(determineStep));
 
     const pipelineBundleStep = skill.steps?.find((s) => s.id === 'pipeline_bundle') as any;
     expect(pipelineBundleStep).toBeTruthy();
@@ -109,12 +104,13 @@ describe('rendering_pipeline_detection generator', () => {
       expect(determineStep.sql).toContain(renderingTypeSource(entry.teaching_type_id));
       if (entry.classification_role === 'feature') {
         expect(entry.primary_eligible).toBe(false);
-        expect(entry.feature_visible).toBe(true);
       }
       if (entry.signal_scope === 'global') {
         expect(scoreStep.sql).toContain(`'${pipelineId}'`);
       }
     }
+
+    expect(catalog.pipelines.VIDEO_OVERLAY_HWC.feature_visible).toBe(false);
 
     const source = fs.readFileSync(
       path.resolve(__dirname, '../services/renderingPipelineDetectionSkillGenerator.ts'),
@@ -136,36 +132,6 @@ describe('rendering_pipeline_detection generator', () => {
     expect(portable.steps?.some((step) => step.id === 'determine_pipeline')).toBe(true);
     expect(serialized).not.toMatch(/[ \t]+$/m);
     expect(serialized).toBe(committed);
-  });
-
-  it('requires app-scoped capture activity before scoring a camera pipeline', async () => {
-    const skill = await generateRenderingPipelineDetectionSkill();
-    const step = skill.steps?.find(step => step.id === 'score_pipelines');
-    if (step?.type !== 'atomic' || !step.sql) throw new Error('Missing pipeline scoring SQL');
-    const db = new Database(':memory:');
-    try {
-      db.exec(`
-        CREATE TABLE process(upid INTEGER PRIMARY KEY, name TEXT);
-        CREATE TABLE thread(utid INTEGER PRIMARY KEY, upid INTEGER, name TEXT);
-        CREATE TABLE thread_track(id INTEGER PRIMARY KEY, utid INTEGER);
-        CREATE TABLE slice(track_id INTEGER, ts INTEGER, dur INTEGER, name TEXT);
-        INSERT INTO process VALUES (1, 'example'), (2, 'other');
-        INSERT INTO thread VALUES (10, 1, 'main'), (11, 1, 'CameraAvailabil'), (20, 2, 'main');
-        INSERT INTO thread_track VALUES (100, 10), (200, 20);
-        INSERT INTO slice VALUES
-          (100, 0, 1, 'AIDL::java::ICameraServiceListener::onCameraAccessPrioritiesChanged::server'),
-          (200, 0, 1, 'Camera3Device::processCaptureRequest');
-      `);
-      const query = db.prepare(`SELECT score FROM (${step.sql.split('${package}').join('example')})
-        WHERE pipeline_id = 'CAMERA_PIPELINE'`).pluck();
-      expect(query.get()).toBe(0);
-      db.exec("INSERT INTO slice VALUES (100, 1, 1, 'CameraCaptureSession::onCaptureCompleted')");
-      expect(query.get()).toBe(1);
-      db.exec("UPDATE slice SET name = 'acquireNextBufferLocked - SurfaceView[CameraPreview]frame=1' WHERE ts = 1");
-      expect(query.get()).toBe(1);
-    } finally {
-      db.close();
-    }
   });
 
   it('requires Flutter UI and SurfaceTexture identities before TextureView signals can score Flutter', async () => {
@@ -319,6 +285,260 @@ describe('rendering_pipeline_detection generator', () => {
     } finally {
       db.close();
     }
+  });
+});
+
+describe('attributed output path selection', () => {
+  let db: Database.Database;
+  let detect: () => Record<string, unknown>;
+  const unknown = {
+    primary_pipeline_id: 'UNKNOWN', primary_confidence: 0, candidates_list: '', doc_path: '',
+  };
+
+  beforeEach(async () => {
+    db = new Database(':memory:');
+    db.exec(`
+      CREATE TABLE requested_package(name TEXT);
+      INSERT INTO requested_package VALUES ('example.app');
+      CREATE TABLE process(upid INTEGER PRIMARY KEY, name TEXT);
+      CREATE TABLE thread(utid INTEGER PRIMARY KEY, upid INTEGER, name TEXT);
+      CREATE TABLE thread_track(id INTEGER PRIMARY KEY, utid INTEGER);
+      CREATE TABLE flow(slice_in INTEGER, slice_out INTEGER);
+      CREATE TABLE slice(id INTEGER PRIMARY KEY, track_id INTEGER, parent_id INTEGER, ts INTEGER, dur INTEGER, name TEXT);
+      CREATE TABLE actual_frame_timeline_slice(upid INTEGER, display_frame_token INTEGER,
+        surface_frame_token INTEGER, layer_name TEXT, dur INTEGER, present_type TEXT);
+      INSERT INTO process VALUES (1, 'example.app'), (2, 'example.app.helper'), (3, '/system/bin/surfaceflinger'),
+        (4, '/system/bin/cameraserver'), (5, '/system/bin/media.codec');
+      INSERT INTO thread VALUES (11, 1, 'RenderThread'), (12, 1, 'CameraAvailabil'), (13, 1, '1.raster'),
+        (14, 1, 'CrRendererMain'), (21, 2, 'RenderThread'), (22, 2, '1.raster'),
+        (31, 3, 'surfaceflinger'), (41, 4, 'CameraOutput'), (51, 5, 'CodecLooper');
+      INSERT INTO thread_track SELECT utid, utid FROM thread;
+    `);
+    const skill = await generateRenderingPipelineDetectionSkill();
+    const sql = (stepId: string) => {
+      const step = skill.steps!.find(s => s.id === stepId) as { sql: string };
+      return step.sql.split("'${package}'").join('(SELECT name FROM requested_package)');
+    };
+    db.exec('CREATE TEMP VIEW scored AS ' + sql('score_pipelines'));
+    db.exec('CREATE TEMP VIEW observed AS ' + sql('layer_signals'));
+    const report = db.prepare(sql('determine_pipeline')
+      .split('${pipeline_scores}').join('scored').split('${layer_signals}').join('observed'));
+    detect = () => report.get() as Record<string, unknown>;
+  });
+  afterEach(() => { db.close(); });
+
+  function event(track: number, ts: number, name: string, parent: number | null = null, dur = 1): number {
+    const inserted = db.prepare('INSERT INTO slice(track_id, parent_id, ts, dur, name) VALUES (?, ?, ?, ?, ?)')
+      .run(track, parent, ts, dur, name);
+    return Number(inserted.lastInsertRowid);
+  }
+
+  function hostFrame(ts: number, track = 11): number {
+    const draw = event(track, ts, 'DrawFrame', null, 40);
+    event(track, ts + 30, 'queueBuffer', draw);
+    return draw;
+  }
+
+  function presented(upid: number, token: number, layer: string): void {
+    const insert = db.prepare('INSERT INTO actual_frame_timeline_slice VALUES (?, ?, ?, ?, 2, ?)');
+    insert.run(upid, token, token + 100, layer, 'On-time Present');
+    insert.run(3, token, null, null, 'On-time Present');
+  }
+
+  it('keeps a host window on AOSP despite camera, compositor, raster and texture hints', () => {
+    event(12, 2, 'ICameraServiceListener::onCameraAccessPrioritiesChanged');
+    event(14, 3, 'Chromium.Compositor');
+    event(13, 4, 'onFrameAvailable');
+    event(11, 5, 'SurfaceTexture::updateTexImage');
+    for (const frame of [1, 2, 3]) {
+      hostFrame(frame * 50);
+      presented(1, frame, 'example.app/CameraActivity');
+    }
+    const result = detect();
+    expect(result.candidates_list).not.toMatch(/CAMERA|TEXTUREVIEW|FLUTTER|WEBVIEW/);
+    expect(result.rendering_type_candidates_list).not.toMatch(/S11_CAMERA|S04_TEXTUREVIEW|S10_FLUTTER|S09_WEBVIEW/);
+    expect(result).toMatchObject({
+      primary_pipeline_id: 'AOSP_STANDARD', target_process: 'example.app',
+      hwui_draw_frames: 3, sf_host_frames: 3, texture_submissions: 0,
+    });
+  });
+
+  it('requires target capture activity for the camera feature score shown in Skill details', () => {
+    event(12, 1, 'ICameraServiceListener::onCameraAccessPrioritiesChanged');
+    event(21, 2, 'Camera3Device::processCaptureRequest');
+    const score = db.prepare("SELECT score FROM scored WHERE pipeline_id = 'CAMERA_PIPELINE'").pluck();
+    expect(score.get()).toBe(0);
+
+    const capture = event(11, 3, 'CameraCaptureSession::onCaptureCompleted');
+    expect(score.get()).toBe(1);
+    db.prepare("UPDATE slice SET name = ? WHERE id = ?")
+      .run('acquireNextBufferLocked - SurfaceView[CameraPreview]frame=1', capture);
+    expect(score.get()).toBe(1);
+  });
+
+  it('abstains on empty, one-frame and other-app output', () => {
+    expect(detect()).toMatchObject(unknown);
+    hostFrame(10);
+    for (const frame of [1, 2, 3]) {
+      hostFrame(frame * 50, 21);
+      presented(2, frame, 'example.app.helper/Host');
+    }
+    expect(detect()).toMatchObject(unknown);
+  });
+
+  it('infers a unique active app and abstains when an unscoped trace has competing producers', () => {
+    db.exec("UPDATE requested_package SET name=''");
+    hostFrame(100);
+    hostFrame(200);
+    expect(detect()).toMatchObject({primary_pipeline_id: 'AOSP_STANDARD', target_process: 'example.app'});
+    hostFrame(100, 21);
+    hostFrame(200, 21);
+    expect(detect()).toMatchObject(unknown);
+  });
+
+  it('recognizes a presented target SurfaceView without guessing its untraced producer', () => {
+    presented(1, 10, 'SurfaceView[example.app/Viewport]#7');
+    presented(1, 20, 'SurfaceView[example.app/Viewport]#7');
+    expect(detect()).toMatchObject({
+      primary_pipeline_id: 'SURFACEVIEW', sf_surfaceview_frames: 2, surfaceview_submissions: 0,
+    });
+    db.exec("UPDATE actual_frame_timeline_slice SET present_type='Dropped Frame' WHERE upid=3");
+    expect(detect()).toMatchObject(unknown);
+    db.exec("UPDATE actual_frame_timeline_slice SET present_type='On-time Present' WHERE upid=3");
+    db.exec('INSERT INTO actual_frame_timeline_slice SELECT * FROM actual_frame_timeline_slice WHERE upid=3');
+    expect(detect()).toMatchObject(unknown);
+  });
+
+  it('counts a HWUI frame submitted directly to an SF-latched SurfaceView only on its destination', () => {
+    const endpoint = '123abc SurfaceView[example.app/GameActivity]';
+    const marker = endpoint + '#7(f:0,a:1)';
+    for (const frame of [1, 2, 3]) {
+      const ts = frame * 100;
+      const draw = event(11, ts, 'DrawFrame', null, 40);
+      const queue = event(11, ts + 10, 'queueBuffer', draw, 15);
+      const callback = event(11, ts + 12, 'onFrameAvailable - ' + marker, queue, 10);
+      event(11, ts + 14, 'acquireNextBufferLocked - ' + marker + 'frame=' + frame, callback);
+      event(31, ts + 30, 'latchBuffer ' + endpoint + '(BLAST)#100 - ' + frame);
+    }
+    // The host has a SurfaceFrame, while child buffers are visible only as SF latches.
+    presented(1, 4, 'example.app/GameActivity');
+    expect(detect()).toMatchObject({
+      primary_pipeline_id: 'SURFACEVIEW', hwui_draw_frames: 3, host_submissions: 0,
+      surfaceview_submissions: 3, sf_host_frames: 1, sf_surfaceview_frames: 0, sf_surface_latches: 3,
+    });
+  });
+
+  it.each([
+    ['VRI[SurfaceViewActivity]', 'AOSP_STANDARD', 2],
+    ['SurfaceView[example.app.helper/GameActivity]', 'UNKNOWN', 0],
+  ] as const)('distinguishes the destination %s from a target SurfaceView', (endpoint, classification, hostSubmissions) => {
+    for (const ts of [100, 200]) {
+      const draw = event(11, ts, 'DrawFrame', null, 40);
+      const queue = event(11, ts + 10, 'queueBuffer', draw, 10);
+      event(11, ts + 11, 'onFrameAvailable - ' + endpoint + '#7(f:0,a:1)', queue);
+    }
+    expect(detect()).toMatchObject({
+      primary_pipeline_id: classification, surfaceview_submissions: 0, host_submissions: hostSubmissions,
+    });
+  });
+
+  it('excludes an explicitly foreign SurfaceView destination even if the app produced its SurfaceFrame', () => {
+    presented(1, 1, 'SurfaceView[example.app.helper/Viewport]#7');
+    presented(1, 2, 'SurfaceView[example.app.helper/Viewport]#7');
+    expect(detect()).toMatchObject({...unknown, sf_host_frames: 0, sf_surfaceview_frames: 0});
+  });
+
+  it('does not promote standalone SurfaceView notifications on a thread named like a Flutter producer', () => {
+    for (const ts of [100, 200]) event(13, ts, 'onFrameAvailable - SurfaceView[example.app/Viewport]#7');
+    expect(detect()).toMatchObject(unknown);
+  });
+
+  it('keeps restarted instances and package siblings from lending submissions to the target', () => {
+    event(11, 10, 'DrawFrame');
+    event(11, 30, 'DrawFrame');
+    event(21, 15, 'queueBuffer');
+    event(21, 35, 'queueBuffer');
+    expect(detect()).toMatchObject(unknown);
+    db.exec("UPDATE process SET name = 'example.app' WHERE upid = 2");
+    expect(detect()).toMatchObject(unknown);
+  });
+
+  it('counts WebView draws in distinct host frames, so nested aliases in one frame stay incidental', () => {
+    const first = hostFrame(100);
+    const second = hostFrame(200);
+    hostFrame(300);
+    const wrapper = event(11, 102, 'DrawFunctor', first, 12);
+    event(11, 104, 'DrawFn_DrawVk', wrapper);
+    event(11, 250, 'DrawFn_DrawVk');
+    expect(detect().primary_pipeline_id).toBe('AOSP_STANDARD');
+    event(11, 202, 'WebViewFunctor::drawVk', second);
+    expect(detect().primary_pipeline_id).toBe('WEBVIEW_GL_FUNCTOR');
+  });
+
+  it('identifies Flutter texture output only when the raster and host actually use the same queue', () => {
+    for (const ts of [100, 200, 300]) {
+      const draw = hostFrame(ts);
+      const acquire = event(11, ts + 10, 'acquireBuffer', draw, 3);
+      event(11, ts + 11, 'SurfaceTexture-host: 0', acquire);
+      const produce = event(13, ts - 10, 'queueBuffer', null, 3);
+      event(13, ts - 9, 'SurfaceTexture-other: 0', produce);
+    }
+    expect(detect()).toMatchObject({primary_pipeline_id: 'AOSP_STANDARD', texture_submissions: 0});
+    db.exec("UPDATE slice SET name = 'SurfaceTexture-host: 0' WHERE name = 'SurfaceTexture-other: 0'");
+    expect(detect()).toMatchObject({primary_pipeline_id: 'FLUTTER_TEXTUREVIEW', texture_submissions: 3});
+  });
+
+  it.each([
+    ['CameraPreview', 'processCaptureResult'],
+    ['VideoSurface', 'renderOutputBufferAndRelease'],
+  ])('keeps %s presentation and unrelated producer activity from identifying a media path', (layer, activity) => {
+    event(12, 10, activity);
+    event(12, 20, activity);
+    presented(2, 1, layer);
+    presented(2, 2, layer);
+    expect(detect()).toMatchObject(unknown);
+    db.exec('UPDATE actual_frame_timeline_slice SET upid=1 WHERE upid=2');
+    expect(detect()).toMatchObject(unknown);
+  });
+
+  function mediaBuffer(frame: number, source: string): void {
+    const ts = frame * 100;
+    const endpoint = '123abc SurfaceView[example.app/Viewport]';
+    const marker = endpoint + '#1(f:0,a:1)';
+    const camera = source === 'CAMERA_PIPELINE';
+    const track = camera ? 41 : 51;
+    const decoder = camera ? null : event(track, ts - 1, 'CCodecBufferChannel::renderOutputBuffer', null, 22);
+    const senderOperation = event(track, ts, camera ? 'queueBuffer' : 'queueToOutputSurface', decoder, 20);
+    const transaction = event(track, ts + 1, 'binder transaction', senderOperation, 10);
+    const reply = event(12, ts + 2, 'binder reply', null, 10);
+    const destinationQueue = event(12, ts + 3, 'queueBuffer', reply, 7);
+    const callback = event(12, ts + 4, 'onFrameAvailable - ' + marker, destinationQueue, 5);
+    event(12, ts + 5, 'acquireNextBufferLocked - ' + marker + 'frame=' + frame, callback);
+    event(31, ts + 25, 'latchBuffer ' + endpoint + '(BLAST)#123 - ' + frame);
+    db.prepare('INSERT INTO flow VALUES (?, ?)').run(reply, transaction);
+  }
+
+  it.each(['CAMERA_PIPELINE', 'VIDEO_PLAYBACK'])('binds %s to the exact queue, buffer number and SF latch', pipeline => {
+    mediaBuffer(41, pipeline);
+    mediaBuffer(42, pipeline);
+    const producerCount = pipeline === 'CAMERA_PIPELINE' ? 'camera_latches' : 'video_latches';
+    expect(detect()).toMatchObject({primary_pipeline_id: pipeline, sf_surface_latches: 2, [producerCount]: 2});
+
+    db.exec("UPDATE slice SET name=replace(name, '123abc', '456def') WHERE track_id=31");
+    expect(detect()).toMatchObject({sf_surface_latches: 0, [producerCount]: 0});
+    db.exec("UPDATE slice SET name=replace(name, '456def', '123abc') WHERE track_id=31");
+    db.exec('DELETE FROM flow');
+    const unbound = detect();
+    expect(unbound).toMatchObject({sf_surface_latches: 2, [producerCount]: 0});
+    expect(unbound.primary_pipeline_id).not.toBe(pipeline);
+  });
+
+  it('keeps an equal split of SF-consumed camera and video outputs unclassified as either producer', () => {
+    mediaBuffer(41, 'CAMERA_PIPELINE');
+    mediaBuffer(42, 'CAMERA_PIPELINE');
+    mediaBuffer(43, 'VIDEO_PLAYBACK');
+    mediaBuffer(44, 'VIDEO_PLAYBACK');
+    expect(detect().primary_pipeline_id).not.toMatch(/CAMERA|VIDEO/);
   });
 });
 

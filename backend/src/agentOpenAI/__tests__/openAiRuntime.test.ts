@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
+import * as architectureDetector from '../../agent/detectors/architectureDetector';
 import {DEFAULT_RUNTIME_CACHE_LIMIT} from '../../agentRuntime/runtimeCache';
 import {sessionContextManager} from '../../agent/context/enhancedSessionContext';
 import {expectRuntimeLeftTerminalStateToFinalizer} from '../../../tests/helpers/runtimeDraftTerminalState';
@@ -354,7 +355,8 @@ describe('OpenAI typed intent integration', () => {
 
       expect(mcp.mock.calls[0][0].packageName).toBe(expectedPackage);
       expect(mcp.mock.calls[0][0].focusTarget).toMatchObject({source: expectedSource});
-      expect(architecture).toHaveBeenCalledWith('trace', expectedPackage);
+      if (focusResult.confidence === 'ambiguous') expect(architecture).not.toHaveBeenCalled();
+      else expect(architecture).toHaveBeenCalledWith('trace', expectedPackage);
       expect(prompt.mock.calls[0][0]).toMatchObject({packageName: expectedPackage,
         focusTarget: {source: expectedSource, confidence: focusResult.confidence}});
       // Only a confident primary becomes a citable current-run evidence row.
@@ -3186,15 +3188,42 @@ describe('OpenAI snapshot compatibility', () => {
 });
 
 describe('OpenAI architecture cache bound', () => {
+  it('redetects on a package change and keeps an inconclusive result out of opening events', async () => {
+    const runtime = createOpenAiRuntimeForTest();
+    const cached = {type: 'FLUTTER', confidence: 0.8, evidence: [],
+      detectorScope: {version: 1, traceId: 'trace', packageName: 'app.a'}};
+    runtime.restoreArchitectureCache('trace', cached);
+    expect(await runtime.detectArchitecture('trace', 'app.a')).toEqual(cached);
+    const inconclusive = {type: 'UNKNOWN' as const, confidence: 0, evidence: [],
+      detectorScope: {version: 1 as const, traceId: 'trace', packageName: 'app.b'}};
+    const detect = jest.fn(async (_context: unknown) => inconclusive);
+    const factory = jest.spyOn(architectureDetector, 'createArchitectureDetector').mockReturnValue({detect});
+    const update = jest.fn();
+    runtime.on('update', update);
+    try {
+      expect(await runtime.detectArchitecture('trace', 'app.b')).toEqual(inconclusive);
+      expect(await runtime.detectArchitecture('trace', 'app.b')).toEqual(inconclusive);
+      expect(detect).toHaveBeenCalledTimes(1);
+      expect(detect).toHaveBeenCalledWith(expect.objectContaining({traceId: 'trace', packageName: 'app.b'}));
+      expect(update).not.toHaveBeenCalled();
+      runtime.restoreArchitectureCache('other-trace', cached);
+      runtime.restoreArchitectureCache('other-trace', {type: 'FLUTTER', confidence: 1, evidence: []});
+      expect(runtime.getCachedArchitecture('other-trace')).toBeUndefined();
+    } finally {
+      factory.mockRestore();
+    }
+  });
+
   it('keeps restored architectures within the shared LRU bound', () => {
     const runtime = createOpenAiRuntimeForTest();
-    const architecture = {type: 'STANDARD', confidence: 0.9, evidence: []};
+    const architecture = (traceId: string) => ({type: 'STANDARD', confidence: 0.9, evidence: [],
+      detectorScope: {version: 1, traceId, packageName: null}});
     for (let index = 0; index <= DEFAULT_RUNTIME_CACHE_LIMIT; index++) {
-      runtime.restoreFromSnapshot(`s-${index}`, `trace-${index}`, {...emptySnapshot(`s-${index}`, `trace-${index}`), architecture});
+      runtime.restoreFromSnapshot(`s-${index}`, `trace-${index}`, {...emptySnapshot(`s-${index}`, `trace-${index}`), architecture: architecture(`trace-${index}`)});
     }
     expect(runtime.architectureCache.size).toBe(DEFAULT_RUNTIME_CACHE_LIMIT);
     expect(runtime.getCachedArchitecture('trace-0')).toBeUndefined();
-    expect(runtime.getCachedArchitecture(`trace-${DEFAULT_RUNTIME_CACHE_LIMIT}`)).toEqual(architecture);
+    expect(runtime.getCachedArchitecture(`trace-${DEFAULT_RUNTIME_CACHE_LIMIT}`)).toEqual(architecture(`trace-${DEFAULT_RUNTIME_CACHE_LIMIT}`));
   });
 });
 

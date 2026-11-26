@@ -278,7 +278,7 @@ invoke_skill("scrolling_analysis", { start_ts: "<trace_start>", end_ts: "<trace_
 <!-- strategy-detail id="architecture_branches" title="滑动混合架构和 producer 分支" keywords="Flutter,TextureView,WebView,React Native,GLSurfaceView,Compose,mixed,architecture" -->
 **Phase 1.5 — 架构感知分支（基于 detect_architecture 结果）：**
 
-`detect_architecture` 的 `primary_pipeline_id` 是当前选中的主 pipeline，也是初始 plan hard gate 的架构事实。`candidates_list` 是排序候选和检测审计证据：runner-up 单独出现不等于该链路已激活，不得因此自动加入对应专属 Skill。只有 selected pipeline 明确为 mixed、结构化架构字段或用户问题明确要求该链路，或执行阶段新增 direct evidence 确认第二 producer 时，才按 **multi-pipeline** 处理；后者通过 `revise_plan` 最小补充，不在初始 plan 预占所有候选。
+`detect_architecture` 给出按目标 App 出图证据确认的主 pipeline 或 UNKNOWN。普通 AOSP 走宿主分析，UNKNOWN 仅使用已有数据源，不启用专属分支。`candidates_list` 是排序候选和检测审计证据：runner-up 单独出现不等于该链路已激活，不得因此自动加入对应专属 Skill。只有 selected pipeline 明确为 mixed、结构化架构字段或用户问题明确要求该链路，或执行阶段新增 direct evidence 确认第二 producer 时，才按 **multi-pipeline** 处理；后者通过 `revise_plan` 最小补充，不在初始 plan 预占所有候选。
 
 **混合出图规则：**
 1. **先分开看 HWUI host 链路**：始终调用 `scrolling_analysis` 获取宿主 App FrameTimeline、MainThread/RenderThread、SF 责任分布。

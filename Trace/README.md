@@ -10,9 +10,9 @@ This directory is the source-controlled trace test and reference corpus.
 
 Evidence tiers: R1=6, R2=0, R3=31.
 
-Pinned Perfetto SQL source: `6327533d577b18931bedc48a5d1f83cacfa4e9d9`. The generated coverage ledger contains 254 Skill SQL source contracts and 2 canonical portable SQL source checks with exact source hashes and upstream module paths.
+Pinned Perfetto SQL source: `6327533d577b18931bedc48a5d1f83cacfa4e9d9`. The generated coverage ledger contains 258 Skill SQL source contracts and 2 canonical portable SQL source checks with exact source hashes and upstream module paths.
 
-Skill execution quality: 296 source-column-backed semantic, 33 execution-only composition, 1 expected-empty negative, 11 explicit deferred prerequisite, 32 definition-only.
+Skill execution quality: 296 source-column-backed semantic, 33 execution-only composition, 1 expected-empty negative, 11 explicit deferred prerequisite, 36 definition-only.
 
 Exact-scope unit bindings (each `exact_sql` and each UPID-bound target step): 36 semantic, 127 execution-only.
 
@@ -64,7 +64,7 @@ Every constructed case is an analysis scenario unless its `case.json` declares `
 | [OUKITEL WP62 device identity metadata](./constructed/device-identity-oukitel-wp62/) | general | Android 15 / API 35 | android-scroll-standard | 0 target(s) |
 | [Google Pixel 6 Pro device identity metadata](./constructed/device-identity-pixel-6-pro/) | general | Android CinnamonBun / API 37 | android-scroll-customer | 0 target(s) |
 | [vivo X300 Pro device identity metadata](./constructed/device-identity-vivo-x300-pro/) | general | Android 16 / API 36 | android-startup-heavy | 0 target(s) |
-| [Framework rendering pipeline signatures](./constructed/framework-pipelines/) | pipeline | Android 16 / API 36 (tested API 35-36) | android-startup-heavy | 33 target(s) |
+| [Framework rendering pipeline signatures](./constructed/framework-pipelines/) | pipeline | Android 16 / API 36 (tested API 35-36) | android-startup-heavy | 37 target(s) |
 | [General analysis and runtime contracts](./constructed/general-runtime-contracts/) | general | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 17 target(s) |
 | [GPU workload and frequency](./constructed/gpu-workload/) | gpu | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 11 target(s) |
 | [Java heap dump class growth](./constructed/heap-dump-class-growth/) | memory | Android 16 / API 36 (tested API 35-36) | android-startup-light | 1 target(s) |

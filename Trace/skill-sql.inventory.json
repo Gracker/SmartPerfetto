@@ -14558,7 +14558,7 @@
     },
     "pipeline_android_view_standard_blast": {
       "source_file": "backend/skills/pipelines/android_view_standard_blast.skill.yaml",
-      "source_sha256": "90083492ccbb0d1f041905753b9cef1c896d1d71e6ccf2839551a80620ba61e0",
+      "source_sha256": "9ece4eb7f323d02ab09a9343925e5ee8490a0e7b63be91c1b958f1bc9469bb21",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14568,7 +14568,7 @@
     },
     "pipeline_android_view_standard_legacy": {
       "source_file": "backend/skills/pipelines/android_view_standard_legacy.skill.yaml",
-      "source_sha256": "d8fe546bae8598f1219b54726508d49b14987a39b00eefea27cc12c606be3310",
+      "source_sha256": "5fcdb505d0195faace5ed8bceafc905ab5470b9a6331073e610921350668979a",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14579,6 +14579,16 @@
     "pipeline_angle_gles_vulkan": {
       "source_file": "backend/skills/pipelines/angle_gles_vulkan.skill.yaml",
       "source_sha256": "a1127f4e905b4539ae79e36b96dcabe11f332e3be0713b0267ba2eb8fb94dbb6",
+      "type": "pipeline_definition",
+      "execution": "none",
+      "declared_modules": [],
+      "top_level_steps": [],
+      "unexecuted_sql": false,
+      "units": []
+    },
+    "pipeline_aosp_standard": {
+      "source_file": "backend/skills/pipelines/aosp_standard.skill.yaml",
+      "source_sha256": "8ef4f43a6a98deea421e0b24b16be99678ef37ac2c9f391d05daf830b9fbed56",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14609,6 +14619,16 @@
     "pipeline_compose_standard": {
       "source_file": "backend/skills/pipelines/compose_standard.skill.yaml",
       "source_sha256": "180dc9350e5d5388811a4929d7be035ed98364c2a7db912d67c9eb0969750b8c",
+      "type": "pipeline_definition",
+      "execution": "none",
+      "declared_modules": [],
+      "top_level_steps": [],
+      "unexecuted_sql": false,
+      "units": []
+    },
+    "pipeline_flutter_surfaceview": {
+      "source_file": "backend/skills/pipelines/flutter_surfaceview.skill.yaml",
+      "source_sha256": "99b1980f20e4b3781d8ec326ead8b82d72fc8e2dfa4ed145c51dad00632763ac",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -14777,6 +14797,16 @@
       "unexecuted_sql": false,
       "units": []
     },
+    "pipeline_surfaceview": {
+      "source_file": "backend/skills/pipelines/surfaceview.skill.yaml",
+      "source_sha256": "7288ad8e6d68dffa275589ff13b4c9a0c229dcb1d745194365090f6466849a37",
+      "type": "pipeline_definition",
+      "execution": "none",
+      "declared_modules": [],
+      "top_level_steps": [],
+      "unexecuted_sql": false,
+      "units": []
+    },
     "pipeline_surfaceview_blast": {
       "source_file": "backend/skills/pipelines/surfaceview_blast.skill.yaml",
       "source_sha256": "f9fe4de787e9e7a05fe436ff30f33fad487a9e45901a061690f9b3fc31dab08c",
@@ -14809,7 +14839,17 @@
     },
     "pipeline_video_overlay_hwc": {
       "source_file": "backend/skills/pipelines/video_overlay_hwc.skill.yaml",
-      "source_sha256": "a2e1f81a3b08c5ad9a10a8bf8975129754d0ad9832c3c58d345da55a5fc21092",
+      "source_sha256": "cdf52ce5a6ae64a4a70b56402994d7b4a5893f578840ce7049860b54d1f3d951",
+      "type": "pipeline_definition",
+      "execution": "none",
+      "declared_modules": [],
+      "top_level_steps": [],
+      "unexecuted_sql": false,
+      "units": []
+    },
+    "pipeline_video_playback": {
+      "source_file": "backend/skills/pipelines/video_playback.skill.yaml",
+      "source_sha256": "48c118e271b736ecc90c30c3bf8849e9705f24e7205cc78c94cf2aa6554ffa61",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -15490,7 +15530,7 @@
     },
     "rendering_pipeline_detection": {
       "source_file": "backend/skills/atomic/rendering_pipeline_detection.skill.yaml",
-      "source_sha256": "a4c526168b0cbe32d5a47c00cdf4aa11dc4282e28713853182afdd56fb92578a",
+      "source_sha256": "182b5f8be57c3813733568e74008cb4d47a7ae7763bcb5dfbfe81c2bfbb79aa2",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -15499,11 +15539,11 @@
       ],
       "top_level_steps": [
         "score_pipelines",
+        "layer_signals",
         "determine_pipeline",
         "subvariants",
         "trace_requirements",
         "active_rendering_processes",
-        "layer_signals",
         "extra_rhythm_signals",
         "bufferqueue_path_signals"
       ],
@@ -15513,7 +15553,7 @@
           "id": "score_pipelines",
           "at": "steps[0].sql",
           "top_level_index": 0,
-          "sha256": "88b35b94da6cdef65cf4a2c477b34c4ecee8e9bb4ca39c8299ee937ee37fd80e",
+          "sha256": "1f2264c2ed973821d5b6fb10b55c6c3a7d9351f72a14494fe27e937cf5e23249",
           "required_columns": [],
           "has_condition": false,
           "read_only": true,
@@ -15524,38 +15564,30 @@
           "forceable": true
         },
         {
-          "id": "determine_pipeline",
+          "id": "layer_signals",
           "at": "steps[1].sql",
           "top_level_index": 1,
-          "sha256": "4abb62cb75e437174a3723bf0b5285a00b667e51783a2f238024df6803a5d9b9",
+          "sha256": "44bb69640bea9fd45ff506b400f0b1f2606816724306f9f90e8eb49cf859aab0",
           "required_columns": [
-            "primary_pipeline_id",
-            "primary_rendering_type_id",
-            "primary_confidence",
-            "candidates_list",
-            "rendering_type_candidates_list",
-            "related_rendering_type_candidates_list",
-            "features_list",
-            "doc_path"
-          ],
-          "has_condition": false,
-          "read_only": true,
-          "placeholders": [
-            "${pipeline_scores}"
-          ],
-          "process_scope_valid": null,
-          "forceable": true
-        },
-        {
-          "id": "subvariants",
-          "at": "steps[2].sql",
-          "top_level_index": 2,
-          "sha256": "f4ce1292253408c3083a78e07349e15ca8cdfd9acffaf734c14312f0aced666d",
-          "required_columns": [
-            "buffer_mode",
-            "flutter_engine",
-            "webview_mode",
-            "game_engine"
+            "observed_path",
+            "target_process",
+            "output_share",
+            "hwui_draw_frames",
+            "host_submissions",
+            "surfaceview_submissions",
+            "texture_submissions",
+            "sf_host_frames",
+            "sf_surfaceview_frames",
+            "sf_surface_latches",
+            "camera_latches",
+            "video_latches",
+            "webview_draw_frames",
+            "app_layer_count",
+            "app_layer_names",
+            "has_surfaceview_layer",
+            "has_video_layer",
+            "has_camera_layer",
+            "has_flutter_layer"
           ],
           "has_condition": false,
           "read_only": true,
@@ -15566,10 +15598,65 @@
           "forceable": true
         },
         {
-          "id": "trace_requirements",
+          "id": "determine_pipeline",
+          "at": "steps[2].sql",
+          "top_level_index": 2,
+          "sha256": "35b5ec37b896cf965a5c46f214413ba22977397c5c3962ed24f88043ece96367",
+          "required_columns": [
+            "primary_pipeline_id",
+            "primary_rendering_type_id",
+            "primary_confidence",
+            "primary_basis",
+            "target_process",
+            "hwui_draw_frames",
+            "host_submissions",
+            "surfaceview_submissions",
+            "texture_submissions",
+            "sf_host_frames",
+            "sf_surfaceview_frames",
+            "sf_surface_latches",
+            "camera_latches",
+            "video_latches",
+            "webview_draw_frames",
+            "candidates_list",
+            "rendering_type_candidates_list",
+            "related_rendering_type_candidates_list",
+            "features_list",
+            "doc_path"
+          ],
+          "has_condition": false,
+          "read_only": true,
+          "placeholders": [
+            "${pipeline_scores}",
+            "${layer_signals}"
+          ],
+          "process_scope_valid": null,
+          "forceable": true
+        },
+        {
+          "id": "subvariants",
           "at": "steps[3].sql",
           "top_level_index": 3,
-          "sha256": "12be9a31c327dc85b8529a131c63d7c973daa2d3814258d512f5fa4d9916c17f",
+          "sha256": "e967233f7c9364f835e284fdb9ffb3a71da7f0f31dea3a02db8dcb7fbfdd1d51",
+          "required_columns": [
+            "buffer_mode",
+            "flutter_engine",
+            "webview_mode",
+            "game_engine"
+          ],
+          "has_condition": false,
+          "read_only": true,
+          "placeholders": [
+            "${pipeline_result}"
+          ],
+          "process_scope_valid": null,
+          "forceable": true
+        },
+        {
+          "id": "trace_requirements",
+          "at": "steps[4].sql",
+          "top_level_index": 4,
+          "sha256": "6306c0502cf636d1225e72775953db78e3216c5a40f950cf3206c228436d63cd",
           "required_columns": [
             "hint_gfx",
             "hint_input",
@@ -15587,9 +15674,9 @@
         },
         {
           "id": "active_rendering_processes",
-          "at": "steps[4].sql",
-          "top_level_index": 4,
-          "sha256": "34a6cbb62165c766be0b7d0cbe6f19fce7db0dc04b624f67e5de049d27dbccb4",
+          "at": "steps[5].sql",
+          "top_level_index": 5,
+          "sha256": "8cff95d7518ab9c7450f4792e096ef3def3018abe718556b201ea48e4bbca467",
           "required_columns": [
             "upid",
             "process_name",
@@ -15605,31 +15692,10 @@
           "forceable": true
         },
         {
-          "id": "layer_signals",
-          "at": "steps[5].sql",
-          "top_level_index": 5,
-          "sha256": "65e3636a52ee4c05abf47814728891057c75ebe063c42fd00d4816b71795c6ac",
-          "required_columns": [
-            "app_layer_count",
-            "app_layer_names",
-            "has_surfaceview_layer",
-            "has_video_layer",
-            "has_flutter_layer",
-            "has_camera_layer"
-          ],
-          "has_condition": false,
-          "read_only": true,
-          "placeholders": [
-            "${package}"
-          ],
-          "process_scope_valid": null,
-          "forceable": true
-        },
-        {
           "id": "extra_rhythm_signals",
           "at": "steps[6].sql",
           "top_level_index": 6,
-          "sha256": "809f2523cdacacfd38b55d15e8f101e8700bd23bba7a068c30691aa9e058080f",
+          "sha256": "2137b7c6236af19206dc2c8c730ad4329eeab32e8c8a77ebdcc767508200b283",
           "required_columns": [
             "swappy_count",
             "swappy_vk_count",
@@ -15653,7 +15719,7 @@
           "id": "bufferqueue_path_signals",
           "at": "steps[7].sql",
           "top_level_index": 7,
-          "sha256": "acdc6aea90bd09378cbb21e3093cccb24f7e6e45d7a157cc84f363d4f66af8d0",
+          "sha256": "d0d1dc43e72fe2bcda9b1f0ebe3fe250f4347558d28572b32a49fe8ae8991bc2",
           "required_columns": [
             "blast_bq_count",
             "apply_transaction_count",

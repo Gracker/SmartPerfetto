@@ -15,8 +15,7 @@ describe('pipeline catalog and product teaching cards', () => {
   it('loads the complete role-aware catalog without promoting features', () => {
     const catalog = pipelineSkillLoader.getCatalog();
     const entries = Object.entries(catalog.pipelines);
-    expect(entries).toHaveLength(31);
-    expect(pipelineSkillLoader.getAllPipelineIds()).toHaveLength(31);
+    expect(pipelineSkillLoader.getAllPipelineIds().sort()).toEqual(Object.keys(catalog.pipelines).sort());
     expect(catalog.version).toBe('3.0');
     expect(catalog).not.toHaveProperty('source');
     expect(catalog).not.toHaveProperty('documents');
@@ -31,7 +30,7 @@ describe('pipeline catalog and product teaching cards', () => {
       expect(pipelineSkillLoader.getPipeline(pipelineId)).not.toBeNull();
       expect(pipelineSkillLoader.getRenderingType(entry.teaching_type_id)).not.toBeNull();
       if (entry.classification_role === 'variant') {
-        expect(entry.primary_eligible).toBe(true);
+        expect(entry.primary_eligible).toBe(entry.output_path !== undefined);
         expect(entry.rendering_type_id).toBe(entry.teaching_type_id);
       } else {
         expect(entry.primary_eligible).toBe(false);
@@ -55,7 +54,7 @@ describe('pipeline catalog and product teaching cards', () => {
 
   it('derives the fallback IDs and teaching source from the catalog default', () => {
     expect(pipelineSkillLoader.getDefaultSelection()).toEqual({
-      pipelineId: 'ANDROID_VIEW_STANDARD_BLAST',
+      pipelineId: 'AOSP_STANDARD',
       renderingTypeId: 'S02_AOSP_STANDARD',
       docPath: renderingTypeSource('S02_AOSP_STANDARD'),
     });

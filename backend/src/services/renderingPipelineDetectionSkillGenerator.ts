@@ -12,6 +12,8 @@ import {
   type PipelineDefinition,
 } from './pipelineSkillLoader';
 
+import {buildLayerSignalsSql, renderingAppScopeSql} from './renderingPipelineOutputEvidence';
+
 type ScopeColumn = 'app_cnt' | 'global_cnt';
 type SignalSource = 't' | 's';
 type SignalOp = 'eq' | 'glob';
@@ -112,16 +114,10 @@ function buildPipelineMetadataSql(catalog: PipelineCatalog): string {
   return Object.entries(catalog.pipelines)
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([pipelineId, entry]) => {
-      const renderingTypeId = entry.rendering_type_id
-        ? sqlStringLiteral(entry.rendering_type_id)
-        : 'NULL';
       return `(${[
-        pipelineId,
-        renderingTypeId,
-        entry.primary_eligible ? 1 : 0,
-        entry.feature_visible ? 1 : 0,
-        renderingTypeSource(entry.teaching_type_id),
-      ].map((value) => typeof value === 'string' && (value === 'NULL' || /^'.*'$/.test(value)) ? value : sqlValueLiteral(value as string | number)).join(', ')})`;
+        pipelineId, entry.rendering_type_id ?? null, entry.output_path ?? null,
+        entry.feature_visible && entry.signal_scope === 'app' ? 1 : 0, renderingTypeSource(entry.teaching_type_id),
+      ].map(sqlValueLiteral).join(', ')})`;
     })
     .join(',\n        ');
 }
@@ -237,61 +233,7 @@ function buildPipelineScoresSql(pipelines: PipelineDefinition[], catalog: Pipeli
 
   return `
       WITH
-      -- Identify a dominant app (when package is not provided) by looking for rendering-related slices,
-      -- then include *all* processes that share the same package prefix. This reduces false positives
-      -- from multi-app traces while still supporting multi-process apps (e.g. WebView renderers).
-      dominant_process AS (
-        SELECT
-          p.upid,
-          p.name as process_name,
-          COUNT(*) as render_cnt
-        FROM slice s
-        JOIN thread_track tt ON s.track_id = tt.id
-        JOIN thread t ON tt.utid = t.utid
-        JOIN process p ON t.upid = p.upid
-        WHERE p.name IS NOT NULL
-          AND p.name NOT LIKE 'com.android.systemui%'
-          AND p.name NOT LIKE 'system_server%'
-          AND p.name NOT LIKE '/system/%'
-          AND s.name IS NOT NULL
-          AND (
-            (t.name = 'RenderThread' AND s.name GLOB 'DrawFrame*')
-            OR (t.name = 'main' AND s.name GLOB '*Choreographer#doFrame*')
-            OR (s.name GLOB '*lockCanvas*')
-            OR (s.name GLOB '*eglSwapBuffers*')
-            OR (s.name GLOB '*vkQueuePresentKHR*')
-            OR (s.name GLOB '*Swappy*')
-            OR (s.name GLOB '*FrameTimeline*')
-            OR (s.name GLOB '*updateTexImage*')
-          )
-        GROUP BY p.upid
-        HAVING COUNT(*) > 5
-        ORDER BY render_cnt DESC
-        LIMIT 1
-      ),
-      dominant_pkg AS (
-        SELECT
-          CASE
-            WHEN instr(process_name, ':') > 0 THEN substr(process_name, 1, instr(process_name, ':') - 1)
-            ELSE process_name
-          END as pkg
-        FROM dominant_process
-      ),
-      app_filter_upids AS (
-        SELECT p.upid
-        FROM process p
-        WHERE '\${package}' <> '' AND (p.name = '\${package}' OR p.name GLOB '\${package}:*')
-        UNION
-        SELECT p.upid
-        FROM process p
-        JOIN dominant_pkg dp
-        WHERE '\${package}' = ''
-          AND dp.pkg IS NOT NULL
-          AND (p.name = dp.pkg OR p.name GLOB dp.pkg || ':*')
-          AND p.name NOT LIKE 'com.android.systemui%'
-          AND p.name NOT LIKE 'system_server%'
-          AND p.name NOT LIKE '/system/%'
-      ),
+      ${renderingAppScopeSql},
       thread_counts AS (
         SELECT
           t.name as thread_name,
@@ -411,8 +353,6 @@ function buildPipelineScoresSql(pipelines: PipelineDefinition[], catalog: Pipeli
 function buildDeterminePipelineSql(catalog: PipelineCatalog): string {
   const pipelineMetadataSql = buildPipelineMetadataSql(catalog);
   const pipelineRelatedRenderingTypesSql = buildPipelineRelatedRenderingTypesSql(catalog);
-  const defaultPipelineId = catalog.default.pipeline_id;
-  const defaultRenderingTypeId = catalog.default.rendering_type_id;
   return `
       WITH
       pipeline_scores AS (
@@ -421,7 +361,7 @@ function buildDeterminePipelineSql(catalog: PipelineCatalog): string {
       pipeline_metadata(
         pipeline_id,
         rendering_type_id,
-        primary_eligible,
+        output_path,
         feature_visible,
         doc_path
       ) AS (
@@ -435,25 +375,6 @@ function buildDeterminePipelineSql(catalog: PipelineCatalog): string {
         VALUES
         ${pipelineRelatedRenderingTypesSql}
       ),
-      ranked AS (
-        SELECT
-          ps.pipeline_id,
-          ps.score,
-          pm.rendering_type_id,
-          ROW_NUMBER() OVER (ORDER BY ps.score DESC, ps.pipeline_id ASC) as rank
-        FROM pipeline_scores ps
-        JOIN pipeline_metadata pm USING (pipeline_id)
-        WHERE ps.score >= ${SCORE_THRESHOLD}
-          AND pm.primary_eligible = 1
-      ),
-      primary_pipeline AS (
-        SELECT pipeline_id, rendering_type_id, score FROM ranked WHERE rank = 1
-      ),
-      candidates AS (
-        SELECT pipeline_id, rendering_type_id, score, rank
-        FROM ranked
-        WHERE rank <= ${MAX_CANDIDATES}
-      ),
       features AS (
         SELECT
           ps.pipeline_id,
@@ -463,21 +384,6 @@ function buildDeterminePipelineSql(catalog: PipelineCatalog): string {
         JOIN pipeline_metadata pm USING (pipeline_id)
         WHERE pm.feature_visible = 1
           AND ps.score >= ${SCORE_THRESHOLD}
-      ),
-      rendering_type_scores AS (
-        SELECT
-          rendering_type_id,
-          MAX(score) as score
-        FROM ranked
-        WHERE rendering_type_id IS NOT NULL
-        GROUP BY rendering_type_id
-      ),
-      ranked_rendering_types AS (
-        SELECT
-          rendering_type_id,
-          score,
-          ROW_NUMBER() OVER (ORDER BY score DESC, rendering_type_id ASC) as rank
-        FROM rendering_type_scores
       ),
       related_rendering_type_scores AS (
         SELECT
@@ -493,25 +399,6 @@ function buildDeterminePipelineSql(catalog: PipelineCatalog): string {
           score,
           ROW_NUMBER() OVER (ORDER BY score DESC, rendering_type_id ASC) as rank
         FROM related_rendering_type_scores
-      ),
-      candidate_list AS (
-        SELECT GROUP_CONCAT(pipeline_id || ':' || ROUND(score, 2), ',') as candidates_list
-        FROM (
-          SELECT pipeline_id, score
-          FROM candidates
-          ORDER BY rank ASC
-        )
-        GROUP BY 'all_candidates'
-      ),
-      rendering_type_candidate_list AS (
-        SELECT GROUP_CONCAT(rendering_type_id || ':' || ROUND(score, 2), ',') as rendering_type_candidates_list
-        FROM (
-          SELECT rendering_type_id, score
-          FROM ranked_rendering_types
-          WHERE rank <= ${MAX_CANDIDATES}
-          ORDER BY rank ASC
-        )
-        GROUP BY 'all_rendering_type_candidates'
       ),
       related_rendering_type_candidate_list AS (
         SELECT GROUP_CONCAT(rendering_type_id || ':' || ROUND(score, 2), ',') as related_rendering_type_candidates_list
@@ -531,148 +418,32 @@ function buildDeterminePipelineSql(catalog: PipelineCatalog): string {
           ORDER BY rank ASC
         )
         GROUP BY 'all_features'
-      ),
-      result AS (
-        SELECT
-          COALESCE((SELECT pipeline_id FROM primary_pipeline), ${sqlStringLiteral(defaultPipelineId)}) as primary_pipeline_id,
-          COALESCE((SELECT rendering_type_id FROM primary_pipeline), ${sqlStringLiteral(defaultRenderingTypeId)}) as primary_rendering_type_id,
-          COALESCE((SELECT score FROM primary_pipeline), 0.50) as primary_confidence,
-          COALESCE((SELECT candidates_list FROM candidate_list), '') as candidates_list,
-          COALESCE((SELECT rendering_type_candidates_list FROM rendering_type_candidate_list), '') as rendering_type_candidates_list,
-          COALESCE((SELECT related_rendering_type_candidates_list FROM related_rendering_type_candidate_list), '') as related_rendering_type_candidates_list,
-          COALESCE((SELECT features_list FROM feature_list), '') as features_list
       )
       SELECT
-        r.primary_pipeline_id,
-        r.primary_rendering_type_id,
-        r.primary_confidence,
-        r.candidates_list,
-        r.rendering_type_candidates_list,
-        r.related_rendering_type_candidates_list,
-        r.features_list,
-        COALESCE((SELECT doc_path FROM pipeline_metadata WHERE pipeline_id = r.primary_pipeline_id), ${sqlStringLiteral(renderingTypeSource(defaultRenderingTypeId))}) as doc_path
-      FROM result r
+        COALESCE(primary_pipeline.pipeline_id, 'UNKNOWN') AS primary_pipeline_id,
+        COALESCE(primary_pipeline.rendering_type_id, 'UNKNOWN') AS primary_rendering_type_id,
+        CASE WHEN primary_pipeline.pipeline_id IS NULL THEN 0 ELSE obs.output_share END AS primary_confidence,
+        obs.observed_path AS primary_basis, obs.target_process, obs.hwui_draw_frames,
+        obs.host_submissions, obs.surfaceview_submissions, obs.texture_submissions,
+        obs.sf_host_frames, obs.sf_surfaceview_frames, obs.sf_surface_latches, obs.camera_latches, obs.video_latches, obs.webview_draw_frames,
+        COALESCE(primary_pipeline.pipeline_id || ':' || ROUND(obs.output_share, 2), '') as candidates_list,
+        COALESCE(primary_pipeline.rendering_type_id || ':' || ROUND(obs.output_share, 2), '') as rendering_type_candidates_list,
+        COALESCE((SELECT related_rendering_type_candidates_list FROM related_rendering_type_candidate_list), '') as related_rendering_type_candidates_list,
+        COALESCE((SELECT features_list FROM feature_list), '') as features_list,
+        COALESCE(primary_pipeline.doc_path, '') AS doc_path
+      FROM \${layer_signals} obs LEFT JOIN pipeline_metadata primary_pipeline ON primary_pipeline.output_path = obs.observed_path
     `;
 }
 
 function buildSubvariantsSql(): string {
   return `
-      WITH
-      dominant_process AS (
-        SELECT
-          p.upid,
-          p.name as process_name,
-          COUNT(*) as render_cnt
-        FROM slice s
-        JOIN thread_track tt ON s.track_id = tt.id
-        JOIN thread t ON tt.utid = t.utid
-        JOIN process p ON t.upid = p.upid
-        WHERE p.name IS NOT NULL
-          AND p.name NOT LIKE 'com.android.systemui%'
-          AND p.name NOT LIKE 'system_server%'
-          AND p.name NOT LIKE '/system/%'
-          AND s.name IS NOT NULL
-          AND (
-            (t.name = 'RenderThread' AND s.name GLOB 'DrawFrame*')
-            OR (t.name = 'main' AND s.name GLOB '*Choreographer#doFrame*')
-            OR (s.name GLOB '*lockCanvas*')
-            OR (s.name GLOB '*eglSwapBuffers*')
-            OR (s.name GLOB '*vkQueuePresentKHR*')
-            OR (s.name GLOB '*Swappy*')
-            OR (s.name GLOB '*FrameTimeline*')
-            OR (s.name GLOB '*updateTexImage*')
-          )
-        GROUP BY p.upid
-        HAVING COUNT(*) > 5
-        ORDER BY render_cnt DESC
-        LIMIT 1
-      ),
-      dominant_pkg AS (
-        SELECT
-          CASE
-            WHEN instr(process_name, ':') > 0 THEN substr(process_name, 1, instr(process_name, ':') - 1)
-            ELSE process_name
-          END as pkg
-        FROM dominant_process
-      ),
-      app_filter_upids AS (
-        SELECT p.upid
-        FROM process p
-        WHERE '\${package}' <> '' AND (p.name = '\${package}' OR p.name GLOB '\${package}:*')
-        UNION
-        SELECT p.upid
-        FROM process p
-        JOIN dominant_pkg dp
-        WHERE '\${package}' = ''
-          AND dp.pkg IS NOT NULL
-          AND (p.name = dp.pkg OR p.name GLOB dp.pkg || ':*')
-          AND p.name NOT LIKE 'com.android.systemui%'
-          AND p.name NOT LIKE 'system_server%'
-          AND p.name NOT LIKE '/system/%'
-      ),
-      thread_counts AS (
-        SELECT
-          t.name as thread_name,
-          COUNT(*) as cnt
-        FROM thread t
-        WHERE t.name IS NOT NULL
-          AND t.upid IN (SELECT upid FROM app_filter_upids)
-        GROUP BY t.name
-      ),
-      slice_counts AS (
-        SELECT
-          s.name as slice_name,
-          COUNT(*) as cnt
-        FROM slice s
-        JOIN thread_track tt ON s.track_id = tt.id
-        JOIN thread t ON tt.utid = t.utid
-        JOIN process p ON t.upid = p.upid
-        WHERE s.name IS NOT NULL
-          AND p.upid IN (SELECT upid FROM app_filter_upids)
-        GROUP BY s.name
-      )
       SELECT
-        CASE
-          WHEN COALESCE((SELECT SUM(cnt) FROM slice_counts WHERE slice_name GLOB '*BLASTBufferQueue*'), 0) > 0 THEN 'BLAST'
-          WHEN COALESCE((SELECT SUM(cnt) FROM slice_counts WHERE slice_name GLOB '*queueBuffer*'), 0) > 0 THEN 'LEGACY'
-          ELSE 'UNKNOWN'
-        END as buffer_mode,
-        CASE
-          WHEN COALESCE((SELECT SUM(cnt) FROM thread_counts WHERE thread_name IN ('ui', '1.ui')), 0) > 0
-               AND COALESCE((SELECT SUM(cnt) FROM slice_counts WHERE slice_name GLOB '*Impeller*' OR slice_name GLOB '*EntityPass*'), 0) > 0
-          THEN 'IMPELLER'
-          WHEN COALESCE((SELECT SUM(cnt) FROM thread_counts WHERE thread_name IN ('ui', '1.ui')), 0) > 0
-               AND COALESCE((SELECT SUM(cnt) FROM slice_counts WHERE slice_name GLOB '*SkGpu*' OR slice_name GLOB '*SkiaGpu*'), 0) > 0
-               AND COALESCE((SELECT SUM(cnt) FROM slice_counts WHERE slice_name GLOB '*EntityPass*'), 0) = 0
-          THEN 'SKIA'
-          WHEN COALESCE((SELECT SUM(cnt) FROM thread_counts WHERE thread_name IN ('ui', '1.ui')), 0) > 0
-          THEN 'UNKNOWN'
-          ELSE 'N/A'
-        END as flutter_engine,
-        CASE
-          WHEN COALESCE((SELECT SUM(cnt) FROM thread_counts
-                         WHERE thread_name = 'VizCompositorThread'
-                            OR thread_name GLOB 'VizCompositorThread*'
-                            OR thread_name = 'VizCompositor'
-                            OR thread_name GLOB 'VizCompositor*'), 0) > 0
-          THEN 'SURFACE_CONTROL'
-          WHEN COALESCE((SELECT SUM(cnt) FROM slice_counts WHERE slice_name GLOB '*DrawGL*' OR slice_name GLOB '*DrawFunctor*'), 0) > 0
-          THEN 'GL_FUNCTOR'
-          WHEN COALESCE((SELECT SUM(cnt) FROM slice_counts WHERE slice_name GLOB '*TBS*' OR slice_name GLOB '*X5*' OR slice_name GLOB '*UCCore*'), 0) > 0
-          THEN 'TEXTUREVIEW_CUSTOM'
-          WHEN COALESCE((SELECT SUM(cnt) FROM slice_counts WHERE slice_name GLOB '*WebView*'), 0) > 0
-               AND COALESCE((SELECT SUM(cnt) FROM slice_counts WHERE slice_name GLOB '*SurfaceView*'), 0) > 0
-          THEN 'SURFACEVIEW_WRAPPER'
-          WHEN COALESCE((SELECT SUM(cnt) FROM thread_counts WHERE thread_name GLOB '*Chrome*' OR thread_name GLOB 'CrRendererMain*'), 0) > 0
-          THEN 'UNKNOWN'
-          ELSE 'N/A'
-        END as webview_mode,
-        CASE
-          WHEN COALESCE((SELECT SUM(cnt) FROM thread_counts WHERE thread_name GLOB 'UnityMain*'), 0) > 0 THEN 'UNITY'
-          WHEN COALESCE((SELECT SUM(cnt) FROM thread_counts WHERE thread_name GLOB 'GameThread*' OR thread_name GLOB 'RHIThread*'), 0) > 0 THEN 'UNREAL'
-          WHEN COALESCE((SELECT SUM(cnt) FROM thread_counts WHERE thread_name GLOB 'GodotMain*'), 0) > 0 THEN 'GODOT'
-          ELSE 'N/A'
-        END as game_engine
+        CASE WHEN primary_basis IN ('hwui_blast','surfaceview_blast') THEN 'BLAST' ELSE 'UNKNOWN' END AS buffer_mode,
+        CASE primary_basis WHEN 'flutter_surface_impeller' THEN 'IMPELLER' WHEN 'flutter_surface_skia' THEN 'SKIA'
+          ELSE 'UNKNOWN' END AS flutter_engine,
+        CASE WHEN primary_basis = 'webview_functor' THEN 'GL_FUNCTOR' ELSE 'UNKNOWN' END AS webview_mode,
+        'UNKNOWN' AS game_engine
+      FROM \${pipeline_result}
     `;
 }
 
@@ -680,58 +451,7 @@ function buildTraceRequirementsSql(): string {
   // Keep hints conservative and app-scoped where possible.
   return `
       WITH
-      dominant_process AS (
-        SELECT
-          p.upid,
-          p.name as process_name,
-          COUNT(*) as render_cnt
-        FROM slice s
-        JOIN thread_track tt ON s.track_id = tt.id
-        JOIN thread t ON tt.utid = t.utid
-        JOIN process p ON t.upid = p.upid
-        WHERE p.name IS NOT NULL
-          AND p.name NOT LIKE 'com.android.systemui%'
-          AND p.name NOT LIKE 'system_server%'
-          AND p.name NOT LIKE '/system/%'
-          AND s.name IS NOT NULL
-          AND (
-            (t.name = 'RenderThread' AND s.name GLOB 'DrawFrame*')
-            OR (t.name = 'main' AND s.name GLOB '*Choreographer#doFrame*')
-            OR (s.name GLOB '*lockCanvas*')
-            OR (s.name GLOB '*eglSwapBuffers*')
-            OR (s.name GLOB '*vkQueuePresentKHR*')
-            OR (s.name GLOB '*Swappy*')
-            OR (s.name GLOB '*FrameTimeline*')
-            OR (s.name GLOB '*updateTexImage*')
-          )
-        GROUP BY p.upid
-        HAVING COUNT(*) > 5
-        ORDER BY render_cnt DESC
-        LIMIT 1
-      ),
-      dominant_pkg AS (
-        SELECT
-          CASE
-            WHEN instr(process_name, ':') > 0 THEN substr(process_name, 1, instr(process_name, ':') - 1)
-            ELSE process_name
-          END as pkg
-        FROM dominant_process
-      ),
-      app_filter_upids AS (
-        SELECT p.upid
-        FROM process p
-        WHERE '\${package}' <> '' AND (p.name = '\${package}' OR p.name GLOB '\${package}:*')
-        UNION
-        SELECT p.upid
-        FROM process p
-        JOIN dominant_pkg dp
-        WHERE '\${package}' = ''
-          AND dp.pkg IS NOT NULL
-          AND (p.name = dp.pkg OR p.name GLOB dp.pkg || ':*')
-          AND p.name NOT LIKE 'com.android.systemui%'
-          AND p.name NOT LIKE 'system_server%'
-          AND p.name NOT LIKE '/system/%'
-      )
+      ${renderingAppScopeSql}
       SELECT
         CASE
           WHEN NOT EXISTS (
@@ -782,12 +502,12 @@ function buildTraceRequirementsSql(): string {
           ELSE NULL
         END as hint_buffer,
         CASE
-          WHEN NOT EXISTS (SELECT 1 FROM process p WHERE p.name = 'surfaceflinger' LIMIT 1)
+          WHEN NOT EXISTS (SELECT 1 FROM process p WHERE p.name IN ('surfaceflinger','/system/bin/surfaceflinger') LIMIT 1)
           THEN 'SurfaceFlinger process missing (need system tracing / root on some devices)'
           ELSE NULL
         END as hint_sf,
         CASE
-          WHEN NOT EXISTS (SELECT 1 FROM slice s WHERE s.name GLOB '*FrameTimeline*' LIMIT 1)
+          WHEN NOT EXISTS (SELECT 1 FROM actual_frame_timeline_slice LIMIT 1)
           THEN 'FrameTimeline missing (enable SurfaceFlinger FrameTimeline / Android 12+)'
           ELSE NULL
         END as hint_timeline
@@ -797,63 +517,7 @@ function buildTraceRequirementsSql(): string {
 function buildActiveRenderingProcessesSql(): string {
   return `
       WITH
-      dominant_process AS (
-        SELECT
-          p.upid,
-          p.name as process_name,
-          COUNT(*) as render_cnt
-        FROM slice s
-        JOIN thread_track tt ON s.track_id = tt.id
-        JOIN thread t ON tt.utid = t.utid
-        JOIN process p ON t.upid = p.upid
-        WHERE p.name IS NOT NULL
-          AND p.name NOT LIKE 'com.android.systemui%'
-          AND p.name NOT LIKE 'system_server%'
-          AND p.name NOT LIKE '/system/%'
-          AND s.name IS NOT NULL
-          AND (
-            (t.name = 'RenderThread' AND s.name GLOB 'DrawFrame*')
-            OR (t.name = 'main' AND s.name GLOB '*Choreographer#doFrame*')
-            OR (s.name GLOB '*lockCanvas*')
-            OR (s.name GLOB '*unlockCanvasAndPost*')
-            OR (s.name GLOB '*eglSwapBuffers*')
-            OR (s.name GLOB '*vkQueuePresentKHR*')
-            OR (s.name GLOB '*Swappy*')
-            OR (s.name GLOB '*FramePacing*')
-            OR (s.name GLOB '*FrameTimeline*')
-            OR (s.name GLOB '*updateTexImage*')
-            OR (s.name GLOB '*Rasterizer::DrawToSurfaces*')
-            OR (s.name GLOB '*Engine::BeginFrame*')
-            OR (s.name GLOB '*EntityPass*')
-          )
-        GROUP BY p.upid
-        HAVING COUNT(*) > 5
-        ORDER BY render_cnt DESC
-        LIMIT 1
-      ),
-      dominant_pkg AS (
-        SELECT
-          CASE
-            WHEN instr(process_name, ':') > 0 THEN substr(process_name, 1, instr(process_name, ':') - 1)
-            ELSE process_name
-          END as pkg
-        FROM dominant_process
-      ),
-      app_filter_upids AS (
-        SELECT p.upid
-        FROM process p
-        WHERE '\${package}' <> '' AND (p.name = '\${package}' OR p.name GLOB '\${package}:*')
-        UNION
-        SELECT p.upid
-        FROM process p
-        JOIN dominant_pkg dp
-        WHERE '\${package}' = ''
-          AND dp.pkg IS NOT NULL
-          AND (p.name = dp.pkg OR p.name GLOB dp.pkg || ':*')
-          AND p.name NOT LIKE 'com.android.systemui%'
-          AND p.name NOT LIKE 'system_server%'
-          AND p.name NOT LIKE '/system/%'
-      ),
+      ${renderingAppScopeSql},
       marker_slices AS (
         SELECT
           p.upid,
@@ -895,92 +559,6 @@ function buildActiveRenderingProcessesSql(): string {
 }
 
 // =============================================================================
-// Supporting evidence-axis extractors
-// =============================================================================
-// These outputs help explain Producer, layer, submission-path, and cadence
-// evidence. They are not a standalone rendering-type proof and do not modify
-// primary ranking.
-// =============================================================================
-
-/**
- * Supporting layer-count evidence.
- * Queries SurfaceFlinger-side layer information for the dominant App.
- *
- * Layer count is the article's decisive signal:
- * - Standard HWUI / Compose / TextureView: 1 layer (host window only)
- * - SurfaceView / Mixed (with SV) / Multi-window: ≥2 layers
- * - WebView Functor / TextureView Custom: 0 independent layer (回宿主)
- * - WebView SurfaceControl: N overlay candidates
- */
-function buildLayerSignalsSql(): string {
-  return `
-      WITH
-      dominant_process AS (
-        SELECT
-          p.upid,
-          p.name as process_name,
-          COUNT(*) as render_cnt
-        FROM slice s
-        JOIN thread_track tt ON s.track_id = tt.id
-        JOIN thread t ON tt.utid = t.utid
-        JOIN process p ON t.upid = p.upid
-        WHERE p.name IS NOT NULL
-          AND p.name NOT LIKE 'com.android.systemui%'
-          AND p.name NOT LIKE 'system_server%'
-          AND p.name NOT LIKE '/system/%'
-          AND s.name IS NOT NULL
-          AND (
-            (t.name = 'RenderThread' AND s.name GLOB 'DrawFrame*')
-            OR (s.name GLOB '*Choreographer#doFrame*')
-            OR (s.name GLOB '*eglSwapBuffers*')
-            OR (s.name GLOB '*vkQueuePresentKHR*')
-            OR (s.name GLOB '*FrameTimeline*')
-          )
-        GROUP BY p.upid
-        HAVING COUNT(*) > 5
-        ORDER BY render_cnt DESC
-        LIMIT 1
-      ),
-      dominant_pkg AS (
-        SELECT
-          CASE
-            WHEN instr(process_name, ':') > 0 THEN substr(process_name, 1, instr(process_name, ':') - 1)
-            ELSE process_name
-          END as pkg
-        FROM dominant_process
-      ),
-      app_layers AS (
-        -- FrameTimeline 提供 layer_name 维度（Android 12+）
-        SELECT DISTINCT layer_name
-        FROM android_frames_layers
-        WHERE layer_name IS NOT NULL
-          AND (
-            ('\${package}' <> '' AND instr(layer_name, '\${package}') > 0)
-            OR ('\${package}' = '' AND instr(layer_name, (SELECT pkg FROM dominant_pkg)) > 0)
-          )
-      )
-      SELECT
-        COALESCE((SELECT COUNT(*) FROM app_layers), 0) as app_layer_count,
-        COALESCE((SELECT GROUP_CONCAT(layer_name, '; ') FROM app_layers), '') as app_layer_names,
-        CASE
-          WHEN (SELECT COUNT(*) FROM app_layers WHERE layer_name GLOB '*SurfaceView*' OR layer_name GLOB 'SurfaceView*') > 0 THEN 1
-          ELSE 0
-        END as has_surfaceview_layer,
-        CASE
-          WHEN (SELECT COUNT(*) FROM app_layers WHERE layer_name GLOB '*video*' OR layer_name GLOB '*Video*' OR layer_name GLOB '*MediaCodec*') > 0 THEN 1
-          ELSE 0
-        END as has_video_layer,
-        CASE
-          WHEN (SELECT COUNT(*) FROM app_layers WHERE layer_name GLOB '*io.flutter*' OR layer_name GLOB '*Flutter*') > 0 THEN 1
-          ELSE 0
-        END as has_flutter_layer,
-        CASE
-          WHEN (SELECT COUNT(*) FROM app_layers WHERE layer_name GLOB '*Camera*' OR layer_name GLOB '*camera*') > 0 THEN 1
-          ELSE 0
-        END as has_camera_layer
-    `;
-}
-
 /**
  * Supporting cadence-source evidence.
  * Detects non-vsync-app rhythm sources in the App scope:
@@ -996,54 +574,7 @@ function buildLayerSignalsSql(): string {
 function buildExtraRhythmSignalsSql(): string {
   return `
       WITH
-      dominant_process AS (
-        SELECT
-          p.upid,
-          p.name as process_name,
-          COUNT(*) as render_cnt
-        FROM slice s
-        JOIN thread_track tt ON s.track_id = tt.id
-        JOIN thread t ON tt.utid = t.utid
-        JOIN process p ON t.upid = p.upid
-        WHERE p.name IS NOT NULL
-          AND p.name NOT LIKE 'com.android.systemui%'
-          AND p.name NOT LIKE 'system_server%'
-          AND p.name NOT LIKE '/system/%'
-          AND s.name IS NOT NULL
-          AND (
-            (t.name = 'RenderThread' AND s.name GLOB 'DrawFrame*')
-            OR (s.name GLOB '*Choreographer#doFrame*')
-            OR (s.name GLOB '*eglSwapBuffers*')
-            OR (s.name GLOB '*vkQueuePresentKHR*')
-          )
-        GROUP BY p.upid
-        HAVING COUNT(*) > 5
-        ORDER BY render_cnt DESC
-        LIMIT 1
-      ),
-      dominant_pkg AS (
-        SELECT
-          CASE
-            WHEN instr(process_name, ':') > 0 THEN substr(process_name, 1, instr(process_name, ':') - 1)
-            ELSE process_name
-          END as pkg
-        FROM dominant_process
-      ),
-      app_filter_upids AS (
-        SELECT p.upid
-        FROM process p
-        WHERE '\${package}' <> '' AND (p.name = '\${package}' OR p.name GLOB '\${package}:*')
-        UNION
-        SELECT p.upid
-        FROM process p
-        JOIN dominant_pkg dp
-        WHERE '\${package}' = ''
-          AND dp.pkg IS NOT NULL
-          AND (p.name = dp.pkg OR p.name GLOB dp.pkg || ':*')
-          AND p.name NOT LIKE 'com.android.systemui%'
-          AND p.name NOT LIKE 'system_server%'
-          AND p.name NOT LIKE '/system/%'
-      ),
+      ${renderingAppScopeSql},
       app_slices AS (
         SELECT s.name as slice_name, COUNT(*) as cnt
         FROM slice s
@@ -1069,74 +600,16 @@ function buildExtraRhythmSignalsSql(): string {
           WHEN COALESCE((SELECT SUM(cnt) FROM app_slices WHERE slice_name GLOB '*PlayerLoop*' OR slice_name GLOB '*FEngineLoop*' OR slice_name GLOB '*MainLoop*'), 0) > 0 THEN 'engine_main_loop'
           WHEN COALESCE((SELECT SUM(cnt) FROM app_slices WHERE slice_name GLOB '*processCaptureRequest*'), 0) > 0 THEN 'camera_request_activity'
           WHEN COALESCE((SELECT SUM(cnt) FROM app_slices WHERE slice_name GLOB '*releaseOutputBuffer*'), 0) > 0 THEN 'video_codec_pacing'
-          ELSE 'vsync_app_only'
+          ELSE 'unknown'
         END as primary_rhythm_source
     `;
 }
 
-/**
- * Supporting BufferQueue-path evidence.
- * Distinguishes the BufferQueue path:
- * - BBQ_TRANSACTION_INPROC (BLAST: applyTransaction + BLASTBufferQueue both present)
- * - BUFFERQUEUE_INPROC (Legacy: queueBuffer present BUT no BLAST signals)
- * - HOST_RESAMPLE (TextureView: updateTexImage on RenderThread + SurfaceTexture)
- * - ACQUIRE_FENCE_NONE_INPROC (Software: lockCanvas/unlockCanvasAndPost)
- * - SURFACECONTROL_TRANSACTION_DIRECT (NDK: ASurfaceTransaction without BLAST)
- *
- * Used by LLM Agent to know which buffer path the trace exhibits, regardless of
- * which primary pipeline got selected by detection scoring.
- */
+/** Inventory of queue, transaction and texture API activity in the target package. */
 function buildBufferqueuePathSignalsSql(): string {
   return `
       WITH
-      dominant_process AS (
-        SELECT
-          p.upid,
-          p.name as process_name,
-          COUNT(*) as render_cnt
-        FROM slice s
-        JOIN thread_track tt ON s.track_id = tt.id
-        JOIN thread t ON tt.utid = t.utid
-        JOIN process p ON t.upid = p.upid
-        WHERE p.name IS NOT NULL
-          AND p.name NOT LIKE 'com.android.systemui%'
-          AND p.name NOT LIKE 'system_server%'
-          AND p.name NOT LIKE '/system/%'
-          AND s.name IS NOT NULL
-          AND (
-            (t.name = 'RenderThread' AND s.name GLOB 'DrawFrame*')
-            OR (s.name GLOB '*Choreographer#doFrame*')
-            OR (s.name GLOB '*eglSwapBuffers*')
-            OR (s.name GLOB '*vkQueuePresentKHR*')
-          )
-        GROUP BY p.upid
-        HAVING COUNT(*) > 5
-        ORDER BY render_cnt DESC
-        LIMIT 1
-      ),
-      dominant_pkg AS (
-        SELECT
-          CASE
-            WHEN instr(process_name, ':') > 0 THEN substr(process_name, 1, instr(process_name, ':') - 1)
-            ELSE process_name
-          END as pkg
-        FROM dominant_process
-      ),
-      app_filter_upids AS (
-        SELECT p.upid
-        FROM process p
-        WHERE '\${package}' <> '' AND (p.name = '\${package}' OR p.name GLOB '\${package}:*')
-        UNION
-        SELECT p.upid
-        FROM process p
-        JOIN dominant_pkg dp
-        WHERE '\${package}' = ''
-          AND dp.pkg IS NOT NULL
-          AND (p.name = dp.pkg OR p.name GLOB dp.pkg || ':*')
-          AND p.name NOT LIKE 'com.android.systemui%'
-          AND p.name NOT LIKE 'system_server%'
-          AND p.name NOT LIKE '/system/%'
-      ),
+      ${renderingAppScopeSql},
       app_slices AS (
         SELECT s.name as slice_name, COUNT(*) as cnt
         FROM slice s
@@ -1150,7 +623,7 @@ function buildBufferqueuePathSignalsSql(): string {
       SELECT
         COALESCE((SELECT SUM(cnt) FROM app_slices WHERE slice_name GLOB '*BLASTBufferQueue*'), 0) as blast_bq_count,
         COALESCE((SELECT SUM(cnt) FROM app_slices WHERE slice_name GLOB '*applyTransaction*'), 0) as apply_transaction_count,
-        COALESCE((SELECT SUM(cnt) FROM app_slices WHERE slice_name GLOB '*queueBuffer*'), 0) as queue_buffer_count,
+        COALESCE((SELECT SUM(cnt) FROM app_slices WHERE (slice_name = 'queueBuffer' OR slice_name GLOB 'queueBuffer - *')), 0) as queue_buffer_count,
         COALESCE((SELECT SUM(cnt) FROM app_slices WHERE slice_name GLOB '*updateTexImage*'), 0) as update_tex_image_count,
         COALESCE((SELECT SUM(cnt) FROM app_slices WHERE slice_name GLOB '*lockCanvas*'), 0) as lock_canvas_count,
         COALESCE((SELECT SUM(cnt) FROM app_slices WHERE slice_name GLOB '*unlockCanvasAndPost*'), 0) as unlock_canvas_post_count,
@@ -1163,14 +636,14 @@ function buildBufferqueuePathSignalsSql(): string {
                AND COALESCE((SELECT SUM(cnt) FROM app_slices WHERE slice_name GLOB '*BLASTBufferQueue*'), 0) = 0
             THEN 'SURFACECONTROL_TRANSACTION_DIRECT'
           WHEN COALESCE((SELECT SUM(cnt) FROM app_slices WHERE slice_name GLOB '*updateTexImage*'), 0) > 0
-            THEN 'HOST_RESAMPLE'
+            THEN 'TEXTURE_UPDATE_OBSERVED'
           WHEN COALESCE((SELECT SUM(cnt) FROM app_slices WHERE slice_name GLOB '*lockCanvas*' OR slice_name GLOB '*unlockCanvasAndPost*'), 0) > 0
                AND COALESCE((SELECT SUM(cnt) FROM app_slices WHERE slice_name GLOB '*BLASTBufferQueue*'), 0) = 0
-            THEN 'ACQUIRE_FENCE_NONE_INPROC'
-          WHEN COALESCE((SELECT SUM(cnt) FROM app_slices WHERE slice_name GLOB '*queueBuffer*'), 0) > 0
+            THEN 'CANVAS_ACTIVITY_OBSERVED'
+          WHEN COALESCE((SELECT SUM(cnt) FROM app_slices WHERE (slice_name = 'queueBuffer' OR slice_name GLOB 'queueBuffer - *')), 0) > 0
                AND COALESCE((SELECT SUM(cnt) FROM app_slices WHERE slice_name GLOB '*BLASTBufferQueue*'), 0) = 0
                AND COALESCE((SELECT SUM(cnt) FROM app_slices WHERE slice_name GLOB '*applyTransaction*'), 0) = 0
-            THEN 'BUFFERQUEUE_INPROC'
+            THEN 'QUEUE_OBSERVED'
           ELSE 'UNKNOWN'
         END as bufferqueue_path
     `;
@@ -1190,14 +663,17 @@ export async function generateRenderingPipelineDetectionSkill(): Promise<SkillDe
   const subvariantsSql = buildSubvariantsSql();
   const traceRequirementsSql = buildTraceRequirementsSql();
   const activeProcessesSql = buildActiveRenderingProcessesSql();
-  // Supporting evidence axes: layer count, cadence, and BufferQueue path.
-  const layerSignalsSql = buildLayerSignalsSql();
+  // Derive the functor aliases from the same probe used by the pipeline inventory.
+  const webview = pipelines.find(p => catalog.pipelines[p.meta.pipeline_id]?.output_path === 'webview_functor');
+  const drawPatterns = webview?.detection?.required_signals?.flatMap(buildSignalComponents)
+    .filter(c => c.source === 's').map(c => `name ${c.op === 'eq' ? '=' : 'GLOB'} ${sqlStringLiteral(c.pattern)}`);
+  const layerSignalsSql = buildLayerSignalsSql(drawPatterns?.join(' OR ') || '0');
   const extraRhythmSignalsSql = buildExtraRhythmSignalsSql();
   const bufferqueuePathSignalsSql = buildBufferqueuePathSignalsSql();
 
   return {
     name: 'rendering_pipeline_detection',
-    version: '4.0',
+    version: '5.0',
     type: 'composite',
     category: 'rendering',
     meta: {
@@ -1236,10 +712,21 @@ export async function generateRenderingPipelineDetectionSkill(): Promise<SkillDe
         name: '计算管线类型评分 (YAML 驱动)',
         display: {
           level: 'detail',
-          title: '管线类型评分',
+          title: '候选特征评分',
         },
         sql: pipelineScoresSql,
         save_as: 'pipeline_scores',
+      },
+      {
+        id: 'layer_signals',
+        type: 'atomic',
+        name: '核对目标应用出图与 SurfaceFlinger 消费',
+        display: {
+          level: 'detail',
+          title: '目标图层与缓冲区',
+        },
+        sql: layerSignalsSql,
+        save_as: 'layer_signals',
       },
       {
         id: 'determine_pipeline',
@@ -1285,18 +772,7 @@ export async function generateRenderingPipelineDetectionSkill(): Promise<SkillDe
         sql: activeProcessesSql,
         save_as: 'active_rendering_processes',
       },
-      // Supporting evidence axes; none is sufficient for type proof by itself.
-      {
-        id: 'layer_signals',
-        type: 'atomic',
-        name: 'SF Layer 数与名字模式 (辅助证据)',
-        display: {
-          level: 'detail',
-          title: 'Layer 信号',
-        },
-        sql: layerSignalsSql,
-        save_as: 'layer_signals',
-      },
+      // Supplementary cadence and submission diagnostics.
       {
         id: 'extra_rhythm_signals',
         type: 'atomic',

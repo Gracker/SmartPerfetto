@@ -66,6 +66,10 @@ function buildSkillResult(opts: {
         data: [{
           primary_pipeline_id: opts.pipelineId,
           primary_confidence: opts.confidence,
+          primary_basis: pipelineSkillLoader.getPipelineCatalogEntry(opts.pipelineId)?.output_path ?? 'hwui',
+          target_process: 'com.example.app',
+          host_submissions: 12,
+          sf_host_frames: 0,
           candidates_list: opts.candidatesList || `${opts.pipelineId}:${opts.confidence}`,
           features_list: opts.featuresList || null,
           doc_path: `rendering_pipelines/${opts.pipelineId.toLowerCase()}.md`,
@@ -90,7 +94,8 @@ function buildSkillResult(opts: {
 describe('ArchitectureDetector (YAML skill-backed)', () => {
   let context: DetectorContext;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await ensurePipelineSkillsInitialized();
     context = {
       traceId: 'test-trace-id',
       traceProcessorService: {},
@@ -127,7 +132,7 @@ describe('ArchitectureDetector (YAML skill-backed)', () => {
       expect(result.type).toBe('SOFTWARE');
     });
 
-    it('should detect MIXED for ANDROID_VIEW_MIXED pipeline', async () => {
+    it('abstains on a scoring-only mixed candidate', async () => {
       mockExecute.mockResolvedValue(
         buildSkillResult({
           pipelineId: 'ANDROID_VIEW_MIXED',
@@ -137,7 +142,7 @@ describe('ArchitectureDetector (YAML skill-backed)', () => {
 
       const result = await detectArchitectureViaSkill(context.traceProcessorService, context.traceId);
 
-      expect(result.type).toBe('MIXED');
+      expect(result.type).toBe('UNKNOWN');
     });
   });
 
@@ -202,11 +207,11 @@ describe('ArchitectureDetector (YAML skill-backed)', () => {
       const result = await detectArchitectureViaSkill(context.traceProcessorService, context.traceId);
 
       expect(result.type).toBe('WEBVIEW');
-      expect(result.webview?.engine).toBe('CHROMIUM');
-      expect(result.webview?.surfaceType).toBe('TEXTUREVIEW');
+      expect(result.webview?.engine).toBe('UNKNOWN');
+      expect(result.webview?.surfaceType).toBe('UNKNOWN');
     });
 
-    it('should detect WebView SURFACE_CONTROL', async () => {
+    it('abstains on an unbound WebView SurfaceControl score', async () => {
       mockExecute.mockResolvedValue(
         buildSkillResult({
           pipelineId: 'WEBVIEW_SURFACE_CONTROL',
@@ -217,11 +222,11 @@ describe('ArchitectureDetector (YAML skill-backed)', () => {
 
       const result = await detectArchitectureViaSkill(context.traceProcessorService, context.traceId);
 
-      expect(result.type).toBe('WEBVIEW');
-      expect(result.webview?.surfaceType).toBe('SURFACECONTROL');
+      expect(result.type).toBe('UNKNOWN');
+      expect(result.webview).toBeUndefined();
     });
 
-    it('should detect X5 custom WebView', async () => {
+    it('rejects the unbound custom WebView classification even with a subvariant', async () => {
       mockExecute.mockResolvedValue(
         buildSkillResult({
           pipelineId: 'WEBVIEW_TEXTUREVIEW_CUSTOM',
@@ -232,13 +237,13 @@ describe('ArchitectureDetector (YAML skill-backed)', () => {
 
       const result = await detectArchitectureViaSkill(context.traceProcessorService, context.traceId);
 
-      expect(result.type).toBe('WEBVIEW');
-      expect(result.webview?.engine).toBe('X5');
+      expect(result.type).toBe('UNKNOWN');
+      expect(result.webview).toBeUndefined();
     });
   });
 
   describe('Compose detection', () => {
-    it('should detect Compose', async () => {
+    it('keeps a Compose signature from identifying a separate output path', async () => {
       mockExecute.mockResolvedValue(
         buildSkillResult({
           pipelineId: 'COMPOSE_STANDARD',
@@ -248,8 +253,8 @@ describe('ArchitectureDetector (YAML skill-backed)', () => {
 
       const result = await detectArchitectureViaSkill(context.traceProcessorService, context.traceId);
 
-      expect(result.type).toBe('COMPOSE');
-      expect(result.compose?.hasRecomposition).toBe(true);
+      expect(result.type).toBe('UNKNOWN');
+      expect(result.compose).toBeUndefined();
     });
   });
 
@@ -270,12 +275,12 @@ describe('ArchitectureDetector (YAML skill-backed)', () => {
   });
 
   describe('Other pipeline types', () => {
-    it('resolves every architecture type from catalog metadata', async () => {
+    it('promotes only catalog entries bound to the observed output path', async () => {
       await ensurePipelineSkillsInitialized();
       for (const [pipelineId, entry] of Object.entries(pipelineSkillLoader.getCatalog().pipelines)) {
-        expect(resolvePipelineArchitectureType(pipelineId)).toBe(entry.architecture_type);
+        expect(resolvePipelineArchitectureType(pipelineId, entry.output_path)).toBe(entry.output_path ? entry.architecture_type : 'UNKNOWN');
       }
-      expect(resolvePipelineArchitectureType('NOT_IN_CATALOG')).toBe('STANDARD');
+      expect(resolvePipelineArchitectureType('NOT_IN_CATALOG', 'hwui')).toBe('UNKNOWN');
     });
 
     it('should detect CAMERA for CAMERA_PIPELINE', async () => {
@@ -288,14 +293,14 @@ describe('ArchitectureDetector (YAML skill-backed)', () => {
       expect(result.type).toBe('CAMERA');
     });
 
-    it('should detect VIDEO_OVERLAY for VIDEO_OVERLAY_HWC', async () => {
+    it('does not promote the unbound HWC overlay feature', async () => {
       mockExecute.mockResolvedValue(
         buildSkillResult({ pipelineId: 'VIDEO_OVERLAY_HWC', confidence: 0.65 }),
       );
 
       const result = await detectArchitectureViaSkill(context.traceProcessorService, context.traceId);
 
-      expect(result.type).toBe('VIDEO_OVERLAY');
+      expect(result.type).toBe('UNKNOWN');
     });
 
     it('should detect SURFACEVIEW for SURFACEVIEW_BLAST', async () => {
@@ -356,6 +361,37 @@ describe('ArchitectureDetector (YAML skill-backed)', () => {
       }
     });
 
+    it.each([
+      ['com.example.app:renderer', 'CAMERA'],
+      ['com.example.application', 'UNKNOWN'],
+      [null, 'UNKNOWN'],
+    ])('checks the observed process %s against the requested package', async (processName, type) => {
+      const row = buildSkillResult({pipelineId: 'CAMERA_PIPELINE', confidence: 1});
+      row.rawResults.determine_pipeline.data[0].target_process = processName;
+      mockExecute.mockResolvedValue(row);
+      const result = await detectArchitectureViaSkill(context.traceProcessorService, context.traceId, 'com.example.app');
+      expect(result.type).toBe(type);
+      if (type === 'UNKNOWN') expect(result.evidence).toEqual([]);
+    });
+
+    it('rejects a valid pipeline ID paired with a different real output path', async () => {
+      const mismatch = buildSkillResult({pipelineId: 'CAMERA_PIPELINE', confidence: 1});
+      mismatch.rawResults.determine_pipeline.data[0].primary_basis = 'hwui';
+      mockExecute.mockResolvedValue(mismatch);
+      await expect(detectArchitectureViaSkill(context.traceProcessorService, context.traceId))
+        .resolves.toMatchObject({type: 'UNKNOWN', confidence: 0, additionalInfo: {pipelineId: 'UNKNOWN', candidates: []}});
+    });
+
+    it('abstains on a legacy score-only result even for a catalog variant', async () => {
+      const stale = buildSkillResult({pipelineId: 'FLUTTER_TEXTUREVIEW', confidence: 0.9});
+      delete stale.rawResults.determine_pipeline.data[0].primary_basis;
+      mockExecute.mockResolvedValue(stale);
+      await expect(detectArchitectureViaSkill(context.traceProcessorService, context.traceId, 'app.b'))
+        .resolves.toMatchObject({type: 'UNKNOWN', confidence: 0,
+          detectorScope: {version: 1, traceId: context.traceId, packageName: 'app.b'},
+          additionalInfo: {pipelineId: 'UNKNOWN', primaryBasis: 'unknown'}});
+    });
+
     it.each(['Skill not found', 'No processor for trace test-trace'])('rejects skill execution failure: %s', error => {
       mockExecute.mockResolvedValue({
         success: false,
@@ -387,7 +423,7 @@ describe('ArchitectureDetector (YAML skill-backed)', () => {
   });
 
   describe('Candidates list parsing', () => {
-    it('should parse candidates into evidence array', async () => {
+    it('separates observed output counts from ranked candidates', async () => {
       mockExecute.mockResolvedValue(
         buildSkillResult({
           pipelineId: 'ANDROID_VIEW_STANDARD_BLAST',
@@ -398,10 +434,15 @@ describe('ArchitectureDetector (YAML skill-backed)', () => {
 
       const result = await detectArchitectureViaSkill(context.traceProcessorService, context.traceId);
 
-      expect(result.evidence).toHaveLength(3);
-      expect(result.evidence[0]).toEqual({ type: 'slice', value: 'ANDROID_VIEW_STANDARD_BLAST', weight: 0.85 });
-      expect(result.evidence[1]).toEqual({ type: 'slice', value: 'COMPOSE_STANDARD', weight: 0.65 });
-      expect(result.evidence[2]).toEqual({ type: 'slice', value: 'FLUTTER_SURFACEVIEW_IMPELLER', weight: 0.30 });
+      expect(result.evidence).toEqual([
+        {type: 'count', metric: 'host_submissions', value: 12, source: 'rendering_pipeline_detection/determine_pipeline'},
+        {type: 'count', metric: 'sf_host_frames', value: 0, source: 'rendering_pipeline_detection/determine_pipeline'},
+      ]);
+      expect(result.additionalInfo?.candidates).toEqual([
+        {id: 'ANDROID_VIEW_STANDARD_BLAST', confidence: 0.85},
+        {id: 'COMPOSE_STANDARD', confidence: 0.65},
+        {id: 'FLUTTER_SURFACEVIEW_IMPELLER', confidence: 0.30},
+      ]);
     });
   });
 

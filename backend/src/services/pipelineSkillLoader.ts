@@ -74,6 +74,11 @@ export interface RenderingTypeDefinition {
 export const renderingTypeSource = (renderingTypeId: string): string =>
   `skills/pipelines/index.yaml#rendering_types.${renderingTypeId}`;
 
+export function matchesPipelineTarget(targetProcess: unknown, packageName?: string): targetProcess is string {
+  return typeof targetProcess === 'string' && targetProcess.length > 0 &&
+    (!packageName || targetProcess === packageName || targetProcess.startsWith(`${packageName}:`));
+}
+
 export interface PipelineCatalogEntry {
   file: string;
   family: string;
@@ -83,6 +88,8 @@ export interface PipelineCatalogEntry {
   related_rendering_type_ids?: string[];
   architecture_type: RenderingArchitectureType;
   signal_scope: 'app' | 'global';
+  /** Output-path observation required before this entry can be reported as primary. */
+  output_path?: string;
   primary_eligible: boolean;
   feature_visible: boolean;
 }
@@ -211,6 +218,7 @@ class PipelineSkillLoaderClass {
       throw new Error('[PipelineSkillLoader] Catalog must define pipelines');
     }
     const pipelineFiles = new Set<string>();
+    const outputPaths = new Set<string>();
     for (const [pipelineId, entry] of Object.entries(catalog.pipelines || {})) {
       if (!isRecord(entry) || !isText(entry.file) || pipelineFiles.has(entry.file) || path.basename(entry.file) !== entry.file) {
         throw new Error(`[PipelineSkillLoader] Pipeline ${pipelineId} has invalid or duplicate file`);
@@ -226,10 +234,20 @@ class PipelineSkillLoaderClass {
       if (!RENDERING_ARCHITECTURE_TYPE_SET.has(entry.architecture_type)) {
         throw new Error(`[PipelineSkillLoader] Pipeline ${pipelineId} has invalid architecture type`);
       }
+      if (entry.output_path !== undefined) {
+        if (
+          typeof entry.output_path !== 'string' || !/^[a-z][a-z0-9_]*$/.test(entry.output_path) ||
+          entry.output_path === 'unknown' || outputPaths.has(entry.output_path) ||
+          entry.classification_role !== 'variant' || entry.signal_scope !== 'app'
+        ) {
+          throw new Error(`[PipelineSkillLoader] Pipeline ${pipelineId} has invalid or duplicate output path`);
+        }
+        outputPaths.add(entry.output_path);
+      }
       if (entry.classification_role === 'variant') {
         if (
-          !entry.primary_eligible ||
-          entry.feature_visible ||
+          entry.primary_eligible !== (entry.output_path !== undefined) ||
+          entry.feature_visible !== false ||
           entry.rendering_type_id !== entry.teaching_type_id ||
           teachingType.kind !== 'concrete' ||
           entry.related_rendering_type_ids !== undefined
@@ -238,8 +256,8 @@ class PipelineSkillLoaderClass {
         }
       } else if (entry.classification_role === 'feature') {
         if (
-          entry.primary_eligible ||
-          !entry.feature_visible ||
+          entry.primary_eligible !== false ||
+          typeof entry.feature_visible !== 'boolean' ||
           entry.rendering_type_id !== undefined ||
           !Array.isArray(entry.related_rendering_type_ids)
         ) {
@@ -259,6 +277,7 @@ class PipelineSkillLoaderClass {
     if (
       !defaultEntry ||
       defaultEntry.classification_role !== 'variant' ||
+      !defaultEntry.primary_eligible ||
       defaultEntry.rendering_type_id !== catalog.default?.rendering_type_id
     ) {
       throw new Error('[PipelineSkillLoader] Catalog default is invalid');
@@ -428,7 +447,10 @@ class PipelineSkillLoaderClass {
         if (pipeline.meta.doc_path !== expectedSource || pipeline.teaching?.source !== expectedSource) {
           throw new Error(`teaching reference must be ${expectedSource}`);
         }
-        this.validateDetection(pipeline, file);
+        // Output-only variants have a catalog binding and no heuristic candidate score.
+        if (pipeline.detection !== undefined || !entry.output_path) {
+          this.validateDetection(pipeline, file);
+        }
         loadedPipelines.set(pipelineId, pipeline);
         console.log(`[PipelineSkillLoader] Loaded pipeline: ${pipelineId} (${pipeline.meta.display_name})`);
       } catch (error: any) {
@@ -470,6 +492,13 @@ class PipelineSkillLoaderClass {
 
   getPipelineCatalogEntry(pipelineId: string): PipelineCatalogEntry | null {
     return this.catalog?.pipelines[pipelineId] || null;
+  }
+
+  /** Heuristic-only and pre-output-evidence rows cannot establish the primary path. */
+  getObservedPipelineEntry(pipelineId: unknown, basis: unknown): PipelineCatalogEntry | null {
+    if (typeof pipelineId !== 'string' || typeof basis !== 'string' || !basis) return null;
+    const entry = this.getPipelineCatalogEntry(pipelineId);
+    return entry?.primary_eligible && entry.output_path === basis ? entry : null;
   }
 
   getRenderingType(renderingTypeId: string): RenderingTypeDefinition | null {

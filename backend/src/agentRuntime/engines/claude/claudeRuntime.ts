@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {architectureForPackage, restoreArchitectureObservation} from '../../runtimeCache';
 import {resolveRuntimePerformanceRecorder} from '../../runtimePerformanceContext';
 
 import {collectSceneEvidenceForPrompt, collectSelectedEvidenceForPrompt} from '../../sceneEntryEvidence';
@@ -87,7 +88,7 @@ import {
   type ClaudeAgentConfig,
 } from './claudeConfig';
 import type { FocusAppDetectionResult } from '../../../agentv3/focusAppDetector';
-import { formatFocusAppTargetProgress, resolveFocusAppTarget } from '../../focusAppTarget';
+import { formatFocusAppTargetProgress, isAmbiguousFocusTarget, resolveFocusAppTarget } from '../../focusAppTarget';
 import { registerFocusAppEvidence } from '../../focusAppEvidence';
 import type {SceneType} from '../../../agentv3/sceneClassifier';
 import { buildComplexityClassifierInput } from '../../../agentv3/queryComplexityContext';
@@ -186,7 +187,6 @@ import {
   providerScopeFromAnalysisOptions,
   quickStopReasonFromTermination,
   resolveQuickTurnBudget,
-  setLruCacheEntry,
   toProtocolHypothesis as toRuntimeProtocolHypothesis,
 } from '../../runtimeCommon';
 import {
@@ -552,7 +552,7 @@ interface ClaudeSelectedFoundation {
 export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
   private traceProcessorService: TraceProcessorService;
   private config: ClaudeAgentConfig;
-  /** Cache architecture detection results per traceId (deterministic per trace). */
+  /** Cache the last package-scoped detector observation per trace. */
   private architectureCache: Map<string, ArchitectureInfo> = new Map();
   /** Per-session artifact stores — persist across turns within a session. */
   private artifactStores: Map<string, ArtifactStore> = new Map();
@@ -589,7 +589,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
 
   /** Restore a cached architecture detection result (e.g., from session persistence). */
   restoreArchitectureCache(traceId: string, architecture: ArchitectureInfo): void {
-    setLruCacheEntry(this.architectureCache, traceId, architecture);
+    restoreArchitectureObservation(this.architectureCache, traceId, architecture);
   }
 
   /** Get cached architecture for a traceId (used for persistence). */
@@ -2180,7 +2180,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     }
 
     if (snapshot.architecture) {
-      setLruCacheEntry(this.architectureCache, traceId, snapshot.architecture);
+      this.restoreArchitectureCache(traceId, snapshot.architecture);
     }
   }
 
@@ -2383,15 +2383,15 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         currentTraceId: traceId,
         referenceTraceId,
         ...(options.tracePairContext ? {tracePairContext: options.tracePairContext} : {}),
-        detectReferenceArchitecture: async id => {
-          const cached = getLruCacheEntry(this.architectureCache, id);
+        detectReferenceArchitecture: async (id, pkg) => {
+          const cached = architectureForPackage(this.architectureCache, id, pkg);
           if (cached) return cached;
           const detected = await createArchitectureDetector().detect({
             traceId: id,
             traceProcessorService: this.traceProcessorService,
-            packageName: undefined,
+            packageName: pkg,
           }) ?? undefined;
-          if (detected) setLruCacheEntry(this.architectureCache, id, detected);
+          if (detected) this.restoreArchitectureCache(id, detected);
           return detected;
         },
         onCapabilityQueryError: (side, error) => {
@@ -2410,9 +2410,11 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       : Promise.resolve(buildRuntimeTracePairIdentityContext({referenceTraceId,
           tracePairContext: options.tracePairContext}));
 
-    // Phase 2: Architecture detection (LRU cached per traceId)
-    const architecturePromise = turnPolicy.preflight !== 'none' ? runPreflightPhase('architecture', async () => {
-      let architecture = getLruCacheEntry(this.architectureCache, traceId);
+    const ambiguousTarget = isAmbiguousFocusTarget(focusTarget);
+    if (ambiguousTarget) this.architectureCache.delete(traceId);
+    const cachedArchitecture = architectureForPackage(this.architectureCache, traceId, effectivePackageName);
+    const architecturePromise = !ambiguousTarget && turnPolicy.preflight !== 'none' ? runPreflightPhase('architecture', async () => {
+      let architecture = cachedArchitecture;
       if (!architecture) {
         try {
           const detector = createArchitectureDetector();
@@ -2422,15 +2424,17 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
             packageName: effectivePackageName,
           });
           if (architecture) {
-            setLruCacheEntry(this.architectureCache, traceId, architecture);
+            this.restoreArchitectureCache(traceId, architecture);
           }
-          this.emitUpdate({ type: 'architecture_detected', content: { architecture }, timestamp: Date.now() });
+          if (architecture && architecture.type !== 'UNKNOWN') {
+            this.emitUpdate({ type: 'architecture_detected', content: { architecture }, timestamp: Date.now() });
+          }
         } catch (err) {
           console.warn('[ClaudeRuntime] Architecture detection failed:', diagnosticLogIdentity((err as Error).message));
         }
       }
       return architecture;
-    }) : Promise.resolve(getLruCacheEntry(this.architectureCache, traceId));
+    }) : Promise.resolve(cachedArchitecture);
 
     // Phase 2.9: Trace data completeness probe (identity-safe shared cache)
     const traceCompletenessPromise = turnPolicy.preflight !== 'none' ? runPreflightPhase('completeness', async () => {
