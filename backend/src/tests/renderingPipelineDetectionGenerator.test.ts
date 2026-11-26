@@ -138,6 +138,36 @@ describe('rendering_pipeline_detection generator', () => {
     expect(serialized).toBe(committed);
   });
 
+  it('requires app-scoped capture activity before scoring a camera pipeline', async () => {
+    const skill = await generateRenderingPipelineDetectionSkill();
+    const step = skill.steps?.find(step => step.id === 'score_pipelines');
+    if (step?.type !== 'atomic' || !step.sql) throw new Error('Missing pipeline scoring SQL');
+    const db = new Database(':memory:');
+    try {
+      db.exec(`
+        CREATE TABLE process(upid INTEGER PRIMARY KEY, name TEXT);
+        CREATE TABLE thread(utid INTEGER PRIMARY KEY, upid INTEGER, name TEXT);
+        CREATE TABLE thread_track(id INTEGER PRIMARY KEY, utid INTEGER);
+        CREATE TABLE slice(track_id INTEGER, ts INTEGER, dur INTEGER, name TEXT);
+        INSERT INTO process VALUES (1, 'example'), (2, 'other');
+        INSERT INTO thread VALUES (10, 1, 'main'), (11, 1, 'CameraAvailabil'), (20, 2, 'main');
+        INSERT INTO thread_track VALUES (100, 10), (200, 20);
+        INSERT INTO slice VALUES
+          (100, 0, 1, 'AIDL::java::ICameraServiceListener::onCameraAccessPrioritiesChanged::server'),
+          (200, 0, 1, 'Camera3Device::processCaptureRequest');
+      `);
+      const query = db.prepare(`SELECT score FROM (${step.sql.split('${package}').join('example')})
+        WHERE pipeline_id = 'CAMERA_PIPELINE'`).pluck();
+      expect(query.get()).toBe(0);
+      db.exec("INSERT INTO slice VALUES (100, 1, 1, 'CameraCaptureSession::onCaptureCompleted')");
+      expect(query.get()).toBe(1);
+      db.exec("UPDATE slice SET name = 'acquireNextBufferLocked - SurfaceView[CameraPreview]frame=1' WHERE ts = 1");
+      expect(query.get()).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
   it('requires Flutter UI and SurfaceTexture identities before TextureView signals can score Flutter', async () => {
     const skill = await generateRenderingPipelineDetectionSkill();
     const scoreStep = skill.steps?.find((step) => step.id === 'score_pipelines') as any;

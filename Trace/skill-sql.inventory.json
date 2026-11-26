@@ -14588,7 +14588,7 @@
     },
     "pipeline_camera_pipeline": {
       "source_file": "backend/skills/pipelines/camera_pipeline.skill.yaml",
-      "source_sha256": "bbc49adbaa0fe539e83eb44f5212389a3865881856cf221571a82003264c777e",
+      "source_sha256": "dfd03d55255b61023ee1c0b4d7c285b6d532ca774e6c5dd05674bbece33510d4",
       "type": "pipeline_definition",
       "execution": "none",
       "declared_modules": [],
@@ -15490,7 +15490,7 @@
     },
     "rendering_pipeline_detection": {
       "source_file": "backend/skills/atomic/rendering_pipeline_detection.skill.yaml",
-      "source_sha256": "bdb32cee14ce0f8f258001d34bdb35cc39cc71fb98757a956e28b913c1064b73",
+      "source_sha256": "a4c526168b0cbe32d5a47c00cdf4aa11dc4282e28713853182afdd56fb92578a",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -15513,7 +15513,7 @@
           "id": "score_pipelines",
           "at": "steps[0].sql",
           "top_level_index": 0,
-          "sha256": "90c2f48a7829b297d3799804d67e63ea520477bfec268cdbae461de077be0763",
+          "sha256": "88b35b94da6cdef65cf4a2c477b34c4ecee8e9bb4ca39c8299ee937ee37fd80e",
           "required_columns": [],
           "has_condition": false,
           "read_only": true,

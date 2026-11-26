@@ -47,19 +47,27 @@ meta:
     整体 pipeline back-pressure；仅凭 PSS/RSS 增长不能判定 ImageReader 泄漏。
 
 detection:
+  # Availability listeners can run in any app. Require a capture operation or
+  # buffer acquisition on a camera preview layer owned by the target.
+  required_signals:
+    - slice_patterns: &capture_activity
+        - "*processCaptureRequest*"
+        - "*processCaptureResult*"
+        - "*setRepeatingRequest*"
+        - "*::onCaptureStarted*"
+        - "*::onCaptureCompleted*"
+        - "*ICameraDeviceCallbacks::onResultReceived*"
+        - "acquireNextBufferLocked*SurfaceView*[Cc]amera*"
   scoring_signals:
+    - signal: has_capture_activity
+      slice_patterns: *capture_activity
+      weight: 60
     - signal: has_camera_thread
-      thread_pattern: "*Camera*"
-      weight: 30
-    - signal: has_cam_abbrev_thread
       thread_pattern: "*Cam*"
-      weight: 10
+      weight: 20
     - signal: has_camera_slice
       slice_pattern: "*Camera*"
-      weight: 30
-    - signal: has_capture_session
-      slice_pattern: "*CaptureSession*"
-      weight: 30
+      weight: 20
 
 teaching:
   source: "skills/pipelines/index.yaml#rendering_types.S11_CAMERA"
