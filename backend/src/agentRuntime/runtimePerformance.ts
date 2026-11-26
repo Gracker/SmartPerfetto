@@ -110,14 +110,14 @@ export interface RuntimeModelPolicyObservation extends RuntimeModelPolicyReceipt
   observedOffsetMs: number;
 }
 
-const POLICY_SELECTIONS: Record<ModelExecutionPolicyReceipt['selection'], true> = {preserve: true, minimum_legal_candidate: true};
+const POLICY_SELECTIONS: Record<ModelExecutionPolicyReceipt['selection'], true> = {preserve: true, minimum_legal_candidate: true, quick_answer_low: true};
 const POLICY_OUTCOMES: Record<ModelExecutionPolicyReceipt['outcome'], true> = {
   preserved: true, candidate_applied: true, not_applied_unknown: true, not_applied_unsupported: true, rejected: true,
 };
 const POLICY_REASONS: Record<ModelExecutionPolicyReceipt['reason'], true> = {
   unsupported_authored_mode: true, unsupported_authored_effort: true, candidate_stage_not_allowed: true,
   adapter_surface_mismatch: true, preserve_requested: true, authored_precedence: true,
-  candidate_minimum_legal: true, server_capability_unknown: true, sdk_capability_unknown: true, no_common_control: true,
+  candidate_minimum_legal: true, quick_budget_low: true, server_capability_unknown: true, sdk_capability_unknown: true, no_common_control: true,
 };
 function policyMember<T extends string>(value: unknown, entries: Record<T, true>): value is T {
   return typeof value === 'string' && Object.prototype.hasOwnProperty.call(entries, value);
@@ -747,7 +747,7 @@ export interface RuntimePerformanceModelCallReceiptV1 {
   durationMs: number;
   /** Time from this call's dispatch to its first provider output, when the stream exposes it. */
   firstOutputMs?: number;
-  outcome: RuntimePerformanceOutcome;
+  outcome: RuntimePerformanceOutcome | 'output_limit';
   /** Visible body vs machine declaration characters of the text this call produced. */
   output?: RuntimeModelCallOutput;
   usage?: RuntimeModelCallUsageV1;
@@ -937,7 +937,7 @@ export interface RuntimeModelCallStart {
 }
 
 export interface RuntimeModelCallEnd {
-  outcome?: RuntimePerformanceOutcome;
+  outcome?: RuntimePerformanceModelCallReceiptV1['outcome'];
   /** Replaces the requested model; without provenance its source remains unknown. */
   model?: string;
   /** Only the actual producer may attach this to the same valid end.model. */

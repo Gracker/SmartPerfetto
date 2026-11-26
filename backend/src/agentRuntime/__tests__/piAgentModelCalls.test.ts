@@ -54,7 +54,7 @@ describe('createPiAgentModelCallTracker', () => {
   it('maps native stop reasons, rejected results and dispatch errors', async () => {
     const {recorder, tracker, controller} = setup();
     for (const [purpose, extra] of [['answer_turn', {stopReason: 'error'}], ['continuation', {errorMessage: 'upstream'}],
-      ['continuation', {stopReason: 'aborted'}]] as const) {
+      ['continuation', {stopReason: 'aborted'}], ['answer_turn', {stopReason: 'length'}]] as const) {
       const {stream, resolve} = deferredStream();
       tracker.dispatch(purpose, () => stream);
       resolve(message(extra as Partial<AssistantMessage>));
@@ -69,7 +69,7 @@ describe('createPiAgentModelCallTracker', () => {
     expect(() => tracker.dispatch('answer_turn', () => { throw new Error('stopped'); })).toThrow();
 
     expect(recorder.seal().modelCalls?.map(call => [call.purpose, call.outcome])).toEqual([
-      ['answer_turn', 'error'], ['continuation', 'error'], ['continuation', 'cancelled'],
+      ['answer_turn', 'error'], ['continuation', 'error'], ['continuation', 'cancelled'], ['answer_turn', 'output_limit'],
       ['answer_turn', 'error'], ['answer_turn', 'error'], ['answer_turn', 'cancelled'],
     ]);
   });

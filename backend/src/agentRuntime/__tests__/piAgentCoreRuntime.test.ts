@@ -1820,6 +1820,19 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(readRuntimeToolResultFacts(text)).toEqual({success: false, planPhaseId: 'p2'});
   });
 
+  it('keeps step-to-artifact locators when scope metadata alone exceeds the model budget', async () => {
+    const artifacts = [{id: 'art-14', stepId: 'measurement', rowCount: 1}];
+    const original = createRuntimeToolResult({success: true, scopeProvenance: {entries: ['scope'.repeat(20_000)]}, artifacts});
+    const tool = createPiAgentCoreToolFromSharedSpec({...createSharedSpec(async () => original), name: 'invoke_skill'}, {
+      allowedToolNames: new Set(['invoke_skill']),
+    });
+    const result = await tool.execute('oversized-scope', {}, undefined);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({truncated: true, artifactIds: ['art-14'],
+      artifactSteps: [{id: 'art-14', stepId: 'measurement'}]});
+    expect(Buffer.byteLength(result.content[0].text)).toBeLessThanOrEqual(MODEL_ROW_PAGE_MAX_BYTES);
+    expect(result.details).toBe(original);
+  });
+
   it('preserves synthesize and diagnostic artifact locators after an oversized body', async () => {
     const original = createRuntimeToolResult({success: true, preview: 'x'.repeat(250_000),
       synthesizeArtifacts: [{artifactId: 'art-synthesize'}], diagnosticsArtifactId: 'art-diagnostic'});

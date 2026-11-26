@@ -17,11 +17,11 @@ export type StageNativeControls =
 export type ModelPolicyFailure = 'unsupported_authored_mode' | 'unsupported_authored_effort' |
   'candidate_stage_not_allowed' | 'adapter_surface_mismatch';
 export type ModelPolicyReason = ModelPolicyFailure | 'preserve_requested' | 'authored_precedence' |
-  'candidate_minimum_legal' | 'server_capability_unknown' | 'sdk_capability_unknown' | 'no_common_control';
+  'candidate_minimum_legal' | 'quick_budget_low' | 'server_capability_unknown' | 'sdk_capability_unknown' | 'no_common_control';
 export interface ModelExecutionPolicyReceipt {
   readonly schemaVersion: 'model_execution_policy@1';
   readonly purpose: RuntimeModelCallPurpose;
-  readonly selection: 'preserve' | 'minimum_legal_candidate';
+  readonly selection: 'preserve' | 'minimum_legal_candidate' | 'quick_answer_low';
   readonly modelId?: string;
   readonly executionFingerprint: ModelExecutionFingerprint;
   readonly authored: ReasoningSetting | 'absent';
@@ -38,7 +38,7 @@ export interface ResolveModelExecutionPolicyInput {
   readonly profile: ResolvedModelExecutionProfile;
   readonly purpose: RuntimeModelDispatchPurpose;
   readonly outputOnly?: true;
-  readonly selection: 'preserve' | 'minimum_legal_candidate';
+  readonly selection: ModelExecutionPolicyReceipt['selection'];
 }
 export type ModelExecutionPolicyResult =
   | Readonly<{status: 'ready'; controls: StageNativeControls; receipt: ModelExecutionPolicyReceipt}>
@@ -110,7 +110,7 @@ function controlsFor(surface: ModelControlSurface, setting: ReasoningSetting): S
 export function resolveModelExecutionPolicy(input: ResolveModelExecutionPolicyInput): ModelExecutionPolicyResult {
   // Validate before constructing any receipt: rejected arbitrary strings must never be echoed.
   if (!input || typeof input.purpose !== 'string' || !Object.prototype.hasOwnProperty.call(STAGES, input.purpose) ||
-    typeof input.selection !== 'string' || !['preserve', 'minimum_legal_candidate'].includes(input.selection)) {
+    typeof input.selection !== 'string' || !['preserve', 'minimum_legal_candidate', 'quick_answer_low'].includes(input.selection)) {
     throw new Error('model_execution_invalid_policy_selection');
   }
   const {profile, purpose, selection} = input;
@@ -133,6 +133,8 @@ export function resolveModelExecutionPolicy(input: ResolveModelExecutionPolicyIn
   if (!surfaceMatches(profile)) return reject('adapter_surface_mismatch');
   const unsupported = authoredFailure(profile);
   if (unsupported) return reject(unsupported);
+  if (selection === 'quick_answer_low' && (purpose !== 'answer_turn' || profile.runtimeKind !== 'pi-agent-core'))
+    return reject('candidate_stage_not_allowed');
   if (selection === 'minimum_legal_candidate' &&
     (STAGES[purpose] === 'main' || STAGES[purpose] === 'continuation' && input.outputOnly !== true)) return reject('candidate_stage_not_allowed');
   // Authored values already belong to the captured native config: never replace them with a stage default.
@@ -144,17 +146,17 @@ export function resolveModelExecutionPolicy(input: ResolveModelExecutionPolicyIn
   if (server.thinking.status === 'unsupported' || server.thinking.value === 'none' || adapter.thinking === 'none' ||
     adapter.surface === 'none') return unchanged('not_applied_unsupported', 'no_common_control');
   let setting: ReasoningSetting;
-  if (server.thinking.value === 'optional' && adapter.thinking === 'optional' && supportsDisable(adapter.surface)) {
+  if (selection !== 'quick_answer_low' && server.thinking.value === 'optional' && adapter.thinking === 'optional' && supportsDisable(adapter.surface)) {
     setting = Object.freeze({mode: 'disabled'});
   } else {
     if (server.efforts.status === 'unknown') return unchanged('not_applied_unknown', 'server_capability_unknown');
     if (adapter.efforts === undefined) return unchanged('not_applied_unknown', 'sdk_capability_unknown');
     const effort = server.efforts.status === 'supported' ? server.efforts.value.find(value =>
-      adapter.efforts!.includes(value) && supportsEffort(adapter.surface, value)) : undefined;
+      (selection !== 'quick_answer_low' || value === 'low') && adapter.efforts!.includes(value) && supportsEffort(adapter.surface, value)) : undefined;
     if (!effort) return unchanged('not_applied_unsupported', 'no_common_control');
     setting = Object.freeze({mode: 'enabled', effort});
   }
   const controls = controlsFor(adapter.surface, setting);
   return controls ? Object.freeze({status: 'ready', controls,
-    receipt: receipt('candidate_applied', 'candidate_minimum_legal', setting)}) : unchanged('not_applied_unsupported', 'no_common_control');
+    receipt: receipt('candidate_applied', selection === 'quick_answer_low' ? 'quick_budget_low' : 'candidate_minimum_legal', setting)}) : unchanged('not_applied_unsupported', 'no_common_control');
 }

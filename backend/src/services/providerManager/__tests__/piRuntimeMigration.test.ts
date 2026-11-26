@@ -526,7 +526,7 @@ describe('Pi native purpose reasoning', () => {
   afterEach(() => {jest.restoreAllMocks();});
 
   async function gatewayRuntime(modelId: string, catalogModule: Record<string, unknown> = catalog,
-    piAiOverrides: Record<string, unknown> = {}, configuredModel?: PiAgentCoreModelConfig) {
+    piAiOverrides: Record<string, unknown> = {}, configuredModel?: PiAgentCoreModelConfig, envOverrides: Record<string, string> = {}) {
     const sent: Array<Record<string, any>> = [];
     const piAi = {
       ...piAiOverrides,
@@ -543,7 +543,7 @@ describe('Pi native purpose reasoning', () => {
       : specifier.includes('/api/') ? new Proxy({}, {get: (_target, key) => key === 'then' ? undefined : () => ({stream: () => undefined, streamSimple: () => undefined})})
         : piAi;
     const record = {...templateRecord('kimi', 'claude-agent-sdk'), models: {primary: modelId, light: modelId}};
-    const env = piEnvOf(record);
+    const env = {...piEnvOf(record), ...envOverrides};
     const config = configuredModel ?? parsePiAgentCoreModelConfig(env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON);
     return {sent, runtime: await createPiAgentCoreProviderRuntime(config, env, loader as never)};
   }
@@ -564,7 +564,7 @@ describe('Pi native purpose reasoning', () => {
   }});
 
   it('selects the minimum legal classification effort for a legacy official GLM model, preserving the main default', async () => {
-    const {runtime, sent} = await gatewayRuntime('unused', catalog, {}, legacyGlm());
+    const {runtime, sent} = await gatewayRuntime('unused', catalog, {}, legacyGlm(), {SMARTPERFETTO_PI_FAST_LOW_REASONING: '1'});
     expect(runtime.model).toMatchObject({compat: {thinkingFormat: 'zai', supportsReasoningEffort: true}});
     const onExecutionPolicy = jest.fn();
     await runtime.streamFnForPurpose!('classification', {onExecutionPolicy})(runtime.model, context, {maxTokens: 1024} as never);
@@ -573,8 +573,18 @@ describe('Pi native purpose reasoning', () => {
     expect(onExecutionPolicy).toHaveBeenCalledWith(expect.objectContaining({outcome: 'candidate_applied',
       mapped: {mode: 'enabled', effort: 'low'}}));
     expect(sent[1].reasoning).toBeUndefined();
+    await runtime.streamFnForPurpose!('answer_turn', {quickMode: true, onExecutionPolicy})(runtime.model, context, {});
+    expect(sent[2].reasoning).toBe('low');
+    expect(onExecutionPolicy).toHaveBeenLastCalledWith(expect.objectContaining({selection: 'quick_answer_low', reason: 'quick_budget_low',
+      outcome: 'candidate_applied', sdkEffective: {mode: 'enabled', effort: 'low'}}));
     const payload = {thinking: {type: 'disabled'}, max_tokens: 16_384};
     expect(await sent[1].onPayload(payload, runtime.model)).toEqual({max_tokens: 16_384});
+  });
+
+  it.each([{}, {SMARTPERFETTO_PI_FAST_LOW_REASONING: '0'}])('preserves the default effort on a fast answer without admission', async env => {
+    const {runtime, sent} = await gatewayRuntime('unused', catalog, {}, legacyGlm(), env as Record<string, string>);
+    await runtime.streamFnForPurpose!('answer_turn', {quickMode: true})(runtime.model, context, {});
+    expect(sent[0].reasoning).toBeUndefined();
   });
 
   it.each([
@@ -584,8 +594,10 @@ describe('Pi native purpose reasoning', () => {
     {compat: {thinkingFormat: 'openai'}},
   ])('does not infer documented GLM SDK controls outside the known contract: %j', async override => {
     const config = legacyGlm(override);
-    const {runtime} = await gatewayRuntime('unused', catalog, {}, config);
+    const {runtime, sent} = await gatewayRuntime('unused', catalog, {}, config, {SMARTPERFETTO_PI_FAST_LOW_REASONING: '1'});
     expect(runtime.model.compat).toEqual(config.model.compat);
+    await runtime.streamFnForPurpose!('answer_turn', {quickMode: true})(runtime.model, context, {});
+    expect(sent[0].reasoning).toBeUndefined();
   });
 
   it('preserves explicit compatibility and authored effort', async () => {
@@ -595,6 +607,8 @@ describe('Pi native purpose reasoning', () => {
     expect((runtime.model as any).compat.supportsReasoningEffort).toBe(false);
     await runtime.streamFnForPurpose!('classification')(runtime.model, context, {maxTokens: 1024} as never);
     expect(sent[0]).toMatchObject({reasoning: 'high', maxTokens: 1024});
+    await runtime.streamFnForPurpose!('answer_turn', {quickMode: true})(runtime.model, context, {});
+    expect(sent[1].reasoning).toBe('high');
   });
 
   it.each(['classification', 'review'] as const)('disables thinking for a tightly capped %s call', async purpose => {

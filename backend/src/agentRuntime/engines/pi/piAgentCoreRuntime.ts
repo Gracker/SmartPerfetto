@@ -1010,11 +1010,18 @@ function stringifyPiToolResult(toolName: string, result: RuntimeToolResult): Arr
     ...(Array.isArray(body?.synthesizeArtifacts) ? body.synthesizeArtifacts.map(item => item?.artifactId) : []),
   ].filter((id): id is string => typeof id === 'string' && id.length > 0))];
   const facts = readToolResultFacts(result);
+  // Scope/provenance can exceed the budget even after every preview was
+  // removed. Keep the mapping that lets the model fetch the right evidence.
+  const artifactSteps = toolName === 'invoke_skill' && Array.isArray(body?.artifacts)
+    ? body.artifacts.flatMap(artifact => typeof artifact?.id === 'string' && typeof artifact.stepId === 'string'
+      ? [{id: artifact.id, stepId: artifact.stepId}] : []) : [];
   const metadata = {...facts, ...(artifactIds.length ? {artifactIds} : {})};
+  const namedMetadata = artifactSteps.length ? {...metadata, artifactSteps} : metadata;
   // Never shorten an identity into a different one. The original result remains
   // in details; exceptionally large metadata is explicitly unavailable here.
-  const boundedMetadata = Buffer.byteLength(JSON.stringify(metadata)) <= MODEL_ROW_PAGE_MAX_BYTES / 2
-    ? metadata : {success: facts.success, metadataOmitted: true, artifactCount: artifactIds.length};
+  const boundedMetadata = Buffer.byteLength(JSON.stringify(namedMetadata)) <= MODEL_ROW_PAGE_MAX_BYTES / 2 ? namedMetadata
+    : Buffer.byteLength(JSON.stringify(metadata)) <= MODEL_ROW_PAGE_MAX_BYTES / 2 ? metadata
+      : {success: facts.success, metadataOmitted: true, artifactCount: artifactIds.length};
   const projection = {
     ...boundedMetadata,
     ...(result.isError === true ? {isError: true} : {}),
@@ -1951,7 +1958,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         const request = investigation.currentRequest();
         const purpose = request?.purpose ?? requestPurpose();
         return agentModelCalls.dispatch(purpose, onExecutionPolicy => (providerRuntime.streamFnForPurpose?.(purpose, {
-          ...(purpose === 'continuation' ? {outputOnly: true} : {}), onExecutionPolicy,
+          ...(purpose === 'continuation' ? {outputOnly: true} : {quickMode: prep.quickMode}), onExecutionPolicy,
         }) ?? providerRuntime.streamFn)(...args), request?.index);
       },
       ...(supplements ? {steeringMode: 'all' as const} : {}),

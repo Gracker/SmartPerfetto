@@ -111,7 +111,7 @@ record 在记录的旧 runtime 下重算的 legacy hash 等于记录的 hash；e
 
 模型控制由 `modelExecutionProfile.ts` 区分服务端模型能力、实际 SDK 表达能力及已捕获的用户配置，`modelExecutionPolicy.ts` 决定本轮用途允许的参数。匹配依据是实际 endpoint、model ID 和协议，未知 gateway 或尚未建模的协议保持 unknown；已由原生 SDK 验证的合法配置继续保留。不能根据 provider 名称、请求耗时或模型自述推断能力，也不能静默切换 pinned provider/model。
 
-主分析与普通续写保留原生设置。分类及显式 output-only 交付，只有在服务端与当前 adapter 都支持时才选择最低合法思考设置。例如已知 GLM 5.3 Flash 不能关闭思考，使用 enabled/low；已知 DeepSeek Flash 支持的相应接口可以关闭。用户显式设置优先，已知不合法的设置在派发前返回配置错误，不能作为临时网络错误重试。SDK 不支持或能力未知时不猜参数。
+主分析与普通续写默认保留原生设置。 Pi 的 fast 分析可以在任一调查轮次直接生成报告。启用实验设置 `SMARTPERFETTO_PI_FAST_LOW_REASONING=1` 后，如果操作者和 SDK 均未选择推理档位，且服务端与 SDK 都支持 low，fast 会以 low 执行。原生长度停止在模型调用记录中记为 `output_limit`。 分类及显式 output-only 交付，只有在服务端与当前 adapter 都支持时才选择最低合法思考设置。例如已知 GLM 5.3 Flash 不能关闭思考，使用 enabled/low；已知 DeepSeek Flash 支持的相应接口可以关闭。用户显式设置优先，已知不合法的设置在派发前返回配置错误，不能作为临时网络错误重试。SDK 不支持或能力未知时不猜参数。
 
 Pi 的 model JSON 可显式设置 `thinkingLevel`（`off/minimal/low/medium/high/xhigh/max`）；installed SDK 不支持的设置会在调用前拒绝，不静默换档。`thinkingLevelMap` 保留 SDK 的原生映射。官方 GLM 未显式设置时不会因 Pi Agent 的默认 off 而自动发送 disabled；已知强制思考模型的显式 off 会被拒绝。缺失的模型温度、工具、成本能力不伪造为已知值，独立轻模型不继承主模型的能力和限制。
 

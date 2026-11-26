@@ -11,7 +11,6 @@ import {
   type RuntimeModelCallSpan,
   type RuntimeModelCallStart,
   type RuntimeModelCallUsageV1,
-  type RuntimePerformanceOutcome,
 } from '../../runtimePerformance';
 
 type PiReasoning = Pick<RuntimeModelCallEnd, 'reasoning' | 'reasoningEffort'>;
@@ -33,8 +32,8 @@ export function piUsageToModelCallUsage(usage: Usage | undefined): RuntimeModelC
 
 /** The model-call end facts of a finished Pi assistant message. */
 export function piAssistantModelCallEnd(message: AssistantMessage): RuntimeModelCallEnd {
-  const outcome: RuntimePerformanceOutcome = message.stopReason === 'aborted' ? 'cancelled'
-    : message.stopReason === 'error' || message.errorMessage ? 'error' : 'ok';
+  const outcome = message.stopReason === 'aborted' ? 'cancelled'
+    : message.stopReason === 'error' || message.errorMessage ? 'error' : message.stopReason === 'length' ? 'output_limit' : 'ok';
   return {outcome, usage: piUsageToModelCallUsage(message.usage),
     ...(message.responseModel ? {model: message.responseModel, modelSource: 'provider_reported' as const}
       : {model: message.model})};

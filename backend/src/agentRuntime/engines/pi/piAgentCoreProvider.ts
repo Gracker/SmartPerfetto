@@ -92,6 +92,7 @@ export const PI_PROVIDER_MAX_RETRIES = 2;
 export type PiAgentCoreProviderModels = Models;
 
 export interface PiStreamPurposePolicy {
+  quickMode?: boolean;
   outputOnly?: true;
   sdkIdentity?: ResolveModelExecutionProfileInput['sdk'];
   onExecutionPolicy?: (receipt: ModelExecutionPolicyReceipt) => void;
@@ -862,8 +863,13 @@ export async function createPiAgentCoreProviderRuntime(
           effective: {authoredReasoning: asSetting(authoredLevel), sdkEffectiveReasoning: asSetting(sdkLevel),
             maxOutputTokens: options?.maxTokens}};
         const profile = resolveModelExecutionProfile(profileInput);
-        selected = resolveModelExecutionPolicy({profile, purpose, outputOnly: policy?.outputOnly,
-          selection: stageCandidate ? 'minimum_legal_candidate' : 'preserve'});
+        // A fast Agent can write the report on any tool-capable round. Preserve a
+        // native level (including off) and any operator-supplied remapping.
+        const quickLow = purpose === 'answer_turn' && policy?.quickMode && sdkLevel === undefined &&
+          capturedEnv.SMARTPERFETTO_PI_FAST_LOW_REASONING === '1' &&
+          (sentModel.thinkingLevelMap?.low ?? 'low') === 'low';
+        const selection = stageCandidate ? 'minimum_legal_candidate' : quickLow ? 'quick_answer_low' : 'preserve';
+        selected = resolveModelExecutionPolicy({profile, purpose, outputOnly: policy?.outputOnly, selection});
         if (selected.status === 'unsupported') throw new PiModelExecutionConfigurationError();
         // A tightly capped call must not spend its cap thinking; both surveyed gateways accept `disabled`.
         // Anything with room to write, such as a closeout, keeps the run's level.
@@ -883,7 +889,7 @@ export async function createPiAgentCoreProviderRuntime(
         // Bind the receipt to the SDK's final selected/mapped setting and the actual stream cap.
         selected = resolveModelExecutionPolicy({profile: resolveModelExecutionProfile({...profileInput,
           effective: {...profileInput.effective, sdkEffectiveReasoning: sdkEffective, maxOutputTokens: streamMaxTokens}}), purpose, outputOnly: policy?.outputOnly,
-          selection: stageCandidate ? 'minimum_legal_candidate' : 'preserve'});
+          selection});
         if (selected.status === 'unsupported') throw new PiModelExecutionConfigurationError();
       } catch {throw new PiModelExecutionConfigurationError();}
       try {policy?.onExecutionPolicy?.(selected.receipt);} catch { /* Observers never change a stream. */ }
