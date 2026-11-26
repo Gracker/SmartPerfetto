@@ -137,6 +137,11 @@ export function packageProvenance(
   };
 }
 
+/** An explicit package resolves ambiguity even when the trace-wide ranking ties. */
+export function isAmbiguousFocusTarget(target?: FocusAppTarget): boolean {
+  return target?.source === 'none' && target.confidence === 'ambiguous';
+}
+
 /** Detection ran and produced something the model can read. */
 export function hasFocusAppDetectionData(target: FocusAppTarget | undefined): target is FocusAppTarget {
   return Boolean(target && (target.candidates.length > 0 || target.excludedNoActivity.length > 0));

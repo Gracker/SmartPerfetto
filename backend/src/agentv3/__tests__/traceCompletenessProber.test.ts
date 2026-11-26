@@ -615,6 +615,11 @@ describe('probeTraceCompleteness', () => {
     expect(undeclared).toEqual([]);
   });
 
+  it('still probes Flutter capability when the output path is unknown', async () => {
+    const result = await probeTraceCompleteness(makeTraceProcessorMock(allCapabilityTables(3)), 'unknown-rendering', 'UNKNOWN');
+    expect(result.notApplicable.map(cap => cap.id)).not.toContain('flutter_rendering');
+  });
+
   it('includes every applicable module before the schema query and skips inapplicable ones', async () => {
     const tps = makeTraceProcessorMock(allCapabilityTables(3));
 

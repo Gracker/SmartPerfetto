@@ -111,6 +111,19 @@ describe('formatToolResultNarration', () => {
     })).toBe('该 artifact 没有数据行');
   });
 
+  it('describes an inconclusive detector without reporting a detected architecture', () => {
+    expect(formatToolResultNarration({
+      toolName: 'detect_architecture', result: mcpResult({type: 'UNKNOWN', confidence: 0}),
+    })).toBe('目标应用的出图证据不足，管线未定');
+  });
+
+  it('labels the selected path’s share of observed output', () => {
+    expect(formatToolResultNarration({
+      toolName: 'detect_architecture', result: mcpResult({type: 'STANDARD', confidence: 0.8,
+        additionalInfo: {confidenceMeaning: 'observed_output_share'}}),
+    })).toBe('识别为 STANDARD 渲染架构（观测出图占比 80%）');
+  });
+
   it('reports the detected architecture and confidence', () => {
     const text = formatToolResultNarration({
       toolName: 'detect_architecture',

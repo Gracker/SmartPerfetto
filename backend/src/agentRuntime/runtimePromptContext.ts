@@ -14,6 +14,7 @@ import {
 } from '../agentv3/focusAppDetector';
 import {
   hasFocusAppDetectionData,
+  isAmbiguousFocusTarget,
   resolveFocusAppTarget,
 } from './focusAppTarget';
 import type {RuntimeTurnPolicy} from './runtimeTurnPolicy';
@@ -81,7 +82,7 @@ export async function buildRuntimeTracePairComparisonContext(input: {
   readonly currentTraceId: string;
   readonly referenceTraceId?: string;
   readonly tracePairContext?: TracePairContext;
-  readonly detectReferenceArchitecture?: (traceId: string) => Promise<ArchitectureInfo | undefined>;
+  readonly detectReferenceArchitecture?: (traceId: string, packageName?: string) => Promise<ArchitectureInfo | undefined>;
   readonly onCapabilityQueryError?: (
     side: 'current' | 'reference',
     error: unknown,
@@ -91,15 +92,9 @@ export async function buildRuntimeTracePairComparisonContext(input: {
   if (!identity) return undefined;
   const referenceTraceId = identity.referenceTraceId;
   const capabilitySql = "SELECT name FROM sqlite_master WHERE type IN ('table', 'view') AND (name LIKE 'android_%' OR name LIKE 'linux_%' OR name LIKE 'sched_%' OR name LIKE 'slices_%')";
-  const [referenceFocus, referenceArchitecture, currentTables, referenceTables] = await Promise.all([
-    detectFocusApps(input.traceProcessorService, referenceTraceId).catch(() => undefined),
-    (input.detectReferenceArchitecture
-      ? input.detectReferenceArchitecture(referenceTraceId)
-      : createArchitectureDetector().detect({
-          traceId: referenceTraceId,
-          traceProcessorService: input.traceProcessorService,
-          packageName: undefined,
-        })).catch(() => undefined),
+  const [referenceFocusTarget, currentTables, referenceTables] = await Promise.all([
+    detectFocusApps(input.traceProcessorService, referenceTraceId)
+      .then(focusResult => resolveFocusAppTarget({focusResult})).catch(() => undefined),
     input.traceProcessorService.query(input.currentTraceId, capabilitySql).catch(error => {
       input.onCapabilityQueryError?.('current', error);
       return null;
@@ -125,9 +120,11 @@ export async function buildRuntimeTracePairComparisonContext(input: {
     }
   }
 
-  // The reference side has no user-named package: only a confident inference
-  // becomes its effective package, and the candidates travel with it.
-  const referenceFocusTarget = referenceFocus ? resolveFocusAppTarget({focusResult: referenceFocus}) : undefined;
+  const packageName = referenceFocusTarget?.packageName;
+  const referenceArchitecture = isAmbiguousFocusTarget(referenceFocusTarget) ? undefined : await (input.detectReferenceArchitecture
+    ? input.detectReferenceArchitecture(referenceTraceId, packageName)
+    : createArchitectureDetector().detect({traceId: referenceTraceId, traceProcessorService: input.traceProcessorService, packageName})
+  ).catch(() => undefined);
   return {
     ...identity,
     referencePackageName: referenceFocusTarget?.packageName,

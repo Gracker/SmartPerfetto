@@ -9,33 +9,11 @@
  * These values were previously hardcoded throughout the codebase.
  *
  * Configuration categories:
- * - Default values for fallback scenarios
  * - Limits for SQL queries and data processing
  * - Step IDs read from the pipeline detection Skill
  *
  * @module config/teaching
  */
-
-// =============================================================================
-// Default Values
-// =============================================================================
-
-/**
- * Default pipeline configuration when detection fails or returns incomplete data.
- *
- * The default pipeline/type/document selection belongs to the rendering
- * catalog. This object only contains generic presentation defaults.
- */
-export const TEACHING_DEFAULTS = {
-  /** Default confidence when parsing fails (0.5 = uncertain) */
-  confidence: 0.5,
-
-  /** Default icon for unknown pipeline types */
-  icon: '📱',
-
-  /** Default family classification */
-  family: 'android_view',
-} as const;
 
 // =============================================================================
 // Processing Limits

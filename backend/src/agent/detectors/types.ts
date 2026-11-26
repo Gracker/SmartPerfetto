@@ -22,6 +22,7 @@ export const RENDERING_ARCHITECTURE_TYPES = [
   'MIXED',         // 混合渲染 (如 SurfaceView + RecyclerView)
   'GAME_ENGINE',   // 游戏引擎 (Unity/Unreal/Godot/Cocos)
   'CAMERA',        // 相机管线 (HAL3/Camera2)
+  'VIDEO_PLAYBACK', // 视频帧输出，合成方式未限定
   'VIDEO_OVERLAY', // 视频 Overlay (HWC 硬件合成)
   'REACT_NATIVE',  // React Native (S14: Old Arch Bridge / New Arch Fabric / Skia)
   'UNKNOWN',       // 未知架构
@@ -57,7 +58,7 @@ export type WebViewEngine =
 /**
  * 检测证据
  */
-export interface DetectionEvidence {
+export type DetectionEvidence = {
   /** 证据类型 */
   type: 'thread' | 'process' | 'slice' | 'counter';
   /** 匹配的值 */
@@ -66,7 +67,12 @@ export interface DetectionEvidence {
   source?: string;
   /** 该证据的权重 (0-1) */
   weight: number;
-}
+} | {
+  type: 'count';
+  metric: string;
+  value: number;
+  source: string;
+};
 
 /**
  * 架构检测结果
@@ -80,6 +86,9 @@ export interface ArchitectureInfo {
 
   /** 检测依据列表 */
   evidence: DetectionEvidence[];
+
+  /** Capture inputs and classifier contract; older snapshots lack this identity. */
+  detectorScope?: {version: 1; traceId: string; packageName: string | null};
 
   /** Flutter 特定信息 */
   flutter?: {

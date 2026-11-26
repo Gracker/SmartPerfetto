@@ -126,7 +126,7 @@ import {
   type TraceProcessorTraceSide,
 } from '../services/traceProcessorConnectionModel';
 import {sqlUsesProcessNameFilter} from '../services/processIdentity/identityGate';
-import {focusAppSelectorCandidates, packageProvenance, type FocusAppTarget} from '../agentRuntime/focusAppTarget';
+import {focusAppSelectorCandidates, isAmbiguousFocusTarget, packageProvenance, type FocusAppTarget} from '../agentRuntime/focusAppTarget';
 import {hasProcessIdentitySelector} from '../services/processIdentity/types';
 import type {EffectiveProcessScope} from '../services/processIdentity/effectiveProcessScope';
 import {exactProcessScopeSupportCatalog} from '../services/skillEngine/processScopeSql';
@@ -160,7 +160,7 @@ import {
 } from './planToolCallRecorder';
 import {hasValidPlanSkipDisposition, resolvePlanPhaseForCall} from './planPhaseSemantics';
 import {getAnalysisPlanCompletionStatus} from './planCompletionStatus';
-import { formatToolCallNarration, type ToolNarrationOptions } from './toolNarration';
+import { formatToolCallNarration, formatToolResultNarration, type ToolNarrationOptions } from './toolNarration';
 import { planPhaseUpdatedContent } from './planPhaseEvents';
 import { ArtifactStore, type CompactArtifactSummary } from './artifactStore';
 import {MODEL_ROW_PAGE_MAX_BYTES, serializedByteLength} from '../agentRuntime/runtimeLimits';
@@ -2479,38 +2479,28 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     };
   }
 
-  async function detectArchitecturePayload(signal?: AbortSignal): Promise<Record<string, unknown>> {
+  async function detectArchitecturePayload(
+    signal?: AbortSignal, targetPackage: string | undefined = packageName,
+  ): Promise<Record<string, unknown>> {
     throwIfTraceProcessorQueryCancelled(signal);
-    const serializeArchitectureEvidence = (info: ArchitectureInfo) =>
-      (info.evidence ?? []).map(e => ({
-        source: e.source,
-        type: e.type,
-        value: e.value,
-        weight: e.weight,
-      }));
-    if (options.cachedArchitecture) {
-      const info = options.cachedArchitecture;
-      return {
-        type: info.type,
-        confidence: info.confidence,
-        evidence: serializeArchitectureEvidence(info),
-        flutter: info.flutter,
-        compose: info.compose,
-        webview: info.webview,
-        additionalInfo: info.additionalInfo,
-        cached: true,
-      };
+    if (!targetPackage && isAmbiguousFocusTarget(options.focusTarget)) {
+      return {type: 'UNKNOWN', confidence: 0, evidence: [], additionalInfo: {primaryBasis: 'ambiguous_target'}};
     }
-    const detector = createArchitectureDetector();
-    const info = await detector.detect({ traceId, traceProcessorService, packageName, signal });
+    const cached = targetPackage === packageName ? options.cachedArchitecture : undefined;
+    const info = cached ?? await createArchitectureDetector().detect({
+      traceId, traceProcessorService, packageName: targetPackage, signal,
+    });
     return {
       type: info.type,
       confidence: info.confidence,
-      evidence: serializeArchitectureEvidence(info),
+      evidence: (info.evidence ?? []).map(e => e.type === 'count'
+        ? {type: e.type, metric: e.metric, value: e.value, source: e.source}
+        : {type: e.type, value: e.value, weight: e.weight, source: e.source}),
       flutter: info.flutter,
       compose: info.compose,
       webview: info.webview,
       additionalInfo: info.additionalInfo,
+      ...(cached ? {cached: true} : {}),
     };
   }
 
@@ -2921,7 +2911,15 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         if (params?.upid != null || params?.pid != null) return createRuntimeToolResult({ success: false, skillId,
           error: 'The detect_architecture delegation does not accept trace-local UPID/PID selectors.',
           action_required: 'choose_a_skill_with_declared_exact_process_support' });
-        const effectiveParams = normalizeSkillParams(params, packageName);
+        const selectors = Object.entries(params ?? {});
+        if (selectors.some(([key, value]) =>
+          !['package', 'process_name'].includes(key) || typeof value !== 'string' || !value.trim()) ||
+            new Set(selectors.map(([, value]) => value.trim())).size > 1) {
+          return createRuntimeToolResult({success: false, skillId,
+            error: 'detect_architecture accepts one package name via package or process_name.'});
+        }
+        const targetPackage = params?.package?.trim() ?? params?.process_name?.trim() ?? packageName;
+        const effectiveParams = targetPackage ? {package: targetPackage} : {};
         const producer = createEvidenceProducerContext(
           'invoke_skill',
           {skillId, params: effectiveParams, planPhaseId},
@@ -2936,17 +2934,13 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             },
             timestamp: Date.now(),
           });
-          const payload = await detectArchitecturePayload(signal);
+          const payload = await detectArchitecturePayload(signal, targetPackage);
           retainArchitectureReceipt(producer);
           emitUpdate?.({
             type: 'progress',
             content: {
               phase: 'analyzing',
-              message: localize(
-                outputLanguage,
-                `架构检测完成: ${String(payload.type ?? 'unknown')} (置信度 ${Math.round(Number(payload.confidence ?? 0) * 100)}%)`,
-                `Architecture detection completed: ${String(payload.type ?? 'unknown')} (${Math.round(Number(payload.confidence ?? 0) * 100)}% confidence)`,
-              ),
+              message: formatToolResultNarration({toolName: 'detect_architecture', result: payload, language: outputLanguage}),
             },
             timestamp: Date.now(),
           });

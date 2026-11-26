@@ -34,8 +34,7 @@ meta:
   # ④⑤⑥ 由 MediaCodec / HAL 完成；
   # Tunneled 模式：完全跳过 ⑩ client composition，直接 ⑨ HWC device composition + sideband。
   non_primary_note: |
-    此 pipeline_id 已在 NON_PRIMARY_PIPELINE_IDS（renderingPipelineDetectionSkillGenerator.ts:23），
-    detection 改动只影响 features list。它属于"实现细节/正交特征"。
+    全局 HWC 和解码器标记可作为进一步检查的线索。确认 overlay 需要将目标视频层与逐帧 HWC DEVICE 合成记录绑定。
   subvariants_note: |
     文章 S12 把 Video Overlay 拆为 3 个子变种：
     - VIDEO_DECODER_SURFACE（非 Tunneled，MediaCodec → Surface → SurfaceView 或 TextureView）

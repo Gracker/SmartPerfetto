@@ -1117,7 +1117,7 @@ async function probeTimelessTraceCompleteness(
   // Decided before any query, so an inapplicable capability loads no module.
   const applicable: CapabilityDef[] = [];
   for (const cap of CAPABILITY_REGISTRY) {
-    const notApplicableReason = !architectureType ? undefined
+    const notApplicableReason = !architectureType || architectureType === 'UNKNOWN' ? undefined
       : cap.applicableArchs && !cap.applicableArchs.includes(architectureType) ? `当前架构 ${architectureType} 不适用`
       : cap.excludedArchs?.includes(architectureType) ? `${architectureType} 架构使用专用分析管线`
       : undefined;

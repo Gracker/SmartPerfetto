@@ -364,6 +364,14 @@ const REQUIRED_STEP_OVERRIDES = new Map([
 ]);
 
 const SEMANTIC_ASSERTION_OVERRIDES = new Map([
+  ['rendering_pipeline_detection', {
+    // The real base App and the constructed overlay both produce frames.
+    // An unscoped query cannot attribute one pipeline to the whole trace.
+    assertions: [
+      {column: 'primary_pipeline_id', operator: 'eq', value: 'UNKNOWN'},
+      {column: 'primary_confidence', operator: 'eq', value: 0},
+    ],
+  }],
   ['code_pinpoint', {
     min_rows: 1,
     assertions: [

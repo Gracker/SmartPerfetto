@@ -801,14 +801,14 @@ Synthesize 数据随 Artifact 一起存储，agent 可通过 `fetch_artifact` �
 Pipeline Skills 用于 Android 渲染管线识别和教学，但“类型”和“检测条目”不是同一层：
 
 - `backend/skills/pipelines/index.yaml` 保存产品自有的精简教学卡片与检测映射；
-- `variant` 可以成为主类型，`feature` 只提供附加证据；
+- 主判定需要匹配目标应用的 `output_path`；其余 `variant` 与 `feature` 信号可供查证；
 - 每条 Pipeline Skill 保存信号、auto-pin、分析建议，通过 `teaching.source` 指向 catalog 卡片；
 - 原始参考文章不入库、不打包，也不进入公共投影。
 
 同一信号的版本别名用 `slice_patterns: [旧模式, 新模式]` 表示 OR，组内只计算
 一份权重。同一实际名称被多个模式命中时，事件次数不重复累计；不同实际名称
-仍各自计数。required 以组内命中数判断，exclude 任一别名命中即排除。事件次数
-不代表生产或显示帧数。
+仍各自计数。required 和 exclude 决定候选评分。主管线另行检查目标应用的出图与消费路径。
+`primary_confidence` 表示该路径在相应可观测样本中的占比。
 
 目录与单条定义的关系如下：
 
@@ -818,6 +818,7 @@ pipelines:
   FLUTTER_TEXTUREVIEW:
     classification_role: variant
     rendering_type_id: S10_FLUTTER
+    output_path: flutter_texture
     primary_eligible: true
   ANGLE_GLES_VULKAN:
     classification_role: feature
@@ -825,16 +826,16 @@ pipelines:
     primary_eligible: false
 
 # backend/skills/pipelines/flutter_textureview.skill.yaml
-name: FLUTTER_TEXTUREVIEW
+name: pipeline_flutter_textureview
 type: pipeline_definition
 detection:
-  signals:
-    - { name: "SurfaceTexture", source: "slice" }
+  scoring_signals:
+    - { signal: has_surface_texture, slice_pattern: "*SurfaceTexture*", weight: 30 }
 teaching:
   source: "skills/pipelines/index.yaml#rendering_types.S10_FLUTTER"
 ```
 
-检测结果分别输出主 `rendering type`、具体 pipeline 子路径和 feature 候选。
+检测结果分别输出主 `rendering type`、具体 pipeline 子路径和 feature 候选。标准宿主出图的提交方式未确定时，返回 `AOSP_STANDARD`。目标 App 的出图证据不足时，返回 `UNKNOWN`，教学接口保留实际观察到的事件，只为已确认的管线生成教学卡和专属 Pin。
 `PipelineDocService` 保留教学返回结构，但直接读取结构化卡片，不读取文章文件。
 CLI、Docker 和 portable 随 Skills 使用同一份卡片；构建清除旧文章缓存。
 双出口、前缓冲、捕获和属性动画通过按需 `rendering-outputs` 知识提供分析边界。

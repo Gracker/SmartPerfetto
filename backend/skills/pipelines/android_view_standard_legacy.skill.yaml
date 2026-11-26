@@ -36,12 +36,10 @@ detection:
   required_signals:
     - thread: RenderThread
       min_count: 1
-    - thread: main
-      min_count: 1
 
   scoring_signals:
     - signal: has_queue_buffer
-      slice_pattern: "*queueBuffer*"
+      slice_pattern: "queueBuffer*"
       weight: 30
     - signal: has_dequeue_buffer
       slice_pattern: "*dequeueBuffer*"
@@ -53,10 +51,6 @@ detection:
   exclude_if:
     - slice_pattern: "*BLASTBufferQueue*"
     - slice_pattern: "*applyTransaction*"
-    - thread: "1.ui"
-    - thread: CrRendererMain
-    - thread: UnityMain        # Game Engine
-    - thread: UnityGfx         # Game Engine
 
 teaching:
   source: "skills/pipelines/index.yaml#rendering_types.S02_AOSP_STANDARD"

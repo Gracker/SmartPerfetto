@@ -77,7 +77,7 @@ import {
 } from '../../../agentv3/claudeMcpServer';
 import {buildSystemPrompt} from '../../../agentv3/claudeSystemPrompt';
 import { extractFindingsFromText } from '../../../agentv3/claudeFindingExtractor';
-import { resolveFocusAppTarget } from '../../focusAppTarget';
+import { isAmbiguousFocusTarget, resolveFocusAppTarget } from '../../focusAppTarget';
 import { registerFocusAppEvidence } from '../../focusAppEvidence';
 import { ArtifactStore } from '../../../agentv3/artifactStore';
 import {observeRuntimeInvestigationEvidence, resolveRuntimeEvidenceStore} from '../../runtimeEvidenceContext';
@@ -147,7 +147,7 @@ import {stableStringify} from '../../../utils/stableJson';
 import { RuntimeExecutionGuard, type RuntimeExecutionLease } from '../../runtimeExecutionGuard';
 import {isRuntimeCandidateAdmitted} from '../../runtimeCandidateAdmission';
 import {countCompletedQuickConversationTurns} from '../../quickBudget';
-import {getLruCacheEntry, setLruCacheEntry} from '../../runtimeCache';
+import {architectureForPackage, getLruCacheEntry, restoreArchitectureObservation} from '../../runtimeCache';
 import {
   DEFAULT_PROVIDER_STREAM_IDLE_TIMEOUT_MS,
   MODEL_ROW_PAGE_MAX_BYTES,
@@ -2497,8 +2497,10 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
 
     const {skillExecutor, effectiveSkillRegistry, sceneCoverageRegistry} = earlySkills ?? await initializeSkills();
 
-    let architecture = getLruCacheEntry(this.architectureCache, traceId);
-    if (!architecture && policy.preflight !== 'none') {
+    const ambiguousTarget = isAmbiguousFocusTarget(focusTarget);
+    if (ambiguousTarget) this.architectureCache.delete(traceId);
+    let architecture = architectureForPackage(this.architectureCache, traceId, effectivePackageName);
+    if (!ambiguousTarget && !architecture && policy.preflight !== 'none') {
       try {
         architecture = await createArchitectureDetector().detect({
           traceId,
@@ -2507,14 +2509,14 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           signal: work.signal,
         });
         work.assertActive();
-        if (architecture) setLruCacheEntry(this.architectureCache, traceId, architecture);
+        if (architecture) this.restoreArchitectureCache(traceId, architecture);
       } catch (err) {
         work.assertActive();
         console.warn('[PiAgentCoreRuntime] Architecture detection failed:', (err as Error).message);
       }
     }
     work.assertActive();
-    if (architecture) {
+    if (architecture && architecture.type !== 'UNKNOWN') {
       this.emit('update', {
         type: 'architecture_detected',
         content: { architecture },
@@ -2740,7 +2742,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
   }
 
   restoreArchitectureCache(traceId: string, architecture: ArchitectureInfo): void {
-    setLruCacheEntry(this.architectureCache, traceId, architecture);
+    restoreArchitectureObservation(this.architectureCache, traceId, architecture);
   }
 
   getCachedArchitecture(traceId: string): ArchitectureInfo | undefined {
@@ -2811,7 +2813,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       this.artifactStores.set(sessionId, ArtifactStore.fromSnapshot(snapshot.artifacts));
     }
     if (snapshot.architecture) {
-      setLruCacheEntry(this.architectureCache, traceId, snapshot.architecture);
+      this.restoreArchitectureCache(traceId, snapshot.architecture);
     }
   }
 

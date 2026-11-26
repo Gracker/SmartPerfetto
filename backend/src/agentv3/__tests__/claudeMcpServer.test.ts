@@ -3360,6 +3360,28 @@ describe('createClaudeMcpServer', () => {
       expect(mockSkillExecutor.execute).not.toHaveBeenCalled();
     });
 
+    it('abstains before running the unscoped tool when focus is ambiguous', async () => {
+      const {tools} = createTestServer({focusTarget: resolveFocusAppTarget({focusResult: {
+        method: 'oom_adj', confidence: 'ambiguous', apps: [],
+      }})});
+      const result = await callTool(tools, 'detect_architecture', {});
+      expect(result).toMatchObject({type: 'UNKNOWN', evidence: [], additionalInfo: {primaryBasis: 'ambiguous_target'}});
+    });
+
+    it('redetects the package explicitly requested by the delegated tool', async () => {
+      const {createArchitectureDetector} = await import('../../agent/detectors/architectureDetector');
+      const detect = jest.fn(async (_context: unknown) => ({type: 'UNKNOWN' as const, confidence: 0, evidence: []}));
+      jest.mocked(createArchitectureDetector).mockReturnValueOnce({detect});
+      const {tools} = createTestServer({packageName: 'app.a',
+        cachedArchitecture: {type: 'FLUTTER', confidence: 0.9, evidence: []}});
+      const result = await callTool(tools, 'invoke_skill', {
+        skillId: 'detect_architecture', params: {package: 'app.b'},
+      });
+      expect(result).toMatchObject({type: 'UNKNOWN', success: true});
+      expect(result.cached).toBeUndefined();
+      expect(detect).toHaveBeenCalledWith(expect.objectContaining({packageName: 'app.b'}));
+    });
+
     it.each([
       ['detect_architecture', false], ['detect_architecture', true],
       ['invoke_skill', false], ['invoke_skill', true],

@@ -22,7 +22,7 @@ describe('skill loader rendering pipeline generator', () => {
     const scoreStep = skill?.steps?.find((step: any) => step.id === 'score_pipelines');
     const determineStep = skill?.steps?.find((step: any) => step.id === 'determine_pipeline');
 
-    expect(skill?.version).toBe('4.0');
+    expect(skill?.version).toBe('5.0');
     expect(scoreStep).toBeTruthy();
     expect(determineStep).toBeTruthy();
     expect(scoreStep.save_as).toBe('pipeline_scores');
@@ -33,7 +33,6 @@ describe('skill loader rendering pipeline generator', () => {
     expect(Buffer.byteLength(scoreStep.sql, 'utf8')).toBeLessThan(45_000);
     expect(Buffer.byteLength(determineStep.sql, 'utf8')).toBeLessThan(10_000);
     expect(scoreStep.sql).not.toContain('COALESCE((SELECT SUM(');
-    expect(determineStep.sql).toContain('SELECT * FROM ${pipeline_scores}');
     expect(skill?.steps?.some((step: any) => step.id === 'pipeline_bundle')).toBe(true);
   });
 });

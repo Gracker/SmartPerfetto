@@ -94,8 +94,8 @@ invoke_skill('rendering_pipeline_detection', { package: <package hint> })
 #   - sched.thread_executing_span_with_slice._critical_path_stack 合并后的其他线程段 -> critical_path_segment / critical_path_to
 ```
 - 先展示当前 trace 中真实观测到的 lanes/events，再展示 Mermaid
-- `primary_pipeline_id` 只是入口，不是最终单选结论
-- 如果 candidates/features 暗示 WebView/Flutter/RN/GL/TextureView/SurfaceView 等混合出图，先分开展示 host HWUI 与 producer 链路
+- 以目标 producer 的提交、宿主采样或 SF 消费链解释 `primary_pipeline_id`。标准 AOSP 可保留未细分的 buffer 路径；UNKNOWN 只展示实际观测与缺项。
+- 确认独立 producer 实际向目标画面出图后，再分开展示 host HWUI 与 producer。候选、线程名和伴随特性只作查证线索。
 - 如果 trace 具备 sched/thread_state 信号，展示 Critical task / Wakeup 关系；如果缺少 `sched_wakeup` 或官方 critical path 为空，明确标成采集缺口
 - 解释关键线程角色（main thread、RenderThread、producer、SurfaceFlinger、HWC/present）
 - 列出关键 Slice 及其含义，并标注哪些在当前 trace 中真实命中、哪些缺失

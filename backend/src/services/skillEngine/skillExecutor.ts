@@ -54,24 +54,9 @@ import {attachEvidenceTable, captureEvidenceTable, capturedEvidenceTable, eviden
 import { scopeMetadata, mergeScopeProvenance, identityForScopeEvidence, scopeProvenanceForFields, type EvidenceScopeMetadata, type EvidenceScopeProvenanceV1 } from '../../types/identityContract';
 import logger from '../../utils/logger';
 import {localize, parseOutputLanguage} from '../../agentv3/outputLanguage';
-import { getPipelineDocService } from '../pipelineDocService';
-import {
-  ensurePipelineSkillsInitialized,
-  pipelineSkillLoader,
-  PinInstruction,
-} from '../pipelineSkillLoader';
-import { TEACHING_DEFAULTS, TEACHING_LIMITS } from '../../config/teaching.config';
-import {
-  parseCandidates,
-  parseFeatures,
-  transformPinInstruction,
-  validateActiveProcesses,
-  validateConfidence,
-  type PinInstructionResponse,
-  type RawPinInstruction,
-  type SkillStepResult,
-  type TeachingContentResponse,
-} from '../../types/teaching.types';
+import {buildPipelineTeachingBundle} from '../pipelineTeachingBundle';
+import {ensurePipelineSkillsInitialized} from '../pipelineSkillLoader';
+import {validateActiveProcesses, type SkillStepResult} from '../../types/teaching.types';
 import {
   DataEnvelope,
   DataEnvelopeMeta,
@@ -3598,7 +3583,6 @@ export class SkillExecutor {
 
     try {
       await ensurePipelineSkillsInitialized();
-      const defaultSelection = pipelineSkillLoader.getDefaultSelection();
 
       const pipelineSource = step.pipeline_source || 'pipeline_result';
       const activeProcessesSource = step.active_processes_source || 'active_rendering_processes';
@@ -3612,108 +3596,16 @@ export class SkillExecutor {
         explicitPipelineIdRaw !== undefined && explicitPipelineIdRaw !== null
           ? String(explicitPipelineIdRaw).trim()
           : '';
-      const primaryPipelineId = (
-        explicitPipelineId ||
-        String(pipelineRow?.primary_pipeline_id ?? '').trim() ||
-        defaultSelection.pipelineId
-      );
-      const primaryConfidence = validateConfidence(
-        pipelineRow?.primary_confidence,
-        TEACHING_DEFAULTS.confidence
-      );
-      const candidatesList = pipelineRow?.candidates_list || '';
-      const primaryRenderingTypeId = String(
-        pipelineRow?.primary_rendering_type_id ||
-        pipelineSkillLoader.getPipelineCatalogEntry(primaryPipelineId)?.rendering_type_id ||
-        defaultSelection.renderingTypeId
-      );
-      const renderingTypeCandidatesList = pipelineRow?.rendering_type_candidates_list || '';
-      const relatedRenderingTypeCandidatesList =
-        pipelineRow?.related_rendering_type_candidates_list || '';
-      const featuresList = pipelineRow?.features_list || '';
-      const docPath = String(pipelineRow?.doc_path || defaultSelection.docPath);
-
-      const candidates = candidatesList
-        ? parseCandidates(candidatesList, TEACHING_LIMITS.maxCandidates)
-        : [{ id: primaryPipelineId, confidence: primaryConfidence }];
-      const renderingTypeCandidates = renderingTypeCandidatesList
-        ? parseCandidates(renderingTypeCandidatesList, TEACHING_LIMITS.maxCandidates)
-        : [{ id: primaryRenderingTypeId, confidence: primaryConfidence }];
-      const relatedRenderingTypes = pipelineSkillLoader.resolveRelatedRenderingTypes(
-        parseCandidates(
-          relatedRenderingTypeCandidatesList,
-          TEACHING_LIMITS.maxCandidates,
-        ),
-      );
-      const features = parseFeatures(featuresList);
-
-      const traceRequirementsMissing = this.extractTraceRequirementHints(
-        this.resolveFirstObjectRowFromSource(traceRequirementsSource, context)
-      );
-
-      const activeRenderingProcesses = validateActiveProcesses(
-        this.resolveStepResultFromSource(activeProcessesSource, context)
-      );
-
-      const mdTeaching = getPipelineDocService().getTeachingContent(primaryPipelineId);
-      const teachingContent: TeachingContentResponse | null = mdTeaching
-        ? {
-            title: mdTeaching.title,
-            summary: mdTeaching.summary,
-            mermaidBlocks: mdTeaching.mermaidBlocks,
-            threadRoles: mdTeaching.threadRoles,
-            keySlices: mdTeaching.keySlices,
-            docPath: mdTeaching.docPath,
-          }
-        : null;
-
-      const basePinInstructions = pipelineSkillLoader
-        .getAutoPinInstructions(primaryPipelineId)
-        .slice(0, TEACHING_LIMITS.maxPinInstructions);
-      const smartFilterConfigs = pipelineSkillLoader.getSmartFilterConfigs(primaryPipelineId);
-
-      const pinInstructions: PinInstructionResponse[] = basePinInstructions.map((inst: PinInstruction) => {
-        const hasSmartFilter = inst.smart_filter?.enabled ?? smartFilterConfigs.has(inst.pattern);
-        const rawInstruction: RawPinInstruction = {
-          pattern: inst.pattern,
-          match_by: inst.match_by,
-          priority: inst.priority,
-          reason: inst.reason,
-          expand: inst.expand,
-          main_thread_only: inst.main_thread_only,
-          smart_filter: hasSmartFilter
-            ? (inst.smart_filter || { enabled: true })
-            : undefined,
-        };
-
-        const transformed = transformPinInstruction(rawInstruction, activeRenderingProcesses);
-        if (transformed.smartPin && !transformed.skipPin) {
-          transformed.reason = `${inst.reason} (${activeRenderingProcesses.length} 活跃进程)`;
-        }
-        return transformed;
-      });
-
       return {
         stepId: step.id,
         stepType: 'pipeline',
         success: true,
-        data: {
-          detection: {
-            detected: !!pipelineRow || !!explicitPipelineId,
-            primaryPipelineId,
-            primaryRenderingTypeId,
-            primaryConfidence,
-            candidates,
-            renderingTypeCandidates,
-            relatedRenderingTypes,
-            features,
-            traceRequirementsMissing,
-          },
-          teachingContent,
-          pinInstructions,
-          activeRenderingProcesses,
-          docPath,
-        },
+        data: buildPipelineTeachingBundle(
+          pipelineRow,
+          validateActiveProcesses(this.resolveStepResultFromSource(activeProcessesSource, context)),
+          this.resolveFirstObjectRowFromSource(traceRequirementsSource, context),
+          {explicitPipelineId, packageName: typeof context.params.package === 'string' ? context.params.package : context.packageName},
+        ),
         executionTimeMs: Date.now() - startTime,
       };
     } catch (error: any) {
@@ -3752,17 +3644,6 @@ export class SkillExecutor {
       return sourceData as Record<string, any>;
     }
     return null;
-  }
-
-  private extractTraceRequirementHints(row: Record<string, any> | null): string[] {
-    if (!row) return [];
-    const hints: string[] = [];
-    for (const value of Object.values(row)) {
-      if (typeof value !== 'string') continue;
-      const trimmed = value.trim();
-      if (trimmed.length > 0) hints.push(trimmed);
-    }
-    return hints;
   }
 
   /**

@@ -31,6 +31,15 @@ function buildSkillResult(): any {
     displayResults: [],
     diagnostics: [],
     rawResults: {
+      determine_pipeline: {
+        stepId: 'determine_pipeline',
+        stepType: 'atomic',
+        success: true,
+        data: [{
+          primary_pipeline_id: 'ANDROID_VIEW_STANDARD_BLAST', primary_basis: 'hwui_blast', target_process: 'com.demo:renderer',
+          primary_rendering_type_id: 'S02_AOSP_STANDARD', primary_confidence: 0.92,
+        }],
+      },
       subvariants: {
         stepId: 'subvariants',
         stepType: 'atomic',
@@ -304,6 +313,69 @@ describe('RenderingPipelineTeachingService', () => {
     expect(observedSql).not.toContain("OR t.name = 'RenderThread'");
   });
 
+  it.each(['bundle', 'legacy row', 'missing row'])('abstains without a teaching card or pins (%s)', async mode => {
+    const skill = buildSkillResult();
+    if (mode === 'bundle') {
+      // A historical undetected bundle may still carry its default BLAST card.
+      skill.rawResults.pipeline_bundle.data.detection.detected = false;
+    } else {
+      delete skill.rawResults.pipeline_bundle;
+      delete skill.rawResults.determine_pipeline;
+      if (mode === 'legacy row') {
+        skill.rawResults.determine_pipeline = {data: [{
+          primary_pipeline_id: 'UNKNOWN', primary_rendering_type_id: 'UNKNOWN', primary_confidence: 0,
+          candidates_list: '', rendering_type_candidates_list: '', doc_path: '',
+        }]};
+      }
+    }
+    mockExecute.mockResolvedValue(skill);
+    const processor = {query: jest.fn(async () => ({columns: [], rows: []}))};
+    const response = await new RenderingPipelineTeachingService(processor as any).analyze({traceId: 'trace-1'});
+    expect(response.detection).toMatchObject({
+      detected: false, primary_pipeline: {id: 'UNKNOWN', confidence: 0},
+      renderingType: {id: 'UNKNOWN', docPath: ''}, candidates: [], renderingTypeCandidates: [],
+      subvariants: {buffer_mode: 'UNKNOWN'},
+    });
+    expect(response.teaching).toBeNull();
+    expect(response.pinInstructions).toEqual([]);
+    expect(response.warnings?.map(warning => warning.code)).toContain('PIPELINE_UNDETERMINED');
+  });
+
+  it.each([
+    ['old scores', true], ['old scores', false], ['mismatched path', true], ['mismatched path', false],
+    ['conflicting bundle ID', true], ['missing source', true], ['similar package', true], ['similar package', false],
+  ])('does not teach an unsupported claim (%s, bundle=%s)', async (reason, hasBundle) => {
+    const skill = buildSkillResult();
+    const row = skill.rawResults.determine_pipeline.data[0];
+    if (!hasBundle) delete skill.rawResults.pipeline_bundle;
+    if (reason === 'old scores') delete row.primary_basis;
+    if (reason === 'similar package') row.target_process = 'com.demo.other';
+    if (reason === 'mismatched path') row.primary_basis = 'texture';
+    if (reason === 'conflicting bundle ID') skill.rawResults.pipeline_bundle.data.detection.primaryPipelineId = 'TEXTUREVIEW_STANDARD';
+    if (reason === 'missing source') delete skill.rawResults.determine_pipeline;
+    mockExecute.mockResolvedValue(skill);
+    const processor = {query: jest.fn(async () => ({columns: [], rows: []}))};
+    const response = await new RenderingPipelineTeachingService(processor as any).analyze({traceId: 'trace-1', packageName: 'com.demo'});
+    expect(response.detection).toMatchObject({detected: false, primaryPipelineId: 'UNKNOWN', primaryConfidence: 0, features: [], relatedRenderingTypes: []});
+    expect(response.teaching).toBeNull();
+    expect(response.pinInstructions).toEqual([]);
+  });
+
+  it('retains the generic AOSP card without selecting a submission variant', async () => {
+    const skill = buildSkillResult();
+    delete skill.rawResults.pipeline_bundle;
+    skill.rawResults.determine_pipeline = {data: [{
+      primary_pipeline_id: 'AOSP_STANDARD', primary_rendering_type_id: 'S02_AOSP_STANDARD', primary_basis: 'hwui', target_process: 'com.demo',
+      candidates_list: '', rendering_type_candidates_list: '',
+    }]};
+    mockExecute.mockResolvedValue(skill);
+    const processor = {query: jest.fn(async () => ({columns: [], rows: []}))};
+    const response = await new RenderingPipelineTeachingService(processor as any).analyze({traceId: 'trace-1'});
+    expect(response.detection).toMatchObject({detected: true, primaryPipelineId: 'AOSP_STANDARD',
+      candidates: [], subvariants: {buffer_mode: 'UNKNOWN'}});
+    expect(response.teaching?.docPath).toBe('skills/pipelines/index.yaml#rendering_types.S02_AOSP_STANDARD');
+  });
+
   it('expands zero-duration selection context instead of producing an empty time window', async () => {
     const traceProcessorService = {
       query: jest.fn(async () => ({
@@ -382,14 +454,8 @@ describe('RenderingPipelineTeachingService', () => {
     // Even overlapping main/RT slices do not identify a buffer handoff.
     expect(response.observedFlow?.dependencies).toEqual([]);
 
-    const producerLane = response.observedFlow?.lanes.find((lane) => lane.role === 'producer');
-    expect(producerLane).toBeDefined();
-    expect(response.observedFlow?.dependencies).not.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          toLaneId: producerLane?.id,
-        }),
-      ])
-    );
+    expect(response.observedFlow?.lanes.some(lane => lane.role === 'producer')).toBe(false);
+    expect(response.observedFlow?.lanes.flatMap(lane => lane.pipelineIds))
+      .not.toContain('WEBVIEW_TEXTUREVIEW_CUSTOM');
   });
 });

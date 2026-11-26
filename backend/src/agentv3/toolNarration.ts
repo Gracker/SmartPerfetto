@@ -1238,15 +1238,18 @@ export function formatToolResultNarration(input: ToolResultNarrationInput): stri
         : '';
     }
     case 'detect_architecture': {
-      // A genuine outcome: the dispatch could not know which pipeline it is.
       const type = readString(body.type);
       if (!type) return '';
+      if (type === 'UNKNOWN') return localize(language,
+        '目标应用的出图证据不足，管线未定', 'Insufficient output evidence to identify the target app’s pipeline');
       const confidence = typeof body.confidence === 'number' && Number.isFinite(body.confidence)
         ? body.confidence
         : undefined;
-      const confidenceText = confidence !== undefined
-        ? localize(language, `（置信度 ${confidence.toFixed(2)}）`, ` (confidence ${confidence.toFixed(2)})`)
-        : '';
+      const observedShare = asRecord(body.additionalInfo).confidenceMeaning === 'observed_output_share';
+      const confidenceText = confidence === undefined ? ''
+        : observedShare
+          ? localize(language, `（观测出图占比 ${Math.round(confidence * 100)}%）`, ` (${Math.round(confidence * 100)}% of observed output)`)
+          : localize(language, `（置信度 ${confidence.toFixed(2)}）`, ` (confidence ${confidence.toFixed(2)})`);
       return shorten(localize(
         language,
         `识别为 ${type} 渲染架构${confidenceText}`,

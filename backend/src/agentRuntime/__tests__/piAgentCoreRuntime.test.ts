@@ -1302,6 +1302,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       },
     );
     runtime.restoreArchitectureCache('trace-pi', {
+      detectorScope: {version: 1, traceId: 'trace-pi', packageName: null},
       type: 'WEBVIEW',
       confidence: 0.67,
       evidence: [],
@@ -1557,6 +1558,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       },
     );
     runtime.restoreArchitectureCache('trace-pi', {
+      detectorScope: {version: 1, traceId: 'trace-pi', packageName: null},
       type: 'WEBVIEW',
       confidence: 0.67,
       evidence: [],
@@ -2470,6 +2472,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       },
     );
     runtime.restoreArchitectureCache(traceId, {
+      detectorScope: {version: 1, traceId, packageName: null},
       type: 'STANDARD',
       confidence: 0.9,
       evidence: [],
@@ -3007,6 +3010,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       },
     );
     runtime.restoreArchitectureCache(traceId, {
+      detectorScope: {version: 1, traceId, packageName: null},
       type: 'WEBVIEW',
       confidence: 0.9,
       evidence: [],
@@ -3261,6 +3265,7 @@ describe('experimental Pi agent-core runtime contract', () => {
     );
     for (let index = 0; index < 51; index += 1) {
       runtime.restoreArchitectureCache(`trace-${index}`, {
+        detectorScope: {version: 1, traceId: `trace-${index}`, packageName: null},
         type: 'STANDARD',
         confidence: 1,
         evidence: [],

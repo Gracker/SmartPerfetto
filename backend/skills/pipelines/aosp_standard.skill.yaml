@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2024-2026 Gracker (Chris)
+# This file is part of SmartPerfetto. See LICENSE for details.
+
+name: pipeline_aosp_standard
+version: "1.0"
+type: pipeline_definition
+category: rendering
+meta:
+  pipeline_id: AOSP_STANDARD
+  display_name: 标准 Android 窗口
+  description: 目标应用由 HWUI 绘制并提交宿主窗口。
+  icon: android
+  family: hwui
+  doc_path: skills/pipelines/index.yaml#rendering_types.S02_AOSP_STANDARD
+teaching:
+  source: skills/pipelines/index.yaml#rendering_types.S02_AOSP_STANDARD
+auto_pin:
+  instructions:
+    - pattern: '^RenderThread(\s+\d+)?$'
+      match_by: name
+      priority: 1
+      reason: 绘制和提交宿主窗口内容
+      smart_filter:
+        enabled: true
+    - pattern: '^[sS]urface[fF]linger'
+      match_by: name
+      priority: 2
+      reason: 查看目标层消费与合成
+      main_thread_only: true

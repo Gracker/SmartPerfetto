@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {architectureForPackage, restoreArchitectureObservation} from '../../runtimeCache';
 import {resolveRuntimePerformanceRecorder} from '../../runtimePerformanceContext';
 import {createModelRequestMetricsFetch} from '../../modelRequestMetrics';
 
@@ -30,7 +31,7 @@ import {buildSystemPrompt} from '../../../agentv3/claudeSystemPrompt';
 import {renderRequiredLocalizedStrategyTemplate} from '../../../agentv3/localizedStrategyTemplate';
 import {inspectCandidateProtocol, buildCandidateProtocolDiagnostic} from '../../../services/canonicalAnalysisResult';
 import {extractFindingsFromText} from '../../../agentv3/claudeFindingExtractor';
-import {resolveFocusAppTarget} from '../../focusAppTarget';
+import {isAmbiguousFocusTarget, resolveFocusAppTarget} from '../../focusAppTarget';
 import {registerFocusAppEvidence} from '../../focusAppEvidence';
 import {type SceneType} from '../../../agentv3/sceneClassifier';
 import {getExtendedKnowledgeBase} from '../../../services/sqlKnowledgeBase';
@@ -73,7 +74,7 @@ import {resolveModelExecutionPolicy} from '../../modelExecutionPolicy';
 import {admitDeliveryCall, deliveryCallFailsOpen} from '../../../services/runtimeCallStats';
 import {createMimoReasoningContentFetch, shouldUseMimoReasoningContentCompat} from './mimoReasoningCompat';
 import {createOpenAIToolsFromMcpDefinitions, openAiToolCallKey} from './openAiToolAdapter';
-import {buildQuickRunReceipt, captureSkillDisplayEntities, createRuntimeSkillNotesBudget, getLruCacheEntry, knowledgeScopeFromAnalysisOptions, providerScopeFromAnalysisOptions, quickStopReasonFromTermination, resolveQuickTurnBudget, setLruCacheEntry, toProtocolHypothesis as toRuntimeProtocolHypothesis} from '../../runtimeCommon';
+import {buildQuickRunReceipt, captureSkillDisplayEntities, createRuntimeSkillNotesBudget, getLruCacheEntry, knowledgeScopeFromAnalysisOptions, providerScopeFromAnalysisOptions, quickStopReasonFromTermination, resolveQuickTurnBudget, toProtocolHypothesis as toRuntimeProtocolHypothesis} from '../../runtimeCommon';
 import {createAnalysisRunSpec, type AnalysisRunSpec} from '../../analysisRunSpec';
 import type {RuntimeSelection} from '../../runtimeSelection';
 import {RuntimeExecutionGuard, type RuntimeExecutionLease} from '../../runtimeExecutionGuard';
@@ -663,7 +664,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
   }
 
   restoreArchitectureCache(traceId: string, architecture: ArchitectureInfo): void {
-    setLruCacheEntry(this.architectureCache, traceId, architecture);
+    restoreArchitectureObservation(this.architectureCache, traceId, architecture);
   }
 
   getCachedArchitecture(traceId: string): ArchitectureInfo | undefined {
@@ -1503,7 +1504,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       this.artifactStores.set(sessionId, ArtifactStore.fromSnapshot(snapshot.artifacts));
     }
     if (snapshot.architecture) {
-      setLruCacheEntry(this.architectureCache, traceId, snapshot.architecture);
+      this.restoreArchitectureCache(traceId, snapshot.architecture);
     }
   }
 
@@ -1640,8 +1641,12 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     });
     const focusTarget = resolveFocusAppTarget({userPackageName: options.packageName, focusResult});
     const effectivePackageName = focusTarget.packageName;
-    const architecture = policy.preflight !== 'none'
-      ? await preflight('architecture', () => this.detectArchitecture(traceId, effectivePackageName)) : undefined;
+    const ambiguousTarget = isAmbiguousFocusTarget(focusTarget);
+    if (ambiguousTarget) this.architectureCache.delete(traceId);
+    const cachedArchitecture = architectureForPackage(this.architectureCache, traceId, effectivePackageName);
+    const architecture = !ambiguousTarget && policy.preflight !== 'none'
+      ? await preflight('architecture', async () => cachedArchitecture ?? this.detectArchitecture(traceId, effectivePackageName))
+      : undefined;
     executionLease?.throwIfAborted();
     runtime.assertWorkRemaining?.();
     const traceCompleteness = policy.preflight !== 'none'
@@ -1738,8 +1743,9 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
   private async detectArchitecture(
     traceId: string,
     packageName?: string,
+    side: 'current' | 'reference' = 'current',
   ): Promise<ArchitectureInfo | undefined> {
-    const cached = getLruCacheEntry(this.architectureCache, traceId);
+    const cached = architectureForPackage(this.architectureCache, traceId, packageName);
     if (cached) return cached;
     try {
       const detector = createArchitectureDetector();
@@ -1749,8 +1755,10 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         packageName,
       });
       if (architecture) {
-        setLruCacheEntry(this.architectureCache, traceId, architecture);
-        this.emitUpdate({ type: 'architecture_detected', content: { architecture }, timestamp: Date.now() });
+        this.restoreArchitectureCache(traceId, architecture);
+        if (side === 'current' && architecture.type !== 'UNKNOWN') {
+          this.emitUpdate({ type: 'architecture_detected', content: { architecture }, timestamp: Date.now() });
+        }
       }
       return architecture;
     } catch (error) {
@@ -1783,7 +1791,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       currentTraceId: traceId,
       referenceTraceId,
       ...(tracePairContext ? {tracePairContext} : {}),
-      detectReferenceArchitecture: id => this.detectArchitecture(id, undefined),
+      detectReferenceArchitecture: (id, pkg) => this.detectArchitecture(id, pkg, 'reference'),
       onCapabilityQueryError: (side, error) => {
         console.warn(
           `[OpenAIRuntime] Capability query failed for ${side} trace:`,

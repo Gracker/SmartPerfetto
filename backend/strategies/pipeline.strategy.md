@@ -133,36 +133,12 @@ feature，展示产品教学卡片中的参考拓扑，并路由到对应分析�
 ```
 detect_architecture()
 ```
-- 返回：architectureType（Standard/Flutter/Compose/WebView/Game 等）、confidence、metadata（engine、surfaceType 等）
-- 如果 confidence < 0.5：标注不确定性，进入 Phase 3 手动验证
-- 如果 confidence >= 0.5：直接进入 Phase 2
+- 从目标 App 的出图路径解释检测结果。标准宿主只在有子路径证据时细分 BLAST 或 Legacy。
+- 返回 UNKNOWN 时，说明缺少哪些出图证据；需要进一步核对时进入 Phase 3。候选分数只用于安排核查顺序。primary_confidence 表示当前采集可见的出图占比。
 
 **Phase 2 — 管线匹配与教学：**
-```
-list_skills(type="pipeline")
-# 根据架构类型动态匹配并调用对应的 pipeline skill（如 android_view_standard_blast）
-```
 
-根据检测到的架构类型匹配对应的 Pipeline Skill：
-
-| 架构类型 | Pipeline Skill | 说明 |
-|---------|---------------|------|
-| Standard BLAST | android_view_standard_blast | Android 12—17 现代基线，BLASTBufferQueue |
-| Standard Legacy | android_view_standard_legacy | Android 12 之前的兼容路径，不能按版本默认推断 |
-| Software Rendering | android_view_software | 软件渲染（无 RenderThread） |
-| Compose | compose_standard | Jetpack Compose 渲染管线 |
-| Flutter SurfaceView (Skia) | flutter_surfaceview_skia | Flutter Skia 引擎 + SurfaceView |
-| Flutter SurfaceView (Impeller) | flutter_surfaceview_impeller | Flutter Impeller 引擎 + SurfaceView |
-| Flutter TextureView | flutter_textureview | Flutter TextureView 模式 |
-| WebView GL Functor | webview_gl_functor | WebView 默认渲染路径 |
-| WebView SurfaceControl | webview_surface_control | WebView 独立 Surface 模式 |
-| SurfaceView | surfaceview_blast | SurfaceView 独立渲染 |
-| TextureView | textureview_standard | TextureView 渲染 |
-| Game Engine | game_engine | 游戏引擎（Unity/Unreal 等） |
-| OpenGL ES | opengl_es | 原生 OpenGL ES 渲染 |
-| Vulkan | vulkan_native | 原生 Vulkan 渲染 |
-| Camera | camera_pipeline | 相机预览管线 |
-| Video Overlay | video_overlay_hwc | 视频 HWC Overlay |
+调用 `invoke_skill("rendering_pipeline_detection", {package: <target package>})`，读取本次 `pipeline_bundle` 的检测结果和教学卡。通用 AOSP 教学以已确认的宿主链路为限。只有在结果提供具体子路径时，才教学该变体。UNKNOWN 保留可直接观察的事件。
 
 Camera 管线判定可以在 Pixel/Google Camera trace 中优先探测
 `pixel_camera_frames` 和 `pixel_camera_memory_span`，用于补充 camera graph
@@ -175,55 +151,12 @@ SurfaceFlinger / HWC / app producer 证据链。
 - **线程角色表**：关键线程名、职责、对应的 trace 标签
 - **关键 Slice 列表**：Slice 名称、说明、正常耗时范围
 
-**Phase 3 — 管线验证（当 confidence < 0.5 时执行）：**
+**Phase 3 — 核对目标窗口的实际出图：**
 
-通过手动查询关键 Slice 模式来确认/修正管线类型：
-```sql
--- 检查 HWUI 标准管线特征
-SELECT s.name AS slice_name, COUNT(*) AS cnt
-FROM slice s
-WHERE s.name IN ('DrawFrame', 'syncFrameState', 'Choreographer#doFrame', 'dequeueBuffer', 'queueBuffer')
-GROUP BY s.name
-ORDER BY cnt DESC
-```
-
-```sql
--- 检查 Flutter 特征
-SELECT thread_name, COUNT(*) AS slice_cnt
-FROM thread_slice
-WHERE thread_name IN ('1.ui', '1.raster', '1.io', 'io.flutter.1.ui', 'io.flutter.1.raster')
-GROUP BY thread_name
-```
-
-```sql
--- 检查 WebView 特征
-SELECT s.name AS slice_name, COUNT(*) AS cnt
-FROM slice s
-WHERE s.name GLOB '*CrRendererMain*'
-   OR s.name GLOB '*WebViewChromium*'
-   OR s.name GLOB '*GLFunctor*'
-   OR s.name GLOB '*viz::*'
-GROUP BY s.name
-ORDER BY cnt DESC
-LIMIT 10
-```
-
-```sql
--- 检查 Game Engine 特征
-SELECT s.name AS slice_name, COUNT(*) AS cnt
-FROM slice s
-WHERE s.name GLOB '*UnityMain*'
-   OR s.name GLOB '*UnityGfx*'
-   OR s.name GLOB '*UE4*'
-   OR s.name GLOB '*GameThread*'
-   OR s.name GLOB '*RHIThread*'
-GROUP BY s.name
-ORDER BY cnt DESC
-LIMIT 10
-```
-
-根据查询结果向用户展示证据：
-"发现 DrawFrame 共 180 次、BLASTBufferQueue 相关 Slice 共 160 次 → 确认为 Standard BLAST 管线"
+1. 限定到目标包及其有归属的进程、观察窗口和输出 surface。沿生产线程上的 draw、提交 buffer、宿主采样或独立 layer，找出实际到达显示路径的帧。
+2. 有 FrameTimeline 时，按目标 UPID、layer 和 surface/display frame token 核对 SurfaceFlinger 的消费与呈现。缺少可关联记录时说明断在哪一段，并保留可见的生产端证据。
+3. 普通 RenderThread 向宿主窗口持续出图时，按标准 AOSP/HWUI 解读。线程名、SDK 初始化、单次 API 调用或别的进程在播放视频都只能提供搜索线索。主链路仍不清楚时保留 UNKNOWN。
+4. 对 camera / video，分别确认预览帧或解码帧送入目标 surface 的证据。音频 codec、拍照处理和相机后台服务都不能证明屏幕上的画面；认定 HWC overlay 还需要该视频 layer 的合成方式。
 
 **Phase 4 — 管线特有分析路由：**
 
@@ -236,7 +169,7 @@ LIMIT 10
 | **Compose** | scrolling_analysis | 关注 Recomposition 开销，FrameTimeline 可用 |
 | **WebView** | scrolling_analysis + 手动分析 CrRendererMain | Web 内容无直接 FrameTimeline |
 | **Game Engine** | game_fps_analysis, gpu_analysis | 无 FrameTimeline，通常 GPU-bound |
-| **Camera/Video** | gpu_analysis, surfaceflinger_analysis | HWC Overlay 分析，关注 layer 合成策略 |
+| **Camera/Video** | gpu_analysis, surfaceflinger_analysis | 核对预览或解码输出的 layer 及其实际合成方式 |
 | **SurfaceView** | surfaceflinger_analysis | 独立 Surface，需查看 SF 合成时序 |
 | **TextureView** | scrolling_analysis | 共享 App Surface，可能有 GPU 纹理上传开销 |
 
@@ -252,44 +185,16 @@ LIMIT 10
 
 **Phase 5 — 多管线共存检测：**
 
-某些应用同时使用多种渲染管线（如 WebView 嵌入 View、Flutter PlatformView、视频播放叠加 UI）：
-
-```sql
--- 检测多 Surface 共存
-SELECT
-  layer_name,
-  COUNT(*) as frame_cnt
-FROM actual_frame_timeline_slice
-GROUP BY layer_name
-ORDER BY frame_cnt DESC
-LIMIT 10
-```
-
-```sql
--- 检测多 RenderThread
-SELECT thread_name, tid, COUNT(*) AS slice_cnt
-FROM thread_slice
-WHERE thread_name GLOB 'RenderThread*'
-   OR thread_name GLOB '1.raster*'
-   OR thread_name GLOB 'CrRendererMain*'
-   OR thread_name GLOB 'GLThread*'
-GROUP BY thread_name, tid
-ORDER BY slice_cnt DESC
-```
-
-如果检测到多管线共存：
-- 说明哪些管线共存以及各自的帧数占比
-- 解释管线之间的交互方式（如 PlatformView 通过 TextureView 桥接）
-- 指出可能的性能影响（如额外的 GPU 纹理拷贝、合成复杂度增加）
+同一窗口有多个生产者时，仅展示分别有提交或消费证据的路径。按目标 layer 核对宿主与独立 surface 的帧；TextureView 等回到宿主的路径还需观察宿主采样。帧占比须明确分子、分母和观察窗口。只有能关联到同一 frame/buffer 时才描述两条路径的依赖。
 
 ### 输出结构必须遵循：
 
 1. **检测结果**：
-   - catalog 出图类型 + 置信度 + 对应文章
+   - 已确认的出图类型、证据及对应教学卡；UNKNOWN 说明缺失的观测
    - 检测子路径 + 独立列出的正交 feature
    - 如有多管线共存，分别列出
 
-2. **管线架构图**（Mermaid 时序图，来自 Pipeline Skill 教学内容）
+2. **管线架构图**（确认路径且有对应教学卡时展示）
 
 3. **关键线程角色表**：
    ```

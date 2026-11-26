@@ -185,7 +185,7 @@ describe('PipelineSkillLoader detection validation', () => {
     const loader = getPipelineSkillLoader();
     await loader.reload();
 
-    expect(loader.getAllPipelineIds()).toHaveLength(31);
+    expect(loader.getAllPipelineIds().sort()).toEqual(Object.keys(loader.getCatalog().pipelines).sort());
   });
 });
 
@@ -197,6 +197,26 @@ describe('PipelineSkillLoader product teaching validation', () => {
   const validateCatalog = (catalog: unknown): void =>
     (getPipelineSkillLoader() as any).validateCatalog(catalog);
   const catalogCopy = (): PipelineCatalog => structuredClone(getPipelineSkillLoader().getCatalog());
+
+  it('rejects duplicate, reserved, malformed and non-app output path bindings', () => {
+    for (const outputPath of ['hwui_blast', 'unknown', 'HWUI;']) {
+      const catalog = catalogCopy();
+      catalog.pipelines.AOSP_STANDARD.output_path = outputPath;
+      expect(() => validateCatalog(catalog)).toThrow('invalid or duplicate output path');
+    }
+    const global = catalogCopy();
+    global.pipelines.AOSP_STANDARD.signal_scope = 'global';
+    expect(() => validateCatalog(global)).toThrow('invalid or duplicate output path');
+    const feature = catalogCopy();
+    feature.pipelines.VIDEO_OVERLAY_HWC.output_path = 'hwc_overlay';
+    expect(() => validateCatalog(feature)).toThrow('invalid or duplicate output path');
+  });
+
+  it('requires an observed output path for primary eligibility', () => {
+    const catalog = catalogCopy();
+    delete catalog.pipelines.FLUTTER_SURFACEVIEW.output_path;
+    expect(() => validateCatalog(catalog)).toThrow('contradictory metadata');
+  });
 
   it.each([
     ['title', ''],

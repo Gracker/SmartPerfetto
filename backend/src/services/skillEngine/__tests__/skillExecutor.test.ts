@@ -5121,6 +5121,8 @@ describe('SkillExecutor - Pipeline Step', () => {
       .mockResolvedValueOnce({
         columns: [
           'primary_pipeline_id',
+          'primary_basis',
+          'target_process',
           'primary_rendering_type_id',
           'primary_confidence',
           'candidates_list',
@@ -5131,6 +5133,8 @@ describe('SkillExecutor - Pipeline Step', () => {
         ],
         rows: [[
           'ANDROID_VIEW_STANDARD_BLAST',
+          'hwui_blast',
+          'com.demo.app',
           'S02_AOSP_STANDARD',
           0.91,
           'ANDROID_VIEW_STANDARD_BLAST:0.91,ANDROID_VIEW_STANDARD_LEGACY:0.42',
@@ -5207,6 +5211,20 @@ describe('SkillExecutor - Pipeline Step', () => {
     expect(bundle.pinInstructions.length).toBeGreaterThan(0);
     expect(Array.isArray(bundle.activeRenderingProcesses)).toBe(true);
     expect(bundle.activeRenderingProcesses[0]?.processName).toBe('com.demo.app');
+  });
+
+  it('can teach an explicitly selected pipeline without detecting it in the trace', async () => {
+    executor.registerSkill({name: 'requested_teaching_card', type: 'composite', version: '1.0',
+      meta: createMeta('Requested teaching card'), steps: [
+        {id: 'pipeline_bundle', type: 'pipeline', pipeline_id: 'ANDROID_VIEW_STANDARD_BLAST'},
+      ]});
+    const result = await executor.execute('requested_teaching_card', 'trace-1');
+    expect(result.rawResults?.pipeline_bundle?.data).toMatchObject({
+      requestedTeachingPipelineId: 'ANDROID_VIEW_STANDARD_BLAST',
+      teachingContent: {docPath: 'skills/pipelines/index.yaml#rendering_types.S02_AOSP_STANDARD'},
+      pinInstructions: [],
+      detection: {detected: false, primaryPipelineId: 'UNKNOWN', primaryConfidence: 0, candidates: []},
+    });
   });
 
   it('reads a source through its save_as binding, not the same-named raw Skill result', async () => {

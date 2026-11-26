@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2024-2026 Gracker (Chris)
+# This file is part of SmartPerfetto. See LICENSE for details.
+
+name: pipeline_flutter_surfaceview
+version: "1.0"
+type: pipeline_definition
+category: rendering
+meta:
+  pipeline_id: FLUTTER_SURFACEVIEW
+  display_name: Flutter SurfaceView 输出
+  description: Flutter raster 路径向独立 SurfaceView 提交图像。
+  icon: flutter
+  family: flutter
+  doc_path: skills/pipelines/index.yaml#rendering_types.S10_FLUTTER
+teaching:
+  source: skills/pipelines/index.yaml#rendering_types.S10_FLUTTER
+auto_pin:
+  instructions:
+    - pattern: 'raster'
+      match_by: name
+      priority: 1
+      reason: 查看 Flutter 光栅化及图像提交
+      smart_filter:
+        enabled: true
+    - pattern: 'SurfaceView'
+      match_by: name
+      priority: 2
+      reason: 查看独立 SurfaceView 输出
+      smart_filter:
+        enabled: true
+    - pattern: '^[sS]urface[fF]linger'
+      match_by: name
+      priority: 3
+      reason: 查看目标层消费与合成
+      main_thread_only: true

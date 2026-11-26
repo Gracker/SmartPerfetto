@@ -1407,6 +1407,9 @@
     "pipeline_angle_gles_vulkan": {
       "policy": "none"
     },
+    "pipeline_aosp_standard": {
+      "policy": "none"
+    },
     "pipeline_camera_pipeline": {
       "policy": "none"
     },
@@ -1414,6 +1417,9 @@
       "policy": "none"
     },
     "pipeline_compose_standard": {
+      "policy": "none"
+    },
+    "pipeline_flutter_surfaceview": {
       "policy": "none"
     },
     "pipeline_flutter_surfaceview_impeller": {
@@ -1467,6 +1473,9 @@
     "pipeline_surface_control_api": {
       "policy": "none"
     },
+    "pipeline_surfaceview": {
+      "policy": "none"
+    },
     "pipeline_surfaceview_blast": {
       "policy": "none"
     },
@@ -1477,6 +1486,9 @@
       "policy": "none"
     },
     "pipeline_video_overlay_hwc": {
+      "policy": "none"
+    },
+    "pipeline_video_playback": {
       "policy": "none"
     },
     "pipeline_vulkan_native": {
