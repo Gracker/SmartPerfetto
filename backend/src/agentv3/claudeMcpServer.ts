@@ -3363,28 +3363,40 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
   const listSkills = tool(
     'list_skills',
-    'List all available SmartPerfetto analysis skills. ' +
-    'Use this to discover which skills exist before invoking one. ' +
-    'Filter by category to narrow results, or use exact metricId for paged registry-declared evidence producers and their inputs.',
+    'Discover SmartPerfetto Skills without running them. Choose one lookup: ' +
+    'omit skillId and metricId to browse (optionally filter by category); ' +
+    'pass skillId alone for the input contract of a specific Skill; ' +
+    'or pass metricId to list its declared producers (optionally filter by category and page using nextOffset).',
     {
-      skillId: z.string().optional().describe('Exact Skill ID: return its complete input contract and exact-process support, including in fast mode. Metadata only; does not execute it.'),
+      skillId: z.string().optional().describe('Exact Skill ID for its complete input contract and exact-process support. Omit metricId and offset.'),
       category: z.string().optional().describe(
         'Optional filter: only return skills whose keywords or tags match this category'
       ),
       metricId: preserveRuntimeLiteralStrings(z.string().optional().describe(
-        'Exact investigation requirement evidenceMetrics ID. Returns only declared producers; an unknown or empty string returns no matches.'
+        'Exact investigation requirement evidenceMetrics ID. Use without skillId. An unknown or empty string matches no producers.'
       )),
       offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional().describe(
-        'Producer page offset from nextOffset; only valid with metricId. Default 0.'
+        'Producer page offset. Omit for the first page. Pass nextOffset with metricId for later pages.'
       ),
     },
     async ({ skillId, category, metricId, offset }) => {
       try {
-        if (skillId !== undefined && (metricId !== undefined || offset !== undefined)) {
-          return createRuntimeToolResult({success: false, reason: 'conflicting_skill_lookup_filters'}, {isError: true});
+        // Placeholder fields can accompany an exact Skill lookup. A metric-only
+        // lookup still treats even an empty metric string as an exact selector.
+        if (skillId !== undefined && (
+          (metricId !== undefined && !isPlaceholderToolString(metricId)) ||
+          (offset !== undefined && offset !== 0)
+        )) {
+          return policyRefusal('retry_list_skills_with_one_lookup', {
+            reason: 'conflicting_skill_lookup_filters',
+            hint: 'For a Skill input contract, retry with skillId alone. For metric producers, omit skillId and use metricId with offset only when paging.',
+          }, {isError: true});
         }
-        if (offset !== undefined && (metricId === undefined || !Number.isSafeInteger(offset) || offset < 0)) {
-          return createRuntimeToolResult({success: false, reason: 'invalid_producer_offset'}, {isError: true});
+        if (skillId === undefined && offset !== undefined && (metricId === undefined || !Number.isSafeInteger(offset) || offset < 0)) {
+          return policyRefusal('retry_list_skills_with_valid_producer_offset', {
+            reason: 'invalid_producer_offset',
+            hint: 'Omit offset for the first page or when browsing. For a later producer page, pass the same metricId and the returned nextOffset.',
+          }, {isError: true});
         }
         const capabilityRegistry = await bindSkillRuntimeRegistry();
         const definitions = new Map(capabilityRegistry.getAllSkills().map(skill => [skill.name, skill]));

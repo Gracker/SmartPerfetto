@@ -47,7 +47,7 @@ import {projectPrivateStructuredValue} from '../../services/security/privateAnal
 import {buildStrategyRegistrySnapshotFromDefinitions, getRegisteredScenes} from '../strategyLoader';
 import {recordPlanOrPrePlanToolCall} from '../planToolCallRecorder';
 import {planPhaseUpdatedContent} from '../planPhaseEvents';
-import {readRuntimeToolResultFacts} from '../../agentRuntime/runtimeToolResult';
+import {decodeRuntimeToolResult, readRuntimeToolResultFacts} from '../../agentRuntime/runtimeToolResult';
 import * as runtimeToolSpec from '../../agentRuntime/runtimeToolSpec';
 import {createClaudeSdkMcpServer} from '../../agentRuntime/engines/claude/claudeSdkTools';
 import {sanitizeSourceReference} from '../../services/codebase/sourceUseDecision';
@@ -1576,12 +1576,39 @@ describe('createClaudeMcpServer', () => {
         } finally {project.mockRestore();}
       });
 
+      it.each(['openai', 'pi'] as const)('returns the exact Skill contract despite unused fields in a %s call', async adapter => {
+        const server = producerServer(1);
+        const definition = server.toolDefinitions.find(item => item.name === 'list_skills')!;
+        const skillId = 'workspace_producer_0';
+        const args = {skillId, metricId: '', offset: 0, category: null};
+        const result = adapter === 'openai'
+          ? await (createOpenAIToolsFromMcpDefinitions([definition])[0] as any).invoke({}, JSON.stringify(args))
+          : await createPiAgentCoreToolFromSharedSpec(definition.shared, {allowedToolNames: new Set([definition.name])})
+            .execute('exact-skill', args, new AbortController().signal, undefined);
+        const {body} = decodeRuntimeToolResult(typeof result === 'string' ? result : result.content);
+        expect(body).toMatchObject({skillId, parameterContract: {requiredParams: ['range_begin']}});
+        expect(server.mockSkillExecutor.execute).not.toHaveBeenCalled();
+        expect(server.mockTpService.query).not.toHaveBeenCalled();
+      });
+
+      it.each([{metricId}, {offset: 5}])('explains how to recover from a conflicting lookup: %j', async filters => {
+        const server = producerServer(1);
+        const skillId = 'workspace_producer_0';
+        const raw = await server.tools.get('list_skills')!.handler({skillId, ...filters});
+        expect(raw.isError).toBe(true);
+        expect(decodeRuntimeToolResult(raw).body).toMatchObject({success: false, reason: 'conflicting_skill_lookup_filters',
+          action_required: 'retry_list_skills_with_one_lookup',
+          hint: expect.stringMatching(/skillId.*metricId.*offset/)});
+        expect(await callTool(server.tools, 'list_skills', {skillId})).toMatchObject({skillId});
+      });
+
       it.each([{}, {metricId, offset: -1}, {metricId, offset: 0.5}, {metricId, offset: Infinity},
         {metricId, offset: Number.MAX_SAFE_INTEGER + 1}])('rejects offsets that cannot name a producer page: %j', async input => {
         const server = producerServer(1);
         const params = Object.keys(input).length ? input : {offset: 0};
         expect(await callTool(server.tools, 'list_skills', params))
-          .toMatchObject({success: false, reason: 'invalid_producer_offset'});
+          .toMatchObject({success: false, reason: 'invalid_producer_offset',
+            action_required: 'retry_list_skills_with_valid_producer_offset'});
       });
     });
 
