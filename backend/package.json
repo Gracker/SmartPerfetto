@@ -198,7 +198,7 @@
     "js-yaml": "^5.4.1",
     "markdown-it": "^15.0.3",
     "multer": "^2.1.1",
-    "openai": "^6.38.0",
+    "openai": "^7.62.0",
     "openid-client": "^6.8.4",
     "semver": "^7.8.5",
     "smol-toml": "1.9.1",
