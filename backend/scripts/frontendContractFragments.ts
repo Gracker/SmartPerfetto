@@ -17,6 +17,10 @@
  */
 
 import ts from 'typescript';
+import {AREA_SELECTION_TRACK_LIMITS} from '../src/agentv3/types';
+
+export const selectionTrackLimitsFragment =
+  `export const AREA_SELECTION_TRACK_LIMITS = ${JSON.stringify(AREA_SELECTION_TRACK_LIMITS)} as const;`;
 
 type ContractDeclaration = ts.InterfaceDeclaration | ts.TypeAliasDeclaration;
 

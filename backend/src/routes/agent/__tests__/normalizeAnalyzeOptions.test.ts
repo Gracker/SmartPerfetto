@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {AREA_SELECTION_TRACK_LIMITS, selectionContextForPrompt} from '../../../agentv3/types';
 import {
   AnalyzeOptionsError,
   normalizeAnalyzeOptions,
@@ -50,6 +51,33 @@ describe('normalizeAnalyzeOptions', () => {
       {selectionContext},
       {endpoint: '/analyze', hasReferenceTraceId: false},
     )).toThrow(expect.objectContaining({code: 'INVALID_SELECTION_CONTEXT'}));
+  });
+
+  it.each(['/analyze', '/sessions/:id/runs'] as const)(
+    'accepts bounded hints for a larger area on %s while rejecting an oversized raw array', endpoint => {
+      const tracks = Array.from({length: AREA_SELECTION_TRACK_LIMITS.count}, (_, index) => ({uri: `/track/${index}`}));
+      const selection = {kind: 'area', source: 'area_selection', startNs: 2482581900000, endNs: 2501801400000,
+        durationNs: 19219500000, trackCount: tracks.length + 1, tracks};
+      const ctx = {endpoint, hasReferenceTraceId: false};
+      const result = normalizeAnalyzeOptions({selectionContext: selection}, ctx);
+      expect(result.selectionContext).toEqual(selection);
+      expect(selectionContextForPrompt(result.selectionContext)).toEqual({...selection, omittedTrackCount: 1});
+      expect(() => normalizeAnalyzeOptions({selectionContext: {...selection, tracks: [...tracks, {uri: '/extra'}]}}, ctx))
+        .toThrow(expect.objectContaining({code: 'INVALID_SELECTION_CONTEXT', details: {
+          field: 'tracks', maxItems: tracks.length, count: tracks.length + 1,
+        }}));
+    },
+  );
+
+  it('identifies the rejected field without echoing a supplied selection kind', () => {
+    try {
+      normalizeAnalyzeOptions({selectionContext: {kind: 'private-trace-label'}},
+        {endpoint: '/analyze', hasReferenceTraceId: false});
+      throw new Error('expected invalid selection');
+    } catch (err) {
+      expect(err).toMatchObject({code: 'INVALID_SELECTION_CONTEXT', details: {field: 'kind'}});
+      expect((err as Error).message).not.toContain('private-trace-label');
+    }
   });
 
   it('admits only bounded track identities for an area selection', () => {

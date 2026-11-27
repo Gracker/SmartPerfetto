@@ -3,7 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import { loadPromptTemplate, renderTemplate } from './strategyLoader';
-import type { ComplexityClassifierInput } from './types';
+import {selectionContextForPrompt, type ComplexityClassifierInput} from './types';
 import type {ReadonlyStrategyRegistrySnapshot} from '../services/selfEvolution/effectiveRuntimeRegistryContext';
 
 type ComplexityPromptInput = string | ComplexityClassifierInput;
@@ -95,7 +95,7 @@ export function buildAnalysisTurnIntentPrompt(input: {
   const requestContext = {
     query: context.query,
     requestedMode: context.requestedMode ?? 'auto',
-    selection: context.selectionContext ?? null,
+    selection: selectionContextForPrompt(context.selectionContext) ?? null,
     hasReferenceTrace: context.hasReferenceTrace,
     ...(context.historyContext !== undefined ? {historyContext: context.historyContext} : {
       previousQueries: context.previousQueries?.slice(-3).map(query => query.slice(0, 800)) ?? [],

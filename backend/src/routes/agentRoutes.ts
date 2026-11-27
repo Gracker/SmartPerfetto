@@ -3675,6 +3675,19 @@ export function analyzeOptionsErrorMessage(
   outputLanguage: OutputLanguage,
 ): string {
   switch (error.code) {
+    case 'INVALID_SELECTION_CONTEXT': {
+      const {field, index, count, maxItems} = error.details ?? {};
+      if (field === 'tracks' && typeof count === 'number' && typeof maxItems === 'number') {
+        return localize(outputLanguage,
+          `选区带有 ${count} 条轨道详情，最多允许 ${maxItems} 条（${error.code}）`,
+          `Selection contains ${count} track hints; at most ${maxItems} are allowed (${error.code})`);
+      }
+      const location = typeof index === 'number' && typeof field === 'string'
+        ? field.replace('tracks', `tracks[${index}]`) : field;
+      return localize(outputLanguage,
+        `选区字段 ${location} 无效，请重新选择有效区间或轨道（${error.code}）`,
+        `Invalid selection field ${location}. Select a valid range or track (${error.code}).`);
+    }
     case 'SMART_COMPARISON_UNSUPPORTED':
       return localize(
         outputLanguage,
@@ -3761,7 +3774,7 @@ export function analyzeOptionsErrorMessage(
     default:
       return localize(
         outputLanguage,
-        '分析参数无效，请检查后重试',
+        `分析参数无效，请检查后重试（${error.code}）`,
         error.message,
       );
   }

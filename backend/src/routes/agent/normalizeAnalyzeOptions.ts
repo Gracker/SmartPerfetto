@@ -7,13 +7,14 @@ import {
   MAX_KNOWLEDGE_SOURCE_IDS_PER_ANALYSIS,
   type CodeAwareMode,
 } from '../../services/codebase/codeAwareFeature';
-import type {
-  SelectionContext,
-  SelectionTrackInfo,
-  TracePairContext,
-  TracePairLayout,
-  TracePaneSide,
-  TraceSource,
+import {
+  AREA_SELECTION_TRACK_LIMITS,
+  type SelectionContext,
+  type SelectionTrackInfo,
+  type TracePairContext,
+  type TracePairLayout,
+  type TracePaneSide,
+  type TraceSource,
 } from '../../agentv3/types';
 import type {
   SceneAnalysisSelection,
@@ -370,53 +371,37 @@ function safeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value);
 }
 
+function invalidSelection(field: string, message: string, details?: Record<string, number>) {
+  return new AnalyzeOptionsError(message, 'INVALID_SELECTION_CONTEXT', 400, {field, ...details});
+}
+
 function normalizeSelectionTrackInfo(
   value: unknown,
   index: number,
 ): SelectionTrackInfo {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new AnalyzeOptionsError(
-      'area selectionContext tracks must contain objects',
-      'INVALID_SELECTION_CONTEXT',
-      400,
-      {index},
-    );
+    throw invalidSelection('tracks', 'area selectionContext tracks must contain objects', {index});
   }
   const raw = value as Record<string, unknown>;
   if (
     typeof raw.uri !== 'string' ||
     raw.uri.trim().length === 0 ||
-    raw.uri.trim().length > 512
+    raw.uri.trim().length > AREA_SELECTION_TRACK_LIMITS.uriLength
   ) {
-    throw new AnalyzeOptionsError(
-      'area selectionContext track uri must be a non-empty bounded string',
-      'INVALID_SELECTION_CONTEXT',
-      400,
-      {index},
-    );
+    throw invalidSelection('tracks.uri', 'area selectionContext track uri must be a non-empty bounded string', {index});
   }
   for (const key of ['utid', 'upid', 'cpu'] as const) {
     if (raw[key] !== undefined && !safeNonNegativeInteger(raw[key])) {
-      throw new AnalyzeOptionsError(
-        `area selectionContext track ${key} must be a non-negative safe integer`,
-        'INVALID_SELECTION_CONTEXT',
-        400,
-        {index},
-      );
+      throw invalidSelection(`tracks.${key}`, `area selectionContext track ${key} must be a non-negative safe integer`, {index});
     }
   }
   if (
     raw.kind !== undefined &&
     (typeof raw.kind !== 'string' ||
       raw.kind.trim().length === 0 ||
-      raw.kind.trim().length > 128)
+      raw.kind.trim().length > AREA_SELECTION_TRACK_LIMITS.kindLength)
   ) {
-    throw new AnalyzeOptionsError(
-      'area selectionContext track kind must be a non-empty bounded string',
-      'INVALID_SELECTION_CONTEXT',
-      400,
-      {index},
-    );
+    throw invalidSelection('tracks.kind', 'area selectionContext track kind must be a non-empty bounded string', {index});
   }
   return {
     uri: raw.uri.trim(),
@@ -431,10 +416,7 @@ function normalizeSelectionTrackInfo(
 export function normalizeSelectionContext(value: unknown): SelectionContext | undefined {
   if (value === undefined || value === null) return undefined;
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new AnalyzeOptionsError(
-      'selectionContext must be an object',
-      'INVALID_SELECTION_CONTEXT',
-    );
+    throw invalidSelection('selectionContext', 'selectionContext must be an object');
   }
   const raw = value as Record<string, unknown>;
   if (raw.kind === 'area') {
@@ -443,35 +425,27 @@ export function normalizeSelectionContext(value: unknown): SelectionContext | un
       !safeNonNegativeInteger(raw.endNs) ||
       raw.endNs <= raw.startNs
     ) {
-      throw new AnalyzeOptionsError(
-        'area selectionContext requires safe integer startNs < endNs',
-        'INVALID_SELECTION_CONTEXT',
-      );
+      throw invalidSelection('startNs/endNs', 'area selectionContext requires safe integer startNs < endNs');
     }
     if (
       raw.durationNs !== undefined &&
       (!safeNonNegativeInteger(raw.durationNs) || raw.durationNs > raw.endNs - raw.startNs)
     ) {
-      throw new AnalyzeOptionsError(
-        'area selectionContext.durationNs must fit the selected range',
-        'INVALID_SELECTION_CONTEXT',
-      );
+      throw invalidSelection('durationNs', 'area selectionContext.durationNs must fit the selected range');
     }
     if (
       raw.source !== undefined &&
       raw.source !== 'area_selection' &&
       raw.source !== 'visible_window'
     ) {
-      throw new AnalyzeOptionsError(
-        'area selectionContext.source is unsupported',
-        'INVALID_SELECTION_CONTEXT',
-      );
+      throw invalidSelection('source', 'area selectionContext.source is unsupported');
     }
-    if (raw.tracks !== undefined && (!Array.isArray(raw.tracks) || raw.tracks.length > 256)) {
-      throw new AnalyzeOptionsError(
-        'area selectionContext.tracks must be a bounded array',
-        'INVALID_SELECTION_CONTEXT',
-      );
+    if (raw.tracks !== undefined && !Array.isArray(raw.tracks)) {
+      throw invalidSelection('tracks', 'area selectionContext.tracks must be an array');
+    }
+    if (Array.isArray(raw.tracks) && raw.tracks.length > AREA_SELECTION_TRACK_LIMITS.count) {
+      throw invalidSelection('tracks', 'area selectionContext.tracks exceeds the maximum track hint count',
+        {count: raw.tracks.length, maxItems: AREA_SELECTION_TRACK_LIMITS.count});
     }
     return {
       kind: 'area',
@@ -487,31 +461,19 @@ export function normalizeSelectionContext(value: unknown): SelectionContext | un
   }
   if (raw.kind === 'track_event') {
     if (!safeNonNegativeInteger(raw.eventId) || !safeInteger(raw.ts)) {
-      throw new AnalyzeOptionsError(
-        'track_event selectionContext requires a non-negative eventId and safe integer ts',
-        'INVALID_SELECTION_CONTEXT',
-      );
+      throw invalidSelection('eventId/ts', 'track_event selectionContext requires a non-negative eventId and safe integer ts');
     }
     if (raw.dur !== undefined && !safeNonNegativeInteger(raw.dur)) {
-      throw new AnalyzeOptionsError(
-        'track_event selectionContext.dur must be a non-negative safe integer',
-        'INVALID_SELECTION_CONTEXT',
-      );
+      throw invalidSelection('dur', 'track_event selectionContext.dur must be a non-negative safe integer');
     }
     if (raw.dur !== undefined && !Number.isSafeInteger(raw.ts + raw.dur)) {
-      throw new AnalyzeOptionsError(
-        'track_event selectionContext ts + dur must be a safe integer',
-        'INVALID_SELECTION_CONTEXT',
-      );
+      throw invalidSelection('ts/dur', 'track_event selectionContext ts + dur must be a safe integer');
     }
     if (raw.source !== undefined && raw.source !== 'track_event_selection') {
-      throw new AnalyzeOptionsError(
-        'track_event selectionContext.source is unsupported',
-        'INVALID_SELECTION_CONTEXT',
-      );
+      throw invalidSelection('source', 'track_event selectionContext.source is unsupported');
     }
     if (raw.nativeTable !== undefined && raw.nativeTable !== 'slice') {
-      throw new AnalyzeOptionsError('track_event selectionContext.nativeTable is unsupported', 'INVALID_SELECTION_CONTEXT');
+      throw invalidSelection('nativeTable', 'track_event selectionContext.nativeTable is unsupported');
     }
     const trackUri = normalizeOptionalString(raw.trackUri, 512);
     return {
@@ -524,10 +486,7 @@ export function normalizeSelectionContext(value: unknown): SelectionContext | un
       ...(trackUri ? {trackUri} : {}),
     };
   }
-  throw new AnalyzeOptionsError(
-    `Unsupported selectionContext.kind: ${String(raw.kind)}`,
-    'INVALID_SELECTION_CONTEXT',
-  );
+  throw invalidSelection('kind', 'selectionContext.kind must be area or track_event');
 }
 
 function normalizeStringArray(value: unknown): string[] {

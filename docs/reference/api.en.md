@@ -764,6 +764,8 @@ only after an explicit user click; they are not automatic commands.
 
 Supported `selectionContext` values contain locator identity, time bounds and an optional native table hint:
 
+For an `area`, `startNs` and `endNs` cover the full selection. The Web UI records the total number of selected tracks in `trackCount` and sends up to 256 resolvable track identity hints in `tracks`. Requests exceeding this limit return HTTP 400 with `INVALID_SELECTION_CONTEXT`, the field name, the actual count and the limit.
+
 A `track_event` may include `nativeTable: "slice"` only from the actual track
 renderer's native table metadata. Omit it for other tables or unknown sources.
 The backend still rereads the native object, time window and identity; the hint

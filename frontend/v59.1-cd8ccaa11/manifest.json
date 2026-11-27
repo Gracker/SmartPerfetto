@@ -65,17 +65,17 @@
     "assets/syntaqlite-runtime.js": "sha256-03Zp8saQe2PidK3xSzWcn+tZNK9fFCFhTr2P9u0GyI8=",
     "assets/syntaqlite-runtime.wasm": "sha256-/2Vh3J/dda+5V70kG6t23YpRk4MCO8Ue2cPVbKKsHiA=",
     "assets/syntaqlite-sqlite.wasm": "sha256-wpSDrwxb4BhCM1q4r0MsFVt2FSuevcDL/7DFUEd4Lbw=",
-    "engine_bundle.js": "sha256-mK4Y4cNdR2eE8qu4Eme1mYbDrNOEA9jNa5n8KLcspIk=",
+    "engine_bundle.js": "sha256-jRdrDk6Nh8MjjBTz6yeojyqTaTgNPSwGoOpjTjwD70A=",
     "frontend.css": "sha256-99q2Zs5Pdgs14s/WQa5EpdYJIwf3qlVbAydAwrvH1O0=",
-    "frontend_bundle.js": "sha256-HQjMB9ujyjGG0NUABoZ/j1cnsA8hKVMuSbc2xCSlNNw=",
+    "frontend_bundle.js": "sha256-RnlhnxQ0Au4tsdpceH2MOm77lIjPr3g4Jh9GAD+HqYE=",
     "proto_utils.wasm": "sha256-f4XdIUl8LwBqLo1TDqZ6AvnadOg+bVAL9WTppEbOFfE=",
-    "stdlib_docs.json": "sha256-wNmCHIsmgiFN8okVrE7NMmOdVMz8T17JpIUR52tq2Xg=",
+    "stdlib_docs.json": "sha256-bljhE6klroODnpFaBBof13qI8n3eQ4oc6IXSTE7t3Qw=",
     "syntaqlite-runtime.js": "sha256-03Zp8saQe2PidK3xSzWcn+tZNK9fFCFhTr2P9u0GyI8=",
     "syntaqlite-runtime.wasm": "sha256-/2Vh3J/dda+5V70kG6t23YpRk4MCO8Ue2cPVbKKsHiA=",
     "syntaqlite-sqlite.wasm": "sha256-wpSDrwxb4BhCM1q4r0MsFVt2FSuevcDL/7DFUEd4Lbw=",
-    "trace_processor.wasm": "sha256-wO334biw9fmiT6VbHoRKPYdBwhNf5WXU0HVul7EynXo=",
-    "trace_processor_memory64.wasm": "sha256-uSKrlMXBAX2akrCfyoTzsCR6eOPE678zEBEutOOklQE=",
-    "traceconv.wasm": "sha256-fyEihNZ+sFMukFHQwZYVIdfBPF9E+H93dBlZ72pBqhU=",
-    "traceconv_bundle.js": "sha256-RouAXJrkJ5EcZ/iw7NppLHE7/f5neF00KG7vyserm2E="
+    "trace_processor.wasm": "sha256-bArGL+bTaGUM77EAYRHbEHtEtMleYa+RMPH+8V4Ep6E=",
+    "trace_processor_memory64.wasm": "sha256-NJbRifA2oRyZNd6ek3zHaEFEHmH7JvBIUKsk40tiODA=",
+    "traceconv.wasm": "sha256-OrOgws/nn9sz5DA+Txgt0MOpLbXgPooy0mvX9gfUdWU=",
+    "traceconv_bundle.js": "sha256-m5h4vfvpIcflVlBF8iMWOg+dwG+131aggRLSFs9tsWM="
   }
 }

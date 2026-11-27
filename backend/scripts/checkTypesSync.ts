@@ -28,6 +28,7 @@ import {
   findOutOfSyncContractFragments,
   FRONTEND_CONTRACT_SOURCES,
   frontendContractFragments,
+  selectionTrackLimitsFragment,
   readBackendSources,
   readFrontendContractSources,
 } from './frontendContractFragments';
@@ -326,6 +327,7 @@ async function checkTypesSync(): Promise<boolean> {
     readBackendSources(projectRoot, readFile, ANALYSIS_COMPLETED_PUBLIC_TYPE_PATHS),
     readBackendSources(projectRoot, readFile, ANALYSIS_RECEIPT_PUBLIC_TYPE_PATHS));
   const outOfSyncFragments = findOutOfSyncContractFragments(frontendContent, [
+    {name: 'area selection track limits', content: selectionTrackLimitsFragment},
     {name: 'AnalysisCompletedEvent', content: analysisCompletedContractFragment(backendContent)},
     {name: 'AnalysisCompletedEvent public dependencies', content: publicTypes.analysisCompleted},
     {name: 'AnalysisReceipt', content: publicTypes.analysisReceipt},

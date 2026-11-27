@@ -20,6 +20,7 @@ import {
   analysisPublicTypeFragments,
   analysisCompletedContractFragment,
   frontendContractFragments,
+  selectionTrackLimitsFragment,
   readBackendSources,
   readFrontendContractSources,
 } from './frontendContractFragments';
@@ -282,6 +283,8 @@ ${criticalPathContractContent}
 ${contractFragments.assistantWork}
 
 ${contractFragments.runSupplement}
+
+${selectionTrackLimitsFragment}
 `);
 
 // Column Types Section

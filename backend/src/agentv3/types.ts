@@ -316,6 +316,8 @@ export interface TraceCompleteness {
 // Keep both in sync when modifying.
 // =============================================================================
 
+export const AREA_SELECTION_TRACK_LIMITS = {count: 256, uriLength: 512, kindLength: 128} as const;
+
 /** Area selection — user marked a time or track range in Perfetto, or the UI used the current viewport as a range scope. */
 export interface AreaSelectionContext {
   kind: 'area';
@@ -323,6 +325,7 @@ export interface AreaSelectionContext {
   startNs: number;
   endNs: number;
   durationNs?: number;
+  /** Bounded identity hints. trackCount is the full selection, including unresolved tracks. */
   tracks?: SelectionTrackInfo[];
   trackCount?: number;
 }
@@ -341,6 +344,13 @@ export interface TrackEventSelectionContext {
 
 /** Discriminated union: an area or a track event selected in Perfetto UI. */
 export type SelectionContext = AreaSelectionContext | TrackEventSelectionContext;
+
+/** Keep omitted identities explicit in model data without changing the selected time range. */
+export function selectionContextForPrompt(selection: SelectionContext | undefined) {
+  if (selection?.kind !== 'area' || selection.trackCount === undefined) return selection;
+  const omittedTrackCount = selection.trackCount - (selection.tracks?.length ?? 0);
+  return omittedTrackCount > 0 ? {...selection, omittedTrackCount} : selection;
+}
 
 /** Stable Perfetto track identity supplied by the UI. */
 export interface SelectionTrackInfo {

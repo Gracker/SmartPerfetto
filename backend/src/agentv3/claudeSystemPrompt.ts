@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import type {ClaudeAnalysisContext, TraceCompleteness} from './types';
+import {selectionContextForPrompt, type ClaudeAnalysisContext, type TraceCompleteness} from './types';
 import {defaultStrategyDetail, getFinalReportContract, loadPromptTemplate, promptDataEnvelope} from './strategyLoader';
 import {loadSourceUsePrompt} from '../services/codebase/sourceUseDecision';
 import {sourceAuthorizationPayload} from '../services/codebase/selectedCodebaseCapabilities';
@@ -298,7 +298,7 @@ function buildTypedTurnSystemPromptParts(
 
   // Selection and both sides of a comparison are atomic, non-droppable data.
   // A large description on one side can never evict the other trace's identity.
-  data(4, 'selection_context', context.selectionContext);
+  data(4, 'selection_context', selectionContextForPrompt(context.selectionContext));
   if (context.comparison) {
     const comparison = context.comparison;
     const pair = comparison.tracePairContext;

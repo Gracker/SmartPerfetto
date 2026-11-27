@@ -6,7 +6,8 @@ import type { AnalysisOptions } from '../agent/core/orchestratorTypes';
 import type { ConversationTurn } from '../agent/types';
 import { buildComplexityClassifierInput } from '../agentv3/queryComplexityContext';
 import type { SceneType } from '../agentv3/sceneClassifier';
-import type { ComplexityClassifierInput, QueryComplexity, SelectionContext, TracePairContext } from '../agentv3/types';
+import {AREA_SELECTION_TRACK_LIMITS, type ComplexityClassifierInput, type QueryComplexity,
+  type SelectionContext, type TracePairContext} from '../agentv3/types';
 import type { OutputLanguage } from '../agentv3/outputLanguage';
 import {
   MAX_CODEBASE_IDS_PER_ANALYSIS,
@@ -189,15 +190,15 @@ function canonicalSelectionContext(value: SelectionContext): SelectionContext {
     (owns(raw, 'trackCount') && raw.trackCount !== undefined && !safeNonNegativeInteger(raw.trackCount))) {
     throw new Error('analysis_run_selection_invalid');
   }
-  const tracks = denseArray(raw.tracks, 256);
+  const tracks = denseArray(raw.tracks, AREA_SELECTION_TRACK_LIMITS.count);
   const normalizedTracks = tracks?.map(item => {
     const track = dataRecord(item, ['uri', 'utid', 'upid', 'cpu', 'kind']);
     if (!exactKeys(track, ['uri', 'utid', 'upid', 'cpu', 'kind']) ||
       ['utid', 'upid', 'cpu'].some(key => owns(track, key) && track[key] !== undefined && !safeNonNegativeInteger(track[key]))) {
       throw new Error('analysis_run_selection_invalid');
     }
-    const uri = canonicalString(track.uri, 512, true)!;
-    const kind = canonicalString(track.kind, 128, false);
+    const uri = canonicalString(track.uri, AREA_SELECTION_TRACK_LIMITS.uriLength, true)!;
+    const kind = canonicalString(track.kind, AREA_SELECTION_TRACK_LIMITS.kindLength, false);
     return {uri,
       ...(track.utid !== undefined ? {utid: track.utid as number} : {}),
       ...(track.upid !== undefined ? {upid: track.upid as number} : {}),
