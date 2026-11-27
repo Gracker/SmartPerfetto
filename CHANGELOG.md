@@ -13,7 +13,17 @@ Detailed commit-level history is available via `git log`.
 
 ## [Unreleased]
 
+## [1.20.3] - 2026-11-27
+
+### Security
+
+- Update Express's locked `body-parser` and `proxy-addr` dependencies to include upstream security fixes. The update preserves support for compressed request bodies.
+
+This release also includes the analysis and timeline fixes listed under 1.20.2.
+
 ## [1.20.2] - 2026-11-27
+
+Superseded during release verification. Use 1.20.3 for distributed builds.
 
 ### Fixed
 
@@ -1266,7 +1276,8 @@ Detailed commit-level history is available via `git log`.
 - HTML report generation and CSV / JSON export.
 - AGPL v3.0 licensing throughout.
 
-[Unreleased]: https://github.com/Gracker/SmartPerfetto/compare/v1.20.2...HEAD
+[Unreleased]: https://github.com/Gracker/SmartPerfetto/compare/v1.20.3...HEAD
+[1.20.3]: https://github.com/Gracker/SmartPerfetto/compare/v1.20.1...v1.20.3
 [1.20.2]: https://github.com/Gracker/SmartPerfetto/compare/v1.20.1...v1.20.2
 [1.20.1]: https://github.com/Gracker/SmartPerfetto/compare/v1.20.0...v1.20.1
 [1.20.0]: https://github.com/Gracker/SmartPerfetto/compare/v1.19.1...v1.20.0
