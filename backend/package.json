@@ -184,7 +184,7 @@
     "@aws-sdk/credential-provider-ini": "^3.973.27",
     "@aws-sdk/credential-provider-node": "^3.972.94",
     "@earendil-works/pi-agent-core": "1.5.0",
-    "@earendil-works/pi-ai": "1.5.0",
+    "@earendil-works/pi-ai": "1.6.0",
     "@earendil-works/pi-coding-agent": "1.5.0",
     "@openai/agents": "^0.13.0",
     "@types/better-sqlite3": "^7.6.13",
