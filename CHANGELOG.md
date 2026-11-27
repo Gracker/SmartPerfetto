@@ -13,6 +13,16 @@ Detailed commit-level history is available via `git log`.
 
 ## [Unreleased]
 
+## [1.20.2] - 2026-11-27
+
+### Fixed
+
+- Identify the target app's rendering path from its recorded frame and composition evidence. Leave the path unknown when the trace cannot establish it, and keep the timeline's teaching cards aligned with that result.
+- Use observed display ticks for scrolling frame budgets and session boundaries, fall back to app frame callbacks when presentation data is insufficient, and require stronger evidence before attributing jank to input handling or other causes.
+- Keep whole-interaction and selected-window measurements distinct in scrolling reports. Flag conflicting measurements and retain trace evidence when source lookups fill the analysis closeout budget.
+- Preserve the full time range when analyzing a timeline selection that spans many tracks. Bound the track hints sent with the request and identify invalid selection fields in API errors.
+- Bound transient Pi provider retries, expose output-length stops and retain report artifact references in bounded calls. Recover from conflicting Skill lookup arguments with actionable guidance.
+
 ## [1.20.1] - 2026-11-25
 
 ### Added
@@ -1256,7 +1266,8 @@ Detailed commit-level history is available via `git log`.
 - HTML report generation and CSV / JSON export.
 - AGPL v3.0 licensing throughout.
 
-[Unreleased]: https://github.com/Gracker/SmartPerfetto/compare/v1.20.1...HEAD
+[Unreleased]: https://github.com/Gracker/SmartPerfetto/compare/v1.20.2...HEAD
+[1.20.2]: https://github.com/Gracker/SmartPerfetto/compare/v1.20.1...v1.20.2
 [1.20.1]: https://github.com/Gracker/SmartPerfetto/compare/v1.20.0...v1.20.1
 [1.20.0]: https://github.com/Gracker/SmartPerfetto/compare/v1.19.1...v1.20.0
 [1.19.0]: https://github.com/Gracker/SmartPerfetto/compare/v1.18.1...v1.19.0
