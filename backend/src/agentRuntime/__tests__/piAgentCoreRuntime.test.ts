@@ -4017,21 +4017,29 @@ describe('experimental Pi agent-core runtime contract', () => {
 
   it('names a context-window stop as its own budget and closes out, not as the turn cap', async () => {
     passVerification();
+    const trace = createFakeTraceProcessorService();
+    trace.query.mockResolvedValue({columns: ['main_state'], rows: [{main_state: 'D'}], durationMs: 1});
     piClassifierResponses.push(
       {role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: JSON.stringify(piClassifierDecision)}]},
-      {role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: 'Observed partial evidence only.'}]},
+      {role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: 'The sampled main thread was in D state. The ANR root cause is unconfirmed.'}]},
     );
     FakePiAgent.promptHandler = async agent => {
+      const sql = agent.state.tools.find((tool: any) => tool.name === 'execute_sql') as any;
+      await sql.execute('anr-state', {sql: "SELECT 'D' AS main_state"});
       const message = {role: 'assistant', stopReason: 'toolUse', content: [{type: 'text', text: 'Retained evidence'}],
         usage: {input: 95_000, output: 1_000, cacheRead: 0, cacheWrite: 0, totalTokens: 96_000, cost: {total: 0}}};
       expect(await (agent.options?.finishTurn as any)({message})).toEqual({action: 'end'});
       agent.emitForTest({type: 'turn_end', message});
       return [message];
     };
-    const result = await typedRuntime({env: {AGENT_QUICK_MAX_TURNS: '50'}})
-      .analyze('继续', 'typed-pi-context-limit', 'trace-pi', {analysisMode: 'fast'});
+    const result = await typedRuntime({trace, env: {AGENT_QUICK_MAX_TURNS: '50'}})
+      .analyze('根据源码分析 ANR 的根因', 'typed-pi-context-limit', 'trace-pi', {analysisMode: 'fast'});
     expect(result).toMatchObject({partial: true, terminationReason: 'max_context_tokens', rounds: 2,
       completion: {status: 'incomplete', reason: 'context_limit', attemptId: 'closeout-2'}});
+    expect(result.conclusion).toBe('The sampled main thread was in D state. The ANR root cause is unconfirmed.');
+    expect(piClassifierCalls).toHaveLength(2);
+    expect(piClassifierCalls[1].context.tools).toEqual([]);
+    expect(piClassifierCalls[1].context.messages[0].content).toContain('main_state');
     expect(result.quickRun?.stopReason).not.toBe('hard_cap');
     // The closeout tells the model which budget ran out.
     expect(piClassifierCalls[1].context.messages[0].content).toMatch(/[（(]context_limit[：:]/);

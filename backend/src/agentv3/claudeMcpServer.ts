@@ -7971,8 +7971,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       content: {
         phase: 'starting',
         message: localize(outputLanguage,
-          `本轮源码深度：${sourceDepth === 'mechanism' ? '机制分析' : '快速定位'}（${originZh}；检索 ${searchesLeft} 次、读取 ${readsLeft} 次）`,
-          `Source depth this run: ${sourceDepth === 'mechanism' ? 'mechanism' : 'locate'} (${originEn}; ${searchesLeft} searches, ${readsLeft} reads)`),
+          `本轮源码深度：${sourceDepth === 'mechanism' ? '机制分析' : '快速定位'}（${originZh}；最多可检索 ${searchesLeft} 次、读取 ${readsLeft} 次）`,
+          `Source depth this run: ${sourceDepth === 'mechanism' ? 'mechanism' : 'locate'} (${originEn}; budget: up to ${searchesLeft} searches and ${readsLeft} reads)`),
       },
       timestamp: Date.now(),
     });

@@ -14,6 +14,7 @@ interface PromptData {
   verified: boolean;
   modelConsumptionKnown: boolean;
   omittedCalls: number;
+  omittedPendingStarts?: number;
   unavailableResults: number;
   entries: Array<{
     toolCallId: string;
@@ -238,6 +239,81 @@ describe('runtime closeout returned-data tape', () => {
     expect(data.entries[data.entries.length - 1]?.returnedData).toMatchObject({evidenceId: 'evidence-49', value: 49});
     expect(data.entries.some(entry => entry.toolCallId === 'sql-0')).toBe(false);
     expect(data.completeTranscript).toBe(false);
+  });
+
+  it('retains returned trace data alongside repeated projected source lookups under byte pressure', async () => {
+    const tape = createRuntimeTurnCloseoutTape();
+    const traceRow = {event: 'ANR', main_state: 'D', dur_ns: 5_000_000_000};
+    await tape.observe({...invocation, phase: 'completed', result: createRuntimeToolResult({rows: [traceRow]})});
+    const reference = (id: string) => ({
+      referenceId: id, codebaseId: 'fixture', filePath: 'PrivateFixture.java',
+      lineRange: {start: 1, end: 2}, text: 'private fixture source',
+    });
+    for (let i = 0; i < 16; i++) {
+      await tape.observe({...invocation, toolName: 'search_codebase', toolCallId: `search-${i}`, phase: 'completed',
+        result: createRuntimeToolResult({matches: Array.from({length: 16}, (_, n) => reference(`ref-${i}-${n}`))})});
+    }
+    for (let i = 0; i < 12; i++) {
+      await tape.observe({...invocation, toolName: 'read_codebase_file', toolCallId: `read-${i}`, phase: 'completed',
+        result: createRuntimeToolResult({reference: reference(`read-ref-${i}`)})});
+    }
+    const prompt = tape.buildPrompt({...question, query: 'What caused the ANR?', budgetExhausted: 'context_limit'})!;
+    const data = readPromptData(prompt);
+    expect(data.entries.find(e => e.toolCallId === invocation.toolCallId)?.returnedData).toEqual({rows: [traceRow]});
+    expect(data.entries.some(e => e.toolCallId === 'search-15')).toBe(true);
+    expect(data.entries.some(e => e.toolCallId === 'read-11')).toBe(true);
+    expect(data.omittedCalls).toBeGreaterThan(0);
+    expect(data.omittedCalls + data.entries.length).toBe(29);
+    expect(Buffer.byteLength(JSON.stringify(data))).toBeLessThanOrEqual(24 * 1024);
+    expect(prompt).not.toMatch(/PrivateFixture|private fixture source/);
+  });
+
+  it('keeps actual rows through pending, refused and failed calls to the same tool', async () => {
+    const tape = createRuntimeTurnCloseoutTape();
+    await tape.observe({...invocation, phase: 'completed', result: createRuntimeToolResult({rows: [[7]]})});
+    for (let i = 0; i < 12; i++) {
+      await tape.observe({...invocation, toolCallId: `pending-${i}`, phase: 'started'});
+      await tape.observe({...invocation, toolCallId: `error-${i}`, phase: 'failed', error: new Error('private error')});
+      await tape.observe({...invocation, toolCallId: `refused-${i}`, phase: 'completed',
+        result: createRuntimeToolResult({success: false})});
+    }
+    const data = readPromptData(tape.buildPrompt(question));
+    expect(data.entries).toHaveLength(32);
+    expect(data.omittedCalls + (data.omittedPendingStarts ?? 0)).toBe(5);
+    expect(data.entries[0]).toMatchObject({toolCallId: 'sql-1', returnedData: {rows: [[7]]}});
+  });
+
+  it('accounts for an evicted start separately when its projected result later arrives', async () => {
+    const tape = createRuntimeTurnCloseoutTape();
+    await tape.observe({...invocation, toolCallId: 'late', phase: 'started'});
+    for (let i = 0; i < 32; i++) {
+      await tape.observe({...invocation, toolCallId: `pending-${i}`, phase: 'started'});
+    }
+    expect(readPromptData(tape.buildPrompt(question))).toMatchObject({omittedCalls: 0, omittedPendingStarts: 1});
+    await tape.observe({...invocation, toolCallId: 'late', phase: 'completed', result: createRuntimeToolResult({rows: [[7]]})});
+    const data = readPromptData(tape.buildPrompt(question));
+    expect(data).toMatchObject({omittedCalls: 0, omittedPendingStarts: 2});
+    expect(data.entries).toHaveLength(32);
+    expect(data.entries[data.entries.length - 1]).toMatchObject({toolCallId: 'late', state: 'returned', returnedData: {rows: [[7]]}});
+  });
+
+  it('represents an individually oversized result as omitted without evicting the trace finding', async () => {
+    const tape = createRuntimeTurnCloseoutTape({maxBytes: 4096});
+    await tape.observe({...invocation, phase: 'completed', result: createRuntimeToolResult({rows: [[7]]})});
+    await tape.observe({...invocation, toolCallId: 'large', phase: 'completed', result: createRuntimeToolResult({
+      rows: Array(10).fill('x'.repeat(1200)),
+    })});
+    const data = readPromptData(tape.buildPrompt(question));
+    expect(data.entries).toEqual([
+      expect.objectContaining({toolCallId: 'sql-1', returnedData: {rows: [[7]]}}),
+      {toolCallId: 'large', toolName: 'execute_sql', state: 'returned', resultFacts: {}, omittedValues: 1},
+    ]);
+    await tape.observe({...invocation, toolCallId: 'large-receipt', phase: 'completed',
+      result: createRuntimeToolResult({}, {facts: {planPhaseId: 'phase'.repeat(1000)}})});
+    const afterReceipt = readPromptData(tape.buildPrompt(question));
+    expect(afterReceipt.entries).toEqual(data.entries);
+    expect(afterReceipt.omittedCalls).toBe(1);
+    expect(Buffer.byteLength(JSON.stringify(afterReceipt))).toBeLessThanOrEqual(4096);
   });
 
   it('bounds bytes for large results and labels both omitted calls and omitted row values', async () => {

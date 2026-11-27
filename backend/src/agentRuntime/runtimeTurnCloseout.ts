@@ -70,19 +70,42 @@ export function createRuntimeTurnCloseoutTape(options: {maxBytes?: number} = {})
   const maxBytes = Math.max(4096, Math.min(options.maxBytes ?? 24 * 1024, 64 * 1024));
   const entries = new Map<string, ToolExcerpt>();
   let omittedCalls = 0;
+  let omittedPendingStarts = 0;
   let unavailableResults = 0;
+  const envelope = (rows = [...entries.values()]) => ({kind: 'current_run_returned_data_excerpts',
+    completeTranscript: false, verified: false, modelConsumptionKnown: false,
+    omittedCalls, ...(omittedPendingStarts ? {omittedPendingStarts} : {}), unavailableResults, entries: rows});
+  const exceedsBudget = () => entries.size > 32 || Buffer.byteLength(JSON.stringify(envelope())) > maxBytes;
   const trim = () => {
-    while (entries.size > 32 || Buffer.byteLength(JSON.stringify([...entries.values()])) > maxBytes) {
-      const oldest = entries.keys().next().value;
-      if (oldest === undefined) break;
-      entries.delete(oldest);
-      omittedCalls++;
+    if (!exceedsBudget()) return;
+    // Preserve a recent usable result and diagnostic status per tool before
+    // falling back to FIFO. Distinct SQL queries may still be omitted.
+    const records = [...entries.values()];
+    const latest = new Map<string, ToolExcerpt>();
+    for (const entry of records) {
+      const usable = entry.state === 'returned' && entry.returnedData !== undefined && entry.resultFacts?.success !== false;
+      latest.set(`${entry.toolName}:${usable ? 'data' : 'status'}`, entry);
+    }
+    const representatives = new Set(latest.values());
+    const evictionOrder = [
+      ...records.filter(row => !representatives.has(row)),
+      ...records.filter(row => representatives.has(row)),
+    ];
+    for (const entry of evictionOrder) {
+      entries.delete(entry.toolCallId);
+      // A pending invocation may still return; do not count the missing start
+      // as an omitted terminal call as well.
+      if (entry.state === 'pending') omittedPendingStarts++;
+      else omittedCalls++;
+      if (!exceedsBudget()) break;
     }
   };
   const observe: RuntimeToolObserver = event => {
     if (event.role === 'final_candidate_submission') return;
     const toolCallId = boundedText(event.toolCallId, 200);
     const toolName = boundedText(event.toolName, 200);
+    // Order by the actual observation, including an out-of-order completion.
+    entries.delete(toolCallId);
     if (event.phase === 'started') {
       entries.set(toolCallId, {toolCallId, toolName, state: 'pending'});
     } else if (event.phase === 'failed') {
@@ -95,8 +118,20 @@ export function createRuntimeTurnCloseoutTape(options: {maxBytes?: number} = {})
         const decoded = decodeRuntimeToolResult(projected);
         const bounds = {nodes: 0, omitted: 0};
         const returnedData = boundedValue(decoded.body ?? projected, bounds);
-        entries.set(toolCallId, {toolCallId, toolName, state: 'returned', resultFacts,
-          returnedData, ...(bounds.omitted ? {omittedValues: bounds.omitted} : {})});
+        const entry: ToolExcerpt = {toolCallId, toolName, state: 'returned', resultFacts,
+          returnedData, ...(bounds.omitted ? {omittedValues: bounds.omitted} : {})};
+        // A single oversized excerpt cannot fit even in an empty tape.
+        if (Buffer.byteLength(JSON.stringify(envelope([entry]))) > maxBytes) {
+          delete entry.returnedData;
+          entry.omittedValues = bounds.omitted + 1;
+          // A producer receipt can itself exceed the full allowance.
+          if (Buffer.byteLength(JSON.stringify(envelope([entry]))) > maxBytes) {
+            omittedCalls++;
+            trim();
+            return;
+          }
+        }
+        entries.set(toolCallId, entry);
       } catch {
         unavailableResults++;
         entries.set(toolCallId, {toolCallId, toolName, state: 'returned', omittedValues: 1});
@@ -106,9 +141,6 @@ export function createRuntimeTurnCloseoutTape(options: {maxBytes?: number} = {})
   };
   /** At least one call returned data that survived projection; an unreadable result gives a delivery call nothing. */
   const hasReturnedData = () => [...entries.values()].some(entry => entry.state === 'returned' && entry.returnedData !== undefined);
-  const returnedData = () => ({kind: 'current_run_returned_data_excerpts',
-    completeTranscript: false, verified: false, modelConsumptionKnown: false,
-    omittedCalls, unavailableResults, entries: [...entries.values()]});
   const render = (templateName: string, input: DeliveryPromptInput,
     extra: Record<string, string> = {}): string | undefined => {
     let template: string | undefined;
@@ -119,7 +151,7 @@ export function createRuntimeTurnCloseoutTape(options: {maxBytes?: number} = {})
       ...extra,
       original_query: boundedText(input.query, 6000),
       prior_conclusion: boundedText(input.priorConclusion, 8000),
-      returned_data: JSON.stringify(returnedData()),
+      returned_data: JSON.stringify(envelope()),
     });
   };
   const buildPrompt = (input: DeliveryPromptInput & {
@@ -140,7 +172,7 @@ export function createRuntimeTurnCloseoutTape(options: {maxBytes?: number} = {})
       outputLanguage: input.outputLanguage ?? 'zh-CN',
       issues: [{type: 'missing_check', severity: 'error', recoveryKind: 'continue_output',
         message: JSON.stringify({nativeCompletion: {status: 'incomplete', reason: 'output_limit'},
-          originalQuery: boundedText(input.query, 6000), returnedData: returnedData()})}],
+          originalQuery: boundedText(input.query, 6000), returnedData: envelope()})}],
     });
   };
   return {observe, buildPrompt, buildEmptyBodyPrompt, buildOutputLimitPrompt, hasReturnedData};

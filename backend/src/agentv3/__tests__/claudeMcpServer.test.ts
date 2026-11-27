@@ -9313,7 +9313,12 @@ describe('createClaudeMcpServer', () => {
       const run = createTestServer({codeAwareMode: 'provider_send', codebaseIds: ['app-codebase'],
         codebaseRegistry: capable, sourceDepth: 'mechanism'});
       expect(depthLines(run.emittedUpdates).map(update => update.content.message))
-        .toEqual(['本轮源码深度：机制分析（按你的选择；检索 16 次、读取 12 次）']);
+        .toEqual(['本轮源码深度：机制分析（按你的选择；最多可检索 16 次、读取 12 次）']);
+      const english = createTestServer({codeAwareMode: 'provider_send', codebaseIds: ['app-codebase'],
+        codebaseRegistry: capable, sourceDepth: 'mechanism', outputLanguage: 'en'});
+      expect(english.emittedUpdates).toContainEqual(expect.objectContaining({
+        content: expect.objectContaining({message: expect.stringContaining('budget: up to 16 searches and 12 reads')}),
+      }));
       // How auto decided is stated, and stored with the run's source use.
       const auto = createTestServer({codeAwareMode: 'provider_send', codebaseIds: ['app-codebase'], codebaseRegistry: capable,
         sourceDepthDecision: {requested: 'auto', effective: 'locate', origin: 'intent'}});
